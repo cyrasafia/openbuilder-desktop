@@ -161,6 +161,18 @@ E2E 回归记录：关 Tab=归档+状态清理 ✓；切项目=Tab 全关+会话
 
 E2E 回归：worktree 全流程（创建→切换→会话→发消息→**流式 busy 置位/复位**→回复 OK→归档→删除）✓；SSE 3 条预算内 REST 全程可用 ✓。
 
+## 7.6 Code Review 第三轮发现与修复（收敛轮，2026-08-23）
+
+前两轮 30 条修复验证通过；本轮 P1=1 P2=2，已修复：
+
+| # | 级别 | 问题 | 修复 |
+|---|---|---|---|
+| 1 | P1 | SSE 预算截断优先级错误：scope 目录最后入集，超预算时第一个被砍（≥5 项目时 worktree 流式复发病灶） | scope 目录最先入集（聊天流式命脉不可丢），项目根随后 |
+| 2 | P2 | profile 切换/删除先 saveProfiles 后 disconnect：managed→attach 切换时旧 serve 进程泄漏（stop 按新 profile 判定）；删激活项后无重连入口 | disconnect 提前（旧 profile 仍激活，managed stop 命中）；remove 后继 profile 存在则自动 connect |
+| 3 | P2 | pendingParts 在 message.updated 到达时不回放：part 先于 info 到达的消息缺开头内容（缓存机制只做了一半） | message.updated 新建条目时回放 pendingParts 并清缓存 |
+
+新增测试：reconciler client 判空（断开后不抛错、状态复位）。
+
 ## 8. 已知限制（v0.1 接受）
 
 - 消息历史仅拉最新 100 条窗口，更早消息无上翻加载（spec 范围外，v0.2 分段加载）

@@ -47,10 +47,11 @@ function ConnectionSettings() {
   const [testing, setTesting] = useState(false)
 
   const activate = async (id: string) => {
+    // 先断开（此时旧 profile 仍激活，managed 模式才能正确 stop 旧进程）
+    await store.disconnect()
     setActiveId(id)
     await store.saveProfiles(profiles, id)
     // 切换 profile = 全量重对账（回到 snapshot 态）
-    await store.disconnect()
     await store.connect()
   }
 
@@ -73,14 +74,18 @@ function ConnectionSettings() {
   }
 
   const remove = async (p: ConnectionProfile) => {
+    // 删除的是当前连接的 profile：先断开（managed stop 命中旧进程）
+    if (p.id === activeId) {
+      await store.disconnect()
+    }
     const next = profiles.filter((x) => x.id !== p.id)
     const nextActive = activeId === p.id ? next[0]?.id ?? null : activeId
     setProfiles(next)
     setActiveId(nextActive)
     await store.saveProfiles(next, nextActive)
-    // 删除的是当前连接的 profile：必须断开，防止状态串台（activeId 已指向未连接项）
-    if (p.id === activeId) {
-      await store.disconnect()
+    // 后继 profile 存在则自动重连（避免"启用"按钮 disabled 导致无重连入口）
+    if (p.id === activeId && nextActive) {
+      await store.connect()
     }
   }
 

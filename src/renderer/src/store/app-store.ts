@@ -325,9 +325,10 @@ export class AppStore {
    */
   private subscriptionDirectories(): string[] {
     const dirs = new Set<string>()
-    for (const p of this.openedProjects) dirs.add(p.worktree)
+    // 当前 scope 最优先（超预算截断时绝不能丢——它是聊天流式的命脉）
     const scope = this.scopeQuery.directory
     if (scope) dirs.add(scope)
+    for (const p of this.openedProjects) dirs.add(p.worktree)
     return [...dirs].slice(0, 5)
   }
 
@@ -393,7 +394,14 @@ export class AppStore {
         const m = this.messagesBySession.get(sessionID)
         if (m) {
           const prev = m.get(info.id)
-          m.set(info.id, prev ? { info, parts: prev.parts } : { info, parts: [] })
+          if (prev) {
+            m.set(info.id, { info, parts: prev.parts })
+          } else {
+            // part 事件先于 message.info 到达：回放缓存（设计 §3"消息到达后回放"）
+            const pending = this.pendingParts(sessionID).get(info.id) ?? []
+            this.pendingParts(sessionID).delete(info.id)
+            m.set(info.id, { info, parts: pending })
+          }
         }
         if (info.role === "user") {
           this.clearOptimistic(sessionID)
