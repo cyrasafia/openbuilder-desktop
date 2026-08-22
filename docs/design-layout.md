@@ -64,23 +64,31 @@
 
 | Tab 类型 | 内容 | 版本 |
 |---|---|---|
-| `chat` 会话 Tab | 聊天视图（消息流 + 底部输入区）；标题 = 会话标题（无标题时取首条消息摘要），流式进行中显示动态指示 | v0.1 |
-| `file` 文件 Tab | 文件树点击文件 → 新开（或复用同文件）纯文本视图；标题 = 文件名；无 dirty 态（只读） | v0.1 |
+| `chat` 会话 Tab | 聊天视图（消息流 + 底部输入区）；标题 = 会话标题（无标题时取首条消息摘要），流式进行中显示动态指示 | v0.1 || `file` 文件 Tab | 文件树点击文件 → 新开（或复用同文件）纯文本视图；标题 = 文件名；无 dirty 态（只读） | v0.1 |
 | `diff` | 会话内变更 diff（@pierre/diffs，会话事件触发） | v0.2（M2） |
 | `terminal` | xterm.js + pty 会话（server pty API） | v0.2（M2） |
 | `browser` | WebContentsView 内嵌浏览器 tab | v0.3+ |
 | `editor` | CodeMirror 6 编辑器 | v0.3+ |
 
-- Tab 规则：可关闭（会话 Tab 关闭仅移出工作区，不删会话）；同 kind 内按打开顺序，不同 kind 混排不分簇（注册制下分簇规则无意义，简化为统一顺序 + kind 图标区分）；切换用 Ctrl+PgUp/PgDn（快捷键体系 v0.2 再统一）
+- Tab 规则：可关闭；同 kind 内按打开顺序，不同 kind 混排（注册制下统一顺序 + kind 图标区分）；切换用 Ctrl+PgUp/PgDn（快捷键体系 v0.2 再统一）
 - Tab 标识稳定：chat = sessionID、file/diff = 文件路径、terminal = ptyID、browser = URL；重复打开同标识复用已开 Tab 并激活
-- 生命周期约束：关闭 Tab 即卸载其订阅/状态（chat Tab 关闭仍保留会话于左栏；重开走 REST 消息快照 + 增量）
+- **chat Tab 与 session 生命周期绑定**：
+  - 新建 chat Tab = 新建 session（`POST /session`），Tab 即 session 的工作区化身
+  - **关闭 chat Tab = 归档 session**（`PATCH time.archived`）——Tab 关闭不提供"仅关闭不归档"的路径，交互语义唯一；从左栏会话列表点击可重新打开（Tab 恢复 + 可选取消归档）
+  - 流式进行中关闭 Tab：先 abort（`POST /session/{id}/abort`）再归档，需二次确认
+- 生命周期约束：关闭 Tab 即卸载其订阅/状态；非 chat Tab 重开无状态恢复成本，chat Tab 重开走 REST 消息快照 + 增量
+- **工作区与文件树均以当前项目为上下文（project-scoped）**：
+  - 切换项目 = 整个工作区上下文切换：文件树重置为新城的根、工作区 Tab 全部关闭（chat Tab 关闭即归档，见上）后加载新项目的会话，或显示空态
+  - Tab 实体带 projectID，属主唯一；跨项目内容不共存于同一工作区视图（browser Tab 例外评估留待 v0.3）
+  - 实现含义：Tab 列表、激活 Tab、文件树展开态三个状态都以 projectID 为 key 分组存取；切换即换组，不做逐 Tab 迁移
 - 输入区仅在会话 Tab 存在；多行输入、Ctrl+Enter 发送（Enter 换行，先按此约定，v0.2 可配置）
 - 空态（无任何 Tab）：新建会话引导 + 最近会话快捷列表
 
 ## 5. 右栏：文件树
 
+- project-scoped：树根 = 当前项目；切换项目时整树重置重拉（与工作区联动，见 §4）
 - 数据：`GET /file?path=…` 懒加载逐层展开；展开态按项目记忆
-- 交互：点击文件 → 工作区开文件 Tab；目录单击展开/折叠；单一激活项目 = 树根
+- 交互：点击文件 → 工作区开文件 Tab；目录单击展开/折叠
 - 排序：目录优先、字母序；隐藏 dotfiles（默认开，可切）
 - v0.1 不做：拖放、搜索、右键操作（新建/重命名/删除）、文件监听刷新（切回 Tab 时重拉）
 - 顶部：路径面包屑（截断中间段）
