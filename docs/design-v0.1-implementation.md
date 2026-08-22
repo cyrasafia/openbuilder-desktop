@@ -139,6 +139,28 @@ Subagent 按 /review 方法全量审查（P1=3 P2=6 P3=7），核心结论：**s
 
 E2E 回归记录：关 Tab=归档+状态清理 ✓；切项目=Tab 全关+会话归档+项目切换 ✓；sandbox:true 下 preload/连接/流式正常 ✓。
 
+## 7.5 Code Review 第二轮发现与修复（2026-08-23）
+
+第一轮修复验证 + 新问题（P1=2 P2=5 P3=7），全部修复：
+
+| # | 级别 | 问题 | 修复 |
+|---|---|---|---|
+| 1 | P1 | managed 模式打开/关闭项目后 SSE 重建丢失凭据（startSse 参数只传一次，重建回退 profile 空凭据 → 401 死循环） | 生效凭据存 `sseCreds` 字段（connect 时设置），startSse 一律使用 |
+| 2 | P1 | worktree 会话收不到任何事件：server 每条 /event 连接只圈定一个 directory，只订项目根 → worktree 内无流式、busy 永不置位、乐观消息不清 | 订阅集合加入当前 scope 目录（见下 #9 连接预算） |
+| 3 | P2 | StrictMode 双 init → managed 双 spawn 泄漏进程 | AppStore.init() 幂等（initPromise）；startManagedServer in-flight 去重 |
+| 4 | P2 | ProjectPicker 打开项目绕过切换确认，静默归档当前会话 | picker onClick 同样走 confirmSwitchProject 门控 |
+| 5 | P2 | 会话被其他客户端删除后 Tab 永远关不掉（findSession null → 静默失败） | closeChatTab/deleteSession 对已不存在会话视为成功关闭；session.deleted 事件主动关 Tab + 清状态 |
+| 6 | P2 | 删除当前激活 profile：activeId 改指未连接项，旧连接残留 | remove 激活项时先 disconnect 再落盘 |
+| 7 | P2 | chat→chat Tab 切换复用 fiber，草稿跨会话泄漏（可误发） | `<ChatView key={active.key}>` 强制重挂载 |
+| 8 | P3 | 无 Tab 会话的 busy 无法通过对账清除 | onSessionsSnapshot 时重置无 Tab 的 busy（仍在流式的会被后续事件重新置位） |
+| 9 | P3→实测升级 | 空组状态栏永久"重连中"；**连接池饿死**：浏览器同 host HTTP/1.1 上限 6，SSE 全占后 REST 排队超时（实测 6 条订阅时 POST worktree 60s 超时，curl 直连 19ms 成功——定位为浏览器连接池） | 订阅集合 = 打开项目根 ∪ 当前 scope 目录，**上限 5**（永久留 ≥1 给 REST）；空组不再触发 degraded |
+| 10 | P3 | disconnect 后 reconciler 空跑（非空断言抛错） | client() 返回 null 时 reconcile 直接放弃 |
+| 11 | P3 | 空体消费者解引用 undefined；store:get/set 读改写竞态 | readFileContent/updateSession 判空；main 侧内存缓存 + 写队列串行化 |
+| 12 | P3 | 无 Tab 会话消息状态无界累积 | 惰性累积门槛：有 Tab/已有容器无条件；其余容器上限 20（超出丢弃，打开走 REST 快照） |
+| 13 | P3 | 死代码：subscriber 僵尸字段、eventGate、isStreamingAssistant、sendMessage/listWorkspaces | 全部删除 |
+
+E2E 回归：worktree 全流程（创建→切换→会话→发消息→**流式 busy 置位/复位**→回复 OK→归档→删除）✓；SSE 3 条预算内 REST 全程可用 ✓。
+
 ## 8. 已知限制（v0.1 接受）
 
 - 消息历史仅拉最新 100 条窗口，更早消息无上翻加载（spec 范围外，v0.2 分段加载）

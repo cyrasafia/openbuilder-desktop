@@ -3,13 +3,14 @@
  * 参考 openbuilder design-incremental-reconcile（窗口 K=100、互斥锁、
  * debounce）与 design-sse-reconnect-recovery（reconnecting→connected 触发）。
  */
-import type { OpencodeEvent, Session } from "./api-types"
+import type { Session } from "./api-types"
 import type { RestClient } from "./rest-client"
 import { mergeSnapshotIntoMessages } from "./message-merge"
 import type { MessageWithParts } from "./api-types"
 
 export interface ReconcilerDeps {
-  client: () => RestClient
+  /** 连接拆除后返回 null（reconcile 直接放弃，不再非空断言） */
+  client: () => RestClient | null
   getOpenedDirectories: () => string[]
   getActiveSessions: () => Array<{ sessionID: string; directory: string }>
   onSessionsSnapshot: (directory: string, sessions: Session[]) => void
@@ -62,30 +63,21 @@ export class Reconciler {
   }
 
   private async reconcileOnce() {
+    const client = this.d.client()
+    if (!client) return
     const dirs = [...new Set(this.d.getOpenedDirectories())]
     await Promise.all(
       dirs.map(async (dir) => {
-        const sessions = await this.d.client().listSessions(dir)
+        const sessions = await client.listSessions(dir)
         this.d.onSessionsSnapshot(dir, sessions)
       }),
     )
     await Promise.all(
       this.d.getActiveSessions().map(async ({ sessionID, directory }) => {
-        const msgs = await this.d.client().listMessages(sessionID, directory, RECONCILE_WINDOW)
+        const msgs = await client.listMessages(sessionID, directory, RECONCILE_WINDOW)
         this.d.onMessagesSnapshot(sessionID, msgs)
       }),
     )
   }
 }
 
-/** 事件闸门：按打开项目集合过滤（design-layout：关闭项目事件一律忽略） */
-export function eventGate(
-  event: OpencodeEvent,
-  openedDirectories: Set<string>,
-): boolean {
-  const props = event.properties as Record<string, unknown>
-  const dir = typeof props.directory === "string" ? props.directory : null
-  if (dir != null) return openedDirectories.has(dir)
-  // session/message 事件经 directory 归属判断（由调用方在 store 层做 sessionID→project 映射）
-  return true
-}

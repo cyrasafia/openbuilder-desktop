@@ -46,11 +46,22 @@ export interface ManagedStartResult {
   password?: string
 }
 
+let startPromise: Promise<ManagedStartResult> | null = null
+
 export async function startManagedServer(): Promise<ManagedStartResult> {
   if (child) {
     return { ok: true, baseUrl: childEnvBaseUrl, username: "opencode", password: childPassword }
   }
+  // 并发去重（StrictMode 双 init 等）：同一次启动只 spawn 一个进程
+  if (!startPromise) {
+    startPromise = doStart().finally(() => {
+      startPromise = null
+    })
+  }
+  return startPromise
+}
 
+async function doStart(): Promise<ManagedStartResult> {
   const bin = process.env.OPENCODE_BIN ?? "opencode"
   const port = await findFreePort()
   const password = randomBytes(16).toString("hex")

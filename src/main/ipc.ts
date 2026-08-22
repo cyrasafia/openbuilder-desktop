@@ -6,17 +6,30 @@ import { startManagedServer, stopManagedServer, killManagedSync } from "./manage
 
 const storePath = join(app.getPath("userData"), "store.json")
 
+// 内存缓存 + 串行写队列：防并发 storeSet 的读改写竞态（后写覆盖前写丢 key）
+let storeCache: Partial<StoreShape> | null = null
+let writeChain: Promise<unknown> = Promise.resolve()
+
 async function loadStore(): Promise<Partial<StoreShape>> {
+  if (storeCache) return storeCache
   try {
-    return JSON.parse(await readFile(storePath, "utf8"))
+    storeCache = JSON.parse(await readFile(storePath, "utf8")) as Partial<StoreShape>
   } catch {
-    return {}
+    storeCache = {}
   }
+  return storeCache
 }
 
-async function saveStore(data: Partial<StoreShape>) {
-  await mkdir(dirname(storePath), { recursive: true })
-  await writeFile(storePath, JSON.stringify(data, null, 2), "utf8")
+function persistStore(): Promise<void> {
+  const data = storeCache ?? {}
+  const task = writeChain.then(() =>
+    mkdir(dirname(storePath), { recursive: true }).then(() =>
+      writeFile(storePath, JSON.stringify(data, null, 2), "utf8"),
+    ),
+  )
+  // 失败不阻断后续写
+  writeChain = task.catch(() => {})
+  return task
 }
 
 export function registerIpc() {
@@ -28,7 +41,7 @@ export function registerIpc() {
   ipcMain.handle("store:set", async (_e, key: keyof StoreShape, value: unknown) => {
     const store = await loadStore()
     store[key] = value as never
-    await saveStore(store)
+    await persistStore()
   })
 
   ipcMain.handle("managed:start", () => startManagedServer())

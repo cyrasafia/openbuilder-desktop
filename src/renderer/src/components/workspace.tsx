@@ -54,7 +54,8 @@ export function Workspace() {
             </button>
           </div>
         )}
-        {active?.kind === "chat" && <ChatView sessionID={active.key.slice(5)} />}
+        {/* key 隔离：防止 chat→chat 切换时复用 fiber 导致草稿/pinned ref 跨会话残留 */}
+        {active?.kind === "chat" && <ChatView key={active.key} sessionID={active.key.slice(5)} />}
         {active?.kind === "file" && <FileView absolutePath={active.key.slice(5)} />}
       </div>
 

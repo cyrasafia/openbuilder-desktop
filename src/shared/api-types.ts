@@ -193,7 +193,3 @@ export type OpencodeEvent =
       properties: { sessionID: string; messageID: string; partID: string }
     }
   | { id: string; type: string; properties: Record<string, unknown> }
-
-export function isStreamingAssistant(msg: Message): boolean {
-  return msg.role === "assistant" && !(msg as AssistantMessage).time.completed
-}

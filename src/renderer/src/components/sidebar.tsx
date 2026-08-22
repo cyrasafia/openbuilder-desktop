@@ -194,6 +194,7 @@ function ProjectPicker({ onClose }: { onClose: () => void }) {
   const candidates = store.projects
     .filter((p) => !opened.has(p.id))
     .sort((a, b) => b.time.updated - a.time.updated)
+  const hasChatTabs = store.tabs.some((tab) => tab.kind === "chat")
 
   return (
     <div className="dialog-mask" onClick={onClose}>
@@ -206,6 +207,8 @@ function ProjectPicker({ onClose }: { onClose: () => void }) {
               key={p.id}
               className="tree-row project-row"
               onClick={() => {
+                // 打开项目同样会归档当前会话（与项目行切换一致的门控）
+                if (hasChatTabs && !confirm(t.confirmSwitchProject)) return
                 void store.openProject(p.id)
                 onClose()
               }}

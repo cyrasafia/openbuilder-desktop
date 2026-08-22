@@ -181,27 +181,10 @@ export class RestClient {
     )
   }
 
-  sendMessage(
-    sessionID: string,
-    directory: string,
-    parts: Part[] | Array<{ type: "text"; text: string }>,
-  ): Promise<MessageWithParts> {
-    return this.request<MessageWithParts>(
-      `/session/${encodeURIComponent(sessionID)}/message${RestClient.dirQuery(directory)}`,
-      { method: "POST", body: JSON.stringify({ parts }), timeoutMs: 30000 },
-    )
-  }
-
   abortSession(sessionID: string, directory: string): Promise<void> {
     return this.request<void>(
       `/session/${encodeURIComponent(sessionID)}/abort${RestClient.dirQuery(directory)}`,
       { method: "POST" },
-    )
-  }
-
-  listWorkspaces(directory: string): Promise<Workspace[]> {
-    return this.request<Workspace[]>(
-      `/experimental/workspace${RestClient.dirQuery(directory)}`,
     )
   }
 
@@ -240,9 +223,14 @@ export class RestClient {
     q.set("directory", directory)
     if (workspace) q.set("workspace", workspace)
     // 实测（server 1.18.x）返回 {type:"text", content:string} 包装对象
-    return this.request<{ type: string; content: string }>(
+    return this.request<{ type: string; content: string } | null>(
       `/file/content?${q.toString()}`,
       { timeoutMs: 30000 },
-    ).then((r) => (typeof r === "string" ? r : r.content))
+    ).then((r) => {
+      if (!r || typeof r.content !== "string") {
+        throw new ApiError(0, "unknown", "文件内容响应格式异常")
+      }
+      return r.content
+    })
   }
 }

@@ -72,12 +72,16 @@ function ConnectionSettings() {
     void store.saveProfiles(next, activeId)
   }
 
-  const remove = (p: ConnectionProfile) => {
+  const remove = async (p: ConnectionProfile) => {
     const next = profiles.filter((x) => x.id !== p.id)
     const nextActive = activeId === p.id ? next[0]?.id ?? null : activeId
     setProfiles(next)
     setActiveId(nextActive)
-    void store.saveProfiles(next, nextActive)
+    await store.saveProfiles(next, nextActive)
+    // 删除的是当前连接的 profile：必须断开，防止状态串台（activeId 已指向未连接项）
+    if (p.id === activeId) {
+      await store.disconnect()
+    }
   }
 
   const test = async (p: ConnectionProfile) => {
@@ -107,7 +111,7 @@ function ConnectionSettings() {
               {p.id === activeId ? t.activeProfile : t.activateProfile}
             </button>
             <button onClick={() => setEditing(p)}>✎</button>
-            <button className="danger" onClick={() => remove(p)}>
+            <button className="danger" onClick={() => void remove(p)}>
               ✕
             </button>
           </div>

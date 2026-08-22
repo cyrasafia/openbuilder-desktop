@@ -87,7 +87,6 @@ export class AppStore {
 
   // ---- 内部 ----
   private client: RestClient | null = null
-  private subscriber: SseSubscriber | null = null
   private reconciler: Reconciler | null = null
   private listeners = new Set<Listener>()
   private snapshotHandlers: Array<() => void> = []
@@ -103,7 +102,17 @@ export class AppStore {
 
   // ============ 初始化 ============
 
-  async init() {
+  private initPromise: Promise<void> | null = null
+
+  /** 幂等 init（StrictMode 双调用/重复挂载防护） */
+  init(): Promise<void> {
+    if (!this.initPromise) {
+      this.initPromise = this.doInit()
+    }
+    return this.initPromise
+  }
+
+  private async doInit() {
     const profileData = (await window.desktop.storeGet("connection.profiles")) ?? {
       profiles: [],
       activeId: null,
@@ -177,13 +186,15 @@ export class AppStore {
     // 全部快照成功后才暴露 client（失败路径不悬挂）
     this.client = client
     this.projects = projects
+    // 生效凭据（managed 模式为主进程生成值）——后续 SSE 重建统一使用
+    this.sseCreds = { username, password }
 
     // 首次连接默认打开 current + 最近活跃 1 个（design-layout）
     await this.ensureDefaultProjects()
 
     // 打开项目的快照 + 订阅
     await this.refreshAllOpenedProjects()
-    this.startSse(username, password)
+    this.startSse()
     this.connectionState = "streaming"
     this.emit()
   }
@@ -201,7 +212,6 @@ export class AppStore {
   private teardownConnection() {
     for (const sub of this.sseGroup) sub.stop()
     this.sseGroup = []
-    this.subscriber = null
     this.client = null
     this.managedBaseUrl = null
     this.health = null
@@ -278,19 +288,20 @@ export class AppStore {
     this.sessionsByProject.set(projectId, next)
   }
 
-  private startSse(username?: string, password?: string) {
+  private startSse() {
     const profile = this.activeProfile
     if (!profile || !this.client) return
     // 先停旧组（关闭的项目/旧 profile 的订阅不得继续收事件——锁定语义）
     for (const sub of this.sseGroup) sub.stop()
     this.sseGroup = []
-    const dirs = this.openedProjects.map((p) => p.worktree)
-    for (const dir of dirs) {
+    const username = this.sseCreds?.username ?? profile.username
+    const password = this.sseCreds?.password ?? profile.password
+    for (const dir of this.subscriptionDirectories()) {
       const sub = new SseSubscriber({
         baseUrl: this.activeBaseUrl!,
         directory: dir,
-        username: username ?? profile.username,
-        password: password ?? profile.password,
+        username,
+        password,
         onEvent: (ev) => this.handleEvent(dir, ev),
         onReconnected: () => this.reconciler?.request(),
         onStatus: () => this.updateSseAggregate(),
@@ -302,6 +313,27 @@ export class AppStore {
     this.updateSseAggregate()
   }
 
+  /**
+   * SSE 订阅目录集合 = 打开项目的 worktree 根 ∪ 当前工作区目录，上限 MAX_SSE。
+   * 两个约束（第二轮 review 后实测发现）：
+   * 1. server 每条 /event 连接只圈定一个 directory（worktree 会话事件只在
+   *    /event?directory=<worktree> 流上）——当前 scope 的目录必须订阅；
+   * 2. 浏览器对同 host 的 HTTP/1.1 并发连接上限 6——SSE 占满后 REST 全部
+   *    排队超时，因此预算 5 条，永久留 ≥1 条给 REST。
+   * 非当前 worktree 的目录不订阅：其会话不在可见 scope 内，切换工作区时
+   * 重订 + REST 快照兜底。
+   */
+  private subscriptionDirectories(): string[] {
+    const dirs = new Set<string>()
+    for (const p of this.openedProjects) dirs.add(p.worktree)
+    const scope = this.scopeQuery.directory
+    if (scope) dirs.add(scope)
+    return [...dirs].slice(0, 5)
+  }
+
+  /** 对账范围与订阅集合一致 */
+  private sseCreds: { username?: string; password?: string } | null = null
+
   private sseGroup: SseSubscriber[] = []
 
   private get activeBaseUrl(): string | null {
@@ -309,15 +341,19 @@ export class AppStore {
   }
 
   private updateSseAggregate() {
-    // 任一目录订阅非 connected 即 degraded（spec：degraded 态要明确提示）
+    // 任一目录订阅非 connected 即 degraded（spec：degraded 态要明确提示）；
+    // 空组（如全部项目关闭）不触发 degraded——无订阅 ≠ 连接异常
     const statuses = this.sseGroup.map((s) => s.getStatus())
-    let sseStatus: SseStatus = "stopped"
-    if (statuses.length > 0) {
-      if (statuses.every((s) => s === "connected")) sseStatus = "connected"
-      else if (statuses.every((s) => s === "reconnecting" || s === "connected")) sseStatus = "reconnecting"
-      else if (statuses.includes("connected") || statuses.includes("reconnecting")) sseStatus = "reconnecting"
-      else sseStatus = "connecting"
+    if (statuses.length === 0) {
+      this.sseStatus = "stopped"
+      if (this.connectionState === "degraded") this.connectionState = "streaming"
+      this.emit()
+      return
     }
+    let sseStatus: SseStatus
+    if (statuses.every((s) => s === "connected")) sseStatus = "connected"
+    else if (statuses.includes("reconnecting")) sseStatus = "reconnecting"
+    else sseStatus = "connecting"
     this.sseStatus = sseStatus
     if (this.connectionState !== "connecting" && this.connectionState !== "disconnected") {
       this.connectionState = sseStatus === "connected" ? "streaming" : "degraded"
@@ -346,14 +382,19 @@ export class AppStore {
         const info = ev.properties.info as Session
         if (!info) return
         this.sessionsByProject.get(info.projectID)?.delete(info.id)
+        // 会话不存在了：对应 Tab 直接关 + 状态卸载
+        this.closeTab(`chat:${info.id}`, { archive: false })
+        this.cleanupSessionState(info.id)
         break
       }
       case "message.updated": {
         const { sessionID, info } = ev.properties as { sessionID: string; info: Message }
         this.ensureConversation(sessionID)
-        let m = this.messagesBySession.get(sessionID)
-        const prev = m?.get(info.id)
-        m!.set(info.id, prev ? { info, parts: prev.parts } : { info, parts: [] })
+        const m = this.messagesBySession.get(sessionID)
+        if (m) {
+          const prev = m.get(info.id)
+          m.set(info.id, prev ? { info, parts: prev.parts } : { info, parts: [] })
+        }
         if (info.role === "user") {
           this.clearOptimistic(sessionID)
         }
@@ -372,7 +413,8 @@ export class AppStore {
       case "message.part.updated": {
         const { sessionID, part } = ev.properties as { sessionID: string; part: Part }
         this.ensureConversation(sessionID)
-        const msg = this.messagesBySession.get(sessionID)!.get(part.messageID)
+        const conv = this.messagesBySession.get(sessionID)
+        const msg = conv?.get(part.messageID)
         if (msg) {
           const idx = msg.parts.findIndex((p) => p.id === part.id)
           if (idx >= 0) {
@@ -381,8 +423,8 @@ export class AppStore {
             msg.parts.push(part)
           }
           // 触发 immutable 更新
-          this.messagesBySession.get(sessionID)!.set(part.messageID, { ...msg })
-        } else {
+          conv!.set(part.messageID, { ...msg })
+        } else if (conv) {
           // 消息 info 未到，先缓存 part
           this.pendingParts(sessionID).set(part.messageID, [
             ...(this.pendingParts(sessionID).get(part.messageID) ?? []),
@@ -428,11 +470,17 @@ export class AppStore {
     return m
   }
 
-  /** 惰性累积容器（design-message-accumulation）：事件到达即建容器，不发 REST */
+  /**
+   * 惰性累积容器（design-message-accumulation）：事件到达即建容器，不发 REST。
+   * 门槛（第二轮 review P3-7）：有 Tab 或已有容器的会话无条件累积；
+   * 其余（其他客户端驱动的会话）最多累积 MAX_LAZY 容器，超出丢弃
+   * （打开时走 REST 快照，不损失数据）。
+   */
   private ensureConversation(sessionID: string) {
-    if (!this.messagesBySession.has(sessionID)) {
-      this.messagesBySession.set(sessionID, new Map())
-    }
+    if (this.messagesBySession.has(sessionID)) return
+    const hasTab = this.tabs.some((t) => t.kind === "chat" && t.key === `chat:${sessionID}`)
+    if (!hasTab && this.messagesBySession.size >= 20) return
+    this.messagesBySession.set(sessionID, new Map())
   }
 
   private clearOptimistic(sessionID: string) {
@@ -530,8 +578,9 @@ export class AppStore {
     const ps = this.projectStateFor()
     ps.currentWorkspaceId = directory
     await this.persistProjectState()
-    // 切工作区：重拉会话列表 + 文件树重置
+    // 切工作区：重拉会话列表 + SSE 重订（scope 目录变化）+ 文件树重置
     await this.refreshSessionsForProject(this.currentProject!)
+    this.startSse()
     this.resetFileTree()
     this.emit()
   }
@@ -588,6 +637,8 @@ export class AppStore {
       await this.client.createWorktree(this.currentProject.worktree, name)
       // worktree API 返回轻量对象，重拉列表拿完整 Workspace 记录
       await this.refreshWorkspacesForProject(this.currentProject)
+      // 新 worktree 目录需要 SSE 订阅（worktree 事件流独立于项目根）
+      this.startSse()
       this.emit()
       return { ok: true }
     } catch (e) {
@@ -608,6 +659,7 @@ export class AppStore {
       }
       await this.refreshSessionsForProject(this.currentProject)
       this.resetFileTree()
+      this.startSse()
       this.emit()
       return { ok: true }
     } catch (e) {
@@ -734,6 +786,7 @@ export class AppStore {
       const updated = await this.client.updateSession(sessionID, session.directory, {
         time: { archived },
       })
+      if (!updated) return false
       const map = this.sessionsByProject.get(updated.projectID)
       map?.set(updated.id, updated)
       this.emit()
@@ -751,6 +804,7 @@ export class AppStore {
     if (!session) return false
     try {
       const updated = await this.client.updateSession(sessionID, session.directory, { title })
+      if (!updated) return false
       const map = this.sessionsByProject.get(updated.projectID)
       map?.set(updated.id, updated)
       this.emit()
@@ -763,7 +817,12 @@ export class AppStore {
   async deleteSession(sessionID: string): Promise<boolean> {
     if (!this.client) return false
     const session = this.findSession(sessionID)
-    if (!session) return false
+    // 已不存在：本地收尾即成功
+    if (!session) {
+      this.closeTab(`chat:${sessionID}`, { archive: false })
+      this.cleanupSessionState(sessionID)
+      return true
+    }
     try {
       await this.client.deleteSession(sessionID, session.directory)
       this.sessionsByProject.get(session.projectID)?.delete(sessionID)
@@ -871,6 +930,12 @@ export class AppStore {
     if (opts.streaming) {
       await this.abortSession(sessionID)
     }
+    // 会话已不存在（如被其他客户端删除）：视为成功关闭
+    if (!this.findSession(sessionID)) {
+      this.closeTab(`chat:${sessionID}`, { archive: false })
+      this.cleanupSessionState(sessionID)
+      return true
+    }
     const ok = await this.archiveSession(sessionID)
     if (ok) {
       this.closeTab(`chat:${sessionID}`, { archive: false })
@@ -954,8 +1019,8 @@ export class AppStore {
 
   mountReconciler() {
     this.reconciler = new Reconciler({
-      client: () => this.client!,
-      getOpenedDirectories: () => this.openedProjects.map((p) => p.worktree),
+      client: () => this.client,
+      getOpenedDirectories: () => this.subscriptionDirectories(),
       getActiveSessions: () =>
         this.tabs
           .filter((t) => t.kind === "chat")
@@ -970,6 +1035,13 @@ export class AppStore {
         }
         for (const [pid, list] of byProject) {
           this.mergeSessionsSnapshot(pid, list)
+        }
+        // 无 Tab 的 busy 会话：会话快照到达即重置（若仍在流式，后续事件会重新置位）
+        const tabSessions = new Set(
+          this.tabs.filter((t) => t.kind === "chat").map((t) => t.key.slice(5)),
+        )
+        for (const sid of [...this.busySessions]) {
+          if (!tabSessions.has(sid)) this.busySessions.delete(sid)
         }
         void dir
       },
