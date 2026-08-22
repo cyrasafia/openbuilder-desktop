@@ -4,5 +4,17 @@
   "private": true,
   "description": "Thin desktop client for opencode server. Electron + React, optimized for GNOME/Wayland.",
   "license": "MIT",
-  "type": "module"
+  "type": "module",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "allowScripts": {
+    "electron@43.4.1": true
+  }
 }

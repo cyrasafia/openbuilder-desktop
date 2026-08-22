@@ -1,0 +1,180 @@
+/**
+ * 视觉令牌 —— 唯一权威落点（DESIGN.md）。
+ * 配色逐值沿用 openbuilder（移动端）DESIGN.md v2；排版密度为桌面端设计。
+ */
+:root {
+  /* typography */
+  --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "Source Code Pro", "DejaVu Sans Mono", Menlo, monospace;
+
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-title-sm: 14px;
+  --text-title-md: 16px;
+  --text-hero: 24px;
+  --text-chat: 14px;
+  --text-mono: 13px;
+
+  --weight-light: 300;
+  --weight-regular: 400;
+  --weight-semibold: 600;
+
+  /* density */
+  --row-tree: 26px;
+  --row-list: 30px;
+  --tabbar-h: 36px;
+  --statusbar-h: 24px;
+  --control-h: 28px;
+  --icon-inline: 16px;
+  --icon-toolbar: 20px;
+
+  /* rounded */
+  --radius-chip: 6px;
+  --radius-card: 8px;
+  --radius-bubble: 12px;
+  --radius-dialog: 12px;
+}
+
+/* dark（默认） */
+:root,
+:root[data-theme="dark"] {
+  --primary: #98d4a3;
+  --on-primary: #003919;
+  --primary-container: #17512b;
+  --on-primary-container: #b4f1be;
+  --secondary: #b7ccb7;
+  --secondary-container: #394b3b;
+  --on-secondary-container: #d3e8d3;
+  --tertiary: #a2ced8;
+  --error: #ffb4ab;
+  --on-error: #690005;
+  --error-container: #93000a;
+  --on-error-container: #ffdad6;
+  --surface: #101510;
+  --on-surface: #dfe4dc;
+  --surface-container-lowest: #0b0f0b;
+  --surface-container-low: #181d18;
+  --surface-container: #1c211c;
+  --surface-container-high: #262b26;
+  --surface-container-highest: #313631;
+  --on-surface-variant: #c1c9bf;
+  --outline: #8b938a;
+  --outline-variant: #414941;
+  --inverse-surface: #dfe4dc;
+  --on-inverse-surface: #2d322d;
+
+  --color-code: #ec407a;
+  --color-link: #2196f3;
+  --color-code-bg: #161b22;
+  --color-border: #30363d;
+  --color-quote-bar: #6e7681;
+  --color-user-bubble: #1f3d2a;
+  --color-user-code-bg: #28513a;
+  --color-user-text: #dfe4dc;
+  --color-user-outline: #8b938a;
+  --color-user-code: #ec407a;
+  --color-user-link: #2196f3;
+
+  --status-completed: #3fb950;
+  --status-running: #4ade80;
+  --status-error: #f85149;
+  --status-pending: #8b949e;
+
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --primary: #35693e;
+  --on-primary: #ffffff;
+  --primary-container: #b7f1ba;
+  --on-primary-container: #1c5128;
+  --secondary: #516351;
+  --secondary-container: #d4e8d1;
+  --on-secondary-container: #3a4b3a;
+  --tertiary: #39656d;
+  --error: #ba1a1a;
+  --on-error: #ffffff;
+  --error-container: #ffdad6;
+  --on-error-container: #93000a;
+  --surface: #f7fbf2;
+  --on-surface: #181818;
+  --surface-container-lowest: #ffffff;
+  --surface-container-low: #f1f5ec;
+  --surface-container: #ebefe7;
+  --surface-container-high: #e5e9e1;
+  --surface-container-highest: #e0e4db;
+  --on-surface-variant: #414941;
+  --outline: #727970;
+  --outline-variant: #c1c9be;
+  --inverse-surface: #2d322c;
+  --on-inverse-surface: #eef2ea;
+
+  --color-code: #c2185b;
+  --color-link: #2196f3;
+  --color-code-bg: #f0f2f5;
+  --color-border: #dadde3;
+  --color-quote-bar: #8c959f;
+  --color-user-bubble: #1f3d2a;
+  --color-user-code-bg: #162b1c;
+  --color-user-text: #dfe4dc;
+  --color-user-outline: #8b938a;
+  --color-user-code: #ec407a;
+  --color-user-link: #2196f3;
+
+  --status-completed: #3fb950;
+  --status-running: #4ade80;
+  --status-error: #f85149;
+  --status-pending: #8b949e;
+
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  font-weight: var(--weight-regular);
+  color: var(--on-surface);
+  background: var(--surface);
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--outline-variant);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
