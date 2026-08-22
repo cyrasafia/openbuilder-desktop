@@ -32,7 +32,7 @@ opencode 桌面端瘦客户端。本文档记录定位、架构与关键技术�
 
 - 官方 desktop 的 server 以 `virtual:opencode-server` 内嵌，指向 monorepo 内 `packages/opencode/dist/node`（`private: true`，**不发布 npm**），且 client 侧是锁版本 vendored tgz——client 与 server 严格 lockstep。
 - 因此 fork 一次后独立 = 内嵌 server 永久冻结在 fork 点；opencode server 迭代极快，数月后"大脑"过时，届时被迫回归上游搬运，更新压力并未消失，只是从"定期 merge"恶化为"过时后大手术"，且发生在一个不完全理解的大代码库里。
-- 自建的**唯一外部契约是 npm 版本化的 `@opencode-ai/sdk`**（与移动端使用的 openapi.json 同源）。上游内部重构（effect 化、sdk-next 等）不影响本项目；升级节奏完全自控（锁版本 + 按需升级）。
+- 自建的**唯一外部契约是 opencode 的 HTTP API 本身**（REST + SSE，OpenAPI 契约与移动端使用的 openapi.json 同源）。不使用 `@opencode-ai/sdk`——其 npm 发布滞后于 server，属过期契约；自写轻 client 层直连 API。上游内部重构（effect 化、sdk-next 等）不影响本项目；契约变更通过 OpenAPI diff 感知，升级节奏完全自控。
 - 代价：放弃官方 desktop 现成 UI。接受，因为需求面（见 §4）可控，且核心难点（流式 markdown）已有明确的抄作业对象与演进路径。
 
 ### D3: 前端框架 = React 19（而非 Solid）
@@ -45,7 +45,7 @@ opencode 桌面端瘦客户端。本文档记录定位、架构与关键技术�
 ### D4: 无中间服务层（renderer 直连 opencode server）
 
 - openchamber 的 express+ws 中间层目的有二：REST+SSE→WS 封装、承载鉴权/relay 等自有功能。本项目两者皆不需要。
-- Renderer 通过 `@opencode-ai/sdk` 直接以 HTTP/SSE 连接 opencode server（本地子进程或远程实例），架构上更薄。
+- Renderer 通过自写 client 层直接以 HTTP/SSE 连接 opencode server（本地子进程或远程实例），架构上更薄。
 - Electron main 只做 Node 能力桥接（进程/PTY/文件），不代理业务流量。
 
 ## 3. 架构
@@ -66,7 +66,7 @@ opencode 桌面端瘦客户端。本文档记录定位、架构与关键技术�
                │ IPC（进程管理事件、PTY 数据流、fs）
 ┌──────────────┴───────────────────────────────────┐
 │  Renderer (React 19 + TS)                        │
-│   @opencode-ai/sdk ──HTTP/SSE──► opencode server │
+│   自写 client 层 ──HTTP/SSE──► opencode server    │
 │   ├─ 会话/聊天（streamdown + shiki）              │
 │   ├─ 终端（xterm.js）                             │
 │   ├─ Diff（@pierre/diffs）                       │
@@ -113,15 +113,15 @@ LLM 逐 token 追加是本项目最大的渲染性能风险。分三级演进，
 
 | 风险 | 对策 |
 |---|---|
-| `@opencode-ai/sdk` breaking change | 锁定版本；升级作为独立任务，跑通冒烟后再进 |
+| opencode HTTP API 契约变更 | client 层类型/调用单点收敛；用 openapi.json diff 检测破坏性变更，升级作为独立任务 |
 | `opencode serve` CLI 启动参数变化（managed 模式） | 启动参数集中在 ServerManager 单点；启动失败给出可读诊断（含版本、命令行） |
 | streamdown 性能不达标 | §5 演进路径，终态方案已被官方验证 |
 | Electron 主进程退出留下孤儿 opencode/pty 进程 | `detached: false` + `will-quit` 统一清理；参考 openchamber 的优雅停机脚本（killer script）思路 |
-| SDK 版本落后导致新会话特性不可用 | 接受；attach 模式下用户可随时用新版 server，UI 兼容旧 API 契约 |
+| server API 版本差异（旧实例缺新事件/字段） | client 层对未知事件类型容忍（透传忽略）；核心路径以 REST 快照兜底 |
 
 ## 7. 里程碑
 
-- **M1 骨架与连接**：electron-vite 工程搭建；ServerManager（managed + attach）；SDK 连通；基础聊天 UI（streamdown）；Wayland/IME 验证。
+- **M1 骨架与连接**：electron-vite 工程搭建；ServerManager（managed + attach）；自写 client 层（REST+SSE+对账）；基础聊天 UI（streamdown）；Wayland/IME 验证。
 - **M2 工作台**：终端（xterm.js + pty）；文件树 + 拖放到聊天输入；diff 视图接入会话事件。
 - **M3 打磨**：流式渲染性能调优（按 §5 判据逐级）；主题；快捷键；Linux 打包（AppImage/deb）。
 
