@@ -9,6 +9,11 @@ opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录�
 - `docs/design-layout.md` — 主界面三栏布局、Tab 注册制、project-scoped 语义。布局/交互改动以此为准
 - `DESIGN.md`（根目录，视觉设计）— 配色/i18n 沿用移动端 openbuilder 的 `../openbuilder/DESIGN.md`；排版密度按桌面习惯重设计。组件规格已定，token 唯一权威落点将是 `src/renderer/src/styles/tokens.css`
 
+## 设计前置约定
+
+- **设计任何功能前，先查 `../openbuilder` 是否做过同类功能**——尤其是 `../openbuilder/docs/design-*.md`（按关键词 grep 文件名与内容）。移动端已踩过的坑（SSE 重连恢复、滚动性能、消息累积、乐观消息等）都记录在里面，桌面端不得重新发明或重蹈覆辙
+- 找到同类设计时：先读其"问题/坑"部分再动手；借鉴方案但按桌面交互习惯调整，并在本仓库 design 文档中注明参考来源（如"参考 openbuilder design-sse-reconnect-recovery"）
+
 ## 硬约束（agent 最容易踩的）
 
 - **不用 `@opencode-ai/sdk`**——npm 发布滞后于 server，是过期契约。通信层自写（REST + SSE 直连），API 契约以 `../openbuilder/opencode_openapi.json` 为准（与移动端同源）
