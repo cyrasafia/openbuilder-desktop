@@ -72,12 +72,10 @@ function ChatView({ sessionID }: { sessionID: string }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const pinnedToBottom = useRef(true)
 
-  // 消息加载（打开时拉快照）
+  // 激活即重拉（design-layout §5：切回 Tab 时重拉；快照与 SSE 状态合并不丢数据）
   useEffect(() => {
     const session = store.findSession(sessionID)
-    if (session && !store.messagesBySession.has(sessionID)) {
-      void store.loadSessionMessages(sessionID, session.directory)
-    }
+    if (session) void store.loadSessionMessages(sessionID, session.directory)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionID])
 
@@ -249,8 +247,9 @@ function FileView({ absolutePath }: { absolutePath: string }) {
   const { t } = useI18n()
   const cached = store.fileContents.get(absolutePath)
 
+  // 激活即重拉（缓存仅作首帧显示）
   useEffect(() => {
-    if (!cached) void store.loadFileContent(absolutePath)
+    void store.loadFileContent(absolutePath)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [absolutePath])
 

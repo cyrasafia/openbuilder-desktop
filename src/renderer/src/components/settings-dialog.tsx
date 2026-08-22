@@ -46,10 +46,6 @@ function ConnectionSettings() {
   const [testResult, setTestResult] = useState<string | null>(null)
   const [testing, setTesting] = useState(false)
 
-  const save = async () => {
-    await store.saveProfiles(profiles, activeId)
-  }
-
   const activate = async (id: string) => {
     setActiveId(id)
     await store.saveProfiles(profiles, id)
@@ -67,25 +63,21 @@ function ConnectionSettings() {
     })
   }
 
+  // 持久化必须用计算出的 next 列表（不能依赖 render 闭包里的旧 state）
   const upsert = (p: ConnectionProfile) => {
-    setProfiles((list) => {
-      const idx = list.findIndex((x) => x.id === p.id)
-      if (idx >= 0) {
-        const next = [...list]
-        next[idx] = p
-        return next
-      }
-      return [...list, p]
-    })
+    const idx = profiles.findIndex((x) => x.id === p.id)
+    const next = idx >= 0 ? profiles.map((x, i) => (i === idx ? p : x)) : [...profiles, p]
+    setProfiles(next)
     setEditing(null)
-    void save()
+    void store.saveProfiles(next, activeId)
   }
 
   const remove = (p: ConnectionProfile) => {
     const next = profiles.filter((x) => x.id !== p.id)
+    const nextActive = activeId === p.id ? next[0]?.id ?? null : activeId
     setProfiles(next)
-    if (activeId === p.id) setActiveId(next[0]?.id ?? null)
-    void store.saveProfiles(next, activeId === p.id ? next[0]?.id ?? null : activeId)
+    setActiveId(nextActive)
+    void store.saveProfiles(next, nextActive)
   }
 
   const test = async (p: ConnectionProfile) => {
@@ -150,10 +142,11 @@ function ProfileForm({
   const { t } = useI18n()
   const [draft, setDraft] = useState<ConnectionProfile>(profile)
 
-  const field = (key: keyof ConnectionProfile, label: string) => (
+  const field = (key: keyof ConnectionProfile, label: string, type = "text") => (
     <label className="form-label">
       {label}
       <input
+        type={type}
         value={String(draft[key] ?? "")}
         onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
       />
@@ -165,7 +158,7 @@ function ProfileForm({
       {field("name", t.profileName)}
       {field("baseUrl", t.profileUrl)}
       {field("username", t.profileUser)}
-      {field("password", t.profilePassword)}
+      {field("password", t.profilePassword, "password")}
       <label className="form-label">
         {t.profileMode}
         <select

@@ -114,10 +114,36 @@ src/
 - [x] worktree：创建（随机/命名）→ 切换（会话过滤 + 文件树重载）→ 会话落 worktree → 删除 → sandboxes 同步
 - [x] kick 重连不炸；typecheck（node+web）+ vitest 19 用例 + electron-vite build 全绿
 
-## 7. 已知限制（v0.1 接受）
+## 7. Code Review 发现与修复（第一轮，2026-08-22）
+
+Subagent 按 /review 方法全量审查（P1=3 P2=6 P3=7），核心结论：**store 的生命周期管理"只建不拆"**——SSE 组、会话状态、连接上下文三类资源没有拆除路径，正是锁定语义走样的根源。全部 P1/P2 及多数 P3 已修复并 E2E 回归：
+
+| # | 级别 | 问题 | 修复 |
+|---|---|---|---|
+| 1 | P1 | SSE 订阅组泄漏：`startSse` 重建时不 stop 旧组（僵尸 `subscriber` 字段从未赋值）；关闭项目后旧订阅仍收事件，违反"关闭=事件忽略" | `startSse` 开头逐个 `stop()` 旧组再重建；删除僵尸字段 |
+| 2 | P1 | FilePanel 条件 Hook：`if (!project) return` 在 useEffect 之前，项目从有到无时 Hook 数变化 → React 崩溃白屏 | Hook 无条件执行，early return 移后 |
+| 3 | P1 | 设置弹窗 upsert/remove 落盘 stale closure：函数式 setState 后 `save()` 闭包里是旧列表，新增 profile 不持久化 | 持久化统一用计算出的 `next` 列表直接调 `saveProfiles(next, activeId)` |
+| 4 | P2 | 切项目 `this.tabs = []` 静默丢弃 chat Tab，不归档——违反"关 Tab 即归档"锁定语义 | `switchProjectContext` 前置 `archiveAllChatTabs()`（流式中先 abort 再归档再清状态）；UI 侧切换前 confirm 提示 |
+| 5 | P2 | busy 只增不减：断线期间完成的会话在对账后仍卡 busy，输入区永久锁死 | `reevaluateBusy(sessionID)`：快照合并后按"存在未完成 assistant"重估（loadSessionMessages 与 reconcile 的 onMessagesSnapshot 都调用） |
+| 6 | P2 | 会话快照整体覆盖（`set(new Map(...))`）：async gap 期间到达的 session 事件被抹掉——违反自家"绝不 clear()+addAll()"原则 | `mergeSessionsSnapshot`：REST 权威覆盖同 id + updated 窗口开区间删除 + SSE-only 保留（三处调用点统一） |
+| 7 | P2 | 会话级状态（messages/pendingParts/optimistic/busy）永不释放，内存无界增长 | `cleanupSessionState(sessionID)`：closeChatTab/deleteSession/切项目归档路径统一调用；teardownConnection 清全部 |
+| 8 | P2 | 连接生命周期串台：managedBaseUrl 不清（SSE 打死地址）、切 profile 旧 Tab/消息残留、client 在快照失败前赋值 | `teardownConnection()`：disconnect/connect 前置完整拆除（SSE 组+域数据+Tab+managed 地址）；client 赋值移到快照全部成功后 |
+| 9 | P2 | managed 模式 spawn 时生成的密码从未交给 renderer，鉴权开启即不可用 | managedStart 返回 `{baseUrl, username, password}`，connect 用其构造 RestClient 与 SSE |
+| 10 | P3 | sidebar 菜单按钮点击冒泡到父行（点"归档"同时开 Tab） | 菜单容器 stopPropagation |
+| 11 | P3 | SSE 聚合"任一 connected 即 streaming"掩盖部分 degraded | 改为"全部 connected 才 streaming" |
+| 12 | P3 | `AbortSignal.timeout` 抛 `TimeoutError` 而非 `AbortError`，超时误分类 unknown | 分类函数加 `TimeoutError` 分支 |
+| 13 | P3 | void 端点（prompt_async 等）200 空体时 `json()` 抛错 → 乐观消息误撤回重发 | 空文本直接返回 undefined；JSON 解析失败归类 ApiError |
+| 14 | P3 | 安全：安全警告禁用生产也生效、sandbox:false、openExternal 不校验协议、无 will-navigate 拦截、密码框明文 | 仅 dev 禁警告；`sandbox:true`（验证 preload 正常）；openExternal 限 http/https；will-navigate 限制应用 origin；密码框 type=password |
+| 15 | P3 | 与设计偏差：首次连接缺"最近活跃 1 个"、关当前项目回退插入序而非最近活跃 | ensureDefaultProjects 开 current+最近活跃；closeProject 按 time.updated 回退。工作区"分支"输入：worktree API 实际不支持 branch 参数（body 仅 name/startCommand），i18n key 已删，design-layout 相应更正 |
+| 16 | P3 | Tab 重激活不重拉（陈旧内容） | chat/file Tab 激活即重拉（组件随激活重挂载，去掉缓存守卫；合并层保证不丢数据） |
+
+E2E 回归记录：关 Tab=归档+状态清理 ✓；切项目=Tab 全关+会话归档+项目切换 ✓；sandbox:true 下 preload/连接/流式正常 ✓。
+
+## 8. 已知限制（v0.1 接受）
 
 - 消息历史仅拉最新 100 条窗口，更早消息无上翻加载（spec 范围外，v0.2 分段加载）
 - 工具调用输入输出为 JSON.stringify 展示，无按工具类型的结构化渲染
 - 布局栏宽度固定（未实现拖拽调宽/折叠），localStorage 布局持久化未接
 - managed 模式仅实现 spawn + 健康等待，未实现崩溃自动拉起
 - SSE 无 per-directory idle LRU（打开项目数通常 <5，可接受）
+- worktree 创建不支持指定分支（/experimental/worktree 契约仅 name/startCommand）

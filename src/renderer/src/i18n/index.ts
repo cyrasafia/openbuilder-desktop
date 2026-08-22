@@ -23,7 +23,6 @@ const zh = {
   mainWorkspace: "主工作区",
   // 工作区
   workspaceName: "名称",
-  workspaceBranch: "分支（可选）",
   create: "创建",
   cancel: "取消",
   confirm: "确定",
@@ -86,6 +85,8 @@ const zh = {
   openSettings: "打开设置",
   confirmCloseStreamingTab:
     "会话正在运行，关闭将停止并归档该会话。继续？",
+  confirmSwitchProject:
+    "切换项目将关闭并归档当前所有打开的会话。继续？",
   confirmDeleteSession: "删除会话？不可恢复",
   confirmDeleteWorkspace: "删除工作区？",
   errorTitle: "出错了",
@@ -108,7 +109,6 @@ const en: typeof zh = {
   deleteWorkspace: "Delete worktree",
   mainWorkspace: "main",
   workspaceName: "Name",
-  workspaceBranch: "Branch (optional)",
   create: "Create",
   cancel: "Cancel",
   confirm: "OK",
@@ -164,6 +164,7 @@ const en: typeof zh = {
   connectFirst: "Configure a server first",
   openSettings: "Open settings",
   confirmCloseStreamingTab: "Session is running. Closing stops and archives it. Continue?",
+  confirmSwitchProject: "Switching projects closes and archives all open sessions. Continue?",
   confirmDeleteSession: "Delete session? This cannot be undone.",
   confirmDeleteWorkspace: "Delete worktree?",
   errorTitle: "Something went wrong",

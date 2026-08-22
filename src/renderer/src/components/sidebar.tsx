@@ -16,6 +16,13 @@ export function Sidebar() {
   const workspaces = current ? store.workspacesOfCurrentProject : []
   const sessions = store.visibleSessions
   const archived = store.archivedSessions
+  const hasChatTabs = store.tabs.some((t) => t.kind === "chat")
+
+  const switchProject = (projectId: string) => {
+    if (projectId === current?.id) return
+    if (hasChatTabs && !confirm(t.confirmSwitchProject)) return
+    void store.setCurrentProject(projectId)
+  }
 
   if (!store.activeProfile) {
     return (
@@ -50,7 +57,7 @@ export function Sidebar() {
               className={
                 "tree-row project-row" + (p.id === current?.id ? " active" : "")
               }
-              onClick={() => void store.setCurrentProject(p.id)}
+              onClick={() => switchProject(p.id)}
             >
               <span className="tree-label" title={p.worktree}>
                 {p.name || p.worktree.split("/").pop() || p.id}
@@ -62,6 +69,7 @@ export function Sidebar() {
                   title={t.closeProject}
                   onClick={(e) => {
                     e.stopPropagation()
+                    if (hasChatTabs && !confirm(t.confirmSwitchProject)) return
                     void store.closeProject(p.id)
                   }}
                 >
@@ -293,7 +301,7 @@ function SessionRow({
       {menuOpen && (
         <>
           <div className="menu-mask" onClick={onClose} />
-          <div className="menu">
+          <div className="menu" onClick={(e) => e.stopPropagation()}>
             {archived ? (
               <button
                 onClick={() => {

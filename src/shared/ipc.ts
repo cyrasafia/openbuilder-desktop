@@ -39,7 +39,13 @@ export interface ConnectionProfile {
 export interface DesktopApi {
   storeGet<K extends keyof StoreShape>(key: K): Promise<StoreShape[K] | null>
   storeSet<K extends keyof StoreShape>(key: K, value: StoreShape[K]): Promise<void>
-  managedStart(): Promise<{ ok: boolean; error?: string; baseUrl?: string }>
+  managedStart(): Promise<{
+    ok: boolean
+    error?: string
+    baseUrl?: string
+    username?: string
+    password?: string
+  }>
   managedStop(): Promise<void>
   onManagedEvent(cb: (payload: string) => void): () => void
   openPathPicker(): Promise<string | null>

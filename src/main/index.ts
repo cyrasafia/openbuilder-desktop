@@ -9,7 +9,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 app.commandLine.appendSwitch("ozone-platform-hint", "auto")
 app.commandLine.appendSwitch("enable-wayland-ime")
 
-process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = "true"
+if (process.env.NODE_ENV === "development") {
+  process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = "true"
+}
 
 let mainWindow: BrowserWindow | null = null
 
@@ -31,16 +33,22 @@ function createMainWindow() {
       preload: preloadPath(),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   })
 
   win.on("ready-to-show", () => win.show())
 
-  // 外链走系统浏览器
+  // 外链走系统浏览器（仅 http/https）
   win.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
+    if (/^https?:\/\//.test(url)) void shell.openExternal(url)
     return { action: "deny" }
+  })
+
+  // 窗口内禁止导航到任意地址（保持应用 origin）
+  win.webContents.on("will-navigate", (e, url) => {
+    const devUrl = process.env.ELECTRON_RENDERER_URL
+    if (!devUrl || !url.startsWith(devUrl)) e.preventDefault()
   })
 
   const devUrl = process.env.ELECTRON_RENDERER_URL

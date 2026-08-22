@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect } from "react"
 import { useI18n, useStore } from "../app"
 import type { FileNode } from "@shared/api-types"
 
@@ -6,6 +6,14 @@ export function FilePanel() {
   const store = useStore()
   const { t } = useI18n()
   const project = store.currentProject
+  const hasLoaded = store.fileTreeNodes.has(".")
+  const rootNodes = store.fileTreeNodes.get(".") ?? []
+
+  // Hooks 必须无条件执行（项目有↔无切换时不允许 Hook 数量变化）
+  useEffect(() => {
+    if (project && !hasLoaded) void store.loadFileNodes(".")
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasLoaded, project?.id, store.currentWorkspace?.directory])
 
   if (!project) {
     return (
@@ -14,14 +22,6 @@ export function FilePanel() {
       </aside>
     )
   }
-
-  const rootNodes = store.fileTreeNodes.get(".") ?? []
-  const hasLoaded = store.fileTreeNodes.has(".")
-
-  useEffect(() => {
-    if (!hasLoaded) void store.loadFileNodes(".")
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasLoaded, project.id, store.currentWorkspace?.directory])
 
   return (
     <aside className="file-panel">

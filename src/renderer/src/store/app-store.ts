@@ -138,11 +138,15 @@ export class AppStore {
   async connect() {
     const profile = this.activeProfile
     if (!profile) return
+    // 连接前先拆干净旧连接（SSE 组、域数据、Tab）——防跨 profile 状态串台
+    this.teardownConnection()
     this.connectionState = "connecting"
     this.connectionError = null
     this.emit()
 
     let baseUrl = profile.baseUrl
+    let username = profile.username
+    let password = profile.password
     if (profile.mode === "managed") {
       const res = await window.desktop.managedStart()
       if (!res.ok || !res.baseUrl) {
@@ -152,70 +156,85 @@ export class AppStore {
         return
       }
       baseUrl = res.baseUrl
+      // managed 模式：主进程生成的凭据（spawn 时注入 OPENCODE_SERVER_PASSWORD）
+      username = res.username ?? "opencode"
+      password = res.password
       this.managedBaseUrl = baseUrl
     }
 
-    const client = new RestClient({
-      baseUrl,
-      username: profile.username,
-      password: profile.password,
-    })
+    const client = new RestClient({ baseUrl, username, password })
+    let projects: Project[]
     try {
       this.health = await client.health()
+      projects = await client.listProjects()
     } catch (e) {
       this.connectionState = "disconnected"
       this.connectionError = e instanceof Error ? e.message : String(e)
       this.emit()
       return
     }
+
+    // 全部快照成功后才暴露 client（失败路径不悬挂）
     this.client = client
+    this.projects = projects
 
-    // 快照：项目
-    try {
-      this.projects = await client.listProjects()
-    } catch (e) {
-      this.connectionState = "disconnected"
-      this.connectionError = `项目列表拉取失败: ${e instanceof Error ? e.message : e}`
-      this.emit()
-      return
-    }
-
-    // 首次连接默认打开 current + 最近 1 个（design-layout）
+    // 首次连接默认打开 current + 最近活跃 1 个（design-layout）
     await this.ensureDefaultProjects()
 
     // 打开项目的快照 + 订阅
     await this.refreshAllOpenedProjects()
-    this.startSse()
+    this.startSse(username, password)
     this.connectionState = "streaming"
     this.emit()
   }
 
   async disconnect() {
-    this.subscriber?.stop()
-    this.subscriber = null
     if (this.activeProfile?.mode === "managed") {
       await window.desktop.managedStop()
     }
-    this.client = null
+    this.teardownConnection()
     this.connectionState = "disconnected"
     this.emit()
+  }
+
+  /** 拆除连接相关的一切运行时状态（SSE 组、域数据、Tab、managed 地址） */
+  private teardownConnection() {
+    for (const sub of this.sseGroup) sub.stop()
+    this.sseGroup = []
+    this.subscriber = null
+    this.client = null
+    this.managedBaseUrl = null
+    this.health = null
+    this.projects = []
+    this.sessionsByProject.clear()
+    this.messagesBySession.clear()
+    this.pendingPartsMap.clear()
+    this.optimisticBySession.clear()
+    this.busySessions.clear()
+    this.tabs = []
+    this.activeTabKey = null
+    this.resetFileTree()
   }
 
   private async ensureDefaultProjects() {
     const ps = this.projectStateFor()
     if (ps.opened.length > 0) return
+    // design-layout：首次连接默认打开 current + 最近活跃 1 个
+    let currentId: string | null = null
     try {
       const current = await this.client!.currentProject()
-      ps.opened = [current.id]
-      ps.currentProjectId = current.id
-      this.projectStates[this.profileKey()] = ps
+      currentId = current.id
     } catch {
-      // 无 current（如 global），fallback 第一个
-      if (this.projects.length > 0) {
-        ps.opened = [this.projects[0].id]
-        ps.currentProjectId = this.projects[0].id
-      }
+      currentId = this.projects[0]?.id ?? null
     }
+    if (!currentId) return
+    const recent = [...this.projects]
+      .filter((p) => p.id !== currentId && p.id !== "global")
+      .sort((a, b) => b.time.updated - a.time.updated)[0]
+    ps.opened = recent ? [currentId, recent.id] : [currentId]
+    ps.currentProjectId = currentId
+    ps.currentWorkspaceId = null
+    this.projectStates[this.profileKey()] = ps
     await this.persistProjectState()
   }
 
@@ -223,32 +242,58 @@ export class AppStore {
     const client = this.client!
     await Promise.all(
       this.openedProjects.map(async (p) => {
-        const dir = p.worktree
-        const sessions = await client.listSessions(dir).catch(() => [] as Session[])
-        this.sessionsByProject.set(
-          p.id,
-          new Map(sessions.filter((s) => s.projectID === p.id).map((s) => [s.id, s])),
-        )
+        const sessions = await client.listSessions(p.worktree).catch(() => [] as Session[])
+        this.mergeSessionsSnapshot(p.id, sessions)
       }),
     )
   }
 
-  private startSse() {
+  /**
+   * 会话快照合并（与消息层同原则：不清空重置，防 async gap 丢失 SSE 事件）。
+   * REST 权威覆盖同 id；本地新增（SSE-only）保留；updated 落在快照窗口开区间
+   * 且不在快照中的本地项视为已删除。
+   */
+  private mergeSessionsSnapshot(projectId: string, sessions: Session[]) {
+    const filtered = sessions.filter((s) => s.projectID === projectId)
+    const existing = this.sessionsByProject.get(projectId) ?? new Map<string, Session>()
+    const next = new Map<string, Session>()
+    const snapIds = new Set<string>()
+    for (const s of filtered) {
+      snapIds.add(s.id)
+      next.set(s.id, s)
+    }
+    if (filtered.length >= 2) {
+      const minUpdated = Math.min(...filtered.map((s) => s.time.updated))
+      const maxUpdated = Math.max(...filtered.map((s) => s.time.updated))
+      for (const [id, s] of existing) {
+        if (snapIds.has(id)) continue
+        if (s.time.updated > minUpdated && s.time.updated < maxUpdated) continue
+        next.set(id, s)
+      }
+    } else {
+      for (const [id, s] of existing) {
+        if (!snapIds.has(id)) next.set(id, s)
+      }
+    }
+    this.sessionsByProject.set(projectId, next)
+  }
+
+  private startSse(username?: string, password?: string) {
     const profile = this.activeProfile
     if (!profile || !this.client) return
-    this.subscriber?.stop()
-    const dirs = this.openedProjects.map((p) => p.worktree)
-    // 每个打开的目录一条订阅（多目录聚合到一个订阅器实例组）
+    // 先停旧组（关闭的项目/旧 profile 的订阅不得继续收事件——锁定语义）
+    for (const sub of this.sseGroup) sub.stop()
     this.sseGroup = []
+    const dirs = this.openedProjects.map((p) => p.worktree)
     for (const dir of dirs) {
       const sub = new SseSubscriber({
         baseUrl: this.activeBaseUrl!,
         directory: dir,
-        username: profile.username,
-        password: profile.password,
+        username: username ?? profile.username,
+        password: password ?? profile.password,
         onEvent: (ev) => this.handleEvent(dir, ev),
         onReconnected: () => this.reconciler?.request(),
-        onStatus: (s) => this.updateSseAggregate(),
+        onStatus: () => this.updateSseAggregate(),
         log: (...args) => console.debug("[sse]", ...args),
       })
       sub.start()
@@ -264,14 +309,15 @@ export class AppStore {
   }
 
   private updateSseAggregate() {
-    const statuses = new Set(this.sseGroup.map((s) => s.getStatus()))
-    const sseStatus: SseStatus = statuses.has("connected")
-      ? "connected"
-      : statuses.has("connecting")
-        ? "connecting"
-        : statuses.has("reconnecting")
-          ? "reconnecting"
-          : "stopped"
+    // 任一目录订阅非 connected 即 degraded（spec：degraded 态要明确提示）
+    const statuses = this.sseGroup.map((s) => s.getStatus())
+    let sseStatus: SseStatus = "stopped"
+    if (statuses.length > 0) {
+      if (statuses.every((s) => s === "connected")) sseStatus = "connected"
+      else if (statuses.every((s) => s === "reconnecting" || s === "connected")) sseStatus = "reconnecting"
+      else if (statuses.includes("connected") || statuses.includes("reconnecting")) sseStatus = "reconnecting"
+      else sseStatus = "connecting"
+    }
     this.sseStatus = sseStatus
     if (this.connectionState !== "connecting" && this.connectionState !== "disconnected") {
       this.connectionState = sseStatus === "connected" ? "streaming" : "degraded"
@@ -461,12 +507,15 @@ export class AppStore {
     const ps = this.projectStateFor()
     ps.opened = ps.opened.filter((id) => id !== projectId)
     if (ps.currentProjectId === projectId) {
-      ps.currentProjectId = ps.opened[0] ?? null
+      // 回退到剩余打开项目中最近活跃的一个
+      const remaining = this.projects
+        .filter((p) => ps.opened.includes(p.id))
+        .sort((a, b) => b.time.updated - a.time.updated)
+      ps.currentProjectId = remaining[0]?.id ?? null
       ps.currentWorkspaceId = null
     }
-    // 卸载该项目的会话状态
-    const project = this.projects.find((p) => p.id === projectId)
-    if (project) this.sessionsByProject.delete(projectId)
+    // 卸载该项目的会话状态（关闭 = 不展示 + 不更新）
+    this.sessionsByProject.delete(projectId)
     await this.persistProjectState()
     await this.switchProjectContext()
     this.emit()
@@ -487,20 +536,38 @@ export class AppStore {
     this.emit()
   }
 
-  /** 切项目/开项目后：快照 + SSE 重订阅 + Tab/文件树重置 */
+  /** 切项目/开项目后：归档旧 chat Tab + 快照 + SSE 重订阅 + 文件树重置 */
   private async switchProjectContext() {
     if (!this.client) return
+    // 锁定语义：chat Tab 关闭即归档——切项目 = 旧项目 Tab 全关 → 逐个归档
+    await this.archiveAllChatTabs()
     await this.refreshAllOpenedProjects()
     this.startSse()
-    this.resetWorkspaceTabs()
     this.resetFileTree()
   }
 
-  private resetWorkspaceTabs() {
-    // project-scoped：切项目 = Tab 全关（chat 关闭即归档，见 closeChatTab；
-    // 这里直接卸载状态，归档由显式关闭路径处理——切换场景提示语在 UI 层确认）
+  /** 归档当前所有 chat Tab（流式中先 abort），并卸载其会话状态 */
+  private async archiveAllChatTabs() {
+    const chatTabs = this.tabs.filter((t) => t.kind === "chat")
     this.tabs = []
     this.activeTabKey = null
+    for (const tab of chatTabs) {
+      const sessionID = tab.key.slice(5)
+      if (this.busySessions.has(sessionID)) {
+        await this.abortSession(sessionID).catch(() => {})
+      }
+      await this.patchSessionArchive(sessionID, Date.now()).catch(() => {})
+      this.cleanupSessionState(sessionID)
+    }
+    this.emit()
+  }
+
+  /** 卸载单个会话的运行时状态（关 Tab/删会话/切项目时调用，防无界增长） */
+  private cleanupSessionState(sessionID: string) {
+    this.messagesBySession.delete(sessionID)
+    this.pendingPartsMap.delete(sessionID)
+    this.optimisticBySession.delete(sessionID)
+    this.busySessions.delete(sessionID)
   }
 
   private resetFileTree() {
@@ -511,12 +578,8 @@ export class AppStore {
 
   async refreshSessionsForProject(project: Project) {
     if (!this.client) return
-    const dir = project.worktree
-    const sessions = await this.client.listSessions(dir).catch(() => [] as Session[])
-    this.sessionsByProject.set(
-      project.id,
-      new Map(sessions.filter((s) => s.projectID === project.id).map((s) => [s.id, s])),
-    )
+    const sessions = await this.client.listSessions(project.worktree).catch(() => [] as Session[])
+    this.mergeSessionsSnapshot(project.id, sessions)
   }
 
   async createWorkspace(name?: string): Promise<{ ok: boolean; error?: string }> {
@@ -636,13 +699,23 @@ export class AppStore {
     }
     pending.clear()
     this.messagesBySession.set(sessionID, merged)
-    // busy 推断：最后一条 assistant 未完成
-    for (const m of merged.values()) {
+    this.reevaluateBusy(sessionID, merged)
+    this.emit()
+  }
+
+  /** busy 重估：仅当存在未完成 assistant 才 busy（防断线丢事件后永久卡 busy） */
+  private reevaluateBusy(sessionID: string, messages?: Map<string, MessageWithParts>) {
+    const msgs = messages ?? this.messagesBySession.get(sessionID)
+    if (!msgs) return
+    let busy = false
+    for (const m of msgs.values()) {
       if (m.info.role === "assistant" && m.info.time.completed == null) {
-        this.busySessions.add(sessionID)
+        busy = true
+        break
       }
     }
-    this.emit()
+    if (busy) this.busySessions.add(sessionID)
+    else this.busySessions.delete(sessionID)
   }
 
   async archiveSession(sessionID: string): Promise<boolean> {
@@ -695,6 +768,7 @@ export class AppStore {
       await this.client.deleteSession(sessionID, session.directory)
       this.sessionsByProject.get(session.projectID)?.delete(sessionID)
       this.closeTab(`chat:${sessionID}`, { archive: false })
+      this.cleanupSessionState(sessionID)
       this.emit()
       return true
     } catch {
@@ -792,13 +866,16 @@ export class AppStore {
     this.emit()
   }
 
-  /** 关闭 chat Tab = 归档（design-layout 锁定语义） */
+  /** 关闭 chat Tab = 归档（design-layout 锁定语义），并卸载会话运行时状态 */
   async closeChatTab(sessionID: string, opts: { streaming: boolean }): Promise<boolean> {
     if (opts.streaming) {
       await this.abortSession(sessionID)
     }
     const ok = await this.archiveSession(sessionID)
-    if (ok) this.closeTab(`chat:${sessionID}`, { archive: false })
+    if (ok) {
+      this.closeTab(`chat:${sessionID}`, { archive: false })
+      this.cleanupSessionState(sessionID)
+    }
     return ok
   }
 
@@ -884,17 +961,24 @@ export class AppStore {
           .filter((t) => t.kind === "chat")
           .map((t) => ({ sessionID: t.key.slice(5), directory: t.directory! })),
       onSessionsSnapshot: (dir, sessions) => {
-        const projectIds = new Set(sessions.map((s) => s.projectID))
-        for (const pid of projectIds) {
-          this.sessionsByProject.set(
-            pid,
-            new Map(sessions.filter((s) => s.projectID === pid).map((s) => [s.id, s])),
-          )
+        // 按项目合并（不清空重置）；同一 dir 可能含多项目会话
+        const byProject = new Map<string, Session[]>()
+        for (const s of sessions) {
+          const list = byProject.get(s.projectID) ?? []
+          list.push(s)
+          byProject.set(s.projectID, list)
         }
+        for (const [pid, list] of byProject) {
+          this.mergeSessionsSnapshot(pid, list)
+        }
+        void dir
       },
       onMessagesSnapshot: (sessionID, msgs) => {
         const local = this.messagesBySession.get(sessionID) ?? new Map()
-        this.messagesBySession.set(sessionID, mergeSnapshotIntoMessages(local, msgs))
+        const merged = mergeSnapshotIntoMessages(local, msgs)
+        this.messagesBySession.set(sessionID, merged)
+        // 对账后重估 busy（断线期间完成的会话不再卡 busy）
+        this.reevaluateBusy(sessionID, merged)
       },
       onReconcileStateChange: (active) => {
         this.reconciling = active

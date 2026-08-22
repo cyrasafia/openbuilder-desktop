@@ -39,7 +39,8 @@ export class ApiError extends Error {
 /** 错误分类转换（参考 openbuilder design-network-error-handling：不暴露响应体） */
 export function classifyFetchError(e: unknown): ApiError {
   if (e instanceof ApiError) return e
-  if (e instanceof DOMException && e.name === "AbortError") {
+  if (e instanceof DOMException && (e.name === "AbortError" || e.name === "TimeoutError")) {
+    // AbortSignal.timeout 抛 TimeoutError（Chromium），手工 abort 抛 AbortError
     return new ApiError(0, "timeout", "请求超时")
   }
   if (e instanceof TypeError) {
@@ -94,7 +95,14 @@ export class RestClient {
       throw new ApiError(res.status, kind, `HTTP ${res.status}`)
     }
     if (res.status === 204) return undefined as T
-    return (await res.json()) as T
+    // void 端点可能返回 200 空体（如 prompt_async）；空体不解析
+    const text = await res.text()
+    if (!text) return undefined as T
+    try {
+      return JSON.parse(text) as T
+    } catch {
+      throw new ApiError(res.status, "unknown", "响应解析失败")
+    }
   }
 
   private static dirQuery(directory: string, extra: Record<string, string | number | undefined> = {}) {

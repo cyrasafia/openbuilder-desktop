@@ -37,15 +37,25 @@ async function waitHealthy(baseUrl: string, timeoutMs: number): Promise<void> {
   throw new Error("opencode server 健康检查超时")
 }
 
-export async function startManagedServer(): Promise<{ ok: boolean; error?: string; baseUrl?: string }> {
+export interface ManagedStartResult {
+  ok: boolean
+  error?: string
+  baseUrl?: string
+  /** basic auth 凭据：spawn 时注入 server，renderer 连接时使用 */
+  username?: string
+  password?: string
+}
+
+export async function startManagedServer(): Promise<ManagedStartResult> {
   if (child) {
-    return { ok: true, baseUrl: childEnvBaseUrl }
+    return { ok: true, baseUrl: childEnvBaseUrl, username: "opencode", password: childPassword }
   }
 
   const bin = process.env.OPENCODE_BIN ?? "opencode"
   const port = await findFreePort()
   const password = randomBytes(16).toString("hex")
   childEnvBaseUrl = `http://127.0.0.1:${port}`
+  childPassword = password
 
   return new Promise((resolve) => {
     try {
@@ -90,12 +100,13 @@ export async function startManagedServer(): Promise<{ ok: boolean; error?: strin
     })
 
     void waitHealthy(childEnvBaseUrl, 20000)
-      .then(() => resolve({ ok: true, baseUrl: childEnvBaseUrl }))
+      .then(() => resolve({ ok: true, baseUrl: childEnvBaseUrl, username: "opencode", password }))
       .catch(() => fail(`opencode serve 启动超时。stderr 尾部:\n${stderrTail}`))
   })
 }
 
 let childEnvBaseUrl = ""
+let childPassword = ""
 
 export async function stopManagedServer() {
   if (child && !child.killed) {
