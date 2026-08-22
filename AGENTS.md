@@ -1,0 +1,35 @@
+# AGENTS.md
+
+opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录下的 Flutter 移动端 `../openbuilder`。**本仓库当前处于设计阶段**：只有设计文档，尚无实现代码。写代码前先读文档，别假设脚手架已存在。
+
+## 必读文档（写任何代码/文档前）
+
+- `docs/design-architecture.md` — 技术栈与 4 条关键决策（D1–D4）及依据。**决策不可被隐式推翻**：Electron 而非 Tauri（GNOME/Wayland 性能）；自建而非 fork opencode-desktop（其内嵌 server 不发 npm，fork 即冻结）；React 19 而非 Solid；无中间服务层，renderer 直连 opencode server
+- `docs/spec-v0.1.md` — 当前版本功能范围、API 映射表、SSE+REST 对账策略、验收口径。改功能范围必须同步此文件
+- `docs/design-layout.md` — 主界面三栏布局、Tab 注册制、project-scoped 语义。布局/交互改动以此为准
+- `DESIGN.md`（根目录，视觉设计）— 配色/i18n 沿用移动端 openbuilder 的 `../openbuilder/DESIGN.md`；排版密度按桌面习惯重设计。组件规格已定，token 唯一权威落点将是 `src/renderer/src/styles/tokens.css`
+
+## 硬约束（agent 最容易踩的）
+
+- **不用 `@opencode-ai/sdk`**——npm 发布滞后于 server，是过期契约。通信层自写（REST + SSE 直连），API 契约以 `../openbuilder/opencode_openapi.json` 为准（与移动端同源）
+- 文档命名遵循移动端项目体系：`docs/design-*.md`（功能/技术设计）、`docs/plan-*.md`（计划）、`docs/review-*.md`（复盘）、`docs/spec-*.md`（版本范围）；根目录 `DESIGN.md` 专属视觉设计，**不得**用作其他用途
+- 中文文档、中文 commit message（见 git log 惯例）
+- 架构文档是"决策记录"性质：修订需在文档内改写决策及依据，而不是只改代码留文档过期
+
+## 已锁定的语义（实现时不可走样）
+
+- 项目打开/关闭是**纯客户端状态**（按 profile 持久化），server 无此概念；关闭项目 = 不展示 + 事件忽略，重开走 REST 快照
+- 关闭 chat Tab = 归档 session（`PATCH time.archived`），无"仅关闭不归档"路径
+- 工作区（worktree）从属项目，左栏二级展示；会话/文件树按 `?workspace=` 过滤；创建/删除用 `POST/DELETE /experimental/workspace`
+- 工作区与文件树 project-scoped：切换项目 = Tab 全关 + 文件树重置，状态按 projectID 分组存取
+- Tab 注册制：kind + 稳定标识（chat=sessionID、file=路径、terminal=ptyID、browser=URL），重复打开复用
+
+## 参考代码（只读，不引入依赖）
+
+- `../opencode` — 官方 monorepo。session-ui 的 markdown 流式渲染管道（worker + morphdom + markdown-cache）是 L2 优化时的移植对象；desktop 的 sidecar/server 管理可参考
+- `../openchamber` — 同类 Electron 项目。React 19 + CodeMirror 6 + @pierre/diffs 的实证选型来源；它的 express+ws 中间层是**本项目明确不做**的（D4）
+
+## 环境事实
+
+- 主力环境 GNOME + Wayland：Electron 需 `ozone-platform-hint=auto` + `enable-wayland-ime` 启动参数（fcitx5）
+- 工具链：node 26 / bun 1.3 / pnpm 12 均可用；构建链规划为 electron-vite + TypeScript（骨架未建）
