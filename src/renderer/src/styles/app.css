@@ -701,6 +701,9 @@
   border-radius: var(--radius-chip);
   padding: 6px 10px;
   resize: none;
+  /* 高度随内容增长（软换行/手动换行一致），上限 200px 后内部滚动 */
+  field-sizing: content;
+  overflow-y: auto;
   min-height: 32px;
   max-height: 200px;
   font-size: var(--text-chat);

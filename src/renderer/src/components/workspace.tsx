@@ -291,7 +291,7 @@ function ChatView({ sessionID }: { sessionID: string }) {
         <textarea
           value={draft}
           placeholder={t.inputPlaceholder}
-          rows={Math.min(8, Math.max(1, draft.split("\n").length))}
+          rows={1}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
