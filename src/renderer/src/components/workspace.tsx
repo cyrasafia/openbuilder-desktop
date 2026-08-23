@@ -72,6 +72,7 @@ function ChatView({ sessionID }: { sessionID: string }) {
   const busy = store.busySessions.has(sessionID)
   const scrollRef = useRef<HTMLDivElement>(null)
   const pinnedToBottom = useRef(true)
+  const lastEntryCount = useRef(0)
 
   // 激活即重拉（design-layout §5：切回 Tab 时重拉；快照与 SSE 状态合并不丢数据）
   useEffect(() => {
@@ -80,17 +81,27 @@ function ChatView({ sessionID }: { sessionID: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionID])
 
+  const scrollToBottom = (behavior: ScrollBehavior = "auto") => {
+    const el = scrollRef.current
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior })
+  }
+
   const onScroll = () => {
     const el = scrollRef.current
     if (!el) return
+    // 距底 <40px 视为"钉在底部"；用户上滚即解除跟随
     pinnedToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
   }
 
   useEffect(() => {
     const el = scrollRef.current
-    if (el && pinnedToBottom.current) {
-      el.scrollTop = el.scrollHeight
+    if (!el) return
+    if (pinnedToBottom.current) {
+      // 新条目到达 → smooth；同条目内容更新（流式 token）→ auto 即时贴底
+      const addedEntries = entries.length > lastEntryCount.current
+      scrollToBottom(addedEntries ? "smooth" : "auto")
     }
+    lastEntryCount.current = entries.length
   }, [entries])
 
   const send = async () => {
@@ -98,6 +109,7 @@ function ChatView({ sessionID }: { sessionID: string }) {
     if (!text || busy) return
     setDraft("")
     pinnedToBottom.current = true
+    scrollToBottom("smooth")
     await store.sendPrompt(sessionID, text)
   }
 
