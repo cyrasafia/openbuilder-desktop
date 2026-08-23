@@ -16,8 +16,8 @@ if (process.env.NODE_ENV === "development") {
 let mainWindow: BrowserWindow | null = null
 
 function preloadPath(): string {
-  // ESM preload 固定输出 .mjs（见 electron.vite.config.ts）
-  return join(__dirname, "../preload/index.mjs")
+  // CJS preload（sandbox:true 需要；见 electron.vite.config.ts）
+  return join(__dirname, "../preload/index.cjs")
 }
 
 function createMainWindow() {

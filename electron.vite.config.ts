@@ -15,9 +15,9 @@ export default defineConfig({
       rollupOptions: {
         input: { index: resolve(__dirname, "src/preload/index.ts") },
         output: {
-          // ESM preload（Electron 43 支持；package.json type:module 下 .js 会被当 ESM，.mjs 无歧义）
-          format: "es",
-          entryFileNames: "index.mjs",
+          // sandbox:true 的 preload 加载器只支持 CJS；.cjs 后缀避开 package.json type:module 歧义
+          format: "cjs",
+          entryFileNames: "index.cjs",
         },
       },
     },

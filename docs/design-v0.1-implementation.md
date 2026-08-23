@@ -173,6 +173,10 @@ E2E 回归：worktree 全流程（创建→切换→会话→发消息→**流�
 
 新增测试：reconciler client 判空（断开后不抛错、状态复位）。
 
+第三轮修复后追加发现并处理：**sandbox:true 的 preload 加载器不支持 ESM**（`Cannot use import statement outside a module`），preload 改为 CJS 输出（`format:"cjs"` + `index.cjs` 后缀避开 package.json type:module 歧义），sandbox 保留。
+
+第四轮（最终确认）：四项修复全部验证通过（scope-first 截断/disconnect-first 顺序/pendingParts 回放/preload CJS 一致性），**P1=0 P2=0，评审收敛**。测试 20/20、typecheck 双侧、build 全绿；E2E 冒烟（scopeFirst ✓ 流式回复 ✓ 归档 ✓ REST ✓ streaming ✓）。
+
 ## 8. 已知限制（v0.1 接受）
 
 - 消息历史仅拉最新 100 条窗口，更早消息无上翻加载（spec 范围外，v0.2 分段加载）
