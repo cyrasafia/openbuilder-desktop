@@ -7,24 +7,19 @@ export function Sidebar() {
   const { t, locale } = useI18n()
   const [pickerOpen, setPickerOpen] = useState(false)
   const [wsDialogOpen, setWsDialogOpen] = useState(false)
-  const hasChatTabs = store.tabs.some((tab) => tab.kind === "chat")
 
   const projects = store.openedProjects
   const current = store.currentProject
 
-  const confirmSwitch = () => !hasChatTabs || confirm(t.confirmSwitchProject)
-
   /** 选项目 = 选主工作区（并切换项目上下文） */
   const selectProjectMain = (projectId: string) => {
     if (projectId === current?.id && !store.currentWorkspace) return
-    if (!confirmSwitch()) return
     void store.setCurrentProject(projectId).then(() => store.setCurrentWorkspace(null))
   }
 
   /** 选工作区（项目内 worktree） */
   const selectWorkspace = (projectId: string, directory: string) => {
     if (projectId === current?.id && store.currentWorkspace?.directory === directory) return
-    if (!confirmSwitch()) return
     if (projectId !== current?.id) {
       void store.setCurrentProject(projectId).then(() => store.setCurrentWorkspace(directory))
     } else {
@@ -79,7 +74,6 @@ export function Sidebar() {
                     title={t.closeProject}
                     onClick={(e) => {
                       e.stopPropagation()
-                      if (!confirmSwitch()) return
                       void store.closeProject(p.id)
                     }}
                   >
@@ -149,8 +143,6 @@ function ProjectPicker({ onClose }: { onClose: () => void }) {
   const candidates = store.projects
     .filter((p) => !opened.has(p.id))
     .sort((a, b) => b.time.updated - a.time.updated)
-  const hasChatTabs = store.tabs.some((tab) => tab.kind === "chat")
-
   return (
     <div className="dialog-mask" onClick={onClose}>
       <div className="dialog" onClick={(e) => e.stopPropagation()}>
@@ -162,7 +154,6 @@ function ProjectPicker({ onClose }: { onClose: () => void }) {
               key={p.id}
               className="tree-row project-row"
               onClick={() => {
-                if (hasChatTabs && !confirm(t.confirmSwitchProject)) return
                 void store.openProject(p.id)
                 onClose()
               }}

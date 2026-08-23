@@ -34,7 +34,7 @@ opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录�
 - 项目打开/关闭是**纯客户端状态**（按 profile 持久化），server 无此概念；关闭项目 = 不展示 + 事件忽略，重开走 REST 快照
 - 关闭 chat Tab = 归档 session（`PATCH time.archived`），无"仅关闭不归档"路径
 - 工作区（worktree）从属项目，左栏二级展示；会话/文件树按 `?workspace=` 过滤；创建/删除用 `POST/DELETE /experimental/workspace`
-- 工作区与文件树 project-scoped：切换项目 = Tab 全关 + 文件树重置，状态按 projectID 分组存取
+- 工作区与文件树 project-scoped：切换项目/工作区 = 打开作用域会话 Tab（不关不归档已有 Tab，Tab 跨项目混排）+ 文件树重置；关闭项目仅关该项目 Tab（不归档）
 - Tab 注册制：kind + 稳定标识（chat=sessionID、file=路径、terminal=ptyID、browser=URL），重复打开复用
 
 ## 参考代码（只读，不引入依赖）

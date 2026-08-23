@@ -572,6 +572,18 @@ export class AppStore {
     }
     // 卸载该项目的会话状态（关闭 = 不展示 + 不更新）
     this.sessionsByProject.delete(projectId)
+    // 该项目的 chat Tab 随之关闭（仅关 Tab，不归档——归档只发生在显式关闭 Tab）
+    const project = this.projects.find((p) => p.id === projectId)
+    for (const tab of [...this.tabs]) {
+      if (tab.kind !== "chat") continue
+      if (tab.projectId === projectId) {
+        this.closeTab(tab.key)
+        this.cleanupSessionState(tab.key.slice(5))
+      } else if (project && tab.directory === project.worktree) {
+        this.closeTab(tab.key)
+        this.cleanupSessionState(tab.key.slice(5))
+      }
+    }
     await this.persistProjectState()
     await this.switchProjectContext()
     this.emit()
@@ -586,35 +598,53 @@ export class AppStore {
     const ps = this.projectStateFor()
     ps.currentWorkspaceId = directory
     await this.persistProjectState()
-    // 切工作区：重拉会话列表 + SSE 重订（scope 目录变化）+ 文件树重置
+    // 切工作区：重拉会话列表 + SSE 重订（scope 目录变化）+ 文件树重置 + 打开作用域会话 Tab
     await this.refreshSessionsForProject(this.currentProject!)
     this.startSse()
     this.resetFileTree()
+    await this.openScopeSessionTabs()
     this.emit()
   }
 
-  /** 切项目/开项目后：归档旧 chat Tab + 快照 + SSE 重订阅 + 文件树重置 */
+  /** 切项目/开项目后：快照 + SSE 重订阅 + 文件树重置 + 打开该作用域的会话 Tab */
   private async switchProjectContext() {
     if (!this.client) return
-    // 锁定语义：chat Tab 关闭即归档——切项目 = 旧项目 Tab 全关 → 逐个归档
-    await this.archiveAllChatTabs()
     await this.refreshAllOpenedProjects()
     this.startSse()
     this.resetFileTree()
+    // 打开当前作用域的未归档非 subagent 会话为 chat Tab（复用已开的）
+    await this.openScopeSessionTabs()
   }
 
-  /** 归档当前所有 chat Tab（流式中先 abort），并卸载其会话状态 */
-  private async archiveAllChatTabs() {
-    const chatTabs = this.tabs.filter((t) => t.kind === "chat")
-    this.tabs = []
-    this.activeTabKey = null
-    for (const tab of chatTabs) {
-      const sessionID = tab.key.slice(5)
-      if (this.busySessions.has(sessionID)) {
-        await this.abortSession(sessionID).catch(() => {})
+  /**
+   * 打开当前作用域的会话 Tab（不关不归档已有 Tab——Tab 跨项目混排）。
+   * 数量约束：最多打开 8 个最近活跃会话，避免一次灌入过多 Tab。
+   * 作用域无会话（或激活 Tab 不属于本作用域）时清空激活 → 中栏显示会话列表。
+   */
+  private async openScopeSessionTabs() {
+    const sessions = this.visibleSessions.slice(0, 8)
+    for (const s of sessions) {
+      const key = `chat:${s.id}`
+      if (!this.tabs.some((t) => t.key === key)) {
+        this.tabs.push({
+          kind: "chat",
+          key,
+          projectId: s.projectID,
+          title: s.title || s.slug || "",
+          directory: s.directory,
+        })
       }
-      await this.patchSessionArchive(sessionID, Date.now()).catch(() => {})
-      this.cleanupSessionState(sessionID)
+    }
+    const scopeDir = this.scopeQuery.directory
+    const active = this.tabs.find((t) => t.key === this.activeTabKey)
+    if (active?.kind === "file") {
+      // file Tab 不受作用域切换影响
+    } else if (active && active.directory === scopeDir) {
+      // 激活的 chat Tab 已属于本作用域：保持
+    } else if (sessions.length > 0) {
+      this.activeTabKey = `chat:${sessions[0].id}`
+    } else {
+      this.activeTabKey = null
     }
     this.emit()
   }
