@@ -683,13 +683,18 @@ export class AppStore {
   }
 
   /** 当前项目的工作区列表（从 sandboxes 派生，name 取 directory 末段） */
-  get workspacesOfCurrentProject(): Array<{ name: string; directory: string }> {
-    const p = this.currentProject
+  /** 指定项目的工作区列表（从 sandboxes 派生，name 取 directory 末段） */
+  workspacesOfProject(projectId: string): Array<{ name: string; directory: string }> {
+    const p = this.projects.find((x) => x.id === projectId)
     if (!p) return []
     return (p.sandboxes ?? []).map((dir) => ({
       name: dir.split("/").pop() ?? dir,
       directory: dir,
     }))
+  }
+
+  get workspacesOfCurrentProject(): Array<{ name: string; directory: string }> {
+    return this.currentProject ? this.workspacesOfProject(this.currentProject.id) : []
   }
 
   // ============ 会话 ============
@@ -699,12 +704,13 @@ export class AppStore {
     return this.currentWorkspace?.directory ?? this.currentProject?.worktree ?? ""
   }
 
+  /** 当前作用域的可见会话：未归档 + 非 subagent（parentID 为空） */
   get visibleSessions(): Session[] {
     const project = this.currentProject
     if (!project) return []
     const dir = this.scopeDirectory()
     return [...(this.sessionsByProject.get(project.id)?.values() ?? [])]
-      .filter((s) => !s.time.archived && s.directory === dir)
+      .filter((s) => !s.time.archived && !s.parentID && s.directory === dir)
       .sort((a, b) => b.time.updated - a.time.updated)
   }
 
@@ -713,7 +719,7 @@ export class AppStore {
     if (!project) return []
     const dir = this.scopeDirectory()
     return [...(this.sessionsByProject.get(project.id)?.values() ?? [])]
-      .filter((s) => s.time.archived && s.directory === dir)
+      .filter((s) => !s.parentID && s.time.archived && s.directory === dir)
       .sort((a, b) => b.time.updated - a.time.updated)
   }
 

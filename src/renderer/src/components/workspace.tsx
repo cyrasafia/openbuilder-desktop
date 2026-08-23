@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { useI18n, useStore } from "../app"
+import { relativeTime } from "../i18n"
 import type { ChatEntry } from "@shared/message-merge"
 import type { Part, ToolPart } from "@shared/api-types"
 
@@ -46,14 +47,8 @@ export function Workspace() {
       </div>
 
       <div className="workspace-body">
-        {!active && (
-          <div className="workspace-empty">
-            <div className="hero">{t.noSession}</div>
-            <button className="btn-primary" onClick={() => void store.createSession()}>
-              {t.newSession}
-            </button>
-          </div>
-        )}
+        {/* 无激活 Tab = 当前作用域的会话列表（未归档、非 subagent） */}
+        {!active && <SessionList />}
         {/* key 隔离：防止 chat→chat 切换时复用 fiber 导致草稿/pinned ref 跨会话残留 */}
         {active?.kind === "chat" && <ChatView key={active.key} sessionID={active.key.slice(5)} />}
         {active?.kind === "file" && <FileView absolutePath={active.key.slice(5)} />}
@@ -61,6 +56,162 @@ export function Workspace() {
 
       {store.settingsOpen && <SettingsDialog />}
     </main>
+  )
+}
+
+/** 作用域会话列表：选择项目/工作区后的默认视图 */
+function SessionList() {
+  const store = useStore()
+  const { t, locale } = useI18n()
+  const [menuFor, setMenuFor] = useState<string | null>(null)
+  const sessions = store.visibleSessions
+  const archived = store.archivedSessions
+  const [archivedOpen, setArchivedOpen] = useState(false)
+  const scopeName =
+    store.currentWorkspace?.name ?? store.currentProject?.name ?? store.currentProject?.worktree.split("/").pop() ?? ""
+
+  return (
+    <div className="session-list-view">
+      <div className="session-list-header">
+        <div>
+          <div className="session-list-scope mono">{scopeName}</div>
+          <div className="session-list-count">
+            {t.sessionsTitle}: {sessions.length}
+          </div>
+        </div>
+        <button className="btn-primary" onClick={() => void store.createSession()}>
+          {t.newSession}
+        </button>
+      </div>
+      <div className="session-list scroll">
+        {sessions.length === 0 && <div className="session-empty">{t.noSession}</div>}
+        {sessions.map((s) => (
+          <SessionCard
+            key={s.id}
+            sessionID={s.id}
+            busy={store.busySessions.has(s.id)}
+            locale={locale}
+            menuOpen={menuFor === s.id}
+            onMenuToggle={() => setMenuFor(menuFor === s.id ? null : s.id)}
+            onCloseMenu={() => setMenuFor(null)}
+          />
+        ))}
+        {archived.length > 0 && (
+          <>
+            <button className="archived-toggle" onClick={() => setArchivedOpen(!archivedOpen)}>
+              {t.archivedSessions} ({archived.length}) {archivedOpen ? "▾" : "▸"}
+            </button>
+            {archivedOpen &&
+              archived.map((s) => (
+                <SessionCard
+                  key={s.id}
+                  sessionID={s.id}
+                  busy={false}
+                  locale={locale}
+                  archived
+                  menuOpen={menuFor === s.id}
+                  onMenuToggle={() => setMenuFor(menuFor === s.id ? null : s.id)}
+                  onCloseMenu={() => setMenuFor(null)}
+                />
+              ))}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function SessionCard({
+  sessionID,
+  busy,
+  locale,
+  archived,
+  menuOpen,
+  onMenuToggle,
+  onCloseMenu,
+}: {
+  sessionID: string
+  busy: boolean
+  locale: "zh" | "en"
+  archived?: boolean
+  menuOpen: boolean
+  onMenuToggle: () => void
+  onCloseMenu: () => void
+}) {
+  const store = useStore()
+  const { t } = useI18n()
+  const session = store.findSession(sessionID)
+  if (!session) return null
+
+  return (
+    <div
+      className={"session-card" + (archived ? " archived" : "")}
+      onClick={() => store.openChatTab(session)}
+    >
+      <div className="session-card-main">
+        <div className="session-card-title">
+          {busy && <span className="status-dot running" />}
+          <span>{session.title || session.slug || t.untitled}</span>
+        </div>
+        <div className="session-card-meta">
+          <span className="mono">{session.slug}</span>
+          <span>{relativeTime(locale, session.time.updated)}</span>
+        </div>
+      </div>
+      <button
+        className="icon-btn row-action"
+        onClick={(e) => {
+          e.stopPropagation()
+          onMenuToggle()
+        }}
+      >
+        ⋯
+      </button>
+      {menuOpen && (
+        <>
+          <div className="menu-mask" onClick={onCloseMenu} />
+          <div className="menu" onClick={(e) => e.stopPropagation()}>
+            {archived ? (
+              <button
+                onClick={() => {
+                  void store.unarchiveSession(session.id).then(() => store.openChatTab(session))
+                  onCloseMenu()
+                }}
+              >
+                {t.unarchive}
+              </button>
+            ) : (
+              <button
+                onClick={() => {
+                  void store.archiveSession(session.id)
+                  onCloseMenu()
+                }}
+              >
+                {t.archive}
+              </button>
+            )}
+            <button
+              onClick={() => {
+                const title = prompt(t.rename, session.title ?? "")
+                if (title != null && title.trim()) void store.renameSession(session.id, title.trim())
+                onCloseMenu()
+              }}
+            >
+              {t.rename}
+            </button>
+            <button
+              className="danger"
+              onClick={() => {
+                if (confirm(t.confirmDeleteSession)) void store.deleteSession(session.id)
+                onCloseMenu()
+              }}
+            >
+              {t.delete}
+            </button>
+          </div>
+        </>
+      )}
+    </div>
   )
 }
 

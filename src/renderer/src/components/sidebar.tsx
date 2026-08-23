@@ -1,27 +1,35 @@
 import { useState } from "react"
 import { useI18n, useStore } from "../app"
 import { relativeTime } from "../i18n"
-import type { Session } from "@shared/api-types"
 
 export function Sidebar() {
   const store = useStore()
   const { t, locale } = useI18n()
-  const [archivedOpen, setArchivedOpen] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [wsDialogOpen, setWsDialogOpen] = useState(false)
-  const [menuFor, setMenuFor] = useState<string | null>(null)
+  const hasChatTabs = store.tabs.some((tab) => tab.kind === "chat")
 
   const projects = store.openedProjects
   const current = store.currentProject
-  const workspaces = current ? store.workspacesOfCurrentProject : []
-  const sessions = store.visibleSessions
-  const archived = store.archivedSessions
-  const hasChatTabs = store.tabs.some((t) => t.kind === "chat")
 
-  const switchProject = (projectId: string) => {
-    if (projectId === current?.id) return
-    if (hasChatTabs && !confirm(t.confirmSwitchProject)) return
-    void store.setCurrentProject(projectId)
+  const confirmSwitch = () => !hasChatTabs || confirm(t.confirmSwitchProject)
+
+  /** 选项目 = 选主工作区（并切换项目上下文） */
+  const selectProjectMain = (projectId: string) => {
+    if (projectId === current?.id && !store.currentWorkspace) return
+    if (!confirmSwitch()) return
+    void store.setCurrentProject(projectId).then(() => store.setCurrentWorkspace(null))
+  }
+
+  /** 选工作区（项目内 worktree） */
+  const selectWorkspace = (projectId: string, directory: string) => {
+    if (projectId === current?.id && store.currentWorkspace?.directory === directory) return
+    if (!confirmSwitch()) return
+    if (projectId !== current?.id) {
+      void store.setCurrentProject(projectId).then(() => store.setCurrentWorkspace(directory))
+    } else {
+      void store.setCurrentWorkspace(directory)
+    }
   }
 
   if (!store.activeProfile) {
@@ -29,7 +37,7 @@ export function Sidebar() {
       <aside className="sidebar">
         <div className="sidebar-empty">
           <p>{t.connectFirst}</p>
-          <button className="btn-primary" onClick={() => (store.openSettings())}>
+          <button className="btn-primary" onClick={() => store.openSettings()}>
             {t.openSettings}
           </button>
         </div>
@@ -39,147 +47,94 @@ export function Sidebar() {
 
   return (
     <aside className="sidebar">
-      <div className="sidebar-section projects">
-        <div className="sidebar-heading">
-          <span>{t.projectsTitle}</span>
-          <button
-            className="icon-btn"
-            title={t.openProject}
-            onClick={() => setPickerOpen(true)}
-          >
-            +
-          </button>
-        </div>
-        <div className="tree">
-          {projects.map((p) => (
-            <div
-              key={p.id}
-              className={
-                "tree-row project-row" + (p.id === current?.id ? " active" : "")
-              }
-              onClick={() => switchProject(p.id)}
-            >
-              <span className="tree-label" title={p.worktree}>
-                {p.name || p.worktree.split("/").pop() || p.id}
-              </span>
-              <span className="tree-meta">{relativeTime(locale, p.time.updated)}</span>
-              {p.id === current?.id && projects.length > 1 && (
-                <button
-                  className="icon-btn row-action"
-                  title={t.closeProject}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    if (hasChatTabs && !confirm(t.confirmSwitchProject)) return
-                    void store.closeProject(p.id)
-                  }}
-                >
-                  ×
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
+      <div className="sidebar-heading">
+        <span>{t.projectsTitle}</span>
+        <button
+          className="icon-btn"
+          title={t.openProject}
+          onClick={() => setPickerOpen(true)}
+        >
+          +
+        </button>
       </div>
 
-      {current && (
-        <div className="sidebar-section workspaces">
-          <div className="sidebar-heading">
-            <span>{t.workspacesTitle}</span>
-            <button
-              className="icon-btn"
-              title={t.newWorkspace}
-              onClick={() => setWsDialogOpen(true)}
-            >
-              +
-            </button>
-          </div>
-          <div className="tree">
-            <div
-              className={
-                "tree-row ws-row" + (!store.currentWorkspace ? " active" : "")
-              }
-              onClick={() => void store.setCurrentWorkspace(null)}
-            >
-              <span className="tree-label">{t.mainWorkspace}</span>
-            </div>
-            {workspaces.map((w) => (
+      <div className="tree scroll">
+        {projects.map((p) => {
+          const isCurrent = p.id === current?.id
+          const workspaces = store.workspacesOfProject(p.id)
+          return (
+            <div key={p.id} className="project-group">
+              {/* 项目行 = 主工作区入口 */}
               <div
-                key={w.directory}
-                className={"tree-row ws-row" + (store.currentWorkspace?.directory === w.directory ? " active" : "")}
-                onClick={() => void store.setCurrentWorkspace(w.directory)}
+                className={"tree-row project-row" + (isCurrent && !store.currentWorkspace ? " active" : "")}
+                onClick={() => selectProjectMain(p.id)}
               >
-                <span className="tree-label">{w.name}</span>
-                <button
-                  className="icon-btn row-action"
-                  title={t.deleteWorkspace}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    if (confirm(t.confirmDeleteWorkspace)) void store.removeWorkspace(w.directory)
-                  }}
-                >
-                  ×
-                </button>
+                <span className="tree-label" title={p.worktree}>
+                  {p.name || p.worktree.split("/").pop() || p.id}
+                </span>
+                <span className="tree-meta">{relativeTime(locale, p.time.updated)}</span>
+                {isCurrent && projects.length > 1 && (
+                  <button
+                    className="icon-btn row-action"
+                    title={t.closeProject}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (!confirmSwitch()) return
+                      void store.closeProject(p.id)
+                    }}
+                  >
+                    ×
+                  </button>
+                )}
               </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div className="sidebar-section sessions">
-        <div className="sidebar-heading">
-          <span>{t.sessionsTitle}</span>
-          <button className="icon-btn" title={t.newSession} onClick={() => void store.createSession()}>
-            +
-          </button>
-        </div>
-        <div className="tree scroll">
-          {sessions.length === 0 && <div className="tree-empty">{t.noSession}</div>}
-          {sessions.map((s) => (
-            <SessionRow
-              key={s.id}
-              session={s}
-              busy={store.busySessions.has(s.id)}
-              activeTabKey={store.activeTabKey}
-              onOpen={() => store.openChatTab(s)}
-              menuOpen={menuFor === s.id}
-              onMenuToggle={() => setMenuFor(menuFor === s.id ? null : s.id)}
-              onClose={() => setMenuFor(null)}
-            />
-          ))}
-          {archived.length > 0 && (
-            <>
-              <button
-                className="archived-toggle"
-                onClick={() => setArchivedOpen(!archivedOpen)}
-              >
-                {t.archivedSessions} ({archived.length}) {archivedOpen ? "▾" : "▸"}
-              </button>
-              {archivedOpen &&
-                archived.map((s) => (
-                  <SessionRow
-                    key={s.id}
-                    session={s}
-                    busy={false}
-                    activeTabKey={store.activeTabKey}
-                    archived
-                    onOpen={() => void store.unarchiveSession(s.id).then(() => store.openChatTab(s))}
-                    menuOpen={menuFor === s.id}
-                    onMenuToggle={() => setMenuFor(menuFor === s.id ? null : s.id)}
-                    onClose={() => setMenuFor(null)}
-                  />
-                ))}
-            </>
-          )}
-        </div>
+              {/* 工作区跟随项目，全部展示（仅当前项目可新增/删除） */}
+              {isCurrent && (
+                <button
+                  className="icon-btn ws-add"
+                  title={t.newWorkspace}
+                  onClick={() => setWsDialogOpen(true)}
+                >
+                  + {t.workspacesTitle}
+                </button>
+              )}
+              {workspaces.map((w) => (
+                <div
+                  key={w.directory}
+                  className={
+                    "tree-row ws-row" +
+                    (isCurrent && store.currentWorkspace?.directory === w.directory ? " active" : "")
+                  }
+                  onClick={() => selectWorkspace(p.id, w.directory)}
+                >
+                  <span className="tree-label" title={w.directory}>
+                    {w.name}
+                  </span>
+                  {isCurrent && (
+                    <button
+                      className="icon-btn row-action"
+                      title={t.deleteWorkspace}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        if (confirm(t.confirmDeleteWorkspace)) void store.removeWorkspace(w.directory)
+                      }}
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )
+        })}
       </div>
 
       <div className="sidebar-footer">
-        <button className="icon-btn" title={t.settings} onClick={() => (store.openSettings())}>
+        <button className="icon-btn" title={t.settings} onClick={() => store.openSettings()}>
           ⚙
         </button>
       </div>
 
-      {pickerOpen && current && <ProjectPicker onClose={() => setPickerOpen(false)} />}
+      {pickerOpen && <ProjectPicker onClose={() => setPickerOpen(false)} />}
       {wsDialogOpen && current && (
         <WorkspaceDialog projectId={current.id} onClose={() => setWsDialogOpen(false)} />
       )}
@@ -207,7 +162,6 @@ function ProjectPicker({ onClose }: { onClose: () => void }) {
               key={p.id}
               className="tree-row project-row"
               onClick={() => {
-                // 打开项目同样会归档当前会话（与项目行切换一致的门控）
                 if (hasChatTabs && !confirm(t.confirmSwitchProject)) return
                 void store.openProject(p.id)
                 onClose()
@@ -258,93 +212,6 @@ function WorkspaceDialog({ projectId, onClose }: { projectId: string; onClose: (
           </button>
         </div>
       </div>
-    </div>
-  )
-}
-
-function SessionRow({
-  session,
-  busy,
-  activeTabKey,
-  archived,
-  onOpen,
-  menuOpen,
-  onMenuToggle,
-  onClose,
-}: {
-  session: Session
-  busy: boolean
-  activeTabKey: string | null
-  archived?: boolean
-  onOpen: () => void
-  menuOpen: boolean
-  onMenuToggle: () => void
-  onClose: () => void
-}) {
-  const store = useStore()
-  const { t } = useI18n()
-  const active = activeTabKey === `chat:${session.id}`
-
-  return (
-    <div
-      className={"tree-row session-row" + (active ? " active" : "") + (archived ? " archived" : "")}
-      onClick={onOpen}
-    >
-      {busy && <span className="status-dot running" />}
-      <span className="tree-label">{session.title || session.slug || t.untitled}</span>
-      <button
-        className="icon-btn row-action"
-        onClick={(e) => {
-          e.stopPropagation()
-          onMenuToggle()
-        }}
-      >
-        ⋯
-      </button>
-      {menuOpen && (
-        <>
-          <div className="menu-mask" onClick={onClose} />
-          <div className="menu" onClick={(e) => e.stopPropagation()}>
-            {archived ? (
-              <button
-                onClick={() => {
-                  onOpen()
-                  onClose()
-                }}
-              >
-                {t.unarchive}
-              </button>
-            ) : (
-              <button
-                onClick={() => {
-                  void store.archiveSession(session.id)
-                  onClose()
-                }}
-              >
-                {t.archive}
-              </button>
-            )}
-            <button
-              onClick={() => {
-                const title = prompt(t.rename, session.title ?? "")
-                if (title != null && title.trim()) void store.renameSession(session.id, title.trim())
-                onClose()
-              }}
-            >
-              {t.rename}
-            </button>
-            <button
-              className="danger"
-              onClick={() => {
-                if (confirm(t.confirmDeleteSession)) void store.deleteSession(session.id)
-                onClose()
-              }}
-            >
-              {t.delete}
-            </button>
-          </div>
-        </>
-      )}
     </div>
   )
 }
