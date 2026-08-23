@@ -31,7 +31,7 @@ const zh = {
   newChatTab: "新聊天",
   untitled: "（未命名）",
   // 聊天
-  inputPlaceholder: "输入消息…（Ctrl+Enter 发送）",
+  inputPlaceholder: "输入消息…（Enter 发送，Shift+Enter 换行）",
   send: "发送",
   sending: "发送中",
   abort: "停止",
@@ -115,7 +115,7 @@ const en: typeof zh = {
   closeTab: "Close",
   newChatTab: "New chat",
   untitled: "(untitled)",
-  inputPlaceholder: "Message… (Ctrl+Enter to send)",
+  inputPlaceholder: "Message… (Enter to send, Shift+Enter for newline)",
   send: "Send",
   sending: "Sending",
   abort: "Stop",

@@ -137,7 +137,9 @@ function ChatView({ sessionID }: { sessionID: string }) {
           rows={Math.min(8, Math.max(1, draft.split("\n").length))}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+            if (e.key === "Enter") {
+              // 修饰键组合（Ctrl/Shift/Alt/Meta）= 换行；裸 Enter = 发送
+              if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return
               e.preventDefault()
               void send()
             }
