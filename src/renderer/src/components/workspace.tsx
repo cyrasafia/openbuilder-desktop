@@ -7,7 +7,11 @@ import type { Part, ToolPart } from "@shared/api-types"
 export function Workspace() {
   const store = useStore()
   const { t } = useI18n()
-  const tabs = store.tabs
+  // Tab 条只显示当前作用域的 Tab（chat: directory 匹配；file: 跟随显示）
+  const scopeDir = store.scopeQuery.directory
+  const tabs = store.tabs.filter(
+    (tab) => tab.kind === "file" || (tab.kind === "chat" && tab.directory === scopeDir),
+  )
   const active = store.activeTab
 
   return (

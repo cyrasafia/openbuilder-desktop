@@ -991,9 +991,20 @@ export class AppStore {
   closeTab(key: string, _opts: { archive?: boolean } = {}) {
     const idx = this.tabs.findIndex((t) => t.key === key)
     if (idx < 0) return
+    const closed = this.tabs[idx]
     this.tabs.splice(idx, 1)
     if (this.activeTabKey === key) {
-      this.activeTabKey = this.tabs[Math.min(idx, this.tabs.length - 1)]?.key ?? null
+      // 回退激活：优先同作用域的相邻 Tab（Tab 条按作用域过滤显示，不能激活到隐藏 Tab）
+      const scopeDir = closed.kind === "file" ? null : closed.directory
+      const candidates =
+        scopeDir != null
+          ? this.tabs.filter((t) => t.kind === "file" || t.directory === scopeDir)
+          : this.tabs
+      const pos = candidates.findIndex((t) => t.key === key)
+      this.activeTabKey =
+        candidates[Math.min(Math.max(pos, 0), candidates.length - 1)]?.key ??
+        candidates[0]?.key ??
+        null
     }
     this.emit()
   }
