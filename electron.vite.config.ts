@@ -38,6 +38,7 @@ export default defineConfig({
     server: {
       // renderer 直连 opencode server；server CORS 对 localhost 无条件放行
       allowedHosts: true,
+      host: "0.0.0.0",
     },
   },
 })
