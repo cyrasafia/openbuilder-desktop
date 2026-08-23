@@ -1,0 +1,57 @@
+# Maintainer: cyrasafia <cyrasafia@users.noreply.github.com>
+# 由 scripts/package-arch.sh 驱动：electron-builder --dir 产出 ../linux-unpacked 后 makepkg
+# 内嵌 electron 运行时（与开发/联调版本一致，避免系统 electron 版本漂移）
+
+pkgname=openbuilder-desktop
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Thin desktop client for opencode server (Electron + React), optimized for GNOME/Wayland"
+arch=('x86_64')
+url="https://github.com/cyrasafia/openbuilder-desktop"
+license=('MIT')
+depends=(
+  'alsa-lib'
+  'gtk3'
+  'nss'
+  'libxtst'
+  'libxss'
+  'libnotify'
+  'libgcrypt'
+  'libcups'
+  'hicolor-icon-theme'
+  'desktop-file-utils'
+)
+provides=('openbuilder-desktop')
+options=('!strip' '!emptydirs')
+install=openbuilder-desktop.install
+
+package() {
+  appdir="$pkgdir/usr/lib/$pkgname"
+
+  # 运行时（相对 PKGBUILD 的 ../linux-unpacked）
+  install -dm755 "$appdir"
+  cp -a "$startdir/../linux-unpacked/." "$appdir/"
+
+  # chrome-sandbox 需要 setuid root（无 user namespaces 时的 zygote 沙箱）
+  chmod 4755 "$appdir/chrome-sandbox"
+
+  # 可执行入口
+  install -dm755 "$pkgdir/usr/bin"
+  ln -s "/usr/lib/$pkgname/$pkgname" "$pkgdir/usr/bin/$pkgname"
+
+  # desktop entry（Wayland 参数由 main 进程 appendSwitch 处理，Exec 无需 flags）
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/$pkgname.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=openbuilder desktop
+Comment=Thin desktop client for opencode server
+Exec=$pkgname %U
+Icon=$pkgname
+Categories=Development;
+Terminal=false
+StartupWMClass=$pkgname
+EOF
+
+  # 图标（目前 512 单尺寸；后续补全尺寸集）
+  install -Dm644 "$startdir/icon-512.png" "$pkgdir/usr/share/icons/h512x512/apps/$pkgname.png"
+}
