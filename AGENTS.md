@@ -1,6 +1,6 @@
 # AGENTS.md
 
-opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录下的 Flutter 移动端 `../openbuilder`。**v0.1 已实现**（三栏布局/聊天/项目/工作区/文件树/对账，见 `docs/design-v0.1-implementation.md`）；终端/diff/markdown 渲染等在 v0.2+。
+opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录下的 Flutter 移动端 `../openbuilder`（绝对路径 `/home/cyrasafia/projects/my-tools/openbuilder`；若本地克隆缺失，从 `https://github.com/cyrasafia/openbuilder.git` 克隆）。**v0.1 已实现**（三栏布局/聊天/项目/工作区/文件树/对账，见 `docs/design-v0.1-implementation.md`）；终端/diff/markdown 渲染等在 v0.2+。
 
 ## 开发命令
 
@@ -8,6 +8,7 @@ opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录�
 - `npm run build` / `npm run typecheck`（node+web 双 tsconfig）/ `npm run test`（vitest，20 用例）
 - 联调：本机 opencode server `http://127.0.0.1:15120`（不要停止/重启）；CDP 驱动 E2E 用 `--remote-debugging-port=9222`
 - preload 必须 CJS 输出（`.cjs`）——sandbox:true 不支持 ESM preload（electron.vite.config.ts 有注释）
+- 打包：`npm run package:linux`（electron-builder）；发行包用 `scripts/package-arch.sh`（makepkg）/ `scripts/package-fedora.sh`（fedora:41 容器内 rpmbuild）
 
 ## 必读文档（写任何代码/文档前）
 
@@ -26,14 +27,15 @@ opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录�
 
 - **不用 `@opencode-ai/sdk`**——npm 发布滞后于 server，是过期契约。通信层自写（REST + SSE 直连），API 契约以 `../openbuilder/opencode_openapi.json` 为准（与移动端同源）
 - 文档命名遵循移动端项目体系：`docs/design-*.md`（功能/技术设计）、`docs/plan-*.md`（计划）、`docs/review-*.md`（复盘）、`docs/spec-*.md`（版本范围）；根目录 `DESIGN.md` 专属视觉设计，**不得**用作其他用途
-- 中文文档、中文 commit message（见 git log 惯例）
+- 中文文档、中文 commit message，前缀惯例 `feat:` / `fix:` / `ui:` / `build:` / `chore:` / `docs:`（见 git log）
+- 合并其他分支到 main 默认用 squash merge（单提交、保留原提交信息作为正文）
 - 架构文档是"决策记录"性质：修订需在文档内改写决策及依据，而不是只改代码留文档过期
 
 ## 已锁定的语义（实现时不可走样）
 
 - 项目打开/关闭是**纯客户端状态**（按 profile 持久化），server 无此概念；关闭项目 = 不展示 + 事件忽略，重开走 REST 快照
 - chat Tab 与归档对称：关闭 Tab = 归档（`PATCH time.archived`），打开 Tab = 取消归档，无"仅关闭不归档"路径
-- 工作区（worktree）从属项目，左栏二级展示；会话/文件树按 `?workspace=` 过滤；创建/删除用 `POST/DELETE /experimental/workspace`
+- 工作区（worktree）从属项目，左栏二级展示；会话/文件树按 `?workspace=` 过滤；创建/删除用 `POST/DELETE /experimental/worktree`（**不用** `/experimental/workspace`，其 create 契约不稳定）；name 省略时 server 生成随机 slug；列表数据源是 `Project.sandboxes`（见 rest-client.ts / app-store.ts 注释）
 - 工作区与文件树 project-scoped：切换项目/工作区 = 打开作用域会话 Tab（不关不归档已有 Tab，Tab 跨项目混排）+ 文件树重置；关闭项目仅关该项目 Tab（不归档）
 - Tab 注册制：kind + 稳定标识（chat=sessionID、file=路径、terminal=ptyID、browser=URL），重复打开复用
 
@@ -45,4 +47,4 @@ opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录�
 ## 环境事实
 
 - 主力环境 GNOME + Wayland：Electron 需 `ozone-platform-hint=auto` + `enable-wayland-ime` 启动参数（fcitx5）
-- 工具链：node 26 / bun 1.3 / pnpm 12 均可用；构建链规划为 electron-vite + TypeScript（骨架未建）
+- 工具链：node 26 / bun 1.3 / pnpm 12 均可用；包管理用 npm（有 package-lock.json，勿混用）
