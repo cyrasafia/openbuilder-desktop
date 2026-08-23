@@ -178,7 +178,8 @@ function SessionCard({
             {archived ? (
               <button
                 onClick={() => {
-                  void store.unarchiveSession(session.id).then(() => store.openChatTab(session))
+                  // openChatTab 已自带 unarchive（打开 = 取消归档）
+                  store.openChatTab(session)
                   onCloseMenu()
                 }}
               >

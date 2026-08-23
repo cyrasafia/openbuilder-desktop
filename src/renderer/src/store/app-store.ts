@@ -717,10 +717,13 @@ export class AppStore {
   workspacesOfProject(projectId: string): Array<{ name: string; directory: string }> {
     const p = this.projects.find((x) => x.id === projectId)
     if (!p) return []
-    return (p.sandboxes ?? []).map((dir) => ({
-      name: dir.split("/").pop() ?? dir,
-      directory: dir,
-    }))
+    // 防御：主工作区 = 项目行本身，sandboxes 若含项目根路径则排除（防重复展示）
+    return (p.sandboxes ?? [])
+      .filter((dir) => dir !== p.worktree)
+      .map((dir) => ({
+        name: dir.split("/").pop() ?? dir,
+        directory: dir,
+      }))
   }
 
   get workspacesOfCurrentProject(): Array<{ name: string; directory: string }> {
@@ -926,7 +929,13 @@ export class AppStore {
 
   // ============ Tab ============
 
+  /** 打开 chat Tab = 取消归档（与"关闭 Tab = 归档"对称） */
   openChatTab(session: Session) {
+    if (session.time.archived) {
+      void this.unarchiveSession(session.id).then(() => {
+        // 归档事件/响应到达后 Tab 标题等状态自然刷新
+      })
+    }
     const key = `chat:${session.id}`
     const existing = this.tabs.find((t) => t.key === key)
     if (!existing) {

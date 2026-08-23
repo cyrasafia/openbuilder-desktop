@@ -70,9 +70,10 @@
 
 - Tab 规则：可关闭；同 kind 内按打开顺序，不同 kind 混排（注册制下统一顺序 + kind 图标区分）；切换用 Ctrl+PgUp/PgDn（快捷键体系 v0.2 再统一）
 - Tab 标识稳定：chat = sessionID、file/diff = 文件路径、terminal = ptyID、browser = URL；重复打开同标识复用已开 Tab 并激活
-- **chat Tab 与 session 生命周期绑定**：
+- **chat Tab 与 session 生命周期绑定（对称语义）**：
   - 新建 chat Tab = 新建 session（`POST /session`），Tab 即 session 的工作区化身
-  - **关闭 chat Tab = 归档 session**（`PATCH time.archived`）——Tab 关闭不提供"仅关闭不归档"的路径，交互语义唯一；从会话列表点击可重新打开（Tab 恢复 + 可选取消归档）
+  - **关闭 chat Tab = 归档 session**（`PATCH time.archived`）——Tab 关闭不提供"仅关闭不归档"的路径，交互语义唯一
+  - **打开 chat Tab = 取消归档**（`PATCH time.archived=0`）——含从会话列表/归档区点击打开（2026-08-23 修订，原"可选取消归档"）
   - 流式进行中关闭 Tab：先 abort（`POST /session/{id}/abort`）再归档，需二次确认
 - 生命周期约束：关闭 Tab 即卸载其订阅/状态；非 chat Tab 重开无状态恢复成本，chat Tab 重开走 REST 消息快照 + 增量
 - **Tab 跨项目混排（2026-08-23 修订，原"切项目 = Tab 全关 + 归档"）**：
