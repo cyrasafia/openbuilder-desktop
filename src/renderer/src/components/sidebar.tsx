@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { FolderGit2 } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import { relativeTime } from "../i18n"
 import type { Session } from "@shared/api-types"
@@ -104,6 +105,7 @@ export function Sidebar() {
                   }
                   onClick={() => selectWorkspace(p.id, w.directory)}
                 >
+                  <FolderGit2 className="ws-icon" size={16} aria-hidden />
                   <span className="tree-label" title={w.directory}>
                     {w.name}
                   </span>

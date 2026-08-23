@@ -83,6 +83,12 @@
   height: var(--row-tree);
 }
 
+/* worktree 行图标：16px 线性（lucide folder-git-2，DESIGN.md） */
+.ws-icon {
+  flex-shrink: 0;
+  color: var(--on-surface-variant);
+}
+
 .tree-label {
   flex: 1;
   overflow: hidden;
