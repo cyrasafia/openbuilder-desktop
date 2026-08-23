@@ -431,8 +431,166 @@
 .assistant-text {
   font-size: var(--text-chat);
   line-height: 1.6;
-  white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* ---------- markdown（.md = streamdown 根；令牌语义见 DESIGN.md appColors） ---------- */
+.md {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.md p {
+  word-break: break-word;
+}
+
+.md h1,
+.md h2 {
+  font-size: var(--text-title-md);
+  font-weight: var(--weight-semibold);
+  line-height: 1.4;
+}
+
+.md h3,
+.md h4,
+.md h5,
+.md h6 {
+  font-size: var(--text-title-sm);
+  font-weight: var(--weight-semibold);
+  line-height: 1.4;
+}
+
+.md strong {
+  font-weight: var(--weight-semibold);
+}
+
+.md a {
+  color: var(--color-link);
+}
+
+.md ul,
+.md ol {
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.md li::marker {
+  color: var(--outline);
+}
+
+/* GFM 任务列表：去项目符号，checkbox 贴左 */
+.md li:has(> input[type="checkbox"]) {
+  list-style: none;
+  margin-left: -20px;
+}
+
+.md input[type="checkbox"] {
+  margin-right: 6px;
+  accent-color: var(--primary);
+}
+
+.md blockquote {
+  border-left: 3px solid var(--color-quote-bar);
+  padding: 2px 0 2px 12px;
+  color: var(--on-surface-variant);
+}
+
+.md hr {
+  border: none;
+  border-top: 1px solid var(--outline-variant);
+}
+
+.md img {
+  max-width: 100%;
+  border-radius: var(--radius-chip);
+}
+
+.md .md-code-inline {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--color-code-bg);
+  color: var(--color-code);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.md-codeblock {
+  background: var(--color-code-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-chip);
+  overflow: hidden;
+}
+
+.md-codeblock-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: var(--row-tree);
+  padding: 0 6px 0 10px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.md-codeblock-lang {
+  font-size: var(--text-xs);
+  color: var(--outline);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.md-copy {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  color: var(--outline);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.md-copy:hover {
+  color: var(--on-surface);
+  background: var(--surface-container-high);
+}
+
+.md-pre {
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  max-height: 300px;
+}
+
+.md-codeblock-code {
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.md-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-chip);
+}
+
+.md table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: var(--text-sm);
+}
+
+.md th,
+.md td {
+  border: 1px solid var(--color-border);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.md th {
+  font-weight: var(--weight-semibold);
+  background: var(--surface-container-low);
 }
 
 .error-card {
@@ -494,7 +652,6 @@
   color: var(--outline);
   font-size: var(--text-sm);
   line-height: 1.5;
-  white-space: pre-wrap;
 }
 
 .code-block-label {

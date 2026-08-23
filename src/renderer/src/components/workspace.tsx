@@ -3,6 +3,7 @@ import { useI18n, useStore } from "../app"
 import { relativeTime } from "../i18n"
 import type { ChatEntry } from "@shared/message-merge"
 import type { Part, ToolPart } from "@shared/api-types"
+import { Markdown } from "./markdown"
 
 export function Workspace() {
   const store = useStore()
@@ -362,7 +363,7 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
       ))}
       {texts.map((p) => (
         <div key={p.id} className="assistant-text">
-          {p.text}
+          <Markdown>{p.text}</Markdown>
         </div>
       ))}
       {errored && (
@@ -384,7 +385,11 @@ function ReasoningChip({ part }: { part: Part }) {
         <span className="chevron">{open ? "▾" : "▸"}</span>
         <span className="chip-label">{t.thinking}</span>
       </button>
-      {open && <div className="chip-body reasoning">{text}</div>}
+      {open && (
+        <div className="chip-body reasoning">
+          <Markdown>{text}</Markdown>
+        </div>
+      )}
     </div>
   )
 }

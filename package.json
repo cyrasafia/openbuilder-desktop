@@ -34,7 +34,8 @@
   },
   "dependencies": {
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "streamdown": "^2.5.0"
   },
   "author": {
     "name": "cyrasafia",

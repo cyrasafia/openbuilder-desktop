@@ -39,6 +39,8 @@ const zh = {
   toolCall: "工具",
   inputLabel: "输入",
   outputLabel: "输出",
+  copy: "复制",
+  copied: "已复制",
   retry: "重试",
   // 文件
   filesTitle: "文件",
@@ -122,6 +124,8 @@ const en: typeof zh = {
   toolCall: "Tool",
   inputLabel: "Input",
   outputLabel: "Output",
+  copy: "Copy",
+  copied: "Copied",
   retry: "Retry",
   filesTitle: "Files",
   loading: "Loading…",

@@ -2,6 +2,8 @@ import { defineConfig } from "vitest/config"
 import { resolve } from "node:path"
 
 export default defineConfig({
+  // renderer 侧 tsx 测试用 React 19 automatic 运行时（无 plugin-react，需显式指定）
+  esbuild: { jsx: "automatic" },
   test: {
     environment: "jsdom",
     include: ["src/**/*.test.{ts,tsx}"],

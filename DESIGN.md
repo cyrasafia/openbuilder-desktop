@@ -101,6 +101,7 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 | 文件树 | 行 26，`ui-md`；目录/文件图标 16 线性；激活行 `surfaceContainerLow` 底 |
 | 消息流 | assistant：无底色全宽块，`chat-md`；user：`userBubble` 色块 + `rounded.bubble`，内边距 12×16，用户文字 `userText` |
 | 输入中提示（TypingSlot） | 消息流末尾常驻固定高 28px 槽位（idle 时兼作底部留白）：busy = 三点脉冲（6px/间距 4/`outline` 色，opacity 0.3↔1.0、900ms、相位差 300ms）；retry = 旋转图标 + 单行截断文案；显隐只动 opacity，禁止布局属性（见 docs/design-typing-indicator.md） |
+| 消息 markdown（assistant 正文/reasoning） | 块间距 8（flex gap）；标题两档：h1/h2=`title-md` 600、h3+ =`title-sm` 600；行内代码 `code` 色 + `codeBackground` 底 + 4px 圆角 + 0.92em mono；代码块与 chip 展开体同款（`codeBackground` 底 + `border` 边 + `rounded.chip`，头部高 26 含语言标签 `ui-xs` `outline` + 复制按钮）；引用 3px `quoteBar` 左栏 + `onSurfaceVariant`；表格 `border` 全框 + 表头 600 + `surfaceContainerLow` 底；链接 `link` 色；任务列表去符号 + checkbox `primary` |
 | 输入区 | min-height 32 自增高，`surfaceContainerLow` 底 + 1px `outlineVariant` 边，focus 1px `primary`；发送按钮 28×28 |
 | 设置弹窗 | 640×min(480, 80vh)，`rounded.dialog`，遮罩 rgba(0,0,0,.5)；表单标签 `ui-sm`，控件 32 |
 | 状态栏 | 高 24，`ui-xs`；状态点 8px：streaming=`status.running`、degraded=`status.pending`、offline=`status.error`、对账中=running 闪烁 |
