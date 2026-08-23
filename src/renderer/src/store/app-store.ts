@@ -5,6 +5,7 @@
 import { RestClient } from "@shared/rest-client"
 import { SseSubscriber, type SseStatus } from "@shared/sse-subscriber"
 import { Reconciler } from "@shared/reconciler"
+import { mergeSessionsSnapshot } from "@shared/session-merge"
 import {
   mergeSnapshotIntoMessages,
   sortEntries,
@@ -249,43 +250,36 @@ export class AppStore {
   }
 
   private async refreshAllOpenedProjects() {
-    const client = this.client!
-    await Promise.all(
-      this.openedProjects.map(async (p) => {
-        const sessions = await client.listSessions(p.worktree).catch(() => [] as Session[])
-        this.mergeSessionsSnapshot(p.id, sessions)
-      }),
-    )
+    await AppStore.runLimited(this.openedProjects, 2, (p) => this.refreshSessionsForProject(p))
   }
 
   /**
-   * 会话快照合并（与消息层同原则：不清空重置，防 async gap 丢失 SSE 事件）。
-   * REST 权威覆盖同 id；本地新增（SSE-only）保留；updated 落在快照窗口开区间
-   * 且不在快照中的本地项视为已删除。
+   * 将单目录会话快照合入项目 map（按 projectID 过滤后交 session-merge 分域合并）。
+   * 闸门：在途快照落地时项目可能已关闭、目录可能已被删除（removeWorkspace）——
+   * 过期快照直接丢弃，防止复活已卸载的 worktree 会话。
    */
-  private mergeSessionsSnapshot(projectId: string, sessions: Session[]) {
+  private applySessionsSnapshot(projectId: string, directory: string, sessions: Session[]) {
+    const project = this.openedProjects.find((p) => p.id === projectId)
+    if (!project) return
+    if (directory !== project.worktree && !(project.sandboxes ?? []).includes(directory)) return
     const filtered = sessions.filter((s) => s.projectID === projectId)
-    const existing = this.sessionsByProject.get(projectId) ?? new Map<string, Session>()
-    const next = new Map<string, Session>()
-    const snapIds = new Set<string>()
-    for (const s of filtered) {
-      snapIds.add(s.id)
-      next.set(s.id, s)
-    }
-    if (filtered.length >= 2) {
-      const minUpdated = Math.min(...filtered.map((s) => s.time.updated))
-      const maxUpdated = Math.max(...filtered.map((s) => s.time.updated))
-      for (const [id, s] of existing) {
-        if (snapIds.has(id)) continue
-        if (s.time.updated > minUpdated && s.time.updated < maxUpdated) continue
-        next.set(id, s)
-      }
-    } else {
-      for (const [id, s] of existing) {
-        if (!snapIds.has(id)) next.set(id, s)
-      }
-    }
-    this.sessionsByProject.set(projectId, next)
+    const local = this.sessionsByProject.get(projectId) ?? new Map<string, Session>()
+    this.sessionsByProject.set(projectId, mergeSessionsSnapshot(local, directory, filtered))
+  }
+
+  /** 并发受限执行（REST 池约束：5 条 SSE 常驻后仅 ~1 空闲连接，无限扇出会让
+   *  排队请求的 AbortSignal.timeout 从分发起算、尾部请求饿死超时——降级为空
+   *  快照虽保守保命，但该目录会一直陈旧到下次刷新） */
+  private static async runLimited<T>(items: T[], limit: number, fn: (item: T) => Promise<void>) {
+    let next = 0
+    await Promise.all(
+      Array.from({ length: Math.min(limit, items.length) }, async () => {
+        while (next < items.length) {
+          const item = items[next++]
+          await fn(item)
+        }
+      }),
+    )
   }
 
   private startSse() {
@@ -663,10 +657,19 @@ export class AppStore {
     this.fileContents.clear()
   }
 
+  /**
+   * 拉取项目会话快照：项目根 + 各 worktree 目录**逐目录**拉取（实测
+   * /session?directory=X 精确匹配，项目根快照不含 worktree 会话，切进工作区/
+   * 左栏指示器都依赖 worktree 目录有自己的快照）；合并按 directory 分域。
+   */
   async refreshSessionsForProject(project: Project) {
-    if (!this.client) return
-    const sessions = await this.client.listSessions(project.worktree).catch(() => [] as Session[])
-    this.mergeSessionsSnapshot(project.id, sessions)
+    const client = this.client
+    if (!client) return
+    const dirs = [...new Set([project.worktree, ...(project.sandboxes ?? [])])]
+    await AppStore.runLimited(dirs, 3, async (dir) => {
+      const sessions = await client.listSessions(dir).catch(() => [] as Session[])
+      this.applySessionsSnapshot(project.id, dir, sessions)
+    })
   }
 
   /** name 省略：由 server 生成随机 slug（两端一致的默认行为） */
@@ -691,6 +694,16 @@ export class AppStore {
       await this.client.removeWorktree(this.currentProject.worktree, directory)
       // worktree 列表数据源是 Project.sandboxes，重拉项目列表同步
       await this.refreshWorkspacesForProject(this.currentProject)
+      // 卸载已删目录的会话（目录已出 sandboxes，此后无快照/订阅通道覆盖它）
+      const map = this.sessionsByProject.get(this.currentProject.id)
+      if (map) {
+        for (const [id, s] of map) {
+          if (s.directory === directory) {
+            map.delete(id)
+            this.busySessions.delete(id)
+          }
+        }
+      }
       const ps = this.projectStateFor()
       if (ps.currentWorkspaceId === directory) {
         ps.currentWorkspaceId = null
@@ -1095,7 +1108,7 @@ export class AppStore {
           .filter((t) => t.kind === "chat")
           .map((t) => ({ sessionID: t.key.slice(5), directory: t.directory! })),
       onSessionsSnapshot: (dir, sessions) => {
-        // 按项目合并（不清空重置）；同一 dir 可能含多项目会话
+        // 按项目合并（不清空重置，按 directory 分域）；同一 dir 可能含多项目会话
         const byProject = new Map<string, Session[]>()
         for (const s of sessions) {
           const list = byProject.get(s.projectID) ?? []
@@ -1103,7 +1116,7 @@ export class AppStore {
           byProject.set(s.projectID, list)
         }
         for (const [pid, list] of byProject) {
-          this.mergeSessionsSnapshot(pid, list)
+          this.applySessionsSnapshot(pid, dir, list)
         }
         // 无 Tab 的 busy 会话：会话快照到达即重置（若仍在流式，后续事件会重新置位）
         const tabSessions = new Set(
@@ -1112,7 +1125,6 @@ export class AppStore {
         for (const sid of [...this.busySessions]) {
           if (!tabSessions.has(sid)) this.busySessions.delete(sid)
         }
-        void dir
       },
       onMessagesSnapshot: (sessionID, msgs) => {
         const local = this.messagesBySession.get(sessionID) ?? new Map()

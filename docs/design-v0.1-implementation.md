@@ -42,6 +42,7 @@ src/
 | `POST /experimental/workspace` 的 `type` 契约不可用（400） | 工作区改用 `/experimental/worktree`（与移动端同源） |
 | worktree 列表的真实数据源是 `Project.sandboxes`（directory 数组）；`GET /experimental/workspace` 对 worktree API 创建的目录返回空 | 工作区列表从 sandboxes 派生 |
 | `?workspace=` 参数（wrk id 体系）传 worktree directory 会 500 | worktree 过滤是**纯客户端行为**：`session.directory === worktreeDir`（同移动端） |
+| `GET /session?directory=X` 为 directory **精确匹配**：项目根查询不返回 worktree 会话（实测根快照 28 条全为根会话） | 会话快照逐目录拉取（项目根 ∪ sandboxes）；快照合并按 directory 分域（session-merge.ts） |
 | Electron renderer 的 `fetch` 是绑定 window 的包装，`const f = fetch; f(...)` 抛 `Illegal invocation` | rest-client 必须 `fetch.bind(globalThis)` |
 
 ## 3. 通信层
@@ -67,7 +68,7 @@ src/
 ### 对账（reconciler.ts）——移植 design-incremental-reconcile
 
 - 触发：SSE 重连成功（debounce 800ms 合并）
-- 内容：每个打开项目 `GET /session`（全量）+ 每个**打开的 chat Tab** `GET /session/{id}/message?limit=100`（窗口 K=100）
+- 内容：每个订阅目录（scope ∪ 打开项目根，见 7.5 #9）`GET /session`（directory 精确匹配）+ 每个**打开的 chat Tab** `GET /session/{id}/message?limit=100`（窗口 K=100）
 - 互斥锁防并发；被互斥跳过 ≠ 失败，pendingKick 重跑；失败静默（状态栏指示器复位）
 
 ### 消息合并（message-merge.ts）——移植 design-sort-order-race + message-accumulation
@@ -177,6 +178,25 @@ E2E 回归：worktree 全流程（创建→切换→会话→发消息→**流�
 第三轮修复后追加发现并处理：**sandbox:true 的 preload 加载器不支持 ESM**（`Cannot use import statement outside a module`），preload 改为 CJS 输出（`format:"cjs"` + `index.cjs` 后缀避开 package.json type:module 歧义），sandbox 保留。
 
 第四轮（最终确认）：四项修复全部验证通过（scope-first 截断/disconnect-first 顺序/pendingParts 回放/preload CJS 一致性），**P1=0 P2=0，评审收敛**。测试 20/20、typecheck 双侧、build 全绿；E2E 冒烟（scopeFirst ✓ 流式回复 ✓ 归档 ✓ REST ✓ streaming ✓）。
+
+## 7.7 联调修复：worktree 会话不可见（2026-08-23）
+
+现象：worktree 内已存在的会话在切进工作区后，中栏会话列表与左栏指示器均不显示（server 上该会话存在、未归档、无 parentID、directory 匹配）。两个叠加病灶，均以运行中 server 实测复现：
+
+| # | 级别 | 问题 | 修复 |
+|---|---|---|---|
+| 1 | P1 | REST 快照拉不到 worktree 会话：所有快照路径都用项目根调 `listSessions(project.worktree)`——连 `setCurrentWorkspace` → `refreshSessionsForProject` 也是；而 `/session?directory=X` 精确匹配，根快照不含 worktree 会话。worktree 会话进 store 的唯一通道是"当前 scope 订阅期间的 SSE 事件"，订阅建立前创建的会话永远不可见 | `refreshSessionsForProject` **逐目录**拉取（项目根 ∪ `Project.sandboxes`），启动/切项目/切工作区统一走它；左栏非当前 worktree 行的指示器也因此有快照数据 |
+| 2 | P1 | 快照合并按 projectID 全域审判：`mergeSessionsSnapshot` 用根快照的 updated 开区间窗口清除整个项目 map——SSE 已收到的 worktree 会话若 updated 落在根窗口内（实测确落），会被下一次任意根快照合并误判为已删除 | 合并逻辑抽到 `shared/session-merge.ts`，**按 directory 分域**：REST 覆盖与窗口删除只作用于快照同目录的本地会话 |
+
+顺带修正：`removeWorkspace` 显式卸载已删目录的会话与 busy 标志（该目录已出 sandboxes，此后无快照/订阅通道覆盖它）；对账回调 `onSessionsSnapshot(dir, …)` 向合并层透传目录。
+
+新增测试：session-merge 4 用例（覆盖跨目录误删回归、同目录窗口边界、空快照保守保留），24/24 全绿。
+
+提交后 review 追加三项，已处理：
+
+- **在途快照闸门**（P3 竞态）：`applySessionsSnapshot` 落地前校验项目仍打开、目录仍在 `worktree ∪ sandboxes`——removeWorkspace 清理之后才完成的旧请求、对已关项目的迟到快照直接丢弃，防复活已卸载的 worktree 会话（该目录此后无任何通道覆盖它）
+- **REST 扇出限并发**（P3 性能）：快照拉取改为 `runLimited`（项目 2 × 目录 3）——连接池被 5 条 SSE 常驻后仅 ~1 空闲槽，无限扇出会让排队请求的 15s 超时从分发起算、尾部饿死（超时降级为空快照虽保守保命，但该目录会陈旧到下次刷新）
+- **补窗口上边界断言**：`updated === max` 且不在快照的本地会话靠开区间 `(min, max)` 保留——此前测试未覆盖该契约点
 
 ## 8. 已知限制（v0.1 接受）
 
