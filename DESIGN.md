@@ -96,7 +96,7 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 |---|---|
 | 三栏容器 | 面板分隔线 1px `outlineVariant`；栏标题 `ui-sm` + `outline` 色 |
 | Tab 条 | 高 36；Tab：图标 16 + 标题 `ui-md`，激活态底部 2px `primary` 指示线 + `surfaceContainerLow` 底；流式中 Tab 标题前置 8px running 状态点 |
-| 项目/工作区树（左栏） | 项目行 30（`title-sm` sans + 活跃时间 `ui-xs`）；worktree 行 26（`ui-md`，缩进 16）；当前项左侧 2px `primary` 竖线 |
+| 项目/工作区树（左栏） | 项目行 30（`title-sm` sans + 活跃时间 `ui-xs`，无图标）；worktree 行 26（16px 线性 worktree 图标（lucide `folder-git-2`）+ `ui-md` 名称 + 分支，整体相对项目名缩进 16）；当前项左侧 2px `primary` 竖线 |
 | 会话列表 | 行 30；标题 `ui-md` 400，hover `surfaceContainerLow`，激活 `surfaceContainer`；归档区折叠头 `ui-sm` `outline` |
 | 文件树 | 行 26，`ui-md`；目录/文件图标 16 线性；激活行 `surfaceContainerLow` 底 |
 | 消息流 | assistant：无底色全宽块，`chat-md`；user：`userBubble` 色块 + `rounded.bubble`，内边距 12×16，用户文字 `userText` |
