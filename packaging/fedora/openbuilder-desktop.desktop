@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=openbuilder desktop
+Comment=Thin desktop client for opencode server
+Exec=openbuilder-desktop %U
+Icon=openbuilder-desktop
+Categories=Development;
+Terminal=false
+StartupWMClass=openbuilder-desktop
