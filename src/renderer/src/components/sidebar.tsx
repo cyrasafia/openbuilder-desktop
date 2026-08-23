@@ -6,7 +6,6 @@ export function Sidebar() {
   const store = useStore()
   const { t, locale } = useI18n()
   const [pickerOpen, setPickerOpen] = useState(false)
-  const [wsDialogOpen, setWsDialogOpen] = useState(false)
 
   const projects = store.openedProjects
   const current = store.currentProject
@@ -73,7 +72,8 @@ export function Sidebar() {
                     title={t.newWorkspace}
                     onClick={(e) => {
                       e.stopPropagation()
-                      setWsDialogOpen(true)
+                      // 不弹窗：name 省略，由 server 生成随机 slug
+                      void store.createWorkspace()
                     }}
                   >
                     +
@@ -131,9 +131,6 @@ export function Sidebar() {
       </div>
 
       {pickerOpen && <ProjectPicker onClose={() => setPickerOpen(false)} />}
-      {wsDialogOpen && current && (
-        <WorkspaceDialog projectId={current.id} onClose={() => setWsDialogOpen(false)} />
-      )}
     </aside>
   )
 }
@@ -170,41 +167,3 @@ function ProjectPicker({ onClose }: { onClose: () => void }) {
   )
 }
 
-function WorkspaceDialog({ projectId, onClose }: { projectId: string; onClose: () => void }) {
-  const store = useStore()
-  const { t } = useI18n()
-  const [name, setName] = useState("")
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  void projectId
-
-  const submit = async () => {
-    setBusy(true)
-    // 名字留空 = server 生成随机 slug
-    const res = await store.createWorkspace(name.trim() || undefined)
-    setBusy(false)
-    if (res.ok) onClose()
-    else setError(res.error ?? "failed")
-  }
-
-  return (
-    <div className="dialog-mask" onClick={onClose}>
-      <div className="dialog dialog-sm" onClick={(e) => e.stopPropagation()}>
-        <div className="dialog-title">{t.newWorkspace}</div>
-        <div className="dialog-body">
-          <label className="form-label">
-            {t.workspaceName}
-            <input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-          </label>
-          {error && <div className="form-error">{error}</div>}
-        </div>
-        <div className="dialog-actions">
-          <button onClick={onClose}>{t.cancel}</button>
-          <button className="btn-primary" disabled={busy} onClick={() => void submit()}>
-            {t.create}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}

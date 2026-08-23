@@ -21,9 +21,6 @@ const zh = {
   newWorkspace: "新建工作区",
   deleteWorkspace: "删除工作区",
   mainWorkspace: "主工作区",
-  // 工作区
-  workspaceName: "名称",
-  create: "创建",
   cancel: "取消",
   confirm: "确定",
   // Tab
@@ -108,8 +105,6 @@ const en: typeof zh = {
   newWorkspace: "New worktree",
   deleteWorkspace: "Delete worktree",
   mainWorkspace: "main",
-  workspaceName: "Name",
-  create: "Create",
   cancel: "Cancel",
   confirm: "OK",
   closeTab: "Close",

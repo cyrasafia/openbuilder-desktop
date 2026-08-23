@@ -669,10 +669,11 @@ export class AppStore {
     this.mergeSessionsSnapshot(project.id, sessions)
   }
 
-  async createWorkspace(name?: string): Promise<{ ok: boolean; error?: string }> {
+  /** name 省略：由 server 生成随机 slug（两端一致的默认行为） */
+  async createWorkspace(): Promise<{ ok: boolean; error?: string }> {
     if (!this.client || !this.currentProject) return { ok: false, error: "no project" }
     try {
-      await this.client.createWorktree(this.currentProject.worktree, name)
+      await this.client.createWorktree(this.currentProject.worktree)
       // worktree API 返回轻量对象，重拉列表拿完整 Workspace 记录
       await this.refreshWorkspacesForProject(this.currentProject)
       // 新 worktree 目录需要 SSE 订阅（worktree 事件流独立于项目根）
