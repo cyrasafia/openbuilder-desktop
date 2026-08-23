@@ -77,6 +77,7 @@ export type PartType =
   | "agent"
   | "repl"
   | "repl-frontend"
+  | "subtask"
 
 export interface PartBase {
   id: string
@@ -128,7 +129,35 @@ export interface StepStartPart extends PartBase {
   snapshot?: string
 }
 
-export type Part = TextPart | ToolPart | StepStartPart | (PartBase & Record<string, unknown>)
+/**
+ * 斜杠命令回显 part（POST /session/:id/command 后真实 user 消息里出现）。
+ * 实测坑（openbuilder design-slash-command-echo SC-1）：展开 prompt 在 `prompt`
+ * 字段，`text` 恒为 null——读 text 会得到空气泡。
+ */
+export interface SubtaskPart extends PartBase {
+  type: "subtask"
+  command: string
+  description?: string | null
+  agent?: string | null
+  model?: { providerID: string; modelID: string } | null
+  prompt?: string | null
+  text?: string | null
+}
+
+/** GET /command 条目（v1 instance 路由，含 builtin/config/MCP/skill 四类） */
+export interface CommandInfo {
+  name: string
+  description?: string
+  agent?: string
+  model?: string
+  source?: "command" | "mcp" | "skill" | string
+  template?: string
+  subtask?: boolean
+  hints?: string[]
+  [k: string]: unknown
+}
+
+export type Part = TextPart | ToolPart | StepStartPart | SubtaskPart | (PartBase & Record<string, unknown>)
 
 export interface MessageWithParts {
   info: Message

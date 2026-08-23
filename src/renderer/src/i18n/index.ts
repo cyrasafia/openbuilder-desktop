@@ -36,6 +36,9 @@ const zh = {
   copy: "复制",
   copied: "已复制",
   retry: "重试",
+  // 斜杠命令
+  commandListLoading: "正在获取命令…",
+  commandHintKeys: "↑↓ 选择　Enter/Tab 补全　Esc 关闭",
   // 文件
   filesTitle: "文件",
   loading: "加载中…",
@@ -120,6 +123,8 @@ const en: typeof zh = {
   copy: "Copy",
   copied: "Copied",
   retry: "Retry",
+  commandListLoading: "Loading commands…",
+  commandHintKeys: "↑↓ select  Enter/Tab complete  Esc close",
   filesTitle: "Files",
   loading: "Loading…",
   empty: "Empty",

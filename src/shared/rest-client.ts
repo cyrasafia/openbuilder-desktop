@@ -3,6 +3,7 @@
  * 契约见 api-types.ts 头注释。
  */
 import type {
+  CommandInfo,
   FileNode,
   HealthInfo,
   MessageWithParts,
@@ -185,6 +186,32 @@ export class RestClient {
     return this.request<void>(
       `/session/${encodeURIComponent(sessionID)}/abort${RestClient.dirQuery(directory)}`,
       { method: "POST" },
+    )
+  }
+
+  /**
+   * 斜杠命令注册表。单源 v1 instance 路由 `GET /command?directory=`——
+   * 与 POST /session/:id/command 执行用同一注册表（builtin init/review +
+   * config/插件 + MCP prompts + 全量 skill 含 ~/.claude、~/.agents 外部扫描）。
+   * 不用 v2 `/api/command`/`/api/skill`：未 GA、source 注册制无外部扫描、
+   * 不合并 skill，且只认 deepObject location 参数、忽略 flat ?directory=
+   * （参考 openbuilder design-slash-command-refresh 2026-08-17 追加）。
+   * 响应为裸数组。
+   */
+  listCommands(directory: string): Promise<CommandInfo[]> {
+    return this.request<CommandInfo[]>(`/command${RestClient.dirQuery(directory)}`)
+  }
+
+  /**
+   * 执行斜杠命令：服务端展开模板（$1..$n/$ARGUMENTS/sh 代码块/model/agent/subtask
+   * 均服务端解析），客户端零展开。实测语义与 prompt_async 同：立即返回
+   * （openbuilder opencode_client.dart 注释），回复与 user 回显走 SSE。
+   * 未注册命令走此端点会 400——发送前应先在注册表里匹配。
+   */
+  sendCommand(sessionID: string, directory: string, command: string, arguments_: string): Promise<void> {
+    return this.request<void>(
+      `/session/${encodeURIComponent(sessionID)}/command${RestClient.dirQuery(directory)}`,
+      { method: "POST", body: JSON.stringify({ command, arguments: arguments_ }) },
     )
   }
 

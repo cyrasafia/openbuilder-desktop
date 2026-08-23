@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { useI18n, useStore } from "../app"
 import { relativeTime } from "../i18n"
 import type { ChatEntry } from "@shared/message-merge"
-import type { Part, Session, ToolPart } from "@shared/api-types"
+import type { CommandInfo, Part, Session, SubtaskPart, ToolPart } from "@shared/api-types"
 import { Markdown } from "./markdown"
 
 export function Workspace() {
@@ -217,9 +217,66 @@ function ChatView({ sessionID }: { sessionID: string }) {
     const text = draft.trim()
     if (!text || busy) return
     setDraft("")
+    setCmdDismissed(false)
     pinnedToBottom.current = true
     scrollToBottom("smooth")
-    await store.sendPrompt(sessionID, text)
+    const res = text.startsWith("/")
+      ? await sendSlash(text)
+      : await store.sendPrompt(sessionID, text)
+    // 失败回填草稿：文本不丢（乐观消息已在 store 侧撤回）
+    if (!res.ok) setDraft(text)
+  }
+
+  /**
+   * 斜杠命令分流：发送前强制重拉注册表（最新命令集），命中才走
+   * POST /session/:id/command（服务端展开）；未注册的 /xxx 按字面文本
+   * 走 prompt（服务端不会展开模板）。
+   * 命令名与参数以任意空白分隔（空格/换行/Tab——Shift+Enter 多行参数可达）。
+   */
+  const sendSlash = async (text: string): Promise<{ ok: boolean; error?: string }> => {
+    const directory = store.findSession(sessionID)?.directory ?? null
+    await store.refreshCommands(directory)
+    const rest = text.slice(1)
+    const sep = rest.search(/\s/)
+    const token = (sep === -1 ? rest : rest.slice(0, sep)).toLowerCase()
+    const matched = (directory ? store.commandsFor(directory) : []).find(
+      (c) => c.name.toLowerCase() === token,
+    )
+    if (!matched) return store.sendPrompt(sessionID, text)
+    const args = sep === -1 ? "" : rest.slice(sep + 1).trim()
+    return store.sendCommand(sessionID, matched.name, args)
+  }
+
+  // ---- 斜杠命令菜单（参考 openbuilder conversation_screen _CommandHints）----
+  // 命令模式：以 / 开头且其后无任何空白（命令名不含空白）；Esc 关闭（改草稿后重开）
+  const [cmdDismissed, setCmdDismissed] = useState(false)
+  const [selIndex, setSelIndex] = useState(0)
+  const cmdMode = draft.startsWith("/") && !/\s/.test(draft.slice(1)) && !cmdDismissed
+  const directory = store.findSession(sessionID)?.directory ?? ""
+  const commands = store.commandsFor(directory)
+  const matches = cmdMode
+    ? commands.filter((c) => ("/" + c.name).toLowerCase().startsWith(draft.toLowerCase()))
+    : []
+  const sel = Math.min(selIndex, Math.max(0, matches.length - 1))
+  const cmdRefreshTriggeredRef = useRef(false)
+
+  // 进入命令模式按需拉取：未拉过或上次降级才拉（不在每次键入时打服务器）
+  useEffect(() => {
+    if (!cmdMode) {
+      cmdRefreshTriggeredRef.current = false
+      return
+    }
+    if (!cmdRefreshTriggeredRef.current || store.commandsDegraded) {
+      cmdRefreshTriggeredRef.current = true
+      void store.refreshCommands(directory)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cmdMode, directory])
+
+  const pickCommand = (c: CommandInfo) => {
+    setDraft(`/${c.name} `)
+    setSelIndex(0)
+    setCmdDismissed(false)
   }
 
   return (
@@ -231,15 +288,49 @@ function ChatView({ sessionID }: { sessionID: string }) {
             <MessageBlock key={entry.kind === "optimistic" ? entry.data.localId : entry.data.info.id} entry={entry} />
           ))}
       </div>
+      {cmdMode && (
+        <CommandHints
+          matches={matches}
+          loading={store.commandsRefreshing && commands.length === 0}
+          selIndex={sel}
+          onPick={pickCommand}
+        />
+      )}
       <div className="composer">
         <textarea
           value={draft}
           placeholder={t.inputPlaceholder}
           rows={1}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => {
+            setDraft(e.target.value)
+            setCmdDismissed(false)
+            setSelIndex(0)
+          }}
           onKeyDown={(e) => {
-            // IME 组合中（如 fcitx5 上屏）不触发发送
+            // IME 组合中（如 fcitx5 上屏）不触发发送与菜单选中
             if (e.nativeEvent.isComposing) return
+            // 命令菜单打开且有匹配：↑/↓ 移动、Enter/Tab 选中补全、Esc 关闭
+            if (cmdMode && matches.length > 0) {
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault()
+                const len = matches.length
+                setSelIndex(e.key === "ArrowDown" ? (sel + 1) % len : (sel - 1 + len) % len)
+                return
+              }
+              if (
+                e.key === "Tab" ||
+                (e.key === "Enter" && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey)
+              ) {
+                e.preventDefault()
+                pickCommand(matches[sel])
+                return
+              }
+              if (e.key === "Escape") {
+                e.preventDefault()
+                setCmdDismissed(true)
+                return
+              }
+            }
             if (e.key === "Enter") {
               // 修饰键组合（Ctrl/Shift/Alt/Meta）= 换行；裸 Enter = 发送
               if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return
@@ -264,6 +355,59 @@ function ChatView({ sessionID }: { sessionID: string }) {
   )
 }
 
+/** 斜杠命令菜单：输入 / 触发，前缀过滤，↑/↓ + Enter/Tab 补全（桌面交互） */
+function CommandHints({
+  matches,
+  loading,
+  selIndex,
+  onPick,
+}: {
+  matches: CommandInfo[]
+  loading: boolean
+  selIndex: number
+  onPick: (c: CommandInfo) => void
+}) {
+  const { t } = useI18n()
+  const listRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    // 键盘移动时保持选中项可见
+    listRef.current
+      ?.querySelector<HTMLElement>(".command-row.selected")
+      ?.scrollIntoView({ block: "nearest" })
+  }, [selIndex, matches.length])
+
+  if (matches.length === 0) {
+    // 仅加载中提示（无匹配时静默，同 openbuilder _CommandHints）
+    if (!loading) return null
+    return (
+      <div className="command-hints">
+        <div className="command-empty">{t.commandListLoading}</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="command-hints scroll" ref={listRef}>
+      {matches.map((c, i) => (
+        <button
+          key={c.name}
+          className={"command-row" + (i === selIndex ? " selected" : "")}
+          // mousedown：先于 textarea blur，补全后焦点留在输入框
+          onMouseDown={(e) => {
+            e.preventDefault()
+            onPick(c)
+          }}
+        >
+          <span className="command-name mono">/{c.name}</span>
+          {c.description && <span className="command-desc">{c.description}</span>}
+        </button>
+      ))}
+      <div className="command-keys mono">{t.commandHintKeys}</div>
+    </div>
+  )
+}
+
 function MessageBlock({ entry }: { entry: ChatEntry }) {
   const { t } = useI18n()
 
@@ -283,6 +427,8 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
     id: string
     text: string
   }>
+  // 斜杠命令回显：subtask part（展开 prompt 在 prompt 字段，text 恒空）
+  const subtasks = parts.filter((p) => p.type === "subtask") as SubtaskPart[]
   const reasonings = parts.filter((p) => p.type === "reasoning")
   const tools = parts.filter((p) => p.type === "tool") as ToolPart[]
   const errored = info.role === "assistant" && info.error
@@ -294,6 +440,16 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
           {texts.map((p) => (
             <p key={p.id}>{p.text}</p>
           ))}
+          {subtasks.map((p) => {
+            // 标签行 + 正文合并为单一 Markdown（openbuilder 二次评审结论：
+            // 单独画标签观感像 chip，与正文样式不一致）
+            const body = p.prompt || p.text || p.description || ""
+            return (
+              <div key={p.id} className="bubble-subtask">
+                <Markdown>{body ? `**subtask: ${p.command}**\n\n${body}` : `**subtask: ${p.command}**`}</Markdown>
+              </div>
+            )
+          })}
         </div>
       </div>
     )

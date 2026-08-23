@@ -733,6 +733,74 @@
   justify-content: flex-end;
 }
 
+/* ---------- 斜杠命令菜单 ---------- */
+.command-hints {
+  flex-shrink: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--surface-container-high);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-chip);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  padding: 4px;
+  /* 与 composer 同宽约束（--chat-max/--chat-min 在 .chat-view 定义） */
+  width: 100%;
+  max-width: calc(var(--chat-max) + 48px);
+  min-width: calc(var(--chat-min) + 48px);
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+
+.command-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: var(--text-md);
+  min-width: 0;
+}
+
+.command-row:hover,
+.command-row.selected {
+  background: var(--surface-container-highest);
+}
+
+.command-name {
+  flex-shrink: 0;
+  font-size: var(--text-mono);
+}
+
+.command-desc {
+  color: var(--on-surface-variant);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.command-empty {
+  padding: 6px 10px;
+  color: var(--on-surface-variant);
+  font-size: var(--text-md);
+}
+
+.command-keys {
+  padding: 4px 10px;
+  color: var(--on-surface-variant);
+  font-size: var(--text-sm);
+  border-top: 1px solid var(--outline-variant);
+  margin-top: 2px;
+}
+
+/* subtask 命令回显：用户气泡内的 markdown 块 */
+.bubble-subtask {
+  margin-top: 4px;
+  font-size: var(--text-chat);
+}
+
 /* ---------- 文件视图 ---------- */
 .file-view {
   flex: 1;

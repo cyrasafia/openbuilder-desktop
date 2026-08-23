@@ -12,11 +12,15 @@ import {
   type ChatEntry,
   type OptimisticMessage,
 } from "@shared/message-merge"
-import type {
-  ConnectionProfile,
-} from "@shared/ipc"
+import type { ConnectionProfile } from "@shared/ipc"
 import "@shared/ipc-global"
+import {
+  applyCommandFetch,
+  initialCommandCache,
+  type CommandCacheState,
+} from "@shared/command-cache"
 import type {
+  CommandInfo,
   FileNode,
   HealthInfo,
   Message,
@@ -77,6 +81,8 @@ export class AppStore {
   messagesBySession = new Map<string, Map<string, MessageWithParts>>()
   optimisticBySession = new Map<string, OptimisticMessage[]>()
   busySessions = new Set<string>()
+  // 斜杠命令注册表缓存（全局单份 per-server，目录隔离见 command-cache.ts）
+  commandCache: CommandCacheState = initialCommandCache()
 
   // ---- UI 状态 ----
   tabs: TabEntity[] = []
@@ -224,6 +230,13 @@ export class AppStore {
     this.busySessions.clear()
     this.tabs = []
     this.activeTabKey = null
+    this.commandCache = initialCommandCache()
+    // 在途 fetch 无法中断；迟到的结果由 refreshCommands 的 client 身份守卫丢弃
+    this.commandsInFlight.clear()
+    if (this.catalogRefreshTimer != null) {
+      clearTimeout(this.catalogRefreshTimer)
+      this.catalogRefreshTimer = null
+    }
     this.resetFileTree()
   }
 
@@ -297,7 +310,13 @@ export class AppStore {
         username,
         password,
         onEvent: (ev) => this.handleEvent(dir, ev),
-        onReconnected: () => this.reconciler?.request(),
+        onReconnected: () => {
+          this.reconciler?.request()
+          // 命令缓存自愈：重连后重拉，让网络抖动恢复期的瞬时空被自动覆盖
+          // （openbuilder design-slash-command-refresh：事件驱动重拉 + 缓存保留两层互补）
+          const cmdDir = this.activeChatDirectory() ?? this.commandCache.cacheDir
+          if (cmdDir) void this.refreshCommands(cmdDir)
+        },
         onStatus: () => this.updateSseAggregate(),
         log: (...args) => console.debug("[sse]", ...args),
       })
@@ -454,11 +473,36 @@ export class AppStore {
         }
         break
       }
+      case "catalog.updated":
+      case "mcp.tools.changed": {
+        // 服务端命令/skill 目录或 MCP 工具变化 → 重拉注册表（不必等下次输入 `/`）。
+        // 事件在每条订阅流上都广播，多目录订阅会连发——去抖合并为一次刷新。
+        this.scheduleCatalogRefresh()
+        break
+      }
       default:
         // 未知事件透传忽略（AGENTS.md 风险对策）
         break
     }
     this.emit()
+  }
+
+  private catalogRefreshTimer: ReturnType<typeof setTimeout> | null = null
+
+  private scheduleCatalogRefresh() {
+    if (this.catalogRefreshTimer != null) return
+    this.catalogRefreshTimer = setTimeout(() => {
+      this.catalogRefreshTimer = null
+      const dir = this.activeChatDirectory()
+      // 无激活 chat Tab 时跳过（无"当前所见"目录），下次输入 `/` 会触发
+      if (dir) void this.refreshCommands(dir)
+    }, 1500)
+  }
+
+  /** 激活 chat Tab 的 directory（命令刷新的"当前所见"目录） */
+  private activeChatDirectory(): string | null {
+    const tab = this.activeTab
+    return tab?.kind === "chat" ? (tab.directory ?? null) : null
   }
 
   private pendingPartsMap = new Map<string, Map<string, Part[]>>()
@@ -918,6 +962,88 @@ export class AppStore {
     const session = this.findSession(sessionID)
     if (!session) return
     await this.client.abortSession(sessionID, session.directory).catch(() => {})
+  }
+
+  // ============ 斜杠命令 ============
+
+  private commandsInFlight = new Map<string, Promise<void>>()
+
+  get commandsRefreshing(): boolean {
+    return this.commandsInFlight.size > 0
+  }
+
+  /** 缓存是否可用（同目录且非空）——命令菜单数据源 */
+  commandsFor(directory: string): CommandInfo[] {
+    return this.commandCache.cacheDir === directory ? this.commandCache.commands : []
+  }
+
+  get commandsDegraded(): boolean {
+    return this.commandCache.degraded
+  }
+
+  /**
+   * 拉取命令注册表（空响应防护见 command-cache.ts）。
+   * - 同目录 in-flight 共享同一 Promise：发送前的强制重拉会**等待**在途
+   *   请求完成再匹配，而非立即读旧缓存（保证"最新注册表"语义）；
+   * - 在途结果跨越 teardown（断开/切 profile）时按 client 身份守卫丢弃，
+   *   防旧 server 的命令写入新连接的缓存。
+   */
+  async refreshCommands(directory: string | null): Promise<void> {
+    const client = this.client
+    if (!client || !directory) return
+    const existing = this.commandsInFlight.get(directory)
+    if (existing) return existing
+    let p!: Promise<void>
+    p = (async () => {
+      let result
+      try {
+        result = { ok: true as const, commands: await client.listCommands(directory) }
+      } catch {
+        result = { ok: false as const }
+      }
+      if (this.client !== client) return
+      this.commandCache = applyCommandFetch(this.commandCache, directory, result)
+      this.emit()
+    })().finally(() => {
+      // 身份比对：迟到的旧请求不得误删重连后同目录的新 in-flight 条目
+      if (this.commandsInFlight.get(directory) === p) this.commandsInFlight.delete(directory)
+    })
+    this.commandsInFlight.set(directory, p)
+    return p
+  }
+
+  /** 发送斜杠命令：乐观回显原始 `/cmd args`，真实 user 消息（subtask/展开文本）到达即清 */
+  async sendCommand(
+    sessionID: string,
+    command: string,
+    arguments_: string,
+  ): Promise<{ ok: boolean; error?: string }> {
+    if (!this.client) return { ok: false, error: "not connected" }
+    const session = this.findSession(sessionID)
+    if (!session) return { ok: false, error: "session not found" }
+    const text = arguments_ ? `/${command} ${arguments_}` : `/${command}`
+    const optimistic: OptimisticMessage = {
+      optimistic: true,
+      localId: `opt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      text,
+      createdAt: Date.now(),
+    }
+    this.optimisticBySession.set(sessionID, [
+      ...(this.optimisticBySession.get(sessionID) ?? []),
+      optimistic,
+    ])
+    this.emit()
+    try {
+      await this.client.sendCommand(sessionID, session.directory, command, arguments_)
+      return { ok: true }
+    } catch (e) {
+      this.optimisticBySession.set(
+        sessionID,
+        (this.optimisticBySession.get(sessionID) ?? []).filter((o) => o.localId !== optimistic.localId),
+      )
+      this.emit()
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
   }
 
   // ============ Tab ============

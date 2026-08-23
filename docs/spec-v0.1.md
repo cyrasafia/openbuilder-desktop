@@ -42,8 +42,10 @@
 | 新建会话 | `POST /session` |
 | 归档/取消归档 | `PATCH /session/{id}`（`time.archived` = 时间戳 / 0） |
 | 会话消息 | `GET /session/{id}/message` |
-| 发消息 | `POST /session/{id}/message`（异步流式） |
-| 事件 | `GET /event`（SSE：`session.*`、`message.*`） |
+| 发消息 | `POST /session/{id}/prompt_async`（异步流式） |
+| 斜杠命令查询 | `GET /command?directory=`（v1 instance 路由，含 builtin/config/MCP/skill 全量注册表） |
+| 斜杠命令发送 | `POST /session/{id}/command`（服务端展开模板，回显见 [design-slash-command.md](design-slash-command.md)） |
+| 事件 | `GET /event`（SSE：`session.*`、`message.*`、`catalog.updated`、`mcp.tools.changed`） |
 | 文件树 | `GET /file?path=…` |
 | 文件内容 | `GET /file/content?path=…` |
 

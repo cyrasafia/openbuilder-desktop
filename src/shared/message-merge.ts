@@ -106,6 +106,11 @@ function mergePart(a: Part, b: Part): Part {
     const text = (t2.text?.length ?? 0) >= (t1.text?.length ?? 0) ? t2.text ?? "" : t1.text ?? ""
     return { ...b, text } as Part
   }
+  if (a.type === "subtask") {
+    // subtask：正文在 prompt（text 恒空），取更完整者（SSE 早事件可能缺 prompt）
+    const len = (p: Part) => ((p as { prompt?: string }).prompt?.length ?? 0)
+    return (len(b) >= len(a) ? b : a) as Part
+  }
   if (a.type === "tool" && b.type === "tool") {
     // tool 状态：SSE 非 pending/空 优先（REST 可能是拉取时刻的旧状态）
     const sseState = b.state as { status?: string; output?: unknown }
