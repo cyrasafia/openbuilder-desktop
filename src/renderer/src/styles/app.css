@@ -241,9 +241,10 @@
 }
 
 /* ---------- 聊天 ---------- */
-/* 消息区/输入区固定 600px 居中（工作区更宽时两侧留白） */
+/* 消息区/输入区动态宽度：[600, 800]px（不含 padding），相对工作区居中 */
 .chat-view {
-  --chat-width: 600px;
+  --chat-min: 600px;
+  --chat-max: 800px;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -259,9 +260,15 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
-  width: var(--chat-width);
-  max-width: var(--chat-width);
+  width: 100%;
+  max-width: calc(var(--chat-max) + 48px); /* content ≤800 + padding 24×2 */
+  min-width: calc(var(--chat-min) + 48px);
   margin: 0 auto;
+  /* 滚动但不显示滚动条 */
+  scrollbar-width: none;
+}
+.message-list::-webkit-scrollbar {
+  display: none;
 }
 
 .msg.user {
@@ -387,8 +394,9 @@
   gap: 6px;
   flex-shrink: 0;
   background: var(--surface);
-  width: var(--chat-width);
-  max-width: var(--chat-width);
+  width: 100%;
+  max-width: calc(var(--chat-max) + 48px);
+  min-width: calc(var(--chat-min) + 48px);
   margin: 0 auto;
   box-sizing: border-box;
 }
