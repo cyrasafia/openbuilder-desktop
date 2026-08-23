@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { useI18n, useStore } from "../app"
 import { relativeTime } from "../i18n"
 import type { ChatEntry } from "@shared/message-merge"
-import type { Part, ToolPart } from "@shared/api-types"
+import type { Part, Session, ToolPart } from "@shared/api-types"
 import { Markdown } from "./markdown"
 
 export function Workspace() {
@@ -46,14 +46,18 @@ export function Workspace() {
             </button>
           </div>
         ))}
-        <button className="icon-btn tabbar-new" title={t.newChatTab} onClick={() => void store.createSession()}>
+        <button
+          className="icon-btn tabbar-new"
+          title={t.newTab}
+          onClick={() => store.showGuidePage()}
+        >
           +
         </button>
       </div>
 
       <div className="workspace-body">
-        {/* 无激活 Tab = 当前作用域的会话列表（未归档、非 subagent） */}
-        {!active && <SessionList />}
+        {/* 无激活 Tab = 新 Tab 引导页（新建项目/工作区、Tab 栏 +、作用域无 Tab） */}
+        {!active && <GuidePage />}
         {/* key 隔离：防止 chat→chat 切换时复用 fiber 导致草稿/pinned ref 跨会话残留 */}
         {active?.kind === "chat" && <ChatView key={active.key} sessionID={active.key.slice(5)} />}
         {active?.kind === "file" && <FileView absolutePath={active.key.slice(5)} />}
@@ -64,158 +68,98 @@ export function Workspace() {
   )
 }
 
-/** 作用域会话列表：选择项目/工作区后的默认视图 */
-function SessionList() {
+/**
+ * 新 Tab 引导页：无激活 Tab 时的默认视图（design-layout §4）。
+ * 输入消息发送 = 新建会话 + 发送首条消息（Tab 自动打开激活，引导页退出）；
+ * 下方列出当前作用域已归档会话，点击恢复（取消归档并开 Tab）；
+ * 终端/网页 Tab 入口为禁用预留（v0.2/v0.3）。
+ */
+function GuidePage() {
   const store = useStore()
   const { t, locale } = useI18n()
-  const [menuFor, setMenuFor] = useState<string | null>(null)
-  const sessions = store.visibleSessions
+  const [draft, setDraft] = useState("")
+  const [sending, setSending] = useState(false)
+  // 已创建待发送的会话：发送失败保留草稿，重试复用（不重复建会话、不产生空 Tab）
+  const pendingSession = useRef<Session | null>(null)
   const archived = store.archivedSessions
-  const [archivedOpen, setArchivedOpen] = useState(false)
   const scopeName =
     store.currentWorkspace?.name ?? store.currentProject?.name ?? store.currentProject?.worktree.split("/").pop() ?? ""
 
+  const send = async () => {
+    const text = draft.trim()
+    if (!text || sending) return
+    setSending(true)
+    if (!pendingSession.current) {
+      // openTab:false——首条消息发送成功才开 Tab 激活（引导页退出）
+      const session = await store.createSession({ openTab: false })
+      if (!session) {
+        setSending(false)
+        return
+      }
+      pendingSession.current = session
+    }
+    const res = await store.sendPrompt(pendingSession.current.id, text)
+    setSending(false)
+    if (res.ok) {
+      setDraft("")
+      store.openChatTab(pendingSession.current)
+      pendingSession.current = null
+    }
+    // 失败：草稿保留在输入框，connectionError 经状态栏可见，重试复用同一会话
+  }
+
   return (
-    <div className="session-list-view">
-      <div className="session-list-header">
-        <div>
-          <div className="session-list-scope mono">{scopeName}</div>
-          <div className="session-list-count">
-            {t.sessionsTitle}: {sessions.length}
-          </div>
-        </div>
-        <button className="btn-primary" onClick={() => void store.createSession()}>
-          {t.newSession}
-        </button>
-      </div>
-      <div className="session-list scroll">
-        {sessions.length === 0 && <div className="session-empty">{t.noSession}</div>}
-        {sessions.map((s) => (
-          <SessionCard
-            key={s.id}
-            sessionID={s.id}
-            busy={store.busySessions.has(s.id)}
-            locale={locale}
-            menuOpen={menuFor === s.id}
-            onMenuToggle={() => setMenuFor(menuFor === s.id ? null : s.id)}
-            onCloseMenu={() => setMenuFor(null)}
+    <div className="guide-view">
+      <div className="guide-main">
+        <div className="hero">{scopeName}</div>
+        <div className="guide-hint">{t.guideHint}</div>
+        <div className="guide-composer">
+          <textarea
+            value={draft}
+            placeholder={t.guidePlaceholder}
+            rows={Math.min(6, Math.max(1, draft.split("\n").length))}
+            autoFocus
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              // IME 组合中（如 fcitx5 上屏）不触发发送
+              if (e.nativeEvent.isComposing) return
+              if (e.key === "Enter") {
+                // 修饰键组合（Ctrl/Shift/Alt/Meta）= 换行；裸 Enter = 发送（与聊天输入区一致）
+                if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return
+                e.preventDefault()
+                void send()
+              }
+            }}
           />
-        ))}
-        {archived.length > 0 && (
-          <>
-            <button className="archived-toggle" onClick={() => setArchivedOpen(!archivedOpen)}>
-              {t.archivedSessions} ({archived.length}) {archivedOpen ? "▾" : "▸"}
-            </button>
-            {archivedOpen &&
-              archived.map((s) => (
-                <SessionCard
-                  key={s.id}
-                  sessionID={s.id}
-                  busy={false}
-                  locale={locale}
-                  archived
-                  menuOpen={menuFor === s.id}
-                  onMenuToggle={() => setMenuFor(menuFor === s.id ? null : s.id)}
-                  onCloseMenu={() => setMenuFor(null)}
-                />
-              ))}
-          </>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function SessionCard({
-  sessionID,
-  busy,
-  locale,
-  archived,
-  menuOpen,
-  onMenuToggle,
-  onCloseMenu,
-}: {
-  sessionID: string
-  busy: boolean
-  locale: "zh" | "en"
-  archived?: boolean
-  menuOpen: boolean
-  onMenuToggle: () => void
-  onCloseMenu: () => void
-}) {
-  const store = useStore()
-  const { t } = useI18n()
-  const session = store.findSession(sessionID)
-  if (!session) return null
-
-  return (
-    <div
-      className={"session-card" + (archived ? " archived" : "")}
-      onClick={() => store.openChatTab(session)}
-    >
-      <div className="session-card-main">
-        <div className="session-card-title">
-          {busy && <span className="status-dot running" />}
-          <span>{session.title || session.slug || t.untitled}</span>
+          <button className="btn-primary" disabled={!draft.trim() || sending} onClick={() => void send()}>
+            {t.send}
+          </button>
         </div>
-        <div className="session-card-meta">
-          <span className="mono">{session.slug}</span>
-          <span>{relativeTime(locale, session.time.updated)}</span>
+        <div className="guide-actions">
+          <button className="guide-action" disabled title={t.comingSoon}>
+            {t.openTerminal}
+          </button>
+          <button className="guide-action" disabled title={t.comingSoon}>
+            {t.openBrowser}
+          </button>
         </div>
       </div>
-      <button
-        className="icon-btn row-action"
-        onClick={(e) => {
-          e.stopPropagation()
-          onMenuToggle()
-        }}
-      >
-        ⋯
-      </button>
-      {menuOpen && (
-        <>
-          <div className="menu-mask" onClick={onCloseMenu} />
-          <div className="menu" onClick={(e) => e.stopPropagation()}>
-            {archived ? (
-              <button
-                onClick={() => {
-                  // openChatTab 已自带 unarchive（打开 = 取消归档）
-                  store.openChatTab(session)
-                  onCloseMenu()
-                }}
-              >
-                {t.unarchive}
-              </button>
-            ) : (
-              <button
-                onClick={() => {
-                  void store.archiveSession(session.id)
-                  onCloseMenu()
-                }}
-              >
-                {t.archive}
-              </button>
-            )}
-            <button
-              onClick={() => {
-                const title = prompt(t.rename, session.title ?? "")
-                if (title != null && title.trim()) void store.renameSession(session.id, title.trim())
-                onCloseMenu()
-              }}
-            >
-              {t.rename}
-            </button>
-            <button
-              className="danger"
-              onClick={() => {
-                if (confirm(t.confirmDeleteSession)) void store.deleteSession(session.id)
-                onCloseMenu()
-              }}
-            >
-              {t.delete}
-            </button>
+      {archived.length > 0 && (
+        <div className="guide-archived">
+          <div className="guide-archived-header">
+            <span>{t.archivedSessions}</span>
+            <span className="guide-archived-hint">{t.restoreHint}</span>
           </div>
-        </>
+          {archived.map((s) => (
+            <div key={s.id} className="guide-card" onClick={() => store.openChatTab(s)}>
+              <div className="guide-card-title">{s.title || s.slug || t.untitled}</div>
+              <div className="guide-card-meta">
+                <span className="mono">{s.slug}</span>
+                <span>{relativeTime(locale, s.time.updated)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   )
@@ -294,6 +238,8 @@ function ChatView({ sessionID }: { sessionID: string }) {
           rows={1}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
+            // IME 组合中（如 fcitx5 上屏）不触发发送
+            if (e.nativeEvent.isComposing) return
             if (e.key === "Enter") {
               // 修饰键组合（Ctrl/Shift/Alt/Meta）= 换行；裸 Enter = 发送
               if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return

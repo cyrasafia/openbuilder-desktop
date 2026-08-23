@@ -613,7 +613,7 @@ export class AppStore {
   /**
    * 打开当前作用域的会话 Tab（不关不归档已有 Tab——Tab 跨项目混排）。
    * 数量约束：最多打开 8 个最近活跃会话，避免一次灌入过多 Tab。
-   * 作用域无会话（或激活 Tab 不属于本作用域）时清空激活 → 中栏显示会话列表。
+   * 作用域无会话（或激活 Tab 不属于本作用域）时清空激活 → 中栏显示新 Tab 引导页。
    */
   private async openScopeSessionTabs() {
     const sessions = this.visibleSessions.slice(0, 8)
@@ -757,7 +757,7 @@ export class AppStore {
     return this.currentWorkspace?.directory ?? this.currentProject?.worktree ?? ""
   }
 
-  /** 指定目录的未归档 + 非 subagent 会话（updated 降序）——中栏会话列表与左栏指示器共用 */
+  /** 指定目录的未归档 + 非 subagent 会话（updated 降序）——左栏指示器数据源 */
   sessionsInDirectory(projectId: string, directory: string): Session[] {
     return [...(this.sessionsByProject.get(projectId)?.values() ?? [])]
       .filter((s) => !s.time.archived && !s.parentID && s.directory === directory)
@@ -780,7 +780,11 @@ export class AppStore {
       .sort((a, b) => b.time.updated - a.time.updated)
   }
 
-  async createSession(): Promise<Session | null> {
+  /**
+   * 新建会话。opts.openTab = false 供引导页使用：先建会话发首条消息，
+   * 发送成功才开 Tab（失败保留草稿，重试复用同一会话，不产生空 Tab）。
+   */
+  async createSession(opts: { openTab?: boolean } = {}): Promise<Session | null> {
     if (!this.client || !this.currentProject) return null
     const { directory } = this.scopeQuery
     try {
@@ -788,9 +792,7 @@ export class AppStore {
       const map = this.sessionsByProject.get(this.currentProject.id) ?? new Map()
       map.set(session.id, session)
       this.sessionsByProject.set(this.currentProject.id, map)
-      this.openChatTab(session)
-      // 加载历史（新会话通常为空）
-      void this.loadSessionMessages(session.id, directory)
+      if (opts.openTab !== false) this.openChatTab(session)
       this.emit()
       return session
     } catch (e) {
@@ -869,42 +871,8 @@ export class AppStore {
     }
   }
 
-  async renameSession(sessionID: string, title: string): Promise<boolean> {
-    if (!this.client) return false
-    const session = this.findSession(sessionID)
-    if (!session) return false
-    try {
-      const updated = await this.client.updateSession(sessionID, session.directory, { title })
-      if (!updated) return false
-      const map = this.sessionsByProject.get(updated.projectID)
-      map?.set(updated.id, updated)
-      this.emit()
-      return true
-    } catch {
-      return false
-    }
-  }
-
-  async deleteSession(sessionID: string): Promise<boolean> {
-    if (!this.client) return false
-    const session = this.findSession(sessionID)
-    // 已不存在：本地收尾即成功
-    if (!session) {
-      this.closeTab(`chat:${sessionID}`, { archive: false })
-      this.cleanupSessionState(sessionID)
-      return true
-    }
-    try {
-      await this.client.deleteSession(sessionID, session.directory)
-      this.sessionsByProject.get(session.projectID)?.delete(sessionID)
-      this.closeTab(`chat:${sessionID}`, { archive: false })
-      this.cleanupSessionState(sessionID)
-      this.emit()
-      return true
-    } catch {
-      return false
-    }
-  }
+  // 重命名/删除会话的 store 方法随 v0.1 会话卡片菜单一并移除（UI 无入口），
+  // v0.2 chat 视图头部菜单落地时恢复（REST 层 updateSession/deleteSession 仍在）
 
   findSession(sessionID: string): Session | null {
     for (const map of this.sessionsByProject.values()) {
@@ -934,13 +902,14 @@ export class AppStore {
       await this.client.promptAsync(sessionID, session.directory, [{ type: "text", text }])
       return { ok: true }
     } catch (e) {
-      // 撤回乐观 + 提示（写操作不自动重试）
+      // 撤回乐观 + 提示（写操作不自动重试）；connectionError 经状态栏可见
+      this.connectionError = e instanceof Error ? e.message : String(e)
       this.optimisticBySession.set(
         sessionID,
         (this.optimisticBySession.get(sessionID) ?? []).filter((o) => o.localId !== optimistic.localId),
       )
       this.emit()
-      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+      return { ok: false, error: this.connectionError }
     }
   }
 
@@ -1044,6 +1013,12 @@ export class AppStore {
 
   setActiveTab(key: string) {
     this.activeTabKey = key
+    this.emit()
+  }
+
+  /** Tab 栏 "+"：清空激活进入新 Tab 引导页（无激活 Tab 的默认视图，design-layout §4） */
+  showGuidePage() {
+    this.activeTabKey = null
     this.emit()
   }
 
