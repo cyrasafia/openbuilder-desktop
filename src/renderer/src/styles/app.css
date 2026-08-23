@@ -2,7 +2,7 @@
 
 .app-shell {
   display: grid;
-  grid-template-columns: var(--sidebar-w, 260px) minmax(800px, 1fr) var(--filepanel-w, 300px);
+  grid-template-columns: var(--sidebar-w, 260px) minmax(0, 1fr) var(--filepanel-w, 300px);
   grid-template-rows: minmax(0, 1fr) auto;
   grid-template-areas:
     "sidebar workspace filepanel"
@@ -241,7 +241,9 @@
 }
 
 /* ---------- 聊天 ---------- */
+/* 消息区/输入区固定 600px 居中（工作区更宽时两侧留白） */
 .chat-view {
+  --chat-width: 600px;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -257,6 +259,9 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
+  width: var(--chat-width);
+  max-width: var(--chat-width);
+  margin: 0 auto;
 }
 
 .msg.user {
@@ -376,12 +381,16 @@
 /* ---------- 输入区 ---------- */
 .composer {
   border-top: 1px solid var(--outline-variant);
-  padding: 8px 12px;
+  padding: 8px 24px;
   display: flex;
   flex-direction: column;
   gap: 6px;
   flex-shrink: 0;
   background: var(--surface);
+  width: var(--chat-width);
+  max-width: var(--chat-width);
+  margin: 0 auto;
+  box-sizing: border-box;
 }
 
 .composer textarea {

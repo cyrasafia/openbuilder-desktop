@@ -24,8 +24,8 @@ function createMainWindow() {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
-    minWidth: 1024,
-    minHeight: 640,
+    minWidth: 680,
+    minHeight: 480,
     show: false,
     autoHideMenuBar: true,
     title: "openbuilder desktop",
