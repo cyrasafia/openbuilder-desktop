@@ -676,12 +676,18 @@ export class AppStore {
   async createWorkspace(): Promise<{ ok: boolean; error?: string }> {
     if (!this.client || !this.currentProject) return { ok: false, error: "no project" }
     try {
-      await this.client.createWorktree(this.currentProject.worktree)
+      const result = await this.client.createWorktree(this.currentProject.worktree)
       // worktree API 返回轻量对象，重拉列表拿完整 Workspace 记录
       await this.refreshWorkspacesForProject(this.currentProject)
-      // 新 worktree 目录需要 SSE 订阅（worktree 事件流独立于项目根）
-      this.startSse()
-      this.emit()
+      // 默认切换到新 worktree；setCurrentWorkspace 内含会话快照/SSE 重订/文件树重置/开作用域 Tab。
+      // 须校验重拉后 sandboxes 已含新目录（重拉失败/列表滞后时 currentWorkspace getter 会拒认，
+      // 先行切换会把幻影 currentWorkspaceId 持久化、下次启动才延迟生效）——此时退回仅订阅
+      if (this.currentProject?.sandboxes?.includes(result.directory)) {
+        await this.setCurrentWorkspace(result.directory)
+      } else {
+        this.startSse()
+        this.emit()
+      }
       return { ok: true }
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
