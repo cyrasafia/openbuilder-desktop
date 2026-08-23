@@ -67,7 +67,18 @@ export function Sidebar() {
                 <span className="tree-label" title={p.worktree}>
                   {p.name || p.worktree.split("/").pop() || p.id}
                 </span>
-                <span className="tree-meta">{relativeTime(locale, p.time.updated)}</span>
+                {isCurrent && (
+                  <button
+                    className="icon-btn row-action"
+                    title={t.newWorkspace}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setWsDialogOpen(true)
+                    }}
+                  >
+                    +
+                  </button>
+                )}
                 {isCurrent && projects.length > 1 && (
                   <button
                     className="icon-btn row-action"
@@ -82,15 +93,6 @@ export function Sidebar() {
                 )}
               </div>
               {/* 工作区跟随项目，全部展示（仅当前项目可新增/删除） */}
-              {isCurrent && (
-                <button
-                  className="icon-btn ws-add"
-                  title={t.newWorkspace}
-                  onClick={() => setWsDialogOpen(true)}
-                >
-                  + {t.workspacesTitle}
-                </button>
-              )}
               {workspaces.map((w) => (
                 <div
                   key={w.directory}
