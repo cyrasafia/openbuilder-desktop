@@ -738,14 +738,18 @@ export class AppStore {
     return this.currentWorkspace?.directory ?? this.currentProject?.worktree ?? ""
   }
 
+  /** 指定目录的未归档 + 非 subagent 会话（updated 降序）——中栏会话列表与左栏指示器共用 */
+  sessionsInDirectory(projectId: string, directory: string): Session[] {
+    return [...(this.sessionsByProject.get(projectId)?.values() ?? [])]
+      .filter((s) => !s.time.archived && !s.parentID && s.directory === directory)
+      .sort((a, b) => b.time.updated - a.time.updated)
+  }
+
   /** 当前作用域的可见会话：未归档 + 非 subagent（parentID 为空） */
   get visibleSessions(): Session[] {
     const project = this.currentProject
     if (!project) return []
-    const dir = this.scopeDirectory()
-    return [...(this.sessionsByProject.get(project.id)?.values() ?? [])]
-      .filter((s) => !s.time.archived && !s.parentID && s.directory === dir)
-      .sort((a, b) => b.time.updated - a.time.updated)
+    return this.sessionsInDirectory(project.id, this.scopeDirectory())
   }
 
   get archivedSessions(): Session[] {
