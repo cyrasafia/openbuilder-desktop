@@ -420,7 +420,10 @@
   padding: 16px 24px;
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
+  /* safe：内容超出容器时退回 start 对齐。裸 flex-end 的溢出发生在 start 侧（上方），
+     css-overflow 规范不把 start 侧对齐溢出计入可滚动区域——Chromium 实测
+     scrollHeight===clientHeight、scrollTop 恒 0：列表完全不可滚、历史消息被裁掉不可达 */
+  justify-content: safe flex-end;
   gap: 16px;
   width: 100%;
   max-width: calc(var(--chat-max) + 48px); /* content ≤800 + padding 24×2 */

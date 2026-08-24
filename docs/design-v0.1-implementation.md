@@ -237,6 +237,20 @@ v0.2 上翻加载方向（预留）：保持正序 DOM + scroll-anchor 锚定（
 
 改动：`workspace.tsx`（onScroll 改为仅吸附、新增 onWheel 挂到 `.message-list`）。typecheck 双侧 + vitest 36/36 全绿。
 
+## 7.10 消息列表不可滚修复——flex-end 溢出不可达（2026-08-24）
+
+现象：消息列表**完全无法上滚**——滚轮/触控板上滚无任何反应，历史消息不可达；§7.8/§7.9 两轮修复后依旧。
+
+根因（联调实例 CDP 实测确认）：§7.8 给 `.message-list` 加的 `justify-content: flex-end` 触发 css-overflow 规范的"start 侧对齐溢出不可滚"——flex-end 把溢出推到容器**上方**（start 侧），而规范不把对齐导致的 start 侧溢出计入可滚动区域。Chromium（Chrome 151 / Electron 43 实测）表现为：`scrollHeight === clientHeight`（溢出部分不计入）、`scrollTop` 恒 0、`maxReachableScrollTop === 0`——容器**根本不是滚动容器**，首条消息被裁剪在视口上方（实测 live 实例：104 条消息、首条 top=-6304px、`maxReachableScrollTop=0`）。连带使 §7.9 的整套逻辑退化：`onWheel` 解除条件 `scrollHeight - clientHeight > 0` 永假（上滚永不解除跟随）、`onScroll` 吸附条件恒真（pinned 永真）。
+
+为何前两轮没发现：§7.8 引入该 CSS 时，流式"跟随"依赖的 scrollTo 在 scrollHeight===clientHeight 下是 no-op，恰好视觉上仍显示底部内容（flex-end 底对齐），跟随看似正常；只有"上滚看历史"这条路径彻底坏死，而 §7.9 的验证聚焦流式跟随。JS 层任何逻辑都救不了 CSS 层"不可滚"。
+
+方案：`justify-content: flex-end` → **`safe flex-end`**（单字修复）。`safe` 对齐在内容溢出时退回 start 对齐——溢出转到底部（end 侧，**可滚**），不溢出时保持底对齐（§7.8 的声明式贴底目标不变）。Chromium 115+ 支持，Electron 43（Chromium 144）覆盖。实测验证（live 实例注入 + headless 复刻）：短内容底对齐不变；溢出后 `maxReachableScrollTop = scrollHeight - clientHeight` 完整可达。
+
+配套 JS 修正（滚动性恢复后 §7.8 症状会随之回归，必须同改）：滚动 effect 的 `grew` 改为 `lastEntryCount.current > 0 && entries.length > lastEntryCount.current`——排除 0→N。溢出态初始 `scrollTop=0` 在**顶部**，0→N 若走 smooth 是可见的整屏滚动动画（§7.8 症状）；auto 在 useLayoutEffect 绘制前同步跳底，用户看不到顶部帧。原代码 `grew = entries.length > lastEntryCount.current` 对 0→N 恒真，与其注释声称的"0→N 用 auto"矛盾（§7.8 时因列表不可滚而未显形）。
+
+改动：`app.css`（`.message-list` safe flex-end + 注释）、`workspace.tsx`（grew 条件）。typecheck 双侧 + vitest 60/60 全绿。
+
 ## 8. 已知限制（v0.1 接受）
 
 - 消息历史仅拉最新 100 条窗口，更早消息无上翻加载（spec 范围外，v0.2 分段加载；方向见 §7.8——正序 DOM + scroll-anchor，不反转渲染顺序）

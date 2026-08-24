@@ -212,8 +212,6 @@ function ChatView({ sessionID }: { sessionID: string }) {
   }
 
   // useLayoutEffect：DOM 变更后、绘制前同步置底，首帧即到底、无滚动动画
-  // 0→N（含首次加载与切回 Tab 重拉快照）用 auto 瞬时定位；
-  // 之后新条目（N→N+1）才 smooth 跟随，同条目流式更新即时贴底。
   useLayoutEffect(() => {
     const el = scrollRef.current
     if (!el) return
@@ -221,7 +219,11 @@ function ChatView({ sessionID }: { sessionID: string }) {
       lastEntryCount.current = entries.length
       return
     }
-    const grew = entries.length > lastEntryCount.current
+    // 0→N（含首次加载与切回 Tab 重拉快照）用 auto 瞬时定位——溢出态初始 scrollTop=0
+    // 在顶部，auto 在绘制前同步跳底，用户看不到顶部帧；smooth 则是可见的整屏滚动
+    // 动画（§7.8 症状回归）。lastEntryCount>0 排除 0→N，之后新条目（N→N+1）才
+    // smooth 跟随，同条目流式更新（N→N）即时贴底。
+    const grew = lastEntryCount.current > 0 && entries.length > lastEntryCount.current
     scrollToBottom(grew ? "smooth" : "auto")
     lastEntryCount.current = entries.length
   }, [entries])
