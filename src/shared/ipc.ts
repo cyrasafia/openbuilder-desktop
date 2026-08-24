@@ -39,8 +39,12 @@ export interface ConnectionProfile {
   mode: "attach" | "managed"
 }
 
+/** 运行平台：main 进程 process.platform 的字面量集；纯浏览器 shim 为 "browser" */
+export type DesktopPlatform = "linux" | "darwin" | "win32" | "browser"
+
 /** IPC 通道类型（preload ↔ main） */
 export interface DesktopApi {
+  platform: DesktopPlatform
   storeGet<K extends keyof StoreShape>(key: K): Promise<StoreShape[K] | null>
   storeSet<K extends keyof StoreShape>(key: K, value: StoreShape[K]): Promise<void>
   managedStart(): Promise<{
@@ -54,4 +58,11 @@ export interface DesktopApi {
   onManagedEvent(cb: (payload: string) => void): () => void
   openPathPicker(): Promise<string | null>
   getAppVersion(): Promise<string>
+  /** Linux 自定义头部窗口控制（title-bar.tsx；仅 frameless 窗口有意义） */
+  winMinimize(): void
+  winToggleMaximize(): void
+  winClose(): void
+  winIsMaximized(): Promise<boolean>
+  /** 最大化/还原状态推送（main → renderer），返回取消订阅 */
+  onWindowMaximized(cb: (maximized: boolean) => void): () => void
 }

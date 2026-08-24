@@ -1,7 +1,7 @@
 import { app, BrowserWindow, shell } from "electron"
 import { fileURLToPath } from "node:url"
 import { join, dirname } from "node:path"
-import { registerIpc } from "./ipc"
+import { registerIpc, bindMainWindow } from "./ipc"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -29,6 +29,9 @@ function createMainWindow() {
     show: false,
     autoHideMenuBar: true,
     title: "openbuilder desktop",
+    // Linux 用自定义头部（renderer title-bar.tsx：拖拽区 + 窗口控制，颜色随主题）；
+    // GNOME/Wayland 下 CSD 由应用自绘；其他平台保留系统装饰
+    frame: process.platform !== "linux",
     webPreferences: {
       preload: preloadPath(),
       contextIsolation: true,
@@ -36,6 +39,8 @@ function createMainWindow() {
       sandbox: true,
     },
   })
+
+  bindMainWindow(win)
 
   win.on("ready-to-show", () => win.show())
 

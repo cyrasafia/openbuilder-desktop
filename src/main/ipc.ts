@@ -1,4 +1,4 @@
-import { ipcMain, dialog, app } from "electron"
+import { ipcMain, dialog, app, type BrowserWindow } from "electron"
 import { readFile, writeFile, mkdir } from "node:fs/promises"
 import { join, dirname } from "node:path"
 import type { StoreShape } from "../shared/ipc"
@@ -32,6 +32,16 @@ function persistStore(): Promise<void> {
   return task
 }
 
+let mainWindow: BrowserWindow | null = null
+
+/** 绑定主窗口（createMainWindow 时调用；重建窗口后重新绑定） */
+export function bindMainWindow(win: BrowserWindow) {
+  mainWindow = win
+  // 最大化/还原状态推送（Linux 自定义头部按钮图标切换）
+  win.on("maximize", () => win.webContents.send("win:maximized", true))
+  win.on("unmaximize", () => win.webContents.send("win:maximized", false))
+}
+
 export function registerIpc() {
   ipcMain.handle("store:get", async (_e, key: keyof StoreShape) => {
     const store = await loadStore()
@@ -55,6 +65,17 @@ export function registerIpc() {
   })
 
   ipcMain.handle("app:getVersion", () => app.getVersion())
+
+  // Linux 自定义头部窗口控制（renderer title-bar.tsx）
+  ipcMain.on("win:minimize", () => mainWindow?.minimize())
+  ipcMain.on("win:toggleMaximize", () => {
+    const win = mainWindow
+    if (!win) return
+    if (win.isMaximized()) win.unmaximize()
+    else win.maximize()
+  })
+  ipcMain.on("win:close", () => mainWindow?.close())
+  ipcMain.handle("win:isMaximized", () => mainWindow?.isMaximized() ?? false)
 
   app.on("will-quit", () => {
     killManagedSync()

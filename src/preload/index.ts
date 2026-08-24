@@ -1,7 +1,9 @@
 import { contextBridge, ipcRenderer } from "electron"
-import type { StoreShape } from "../shared/ipc"
+import type { DesktopPlatform, StoreShape } from "../shared/ipc"
 
 const api = {
+  // 沙箱 preload 的受限 process 对象含 platform；渲染层据此决定是否画自定义头部
+  platform: process.platform as DesktopPlatform,
   storeGet: <K extends keyof StoreShape>(key: K) => ipcRenderer.invoke("store:get", key),
   storeSet: <K extends keyof StoreShape>(key: K, value: StoreShape[K]) =>
     ipcRenderer.invoke("store:set", key, value),
@@ -14,6 +16,15 @@ const api = {
   },
   openPathPicker: () => ipcRenderer.invoke("dialog:openPath"),
   getAppVersion: () => ipcRenderer.invoke("app:getVersion"),
+  winMinimize: () => ipcRenderer.send("win:minimize"),
+  winToggleMaximize: () => ipcRenderer.send("win:toggleMaximize"),
+  winClose: () => ipcRenderer.send("win:close"),
+  winIsMaximized: () => ipcRenderer.invoke("win:isMaximized") as Promise<boolean>,
+  onWindowMaximized: (cb: (maximized: boolean) => void) => {
+    const listener = (_e: unknown, maximized: boolean) => cb(maximized)
+    ipcRenderer.on("win:maximized", listener)
+    return () => ipcRenderer.removeListener("win:maximized", listener)
+  },
 }
 
 contextBridge.exposeInMainWorld("desktop", api)

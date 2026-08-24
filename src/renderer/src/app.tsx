@@ -12,6 +12,7 @@ import { Sidebar } from "./components/sidebar"
 import { Workspace } from "./components/workspace"
 import { FilePanel } from "./components/file-panel"
 import { StatusBar } from "./components/status-bar"
+import { TitleBar } from "./components/title-bar"
 
 const StoreContext = createContext<AppStore | null>(null)
 
@@ -90,11 +91,15 @@ export function App() {
 
 function Shell() {
   return (
-    <div className="app-shell">
-      <Sidebar />
-      <Workspace />
-      <FilePanel />
-      <StatusBar />
+    <div className="app-root">
+      {/* Linux frameless：自绘头部（拖拽区 + 窗口控制）；其他平台/浏览器无系统装饰缺失问题 */}
+      {window.desktop.platform === "linux" && <TitleBar />}
+      <div className="app-shell">
+        <Sidebar />
+        <Workspace />
+        <FilePanel />
+        <StatusBar />
+      </div>
     </div>
   )
 }

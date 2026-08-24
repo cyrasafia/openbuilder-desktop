@@ -79,6 +79,11 @@ const zh = {
   statusOffline: "离线",
   statusReconciling: "对账中",
   serverInfo: "服务器",
+  // 窗口控制（Linux 自定义头部）
+  winMinimize: "最小化",
+  winMaximize: "最大化",
+  winRestore: "还原",
+  winClose: "关闭",
   // 空态
   noProject: "先打开一个项目",
   connectFirst: "先配置服务器连接",
@@ -165,6 +170,10 @@ const en: typeof zh = {
   statusOffline: "offline",
   statusReconciling: "reconciling",
   serverInfo: "Server",
+  winMinimize: "Minimize",
+  winMaximize: "Maximize",
+  winRestore: "Restore",
+  winClose: "Close",
   noProject: "Open a project first",
   connectFirst: "Configure a server first",
   openSettings: "Open settings",

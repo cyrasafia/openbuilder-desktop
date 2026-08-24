@@ -9,6 +9,7 @@ const PREFIX = "ob-desktop-shim:"
 
 function createBrowserDesktopApi(): DesktopApi {
   return {
+    platform: "browser",
     async storeGet(key) {
       const raw = localStorage.getItem(PREFIX + key)
       return raw ? (JSON.parse(raw) as StoreShape[typeof key]) : null
@@ -28,6 +29,15 @@ function createBrowserDesktopApi(): DesktopApi {
     },
     async getAppVersion() {
       return "0.1.0-browser"
+    },
+    winMinimize() {},
+    winToggleMaximize() {},
+    winClose() {},
+    async winIsMaximized() {
+      return false
+    },
+    onWindowMaximized() {
+      return () => {}
     },
   }
 }
