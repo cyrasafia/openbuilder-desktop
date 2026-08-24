@@ -33,7 +33,7 @@ export function Workspace() {
             onClick={() => store.setActiveTab(tab.key)}
           >
             {tab.kind === "chat" && store.isSessionActive(tab.key.slice(5)) && (
-              <span className="status-dot running" />
+              <span className="status-dot session-running" />
             )}
             <span className="tab-label">{tab.title || t.untitled}</span>
             <button

@@ -192,9 +192,25 @@
   visibility: hidden;
 }
 
+/* 空闲点与运行点同用 12px 盒子（同 app 统一 glyph 盒），仅中心小灰点，避免同行混排尺寸不一 */
 .session-indicator .status-dot.idle {
+  position: relative;
+  width: 12px;
+  height: 12px;
+  background: transparent;
+}
+
+.session-indicator .status-dot.idle::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
   background: var(--status-pending);
   opacity: 0.55;
+  transform: translate(-50%, -50%);
 }
 
 .session-count {
@@ -1043,6 +1059,62 @@
 .status-dot.running,
 .status-dot.tool-running {
   background: var(--status-running);
+}
+
+/* 会话进行中：双层圆点 = 稳定中心点 + 外圈光晕呼吸（同 app，参数对齐
+   openbuilder design-agent-status-indicator.md §动效设计：1200ms easeInOut 往复，
+   外圈 scale 0.75→1.15、opacity 0.2→0.55，中心点不缩放；仅此类呼吸，
+   status-bar 的 SSE running 点与 tool 卡片状态点保持静态实心） */
+.status-dot.session-running {
+  position: relative;
+  width: 12px;
+  height: 12px;
+  background: transparent;
+}
+
+.status-dot.session-running::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--status-running);
+  transform: translate(-50%, -50%) scale(0.75);
+  opacity: 0.2;
+  animation: halo-breathe 1.2s ease-in-out infinite alternate;
+}
+
+.status-dot.session-running::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--status-running);
+  transform: translate(-50%, -50%);
+}
+
+@keyframes halo-breathe {
+  from {
+    transform: translate(-50%, -50%) scale(0.75);
+    opacity: 0.2;
+  }
+  to {
+    transform: translate(-50%, -50%) scale(1.15);
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-dot.session-running::before {
+    animation: none;
+    transform: translate(-50%, -50%) scale(0.95);
+    opacity: 0.375;
+  }
 }
 
 .status-dot.tool-completed {
