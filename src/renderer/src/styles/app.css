@@ -137,10 +137,71 @@
   height: var(--row-tree);
 }
 
+/* worktree 行相对项目行缩进 16（design-layout §3），强化与项目行的层级区分 */
+.ws-row {
+  padding-left: 22px;
+}
+
 /* worktree 行图标：16px 线性（lucide folder-git-2，DESIGN.md） */
 .ws-icon {
   flex-shrink: 0;
   color: var(--on-surface-variant);
+}
+
+/* 项目行（一级）：头像 + 名称/路径两行，与单行 worktree 行明显区分 */
+.project-row {
+  height: auto;
+  min-height: var(--row-list);
+  padding: 4px 6px;
+}
+
+.project-avatar {
+  position: relative;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-chip);
+  border: 1px solid color-mix(in srgb, var(--avatar-color, var(--on-surface-variant)) 40%, transparent);
+  background: color-mix(in srgb, var(--avatar-color, var(--on-surface-variant)) 14%, transparent);
+  color: var(--avatar-color, var(--on-surface-variant));
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  line-height: 1;
+}
+
+/* 自定义图片头像（icon.override/url）：绝对定位盖住首字母瓷片，失败由 JS 隐藏回退 */
+.project-avatar-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+}
+
+.project-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.project-name {
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.project-path {
+  font-size: var(--text-xs);
+  color: var(--outline);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .tree-label {

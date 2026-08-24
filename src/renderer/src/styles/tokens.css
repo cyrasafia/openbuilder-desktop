@@ -34,6 +34,18 @@
   --radius-card: 8px;
   --radius-bubble: 12px;
   --radius-dialog: 12px;
+
+  /* 项目头像内容色（非主题语义色，不随主题切换；调色板/命名色映射沿用 openbuilder ProjectAvatar） */
+  --avatar-green: #4ade80;
+  --avatar-mint: #34d399;
+  --avatar-blue: #60a5fa;
+  --avatar-cyan: #22d3ee;
+  --avatar-orange: #f0883e;
+  --avatar-purple: #c084fc;
+  --avatar-violet: #a78bfa;
+  --avatar-pink: #f472b6;
+  --avatar-yellow: #facc15;
+  --avatar-red: #f85149;
 }
 
 /* dark（默认） */

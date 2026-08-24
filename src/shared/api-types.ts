@@ -15,7 +15,8 @@ export interface Project {
   worktree: string
   vcs?: "git"
   name?: string
-  icon?: { color?: string; emoji?: string }
+  /** 契约 ProjectIcon：override（用户自定义图片 URL/data URL）> url（server 自动发现，需实验开关）；color 为命名色 */
+  icon?: { url?: string; override?: string; color?: string }
   time: ProjectTime
   sandboxes?: string[]
 }

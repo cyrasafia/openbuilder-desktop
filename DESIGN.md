@@ -96,7 +96,7 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 | 三栏容器 | 面板分隔线 1px `outlineVariant`；栏标题 `ui-sm` + `outline` 色 |
 | 标题栏（Linux） | 高 36，`surfaceContainerLow` 底 + 1px `outlineVariant` 下边、标题 `ui-sm`；整体拖拽区，右侧控制钮 44×36（lucide 14px `onSurfaceVariant`，hover `surfaceContainerHigh`，关闭钮 hover `error` 底 + `onError` 图标）；仅 Linux frameless 渲染，深/浅主题随 token 切换 |
 | Tab 条 | 高 36；Tab：图标 16 + 标题 `ui-md`，激活态底部 2px `primary` 指示线 + `surfaceContainerLow` 底；流式中 Tab 标题前置 8px running 状态点 |
-| 项目/工作区树（左栏） | 项目行 30（`title-sm` sans + 活跃时间 `ui-xs`，无图标）；worktree 行 26（16px 线性 worktree 图标（lucide `folder-git-2`）+ `ui-md` 名称 + 分支，整体相对项目名缩进 16）；当前项左侧 2px `primary` 竖线 |
+| 项目/工作区树（左栏） | 项目行自适应高（≥30，常态 ~40）：26px 圆角头像（`icon.override` > `icon.url` 图片（data:/https:，失败回退）> 名称首字母；色 = `icon.color` 命名色 > 名称哈希，与 openbuilder ProjectAvatar 跨端同色，调色板 token `--avatar-*`）+ 右侧两行——名称 `ui-md` 600 + 路径 `ui-xs` `outline`（行内截断，title 全量）；worktree 行 26（16px 线性 worktree 图标（lucide `folder-git-2`）+ `ui-md` 名称 + 分支，相对项目行缩进 16）；当前项左侧 2px `primary` 竖线 |
 | 会话列表 | 行 30；标题 `ui-md` 400，hover `surfaceContainerLow`，激活 `surfaceContainer`；归档区折叠头 `ui-sm` `outline` |
 | 文件树 | 行 26，`ui-md`；目录/文件图标 16 线性；激活行 `surfaceContainerLow` 底 |
 | 消息流 | assistant：无底色全宽块，`chat-md`；user：`userBubble` 色块 + `rounded.bubble`，内边距 12×16，用户文字 `userText` |

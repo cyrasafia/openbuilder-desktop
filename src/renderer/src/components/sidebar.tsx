@@ -1,8 +1,73 @@
-import { useState } from "react"
+import { useState, type CSSProperties } from "react"
 import { FolderGit2 } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import { relativeTime } from "../i18n"
-import type { Session } from "@shared/api-types"
+import type { Project, Session } from "@shared/api-types"
+
+/** server icon.color 命名色 → --avatar-* token（与 openbuilder ProjectAvatar.namedColor 同源，mint 与 green 同色） */
+const NAMED_AVATAR_COLORS: Record<string, string> = {
+  mint: "var(--avatar-green)",
+  green: "var(--avatar-green)",
+  pink: "var(--avatar-pink)",
+  blue: "var(--avatar-blue)",
+  orange: "var(--avatar-orange)",
+  purple: "var(--avatar-purple)",
+  yellow: "var(--avatar-yellow)",
+  red: "var(--avatar-red)",
+  cyan: "var(--avatar-cyan)",
+}
+
+/** 哈希回退调色板（openbuilder _palette 同源同序，9 色不含 red），保证同名项目跨端同色 */
+const AVATAR_PALETTE = [
+  "var(--avatar-green)",
+  "var(--avatar-blue)",
+  "var(--avatar-orange)",
+  "var(--avatar-purple)",
+  "var(--avatar-pink)",
+  "var(--avatar-mint)",
+  "var(--avatar-yellow)",
+  "var(--avatar-cyan)",
+  "var(--avatar-violet)",
+]
+
+function avatarColor(name: string, named?: string): string {
+  const hit = named ? NAMED_AVATAR_COLORS[named] : undefined
+  if (hit) return hit
+  let h = 0
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) & 0x7fffffff
+  return AVATAR_PALETTE[h % AVATAR_PALETTE.length]!
+}
+
+/** 图片源白名单（openbuilder 同款）：仅 data:/http(s):，其余 scheme 忽略走首字母 */
+function avatarImageSrc(icon?: Project["icon"]): string | undefined {
+  const src = icon?.override || icon?.url
+  if (!src) return undefined
+  return src.startsWith("data:") || src.startsWith("http://") || src.startsWith("https://") ? src : undefined
+}
+
+/**
+ * 项目头像（参考 openbuilder ProjectAvatar，按桌面密度缩至 26px）：
+ * 图片（`icon.override` > `icon.url`，data:/https:）覆盖于瓷片上，加载失败回退；
+ * 无图 = 项目名首字母；色 = `icon.color` 命名色，缺失按名哈希（与移动端同色）。
+ */
+function ProjectAvatar({ name, icon }: { name: string; icon?: Project["icon"] }) {
+  const imgSrc = avatarImageSrc(icon)
+  return (
+    <span className="project-avatar" style={{ "--avatar-color": avatarColor(name, icon?.color) } as CSSProperties} aria-hidden>
+      {imgSrc && (
+        <img
+          className="project-avatar-img"
+          src={imgSrc}
+          alt=""
+          onError={(e) => {
+            e.currentTarget.style.display = "none"
+          }}
+        />
+      )}
+      {(Array.from(name.trim())[0] ?? "?").toUpperCase()}
+    </span>
+  )
+}
 
 export function Sidebar() {
   const store = useStore()
@@ -127,8 +192,10 @@ function ProjectTree() {
                 className={"tree-row project-row" + (isCurrent && !store.currentWorkspace ? " active" : "")}
                 onClick={() => selectProjectMain(p.id)}
               >
-                <span className="tree-label" title={p.worktree}>
-                  {p.name || p.worktree.split("/").pop() || p.id}
+                <ProjectAvatar name={p.name || p.worktree.split("/").pop() || p.id} icon={p.icon} />
+                <span className="project-main" title={p.worktree}>
+                  <span className="project-name">{p.name || p.worktree.split("/").pop() || p.id}</span>
+                  <span className="project-path">{p.worktree}</span>
                 </span>
                 <SessionIndicator sessions={store.sessionsInDirectory(p.id, p.worktree)} />
                 {isCurrent && (
@@ -261,7 +328,11 @@ function ProjectPicker({ onClose }: { onClose: () => void }) {
                 onClose()
               }}
             >
-              <span className="tree-label">{p.name || p.worktree.split("/").pop()}</span>
+              <ProjectAvatar name={p.name || p.worktree.split("/").pop() || p.id} icon={p.icon} />
+              <span className="project-main" title={p.worktree}>
+                <span className="project-name">{p.name || p.worktree.split("/").pop() || p.id}</span>
+                <span className="project-path">{p.worktree}</span>
+              </span>
               <span className="tree-meta">{relativeTime(locale, p.time.updated)}</span>
             </div>
           ))}
