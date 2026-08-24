@@ -136,6 +136,18 @@ export class RestClient {
   }
 
   /**
+   * 项目级会话快照（`GET /session?directory=X&scope=project`，实测 server 1.18.x）：
+   * 返回该项目**全部目录**（worktree + sandboxes；global 则为全部会话目录）的
+   * 未归档会话，一次覆盖。用途：global 项目按 directory 拆分的发现查询——
+   * 不用裸 `GET /session`（那是 server cwd 所在 instance 的会话，随启动目录漂移）。
+   */
+  listProjectSessions(worktreeDirectory: string): Promise<Session[]> {
+    return this.request<Session[]>(
+      `/session${RestClient.dirQuery(worktreeDirectory, { scope: "project" })}`,
+    )
+  }
+
+  /**
    * 会话状态快照（`GET /session/status?directory=`）。
    * 契约：返回 {sessionID: status}，且 server 侧 map 在 idle 时删除条目——
    * 返回里只含非 idle 会话（缺该会话 ⇒ idle）。无 directory 时返回 {}，必须带目录查。

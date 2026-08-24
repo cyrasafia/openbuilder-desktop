@@ -1,7 +1,8 @@
-import { useState, type CSSProperties } from "react"
+import { useEffect, useState, type CSSProperties } from "react"
 import { FolderGit2, FolderPlus, Trash2 } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import { relativeTime } from "../i18n"
+import { GLOBAL_PROJECT_ID, globalEntryKey } from "@shared/project-entries"
 import type { Project, Session } from "@shared/api-types"
 
 /** server icon.color 命名色 → --avatar-* token（与 openbuilder ProjectAvatar.namedColor 同源，mint 与 green 同色） */
@@ -152,19 +153,24 @@ function ServerStatus() {
   )
 }
 
-/** 项目/工作区两级树（有活跃 profile 时的左栏主体） */
+/**
+ * 项目/工作区两级树（有活跃 profile 时的左栏主体）。
+ * global 项目按 directory 拆为 N 个顶级 entry 行（design-layout §3）：行视觉与
+ * 普通项目行一致（头像 + 名称/路径两行），无子行（global 非 git 无 worktree）。
+ */
 function ProjectTree() {
   const store = useStore()
   const { t } = useI18n()
   const [pickerOpen, setPickerOpen] = useState(false)
 
-  const projects = store.openedProjects
+  const entries = store.openedEntries
   const current = store.currentProject
 
-  /** 选项目 = 选主工作区（openProject 内含切回主工作区，先切换后加载） */
-  const selectProjectMain = (projectId: string) => {
-    if (projectId === current?.id && !store.currentWorkspace) return
-    void store.setCurrentProject(projectId)
+  /** 选 entry 行（普通项目 = 主工作区入口，worktree 态点击 = 回主工作区——
+   *  openProject 内含切回；global = 该目录作用域，openGlobalDirectory 先切换后加载） */
+  const selectEntry = (key: string) => {
+    if (store.isEntryActive(key)) return
+    void store.openEntry(key)
   }
 
   /** 选工作区（项目内 worktree）；跨项目点击 = 开项目并直达该工作区（单次切换） */
@@ -190,28 +196,30 @@ function ProjectTree() {
       </div>
 
       <div className="tree scroll">
-        {projects.map((p) => {
-          const isCurrent = p.id === current?.id
-          const workspaces = store.workspacesOfProject(p.id)
+        {entries.map((e) => {
+          // global 按目录拆行：作用域 = 该目录本身；普通项目行 = 主工作区入口
+          const isActive = store.isEntryActive(e.key)
+          const isCurrentProject = e.project.id === current?.id
+          const workspaces = e.isGlobal ? [] : store.workspacesOfProject(e.project.id)
           return (
-            <div key={p.id} className="project-group">
-              {/* 项目行 = 主工作区入口 */}
+            <div key={e.key} className="project-group">
               <div
-                className={"tree-row project-row" + (isCurrent && !store.currentWorkspace ? " active" : "")}
-                onClick={() => selectProjectMain(p.id)}
+                className={"tree-row project-row" + (isActive ? " active" : "")}
+                onClick={() => selectEntry(e.key)}
               >
-                <ProjectAvatar name={p.name || p.worktree.split("/").pop() || p.id} icon={p.icon} />
-                <span className="project-main" title={p.worktree}>
-                  <span className="project-name">{p.name || p.worktree.split("/").pop() || p.id}</span>
-                  <span className="project-path">{p.worktree}</span>
+                <ProjectAvatar name={e.name} icon={e.project.icon} />
+                <span className="project-main" title={e.directory}>
+                  <span className="project-name">{e.name}</span>
+                  <span className="project-path">{e.directory}</span>
                 </span>
-                <SessionIndicator sessions={store.sessionsInDirectory(p.id, p.worktree)} />
-                {isCurrent && (
+                <SessionIndicator sessions={store.sessionsInDirectory(e.project.id, e.directory)} />
+                {/* 工作区新增仅普通项目（global 非 git，无 worktree） */}
+                {isCurrentProject && !e.isGlobal && (
                   <button
                     className="icon-btn row-action"
                     title={t.newWorkspace}
-                    onClick={(e) => {
-                      e.stopPropagation()
+                    onClick={(ev) => {
+                      ev.stopPropagation()
                       // 不弹窗：name 省略，由 server 生成随机 slug
                       void store.createWorkspace()
                     }}
@@ -219,45 +227,47 @@ function ProjectTree() {
                     <FolderPlus size={16} aria-hidden />
                   </button>
                 )}
-                {isCurrent && projects.length > 1 && (
+                {/* 关闭按钮：普通项目行跟随"当前项目"（worktree 态也可关，与 + 按钮
+                    一致）；global 行仅该目录 entry 激活时显示 */}
+                {(e.isGlobal ? isActive : isCurrentProject) && entries.length > 1 && (
                   <button
                     className="icon-btn row-action"
                     title={t.closeProject}
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      void store.closeProject(p.id)
+                    onClick={(ev) => {
+                      ev.stopPropagation()
+                      void store.closeEntry(e.key)
                     }}
                   >
                     ×
                   </button>
                 )}
               </div>
-              {/* 工作区跟随项目，全部展示（仅当前项目可新增/删除） */}
+              {/* 工作区跟随项目，全部展示（仅当前项目可新增/删除；global 无子行） */}
               {workspaces.map((w) => (
                 <div
                   key={w.directory}
                   className={
                     "tree-row ws-row" +
-                    (isCurrent && store.currentWorkspace?.directory === w.directory ? " active" : "")
+                    (isCurrentProject && store.currentWorkspace?.directory === w.directory ? " active" : "")
                   }
-                  onClick={() => selectWorkspace(p.id, w.directory)}
+                  onClick={() => selectWorkspace(e.project.id, w.directory)}
                 >
                   <FolderGit2 className="ws-icon" size={16} aria-hidden />
                   <span className="tree-label" title={w.directory}>
                     {w.name}
                   </span>
-                  <SessionIndicator sessions={store.sessionsInDirectory(p.id, w.directory)} />
-                  {isCurrent && (
+                  <SessionIndicator sessions={store.sessionsInDirectory(e.project.id, w.directory)} />
+                  {isCurrentProject && (
                     <button
                       className="icon-btn row-action"
                       title={t.deleteWorkspace}
-                      onClick={(e) => {
-                        e.stopPropagation()
+                      onClick={(ev) => {
+                        ev.stopPropagation()
                         if (confirm(t.confirmDeleteWorkspace)) void store.removeWorkspace(w.directory)
                       }}
-                  >
-                    <Trash2 size={16} aria-hidden />
-                  </button>
+                    >
+                      <Trash2 size={16} aria-hidden />
+                    </button>
                   )}
                 </div>
               ))}
@@ -314,34 +324,63 @@ function SessionIndicator({ sessions }: { sessions: Session[] }) {
   )
 }
 
+interface PickerCandidate {
+  key: string
+  name: string
+  path: string
+  updated: number
+  icon?: Project["icon"]
+}
+
 function ProjectPicker({ onClose }: { onClose: () => void }) {
   const store = useStore()
   const { t, locale } = useI18n()
-  const opened = new Set(store.openedProjects.map((p) => p.id))
-  const candidates = store.projects
-    .filter((p) => !opened.has(p.id))
-    .sort((a, b) => b.time.updated - a.time.updated)
+
+  // 打开即刷新 global 发现快照：新 global 目录的首个会话事件被事件闸门丢弃
+  // （entry 未打开），只能靠 scope=project 全量快照发现（openbuilder 同源结论）
+  useEffect(() => {
+    void store.refreshGlobalSessions()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const opened = new Set(store.openedEntries.map((e) => e.key))
+  const candidates: PickerCandidate[] = [
+    ...store.projects
+      .filter((p) => p.id !== GLOBAL_PROJECT_ID && !opened.has(p.id))
+      .map((p) => ({
+        key: p.id,
+        name: p.name || p.worktree.split("/").pop() || p.id,
+        path: p.worktree,
+        updated: p.time.updated,
+        icon: p.icon,
+      })),
+    ...store
+      .globalDirectoryRows()
+      .filter((r) => !opened.has(globalEntryKey(r.directory)))
+      .map((r) => ({ key: globalEntryKey(r.directory), name: r.name, path: r.directory, updated: r.updated })),
+  ].sort((a, b) => b.updated - a.updated)
+
   return (
     <div className="dialog-mask" onClick={onClose}>
       <div className="dialog" onClick={(e) => e.stopPropagation()}>
         <div className="dialog-title">{t.openProject}</div>
         <div className="dialog-body scroll">
           {candidates.length === 0 && <div className="tree-empty">{t.empty}</div>}
-          {candidates.map((p) => (
+          {candidates.map((c) => (
             <div
-              key={p.id}
+              key={c.key}
               className="tree-row project-row"
               onClick={() => {
-                void store.openProject(p.id)
+                void store.openEntry(c.key)
                 onClose()
               }}
             >
-              <ProjectAvatar name={p.name || p.worktree.split("/").pop() || p.id} icon={p.icon} />
-              <span className="project-main" title={p.worktree}>
-                <span className="project-name">{p.name || p.worktree.split("/").pop() || p.id}</span>
-                <span className="project-path">{p.worktree}</span>
+              <ProjectAvatar name={c.name} icon={c.icon} />
+              <span className="project-main" title={c.path}>
+                <span className="project-name">{c.name}</span>
+                <span className="project-path">{c.path}</span>
               </span>
-              <span className="tree-meta">{relativeTime(locale, p.time.updated)}</span>
+              <span className="tree-meta">{relativeTime(locale, c.updated)}</span>
             </div>
           ))}
         </div>

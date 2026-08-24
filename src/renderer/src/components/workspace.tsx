@@ -102,8 +102,8 @@ function GuidePage() {
   // 已创建待发送的会话：发送失败保留草稿，重试复用（不重复建会话、不产生空 Tab）
   const pendingSession = useRef<Session | null>(null)
   const archived = store.archivedSessions
-  const scopeName =
-    store.currentWorkspace?.name ?? store.currentProject?.name ?? store.currentProject?.worktree.split("/").pop() ?? ""
+  // global 拆分：作用域名 = 目录末段（根目录显示 "global"）——store 统一派生
+  const scopeName = store.scopeDisplayName
 
   const send = async () => {
     const text = draft.trim()

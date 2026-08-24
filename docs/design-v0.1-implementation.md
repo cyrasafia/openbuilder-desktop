@@ -44,6 +44,8 @@ src/
 | `?workspace=` 参数（wrk id 体系）传 worktree directory 会 500 | worktree 过滤是**纯客户端行为**：`session.directory === worktreeDir`（同移动端） |
 | `GET /session?directory=X` 为 directory **精确匹配**：项目根查询不返回 worktree 会话（实测根快照 28 条全为根会话） | 会话快照逐目录拉取（项目根 ∪ sandboxes）；快照合并按 directory 分域（session-merge.ts） |
 | `GET /session`（server 源码 `V2Session.list` 核实，2026-08-24）：① 列表**含 archived 会话**（无归档过滤条件）② 按 `created desc` 排序 + `limit` 分页（不传默认 50，首页空 = 全表空）③ 单次快照可能截断 | ① 空≠全被归档：store 空快照清除本地同目录会话是安全的（applySessionsSnapshot）② "不在快照 = 已删除"不成立：merge 层维持 updated 开区间窗口保守删除 ③ 目录会话 >50 时窗口误删风险（旧会话落窗口内）为已知限制 |
+| `GET /session?scope=project&directory=X` 一次返回**该项目全部目录**（worktree ∪ sandboxes；global 为全部会话目录）的会话——global 拆分的发现查询。裸 `GET /session`（无参）返回 **server cwd 所在 instance** 的会话，随启动目录漂移，不可用作 global 发现（openbuilder 用它是因为移动端场景 server cwd 固定） | `listProjectSessions()`；连接时 + 选择器打开时刷新 global 全量快照 |
+| global 项目（`id==="global"`，worktree `/`）持有全部非 git 目录会话，`Project.sandboxes` 恒空；同一目录可既有 git 项目又有 global 会话（先建会话后 init git 的历史目录）——选择器两行并存是正确呈现 | global 按目录拆 entry（键 `global\0<directory>`），openProject/closeProject 不适用于 global 整体；未打开 entry 的目录事件被事件闸门丢弃（单全局流收全量、按打开集合放行），新 global 目录只能靠 scope=project 快照发现 |
 | Electron renderer 的 `fetch` 是绑定 window 的包装，`const f = fetch; f(...)` 抛 `Illegal invocation` | rest-client 必须 `fetch.bind(globalThis)` |
 | `GET /global/event`（v1.0.66+）为 GlobalBus 无过滤直通：单条连接收全部 directory 事件，信封 `{directory, project?, workspace?, payload}`；`/event?directory=X` 是同一总线按 directory 过滤的子集 | 通信层已实施单全局流（见 [design-sse-global-event.md](design-sse-global-event.md)，含 durable 事件 sync 双发须忽略、SSE 帧无 id 字段 Last-Event-ID 无效等事实与 E2E 记录） |
 
@@ -279,6 +281,24 @@ v0.2 上翻加载方向（预留）：保持正序 DOM + scroll-anchor 锚定（
 **二次修复（code review 发现）**：仅改 `sortMessages` 不够——`sortEntries` 的乐观消息固定分层（乐观 < 一切流式、乐观 > 一切已完成）与 created 守卫构成**排序环**（O < 半截、半截 < 更晚已完成、已完成 < O），环 comparator 下 `Array.prototype.sort` 结果未定义：半截消息会话里每次发送，乐观气泡都可能被插进历史中间（输入区 busy 守卫不拦此场景——半截消息不置 busy）。修复：乐观消息锚定 `maxCreated+1`（不取 `Date.now()`，规避客户端钟偏差），与消息走同一比较器（含流式守卫）。语义变化：乐观不再强制排活跃流式 assistant 之前——输入区 busy 守卫使二者不共存，不可达；若未来放开并发发送，乐观按时间序排流式下方。
 
 改动：`message-merge.ts`（sortMessages 守卫 + sortEntries 统一比较器 + 注释）、`message-merge.test.ts`（改写流式排尾/乐观排序用例为真实场景 + 新增半截消息与排序环回归用例）。typecheck 双侧 + vitest 全绿。
+## 7.13 global 项目按 directory 拆分（2026-08-24）
+
+问题：server 把所有非 git 目录会话归入 `global` 项目（worktree `/`，实测一台 server 71 条会话散布 24 个目录：家目录、文档目录、/tmp……）。原左栏只有一行"global"、作用域恒为 `/`——其余目录的会话**不可达**（`/session?directory=/` 精确匹配，只返回 2 条根目录会话）。
+
+方案（参考 openbuilder `server_store.dart`：`id==="global"` 时按 directory 聚合、活动键 `global\u0000$dir`）：
+
+- **entry 模型**（`shared/project-entries.ts` 纯函数层）：左栏"项目行"抽象为 entry——普通项目 1 行（key = project.id）；global N 行（key = `global\0<directory>`，作用域 = 目录本身，无子行/无 worktree 操作）。持久化 `ProjectState.opened` 改存 entry 键，旧值裸 `"global"` 启动时迁移为根目录 entry（幂等、变更即落盘）
+- **发现**（`refreshGlobalSessions`）：`GET /session?scope=project&directory=/` 一次取 global 全量，按 directory 分域直合并进 `sessionsByProject["global"]` 并标记 `snapshottedDirs`（Tab 恢复闸门依赖）；连接时 + 选择器打开时刷新。新 global 目录的首个会话事件被事件闸门丢弃（单全局流收全量目录事件、按打开集合放行——entry 未打开的目录不在集合内）——只能靠此快照发现，两次刷新之间新目录不可见（已知接受）
+- **作用域复用 currentWorkspaceId**：global 目录行的当前作用域经该字段表达（`currentWorkspace` getter 放行"已打开 global 目录"，仍拒陈旧值）；根目录 `/` 行 = 项目根语义（workspace null，作用域经 worktree 兜底）
+- **SSE（rebase main 单全局流后适配）**：`/global/event` 单流覆盖全部目录，无逐目录订阅/预算概念（§7.5-9 的连接池约束由 2ed27fb 消除）；`openedDirectories()` 的 global 分支 = 已打开 entry 目录（worktree "/" 仅根 entry 打开时入集），事件闸门/对账/状态快照同源消费
+- **关闭 global 目录**（`closeGlobalDirectory`）：卸载该目录会话域 + 状态 + chat Tab（不归档）+ 该目录 Tab 记忆（须在关 Tab 后删——closeTab 的记忆同步会重建条目），其余 global 目录不受影响；当前作用域回退 = 其余已打开 global 目录最活跃者，无则最近活跃普通项目
+- **闸门适配**：`applySessionsSnapshot`/`isOpenedDirectory`/状态快照 still 校验对 global 走"已打开目录 ∪ 已知会话域"；`findProjectOwningDirectory`（Tab 记忆归属）对 global 走已知目录集。发现快照本身不经逐目录闸门（新目录必须能进 map）；关目录后迟到的发现快照可能复活其会话域——entry 已关不展示，重开时重拉覆盖，无可见影响
+- **双行目录所有权**（第三轮 review 修复）：目录既有 git 项目又有 global 会话时（先建会话后 init git），`findProjectOwningDirectory` **普通项目精确匹配优先**、global 只兜底无人认领的目录（global 在 projects 数组首位，不区分顺序会把双行目录永远解析到 global——污染 Tab 恢复会话集与记忆归属）；`closeGlobalDirectory` 的 Tab 关闭/记忆删除均按 `projectId === global` 收窄，不误伤 git 项目侧；`closeProject` 的 worktree 兜底关 Tab 分支同样排除 global Tab。残余歧义（两 entry 共享同一 scope directory，Tab 条/记忆天然按目录聚合）接受——作用域 = directory 是锁定语义
+- **已知局限**：目录排序活跃度随归档下沉（未做 openbuilder 式单调活动表，量级小接受）；目录显示名可能同名（title 提示全路径）
+
+E2E（live server 1.18.20，CDP）：旧态 `"global"` 迁移为根 entry ✓；选择器并列普通项目与 global 目录（含"先建会话后 init git"的双行目录）✓；打开 `/home/cyrasafia`（33 会话、1 条可见）= 顶级行 + 首开 1 Tab + 100 条消息加载 ✓；关闭该 entry 回退根 entry、持久化 `opened=["global\0/"]`、该目录 Tab 记忆清除 ✓。typecheck 双侧 + vitest 72/72 全绿。
+
+rebase main（单全局流 + 先切换后加载 + 项目行头像重构）适配：`openGlobalDirectory` 改先切换后加载（同步段登记 + 渲染，快照后台）；`setCurrentWorkspace` 幻影校验加 global 分支（global 目录不在 sandboxes）；`refreshGlobalSessions` 标记 `snapshottedDirs`（restoreScopeTabs 闸门）；sidebar 按 main 的头像 + 两行视觉渲染 entry 行。
 
 ## 8. 已知限制（v0.1 接受）
 
@@ -288,3 +308,4 @@ v0.2 上翻加载方向（预留）：保持正序 DOM + scroll-anchor 锚定（
 - managed 模式仅实现 spawn + 健康等待，未实现崩溃自动拉起
 - SSE 无 per-directory idle LRU（打开项目数通常 <5，可接受）
 - worktree 创建不支持指定分支（/experimental/worktree 契约仅 name/startCommand）
+- global 新目录的发现依赖连接时/选择器打开时的快照刷新，两次刷新之间新目录不可见（§7.13）

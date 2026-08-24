@@ -38,6 +38,7 @@ opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录�
 - 工作区（worktree）从属项目，左栏二级展示；会话/文件树按 `?workspace=` 过滤；创建/删除用 `POST/DELETE /experimental/worktree`（**不用** `/experimental/workspace`，其 create 契约不稳定）；name 省略时 server 生成随机 slug；列表数据源是 `Project.sandboxes`（见 rest-client.ts / app-store.ts 注释）
 - 工作区与文件树 project-scoped：切换项目/工作区 = 打开作用域会话 Tab（不关不归档已有 Tab，Tab 跨项目混排）+ 文件树重置；关闭项目仅关该项目 Tab（不归档）
 - Tab 注册制：kind + 稳定标识（chat=sessionID、file=路径、terminal=ptyID、browser=URL），重复打开复用
+- **global 项目按 directory 拆分**（2026-08-24 起，见 design-v0.1-implementation §7.13）：`id==="global"` 项目不在左栏整体展示，而是每个会话目录一行顶级 entry（键 `global\0<directory>`，打开/关闭/作用域独立）；发现 = `GET /session?scope=project&directory=/` 全量快照（连接时 + 选择器打开时刷新）；**不用裸 `GET /session` 做 global 发现**（那是 server cwd 所在 instance 的会话，随启动目录漂移）；SSE 为单全局流（/global/event），未打开 entry 的目录事件被事件闸门丢弃（openedDirectories 的 global 分支 = 已打开目录）
 
 ## 参考代码（只读，不引入依赖）
 
