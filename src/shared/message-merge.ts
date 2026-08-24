@@ -46,8 +46,8 @@ function isStreaming(m: Message): boolean {
  * 守卫构成环（O<半截、半截<更晚已完成、已完成<O），环 comparator 下
  * Array.prototype.sort 结果未定义——半截消息会话里每次发送乐观气泡都可能
  * 插进历史中间（§7.12）。锚定值不取 Date.now()：客户端钟与服务器钟可能偏差。
- * 语义变化：乐观不再强制排活跃流式 assistant 之前——本项输入区有 busy 守卫，
- * 乐观与活跃流式不共存，不可达（若未来放开并发发送，乐观按时间序排其下）。
+ * 并发发送已放开（design-supplement-send：busy 中补充发送）：乐观与活跃流式
+ * 可共存，乐观按时间序排活跃流式之下（锚定 maxCreated+1 天然满足）。
  */
 export function sortEntries(entries: ChatEntry[]): ChatEntry[] {
   const maxCreated = entries.reduce(

@@ -214,3 +214,115 @@ describe("先切换后加载：openProject 直达工作区", () => {
     expect(store.scopeQuery.directory).toBe("/other")
   })
 })
+
+describe("busy 补充发送（design-supplement-send）", () => {
+  /** 直驱 handleEvent（SSE 已 mock off）：事件信封 { type, properties } */
+  function dispatch(ev: { type: string; properties: unknown }) {
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, ev)
+  }
+
+  /** 经真实事件路径置 busy（session.status 信封目录 = ROOT） */
+  function setBusy() {
+    dispatch({
+      type: "session.status",
+      properties: { sessionID: "s1", status: { type: "busy" } },
+    })
+  }
+
+  /** 经真实事件路径置 retry（带退避提示，补充发送不得覆写） */
+  function setRetry() {
+    dispatch({
+      type: "session.status",
+      properties: {
+        sessionID: "s1",
+        status: { type: "retry", attempt: 2, message: "rate limited" },
+      },
+    })
+  }
+
+  it("busy 中 sendPrompt：乐观补充追加不误清既有消息，状态保持 busy；真实 user 事件到达即清乐观", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    client.promptAsync = async () => {}
+    // 会话 busy + 已有活跃流式 assistant（created 200，completed 空）
+    setBusy()
+    dispatch({
+      type: "message.updated",
+      properties: {
+        sessionID: "s1",
+        info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 200 } },
+      },
+    })
+    dispatch({
+      type: "message.updated",
+      properties: {
+        sessionID: "s1",
+        info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
+      },
+    })
+
+    const res = await store.sendPrompt("s1", "补充：顺带统计词数")
+    expect(res.ok).toBe(true)
+    expect(store.statusOf("s1").type).toBe("busy")
+    // 排序：流式 assistant 之下追加乐观补充（锚定 maxCreated+1）
+    const entries = store.chatEntries("s1")
+    expect(entries.map((e) => (e.kind === "optimistic" ? "opt" : e.data.info.id))).toEqual([
+      "msg_u1",
+      "msg_a1",
+      "opt",
+    ])
+
+    // 真实补充 user 消息（created 晚于流式 assistant）经 SSE 到达：乐观清空、消息入列
+    dispatch({
+      type: "message.updated",
+      properties: {
+        sessionID: "s1",
+        info: { id: "msg_u2", sessionID: "s1", role: "user", time: { created: 300 } },
+      },
+    })
+    const after = store.chatEntries("s1")
+    expect(after.map((e) => (e.kind === "message" ? e.data.info.id : e.kind))).toEqual([
+      "msg_u1",
+      "msg_a1",
+      "msg_u2",
+    ])
+  })
+
+  it("多条乐观并存：首条真实到达清全部（移动端同语义，短暂闪烁可接受）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    client.promptAsync = async () => {}
+    setBusy()
+
+    await store.sendPrompt("s1", "补充一")
+    await store.sendPrompt("s1", "补充二")
+    expect(store.chatEntries("s1").filter((e) => e.kind === "optimistic")).toHaveLength(2)
+    expect(store.chatEntries("s1").map((e) => (e.kind === "optimistic" ? e.data.text : null))).toEqual([
+      "补充一",
+      "补充二",
+    ])
+
+    dispatch({
+      type: "message.updated",
+      properties: {
+        sessionID: "s1",
+        info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
+      },
+    })
+    expect(store.chatEntries("s1").every((e) => e.kind === "message")).toBe(true)
+  })
+
+  it("retry 中补充发送：乐观 busy 不覆写 retry（退避提示保持整个 backoff 窗口）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    client.promptAsync = async () => {}
+    setRetry()
+
+    const res = await store.sendPrompt("s1", "补充")
+    expect(res.ok).toBe(true)
+    expect(store.statusOf("s1")).toEqual({ type: "retry", attempt: 2, message: "rate limited" })
+  })
+})

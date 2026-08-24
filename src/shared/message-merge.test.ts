@@ -50,6 +50,16 @@ describe("sortMessages（sort-order 竞态防护）", () => {
     const sorted = [done2, user, done1].sort(sortMessages)
     expect(sorted.map((m) => m.info.id)).toEqual(["msg_a1", "msg_u1", "msg_a2"])
   })
+
+  it("busy 补充发送（design-supplement-send）：补充 user（created 晚于活跃流式）排流式之下，与其后回应同序", () => {
+    // 联调实测：server 立即落库补充 user 消息，其 created 晚于进行中的 assistant
+    const u1 = entry(userMsg("msg_u1", 100))
+    const streaming = entry(assistantMsg("msg_a1", 200)) // 进行中（completed 空）
+    const supplement = entry(userMsg("msg_u2", 300)) // busy 中发送的补充
+    const reply = entry(assistantMsg("msg_a2", 400, 500)) // run 续轮对补充的回应
+    const sorted = [reply, supplement, streaming, u1].sort(sortMessages)
+    expect(sorted.map((m) => m.info.id)).toEqual(["msg_u1", "msg_a1", "msg_u2", "msg_a2"])
+  })
 })
 
 describe("sortEntries（乐观消息）", () => {

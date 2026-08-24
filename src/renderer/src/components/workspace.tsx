@@ -256,7 +256,9 @@ function ChatView({ sessionID }: { sessionID: string }) {
 
   const send = async () => {
     const text = draft.trim()
-    if (!text || busy) return
+    // busy 不拦（design-supplement-send）：进行中发送 = 补充消息，server 在
+    // 当前 run 内吸收（不打断、不排队），乐观气泡按时间序排活跃流式下方
+    if (!text) return
     setDraft("")
     setCmdDismissed(false)
     pinnedToBottom.current = true
@@ -392,11 +394,15 @@ function ChatView({ sessionID }: { sessionID: string }) {
             mode="session"
             session={store.findSession(sessionID)}
           />
-          {busy ? (
+          {/* busy 时停止常驻可达（移动端 showStop 输入即隐藏——桌面空间足够，
+              保留停止入口：补充输入中途仍可直接终止 run，无需清空草稿）；
+              发送按钮在 busy 时仅于有草稿时出现（空输入无发送语义） */}
+          {busy && (
             <button className="btn-danger" onClick={() => void store.abortSession(sessionID)}>
               {t.abort}
             </button>
-          ) : (
+          )}
+          {(!busy || draft.trim()) && (
             <button className="btn-primary" disabled={!draft.trim()} onClick={() => void send()}>
               {t.send}
             </button>

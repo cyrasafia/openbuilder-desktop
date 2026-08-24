@@ -1340,8 +1340,12 @@ export class AppStore {
     try {
       await this.client.promptAsync(sessionID, session.directory, [{ type: "text", text }])
       // 乐观 busy（design-typing-indicator §4 来源 3）：不等 session.status 事件，
-      // 消除首字节延迟——dots 于预留槽内立即出现
-      this.setSessionStatus(sessionID, { type: "busy" }, session.directory)
+      // 消除首字节延迟——dots 于预留槽内立即出现。仅 idle 时写：busy 幂等可不写，
+      // retry 态写入会把退避提示（attempt/message）覆写成 dots——server 每个
+      // backoff 窗口只发一次 retry 事件，错误指示将持续整个退避期（design-supplement-send §3.2）
+      if (this.statusOf(sessionID).type === "idle") {
+        this.setSessionStatus(sessionID, { type: "busy" }, session.directory)
+      }
       this.emit()
       return { ok: true }
     } catch (e) {
