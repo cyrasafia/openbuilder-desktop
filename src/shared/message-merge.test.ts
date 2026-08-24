@@ -25,12 +25,22 @@ function textPart(id: string, messageID: string, text: string, type: "text" | "r
 }
 
 describe("sortMessages（sort-order 竞态防护）", () => {
-  it("流式 assistant 始终排最后，即使 created 更小", () => {
-    const optimisticUser = entry(userMsg("msg_u1", 100)) // T_client
-    const streamingAssistant = entry(assistantMsg("msg_a1", 50)) // 占位 created 更小
-    const serverUser = entry(userMsg("msg_u2", 200)) // T_server 更大
-    const sorted = [streamingAssistant, serverUser, optimisticUser].sort(sortMessages)
-    expect(sorted.map((m) => m.info.id)).toEqual(["msg_u1", "msg_u2", "msg_a1"])
+  it("流式 assistant（created 不早于对方）排最后", () => {
+    const user = entry(userMsg("msg_u1", 100))
+    const streaming = entry(assistantMsg("msg_a1", 200)) // server created，晚于触发消息
+    const done = entry(assistantMsg("msg_a2", 50, 80))
+    const sorted = [streaming, user, done].sort(sortMessages)
+    expect(sorted.map((m) => m.info.id)).toEqual(["msg_a2", "msg_u1", "msg_a1"])
+  })
+
+  it("历史半截消息（completed 永空的 aborted assistant）按 created 排序，不压住更晚消息", () => {
+    // 实测场景：server 对中断消息永远不写 time.completed（msg_0322894ea），
+    // 无条件排尾会让它的 reasoning/tool 永久显示在几小时后的回复下方
+    const aborted = entry(assistantMsg("msg_a1", 100)) // completed 永空
+    const user = entry(userMsg("msg_u2", 200))
+    const reply = entry(assistantMsg("msg_a3", 300, 400))
+    const sorted = [reply, user, aborted].sort(sortMessages)
+    expect(sorted.map((m) => m.info.id)).toEqual(["msg_a1", "msg_u2", "msg_a3"])
   })
 
   it("assistant 完成后按 created 正常排序", () => {
@@ -43,7 +53,7 @@ describe("sortMessages（sort-order 竞态防护）", () => {
 })
 
 describe("sortEntries（乐观消息）", () => {
-  it("乐观消息在已完成消息之后、流式 assistant 之前", () => {
+  it("乐观消息锚定 maxCreated+1 排最后（不受客户端时钟偏差影响）", () => {
     const done: ChatEntry = { kind: "message", data: entry(assistantMsg("msg_a1", 100, 150)) }
     const optimistic: ChatEntry = {
       kind: "optimistic",
@@ -53,8 +63,26 @@ describe("sortEntries（乐观消息）", () => {
     const sorted = sortEntries([streaming, optimistic, done])
     expect(sorted.map((e) => (e.kind === "optimistic" ? e.data.localId : e.data.info.id))).toEqual([
       "msg_a1",
-      "opt_1",
       "msg_a2",
+      "opt_1",
+    ])
+  })
+
+  it("回归：半截消息 + 更晚已完成消息 + 乐观在途不构成排序环（固定分层曾致 sort 未定义）", () => {
+    // 客户端钟落后服务器：乐观 createdAt(50) 早于所有服务器 created
+    const user: ChatEntry = { kind: "message", data: entry(userMsg("msg_u1", 100)) }
+    const half: ChatEntry = { kind: "message", data: entry(assistantMsg("msg_a1", 200)) } // completed 永空
+    const done: ChatEntry = { kind: "message", data: entry(assistantMsg("msg_a2", 300, 350)) }
+    const optimistic: ChatEntry = {
+      kind: "optimistic",
+      data: { optimistic: true, localId: "opt_1", text: "hi", createdAt: 50 },
+    }
+    const sorted = sortEntries([done, optimistic, user, half])
+    expect(sorted.map((e) => (e.kind === "optimistic" ? e.data.localId : e.data.info.id))).toEqual([
+      "msg_u1",
+      "msg_a1",
+      "msg_a2",
+      "opt_1",
     ])
   })
 })

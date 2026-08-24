@@ -79,7 +79,7 @@ src/
 
 ### 消息合并（message-merge.ts）——移植 design-sort-order-race + message-accumulation
 
-- 排序：**流式 assistant（completed 为空）恒排最后**——乐观消息的 created 竞态由排序层兜底
+- 排序：**流式 assistant（completed 为空）排最后，但仅在 created 不早于对方时生效**（§7.12 的 created 守卫）——乐观消息的 created 竞态由排序层兜底
 - 合并原则：`info` 取 REST 权威；`parts` 按 part-id 并集（text 取更长者，tool 状态非 pending 优先）；
   顺序以 REST 为基线、SSE-only 追加尾；**绝不 clear()+addAll()**
 - 窗口区间删除：本地消息 created 落在快照 (min,max) 开区间且不在快照 id 集 → 删（revert 场景）
@@ -267,6 +267,18 @@ v0.2 上翻加载方向（预留）：保持正序 DOM + scroll-anchor 锚定（
 方案：职责分离为两层——`.message-list` 只做全宽滚动容器（flex:1 + overflow-y:auto，scrollRef/onWheel/onScroll 不动）；新增内层 `.message-list-inner` 承接限宽居中（max/min-width + margin:0 auto + padding + gap）与 §7.10 的 `safe flex-end`。贴底语义经 `min-height:100%` 保留：内容不足时内层占满滚动层可见高度，flex-end 才有下压空间（高度 auto 的内层 flex-end 是 no-op，消息会贴顶）。§7.10 的溢出可滚性不受影响（滚动容器为普通 block，内层高度完整计入 scrollHeight）。
 
 改动：`app.css`（两层拆分 + 注释）、`workspace.tsx`（MessageBlock/TypingSlot 包入 `.message-list-inner`）。typecheck 双侧 + vitest 63/63 全绿。
+
+## 7.12 半截消息永久排尾——流式保底加 created 守卫（2026-08-24）
+
+现象：jolly-cabin 会话 `ses_fcdd86e4…`（按 directory 拆分 global 项目）中，一条含 1 reasoning + 2 bash tool 的 assistant 消息被显示在数小时后的最终回复下方，尽管它实际早于那些回复。
+
+根因（API 契约事实）：server 对**中断的 assistant 消息永远不写 `time.completed`**（实测 `msg_0322894ea`：abort 后首个 tool 卡在 `status:"running"`，消息无 finish、completed 恒 null）。`sortMessages` 的流式保底（design-sort-order-race 移植）原为无条件"completed 为空 → 排最后"，于是这类历史半截消息被永久钉在列表末尾，压住所有更晚的消息。移动端 openbuilder 未受此规则影响（其 `_sort()` 为纯 created 排序，流式排尾只作用于列表预览层）。
+
+方案：流式保底加 **created 守卫**——`completed` 为空的 assistant 仅在 `created` 不早于对方时才排后，否则回落 created 比较。活跃流式 assistant 的 created 必然晚于触发它的 user 消息（server 顺序创建），保底语义不受影响；本项目无占位 assistant 合成（消息 info 恒来自 server `message.updated`/REST），不存在"流式 assistant created 更小"的真实场景，原无条件保底编码的是 openbuilder 占位消息竞态，在本项目只会误伤。
+
+**二次修复（code review 发现）**：仅改 `sortMessages` 不够——`sortEntries` 的乐观消息固定分层（乐观 < 一切流式、乐观 > 一切已完成）与 created 守卫构成**排序环**（O < 半截、半截 < 更晚已完成、已完成 < O），环 comparator 下 `Array.prototype.sort` 结果未定义：半截消息会话里每次发送，乐观气泡都可能被插进历史中间（输入区 busy 守卫不拦此场景——半截消息不置 busy）。修复：乐观消息锚定 `maxCreated+1`（不取 `Date.now()`，规避客户端钟偏差），与消息走同一比较器（含流式守卫）。语义变化：乐观不再强制排活跃流式 assistant 之前——输入区 busy 守卫使二者不共存，不可达；若未来放开并发发送，乐观按时间序排流式下方。
+
+改动：`message-merge.ts`（sortMessages 守卫 + sortEntries 统一比较器 + 注释）、`message-merge.test.ts`（改写流式排尾/乐观排序用例为真实场景 + 新增半截消息与排序环回归用例）。typecheck 双侧 + vitest 全绿。
 
 ## 8. 已知限制（v0.1 接受）
 

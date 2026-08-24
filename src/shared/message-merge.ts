@@ -17,14 +17,21 @@ export type ChatEntry =
   | { kind: "message"; data: MessageWithParts }
   | { kind: "optimistic"; data: OptimisticMessage }
 
-/** 稳定排序：user 按 created；assistant 未完成排最后 */
+/**
+ * 稳定排序：user 按 created；流式 assistant（time.completed 为空）排最后。
+ * 流式保底只在「不早于对方 created」时生效：server 会把中断/半截消息的
+ * completed 永远留空（实测 ses_fcdd86e4…/msg_0322894ea：abort 后首个 tool
+ * 卡 running、completed 恒 null），若无条件排最后，这类历史半截消息会被
+ * 永久压在所有更晚消息之下（展示顺序错乱）。活跃流式 assistant 的 created
+ * 必然晚于触发它的 user 消息，created 守卫不影响其排尾。
+ */
 export function sortMessages(a: MessageWithParts, b: MessageWithParts): number {
   const sa = isStreaming(a.info)
   const sb = isStreaming(b.info)
-  if (sa && !sb) return 1
-  if (!sa && sb) return -1
   const ca = a.info.time.created
   const cb = b.info.time.created
+  if (sa && !sb && ca >= cb) return 1
+  if (!sa && sb && cb >= ca) return -1
   if (ca !== cb) return ca - cb
   return a.info.id < b.info.id ? -1 : 1
 }
@@ -33,20 +40,41 @@ function isStreaming(m: Message): boolean {
   return m.role === "assistant" && m.time.completed == null
 }
 
-/** 乐观消息排在流式 assistant 之前、所有已完成消息之后 */
+/**
+ * 乐观消息锚定 maxCreated+1，与消息走**同一比较器**（含流式 created 守卫）。
+ * 不用固定分层（乐观 < 流式、乐观 > 已完成）：分层与 sortMessages 的 created
+ * 守卫构成环（O<半截、半截<更晚已完成、已完成<O），环 comparator 下
+ * Array.prototype.sort 结果未定义——半截消息会话里每次发送乐观气泡都可能
+ * 插进历史中间（§7.12）。锚定值不取 Date.now()：客户端钟与服务器钟可能偏差。
+ * 语义变化：乐观不再强制排活跃流式 assistant 之前——本项输入区有 busy 守卫，
+ * 乐观与活跃流式不共存，不可达（若未来放开并发发送，乐观按时间序排其下）。
+ */
 export function sortEntries(entries: ChatEntry[]): ChatEntry[] {
+  const maxCreated = entries.reduce(
+    (m, e) => (e.kind === "message" ? Math.max(m, e.data.info.time.created) : m),
+    0,
+  )
+  const createdOf = (e: ChatEntry): number =>
+    e.kind === "optimistic" ? maxCreated + 1 : e.data.info.time.created
+  const streamingOf = (e: ChatEntry): boolean =>
+    e.kind === "message" && isStreaming(e.data.info)
   return [...entries].sort((a, b) => {
     if (a.kind === "optimistic" && b.kind === "optimistic") {
       return a.data.createdAt - b.data.createdAt
     }
-    if (a.kind === "optimistic") {
-      // 乐观消息永远不在流式 assistant 之后
-      return b.kind === "message" && isStreaming(b.data.info) ? -1 : 1
+    const sa = streamingOf(a)
+    const sb = streamingOf(b)
+    const ca = createdOf(a)
+    const cb = createdOf(b)
+    if (sa && !sb && ca >= cb) return 1
+    if (!sa && sb && cb >= ca) return -1
+    if (ca !== cb) return ca - cb
+    // created 并列（含毫秒碰撞）：乐观视为最新排后；同为 message 再走稳定 tie-break
+    if (a.kind !== b.kind) return a.kind === "optimistic" ? 1 : -1
+    if (a.kind === "message" && b.kind === "message") {
+      return a.data.info.id < b.data.info.id ? -1 : 1
     }
-    if (b.kind === "optimistic") {
-      return a.kind === "message" && isStreaming(a.data.info) ? 1 : -1
-    }
-    return sortMessages(a.data, b.data)
+    return 0
   })
 }
 
