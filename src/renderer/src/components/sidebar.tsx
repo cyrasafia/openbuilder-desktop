@@ -142,14 +142,14 @@ export function Sidebar() {
 
 /**
  * 会话状态指示器（项目/工作区行右侧）：该作用域未归档、非 subagent 会话的状态。
- * ≤4 个逐会话状态点（busy = 运行色闪烁，参考 Tab/会话列表的 busySessions 逻辑）；
- * >4 个收起为数字（任一 busy 时前置运行点）。靠右浮层覆盖操作按钮，行 hover 时隐藏。
+ * ≤4 个逐会话状态点（busy/retry = 运行色闪烁，消费 sessionStatus 单一事实源）；
+ * >4 个收起为数字（任一进行中时前置运行点）。靠右浮层覆盖操作按钮，行 hover 时隐藏。
  */
 function SessionIndicator({ sessions }: { sessions: Session[] }) {
   const store = useStore()
   const { t } = useI18n()
   if (sessions.length === 0) return null
-  const busyCount = sessions.reduce((n, s) => n + (store.busySessions.has(s.id) ? 1 : 0), 0)
+  const busyCount = sessions.reduce((n, s) => n + (store.isSessionActive(s.id) ? 1 : 0), 0)
   const title = t.sessionIndicatorTitle
     .replace("{count}", String(sessions.length))
     .replace("{busy}", String(busyCount))
@@ -164,7 +164,7 @@ function SessionIndicator({ sessions }: { sessions: Session[] }) {
         sessions.map((s) => (
           <span
             key={s.id}
-            className={"status-dot" + (store.busySessions.has(s.id) ? " running blink" : " idle")}
+            className={"status-dot" + (store.isSessionActive(s.id) ? " running blink" : " idle")}
           />
         ))
       )}

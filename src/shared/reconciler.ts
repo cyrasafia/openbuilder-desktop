@@ -3,7 +3,7 @@
  * 参考 openbuilder design-incremental-reconcile（窗口 K=100、互斥锁、
  * debounce）与 design-sse-reconnect-recovery（reconnecting→connected 触发）。
  */
-import type { Session } from "./api-types"
+import type { Session, SessionStatusValue } from "./api-types"
 import type { RestClient } from "./rest-client"
 import { mergeSnapshotIntoMessages } from "./message-merge"
 import type { MessageWithParts } from "./api-types"
@@ -12,8 +12,16 @@ export interface ReconcilerDeps {
   /** 连接拆除后返回 null（reconcile 直接放弃，不再非空断言） */
   client: () => RestClient | null
   getOpenedDirectories: () => string[]
+  /**
+   * 状态快照目录集 = 打开项目全集（root ∪ sandboxes）。非当前 worktree 无 SSE
+   * 事件通道（订阅集合仅含当前 scope），其 busy/retry 只能靠对账快照纠正——
+   * 若与订阅集合一致，连上的 busy 会话结束后 dots 永久卡亮。
+   */
+  getStatusDirectories: () => string[]
   getActiveSessions: () => Array<{ sessionID: string; directory: string }>
   onSessionsSnapshot: (directory: string, sessions: Session[]) => void
+  /** 目录状态快照；fetch 失败时以 null 回调（调用方保留旧值，防 SS-1） */
+  onStatusSnapshot: (directory: string, statuses: Record<string, SessionStatusValue> | null) => void
   onMessagesSnapshot: (sessionID: string, messages: MessageWithParts[]) => void
   onReconcileStateChange: (active: boolean) => void
   log?: (...args: unknown[]) => void
@@ -72,10 +80,31 @@ export class Reconciler {
         this.d.onSessionsSnapshot(dir, sessions)
       }),
     )
+    // 状态快照逐目录容错：失败目录回传 null（保留旧值），不拖垮其余目录。
+    // 并发受限 2（浏览器对同 host 连接上限 6，5 条 SSE 常驻后仅 ~1 空闲——
+    // 无限扇出会让排队请求从分发起算超时、尾部饿死，见 app-store runLimited 注释）
+    const statusDirs = [...new Set(this.d.getStatusDirectories())]
+    await Reconciler.runLimited(statusDirs, 2, async (dir) => {
+      const statuses = await client.listSessionStatus(dir).catch(() => null)
+      this.d.onStatusSnapshot(dir, statuses)
+    })
     await Promise.all(
       this.d.getActiveSessions().map(async ({ sessionID, directory }) => {
         const msgs = await client.listMessages(sessionID, directory, RECONCILE_WINDOW)
         this.d.onMessagesSnapshot(sessionID, msgs)
+      }),
+    )
+  }
+
+  /** 并发受限执行（REST 连接池约束，与 AppStore.runLimited 同策略） */
+  private static async runLimited<T>(items: T[], limit: number, fn: (item: T) => Promise<void>) {
+    let next = 0
+    await Promise.all(
+      Array.from({ length: Math.min(limit, items.length) }, async () => {
+        while (next < items.length) {
+          const item = items[next++]
+          await fn(item)
+        }
       }),
     )
   }

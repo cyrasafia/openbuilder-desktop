@@ -8,6 +8,7 @@ function fakeClient() {
     listSessions: vi.fn(async () => [
       { id: "ses_1", projectID: "p1", directory: "/proj", time: { created: 1, updated: 2 } },
     ] as Session[]),
+    listSessionStatus: vi.fn(async () => ({ ses_1: { type: "busy" } })),
     listMessages: vi.fn(async () => []),
   } as unknown as RestClient
 }
@@ -16,33 +17,56 @@ function makeReconciler(overrides: Partial<ConstructorParameters<typeof Reconcil
   const client = fakeClient()
   const onSessions = vi.fn()
   const onMessages = vi.fn()
+  const onStatus = vi.fn()
   const onState = vi.fn()
   const r = new Reconciler({
     client: () => client,
     getOpenedDirectories: () => ["/proj"],
+    getStatusDirectories: () => ["/proj"],
     getActiveSessions: () => [{ sessionID: "ses_1", directory: "/proj" }],
     onSessionsSnapshot: onSessions,
+    onStatusSnapshot: onStatus,
     onMessagesSnapshot: onMessages,
     onReconcileStateChange: onState,
     ...overrides,
   })
-  return { r, client, onSessions, onMessages, onState }
+  return { r, client, onSessions, onMessages, onStatus, onState }
 }
 
 describe("Reconciler", () => {
-  it("request → 拉会话与消息快照", async () => {
+  it("request → 拉会话/状态/消息快照；状态失败目录回传 null 不拖垮对账", async () => {
     vi.useFakeTimers()
     try {
-      const { r, onSessions, onMessages, onState } = makeReconciler()
+      const client = fakeClient()
+      ;(client.listSessionStatus as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("boom"))
+      const { r, onSessions, onMessages, onStatus, onState } = makeReconciler({
+        client: () => client,
+      })
       r.request()
       await vi.advanceTimersByTimeAsync(900) // debounce 800ms
       expect(onSessions).toHaveBeenCalledWith(
         "/proj",
         expect.arrayContaining([expect.objectContaining({ id: "ses_1" })]),
       )
+      expect(onStatus).toHaveBeenCalledWith("/proj", null)
       expect(onMessages).toHaveBeenCalledWith("ses_1", [])
       expect(onState).toHaveBeenCalledWith(true)
       expect(onState).toHaveBeenLastCalledWith(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("request → 状态快照成功目录回传 fresh；目录集用 getStatusDirectories（含非订阅 worktree）", async () => {
+    vi.useFakeTimers()
+    try {
+      const { r, onStatus } = makeReconciler({
+        getStatusDirectories: () => ["/proj", "/proj-wt"],
+      })
+      r.request()
+      await vi.advanceTimersByTimeAsync(900)
+      expect(onStatus).toHaveBeenCalledWith("/proj", { ses_1: { type: "busy" } })
+      expect(onStatus).toHaveBeenCalledWith("/proj-wt", { ses_1: { type: "busy" } })
     } finally {
       vi.useRealTimers()
     }
@@ -73,8 +97,10 @@ describe("Reconciler", () => {
       const r = new Reconciler({
         client: () => client,
         getOpenedDirectories: () => ["/proj"],
+        getStatusDirectories: () => ["/proj"],
         getActiveSessions: () => [],
         onSessionsSnapshot: () => {},
+        onStatusSnapshot: () => {},
         onMessagesSnapshot: () => {},
         onReconcileStateChange: onState,
       })

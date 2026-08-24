@@ -17,8 +17,10 @@ describe("Reconciler client 判空", () => {
       const r = new Reconciler({
         client: () => null,
         getOpenedDirectories: () => ["/proj"],
+        getStatusDirectories: () => ["/proj"],
         getActiveSessions: () => [],
         onSessionsSnapshot: () => {},
+        onStatusSnapshot: () => {},
         onMessagesSnapshot: () => {},
         onReconcileStateChange: onState,
       })

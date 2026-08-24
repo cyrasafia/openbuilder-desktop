@@ -9,6 +9,7 @@ import type {
   MessageWithParts,
   Project,
   Session,
+  SessionStatusValue,
   Workspace,
   WorktreeResult,
 } from "./api-types"
@@ -129,6 +130,17 @@ export class RestClient {
 
   listSessions(directory: string, workspace?: string): Promise<Session[]> {
     return this.request<Session[]>(`/session${RestClient.dirQuery(directory, { workspace })}`)
+  }
+
+  /**
+   * 会话状态快照（`GET /session/status?directory=`）。
+   * 契约：返回 {sessionID: status}，且 server 侧 map 在 idle 时删除条目——
+   * 返回里只含非 idle 会话（缺该会话 ⇒ idle）。无 directory 时返回 {}，必须带目录查。
+   */
+  listSessionStatus(directory: string): Promise<Record<string, SessionStatusValue>> {
+    return this.request<Record<string, SessionStatusValue>>(
+      `/session/status${RestClient.dirQuery(directory)}`,
+    )
   }
 
   createSession(directory: string, workspace?: string, title?: string): Promise<Session> {

@@ -67,7 +67,7 @@ sessionStatus: Map<sessionID, 'busy' | 'idle' | 'retry'>
 | SSE `session.status`（`{sessionID, status}`，status = busy/idle/retry） | 实时 | 权威设置（含 retry 态） |
 | SSE `session.idle`（`{sessionID}`） | 实时 | 置 idle（仅状态实际变化时通知，防 spurious idle 抖动——移动端 wasBusy/wasRetry 守卫） |
 | 乐观设置 | `POST /session/{id}/message` 成功 | 立即置 busy（不等事件，消除首字节延迟） |
-| REST `GET /session/status?directory=<dir>` | 冷启动快照 + 重连对账 | **按目录覆盖合并**：成功目录 fresh 权威（返回里缺该会话 ⇒ idle）；失败目录**保留旧值**——严禁 `clear() + addAll()`（SS-1 回归：某目录 fetch 失败返回 `{}` 会把已知 busy 全误清成 idle） |
+| REST `GET /session/status?directory=<dir>` | 冷启动快照 + 重连对账 | **按目录覆盖合并**：成功目录 fresh 权威（返回里缺该会话 ⇒ idle）；失败目录**保留旧值**——严禁 `clear() + addAll()`（SS-1 回归：某目录 fetch 失败返回 `{}` 会把已知 busy 全误清成 idle）。**快照目录集 = 打开项目全集（root ∪ sandboxes）**：非当前 worktree 无 SSE 事件通道（订阅集合仅含当前 scope，见 design-v0.1-implementation 连接池约束），其 busy 结束后只能靠对账快照纠正——对账目录集若与订阅集一致，左栏 dots 会永久卡亮（对齐移动端 `_fetchAllStatuses` 覆盖全部目录的语义） |
 | 消息 finish 推断 | 任何 `GET /session/{id}/message` 结果处理时 | 末条 assistant 且 `finish === 'stop' \|\| 'error'` ⇒ idle；`'tool-calls'`（中间步骤）与 `null`（生成中）**不触发**（移动端 D-SS-A/B 已验证：进行中消息在 REST 可见且 finish=null） |
 
 - 状态不落盘（时效性强，磁盘 busy 是误导；冷启动显示 idle 直到 REST 返回）；
@@ -112,11 +112,16 @@ sessionStatus: Map<sessionID, 'busy' | 'idle' | 'retry'>
 
 发消息后 SSE 断开且重连成功前：乐观 busy 无自动复位路径（`session.idle` 丢失、reconcile 未触发）。依赖状态栏 degraded 提示 + 手动刷新（刷新走消息 finish 推断兜底）。v0.2 可评估发送后延迟 status 检查——移动端 design-session-status 同结论，不重复发明。
 
-## 9. 涉及文件（规划，待骨架建立后实现）
+另一残留：非当前 worktree 的 busy 结束若期间无任何 SSE 重连，对账不触发，该目录左栏 dots 保持到下次 scope 切换/项目重开（对账快照目录集虽覆盖全集，但只在重连时跑）。v0.2 可评估低频周期刷新；移动端同样只在 bootstrap/reconcile 拉取，不超前发明。
+
+## 9. 涉及文件（已实现）
 
 | 位置 | 改动 |
 |---|---|
-| renderer client 层（SSE 订阅器） | 分发 `session.status` / `session.idle` 事件（契约：`opencode_openapi.json`，容忍未知事件透传忽略） |
-| renderer store | `sessionStatus` 映射 + 按目录覆盖合并 + finish 推断 + 事件闸门过滤 |
-| renderer ChatView | 消息列表末尾 `TypingSlot`（常驻 28px）+ `TypingIndicator`（三点）/ retry 呈现 |
-| i18n catalog | "正在生成…" 中英 key |
+| `src/shared/api-types.ts` | `SessionStatusValue` 联合类型 + `session.status` / `session.idle` 事件声明（契约：`opencode_openapi.json`，未知事件透传忽略） |
+| `src/shared/rest-client.ts` | `listSessionStatus(directory)`（无 directory 返回 `{}`，必须带目录查） |
+| `src/shared/session-status.ts` | 纯逻辑层：按目录覆盖合并（SS-1 防回归）+ finish 终态推断 |
+| `src/shared/reconciler.ts` | 对账附加逐目录状态快照：`getStatusDirectories` = 打开项目全集，并发受限 2（连接池约束），失败目录回传 null |
+| `src/renderer/src/store/app-store.ts` | `sessionStatus` 映射（单一事实源）+ 5 类来源接入 + 在途快照闸门（`isOpenedDirectory`） |
+| `src/renderer/src/components/workspace.tsx` | 消息列表末尾 `TypingSlot`（常驻 28px）+ 三点 / retry 呈现 |
+| `src/renderer/src/i18n/index.ts` | "正在生成…" / "重试中" / "重试中：{message}" 中英 key |

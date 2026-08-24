@@ -454,6 +454,96 @@
   word-break: break-word;
 }
 
+/* ---------- 输入中提示（TypingSlot，design-typing-indicator §5） ----------
+ * 常驻固定高 28px（4px 网格 × 7）+ overflow hidden：busy ⇄ idle 零布局变化（INV-1）；
+ * idle 时兼作消息流底部呼吸留白；显隐只走 opacity/visibility，布局属性禁止参与动画 */
+.typing-slot {
+  height: 28px;
+  overflow: hidden;
+  flex-shrink: 0;
+  display: grid;
+}
+
+/* dots 与 retry 同格重叠（grid-area: 1/1）：visibility:hidden 保留占位，
+ * 不叠放会把 retry 呈现顶右 ~26px（违反 §5 左对齐 assistant 内容列） */
+.typing-dots,
+.typing-retry {
+  grid-area: 1 / 1;
+  align-self: center;
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 150ms,
+    visibility 150ms;
+}
+
+.typing-dots.on,
+.typing-retry.on {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* 三点：6px/间距 4/outline 色（次级提示语义；status.running 留给状态点不混用），
+ * opacity 脉冲 0.3↔1.0、900ms、相位差 300ms（沿用移动端节奏参数），纯 CSS 无 JS 定时器 */
+.typing-dots {
+  gap: 4px;
+}
+
+.typing-dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--outline);
+  animation: typing-pulse 900ms infinite;
+}
+
+.typing-dots i:nth-child(2) {
+  animation-delay: 300ms;
+}
+
+.typing-dots i:nth-child(3) {
+  animation-delay: 600ms;
+}
+
+@keyframes typing-pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* retry 呈现：16px 旋转图标 + 单行截断文案 ui-sm，高度 ≤ 28px */
+.typing-retry {
+  gap: 6px;
+}
+
+.typing-spinner {
+  color: var(--outline);
+  flex-shrink: 0;
+  animation: typing-spin 1s linear infinite;
+}
+
+.typing-retry-text {
+  font-size: var(--text-sm);
+  color: var(--outline);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@keyframes typing-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* ---------- markdown（.md = streamdown 根；令牌语义见 DESIGN.md appColors） ---------- */
 .md {
   display: flex;

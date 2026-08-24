@@ -1,8 +1,16 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { LoaderCircle } from "lucide-react"
 import { useI18n, useStore } from "../app"
-import { relativeTime } from "../i18n"
+import { format, relativeTime } from "../i18n"
 import type { ChatEntry } from "@shared/message-merge"
-import type { CommandInfo, Part, Session, SubtaskPart, ToolPart } from "@shared/api-types"
+import type {
+  CommandInfo,
+  Part,
+  Session,
+  SessionStatusValue,
+  SubtaskPart,
+  ToolPart,
+} from "@shared/api-types"
 import { Markdown } from "./markdown"
 
 export function Workspace() {
@@ -24,7 +32,7 @@ export function Workspace() {
             className={"tab" + (tab.key === store.activeTabKey ? " active" : "")}
             onClick={() => store.setActiveTab(tab.key)}
           >
-            {tab.kind === "chat" && store.busySessions.has(tab.key.slice(5)) && (
+            {tab.kind === "chat" && store.isSessionActive(tab.key.slice(5)) && (
               <span className="status-dot running" />
             )}
             <span className="tab-label">{tab.title || t.untitled}</span>
@@ -34,7 +42,7 @@ export function Workspace() {
               onClick={(e) => {
                 e.stopPropagation()
                 if (tab.kind === "chat") {
-                  const streaming = store.busySessions.has(tab.key.slice(5))
+                  const streaming = store.isSessionActive(tab.key.slice(5))
                   if (streaming && !confirm(t.confirmCloseStreamingTab)) return
                   void store.closeChatTab(tab.key.slice(5), { streaming })
                 } else {
@@ -170,7 +178,8 @@ function ChatView({ sessionID }: { sessionID: string }) {
   const { t } = useI18n()
   const [draft, setDraft] = useState("")
   const entries = store.chatEntries(sessionID)
-  const busy = store.busySessions.has(sessionID)
+  const status = store.statusOf(sessionID)
+  const busy = status.type !== "idle"
   const scrollRef = useRef<HTMLDivElement>(null)
   const pinnedToBottom = useRef(true)
   const lastEntryCount = useRef(0)
@@ -281,6 +290,8 @@ function ChatView({ sessionID }: { sessionID: string }) {
         {entries.map((entry) => (
           <MessageBlock key={entry.kind === "optimistic" ? entry.data.localId : entry.data.info.id} entry={entry} />
         ))}
+        {/* 常驻固定高槽位（INV-1）：显隐只动槽内内容，消息流总高度不变（design-typing-indicator §3） */}
+        <TypingSlot status={status} />
       </div>
       {cmdMode && (
         <CommandHints
@@ -398,6 +409,41 @@ function CommandHints({
         </button>
       ))}
       <div className="command-keys mono">{t.commandHintKeys}</div>
+    </div>
+  )
+}
+
+/**
+ * 输入中提示常驻槽位（design-typing-indicator §3）：
+ * - 高度恒定 28px + overflow hidden——busy ⇄ idle 切换零布局变化（INV-1）；
+ * - idle 时兼作消息流底部呼吸留白；空会话时同样无害；
+ * - 显隐只走 opacity/visibility（150ms），布局属性不参与动画；
+ * - retry 在同槽位呈现（旋转图标 + 单行截断文案，高度 ≤ H）。
+ */
+function TypingSlot({ status }: { status: SessionStatusValue }) {
+  const { t } = useI18n()
+  const busy = status.type === "busy"
+  const retry = status.type === "retry"
+  const retryText = retry
+    ? status.message
+      ? format(t.retryingMessage, { message: status.message })
+      : t.retrying
+    : ""
+  return (
+    <div
+      className="typing-slot"
+      role="status"
+      aria-label={busy ? t.generating : retry ? retryText : undefined}
+    >
+      <span className={"typing-dots" + (busy ? " on" : "")} aria-hidden="true">
+        <i />
+        <i />
+        <i />
+      </span>
+      <span className={"typing-retry" + (retry ? " on" : "")}>
+        <LoaderCircle className="typing-spinner" size={16} aria-hidden="true" />
+        <span className="typing-retry-text">{retryText}</span>
+      </span>
     </div>
   )
 }

@@ -62,6 +62,9 @@ export interface AssistantMessage {
   role: "assistant"
   time: { created: number; completed?: number }
   error?: { type?: string; message?: string } | null
+  /** 终态：stop（正常）/ error（异常）；tool-calls（中间步骤）与 null（生成中）非终态。
+   *  (string & {}) 防联合类型坍缩——保留已知字面量的补全提示，同时容忍未来新值 */
+  finish?: "stop" | "error" | "tool-calls" | (string & {}) | null
   [k: string]: unknown
 }
 
@@ -195,12 +198,37 @@ export interface HealthInfo {
   version: string
 }
 
+/** 会话状态（SSE session.status / GET /session/status 的值；server 仅保留非 idle 项） */
+export type SessionStatusValue =
+  | { type: "busy" }
+  | { type: "idle" }
+  | {
+      type: "retry"
+      attempt: number
+      message: string
+      next: number
+      action?: {
+        reason: string
+        provider: string
+        title: string
+        message: string
+        label: string
+        link?: string
+      }
+    }
+
 /** SSE 事件（/event）。仅声明 v0.1 消费的事件，未知类型透传忽略。 */
 export type OpencodeEvent =
   | { id: string; type: "server.connected"; properties: Record<string, unknown> }
   | { id: string; type: "session.created"; properties: { sessionID: string; info: Session } }
   | { id: string; type: "session.updated"; properties: { sessionID: string; info: Session } }
   | { id: string; type: "session.deleted"; properties: { sessionID: string; info: Session } }
+  | {
+      id: string
+      type: "session.status"
+      properties: { sessionID: string; status: SessionStatusValue }
+    }
+  | { id: string; type: "session.idle"; properties: { sessionID: string } }
   | {
       id: string
       type: "message.updated"

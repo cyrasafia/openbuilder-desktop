@@ -36,6 +36,10 @@ const zh = {
   copy: "复制",
   copied: "已复制",
   retry: "重试",
+  // 输入中提示（design-typing-indicator §5；文案对齐移动端 ARB 同场景）
+  generating: "正在生成…",
+  retrying: "重试中",
+  retryingMessage: "重试中：{message}",
   // 斜杠命令
   commandListLoading: "正在获取命令…",
   commandHintKeys: "↑↓ 选择　Enter/Tab 补全　Esc 关闭",
@@ -123,6 +127,9 @@ const en: typeof zh = {
   copy: "Copy",
   copied: "Copied",
   retry: "Retry",
+  generating: "Generating…",
+  retrying: "Retrying",
+  retryingMessage: "Retrying: {message}",
   commandListLoading: "Loading commands…",
   commandHintKeys: "↑↓ select  Enter/Tab complete  Esc close",
   filesTitle: "Files",

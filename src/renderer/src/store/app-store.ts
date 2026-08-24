@@ -6,9 +6,11 @@ import { RestClient } from "@shared/rest-client"
 import { SseSubscriber, type SseStatus } from "@shared/sse-subscriber"
 import { Reconciler } from "@shared/reconciler"
 import { mergeSessionsSnapshot } from "@shared/session-merge"
+import { inferIdleFromMessages, mergeStatusSnapshot } from "@shared/session-status"
 import {
   mergeSnapshotIntoMessages,
   sortEntries,
+  sortMessages,
   type ChatEntry,
   type OptimisticMessage,
 } from "@shared/message-merge"
@@ -29,6 +31,7 @@ import type {
   Part,
   Project,
   Session,
+  SessionStatusValue,
   Workspace,
 } from "@shared/api-types"
 
@@ -80,7 +83,14 @@ export class AppStore {
   sessionsByProject = new Map<string, Map<string, Session>>()
   messagesBySession = new Map<string, Map<string, MessageWithParts>>()
   optimisticBySession = new Map<string, OptimisticMessage[]>()
-  busySessions = new Set<string>()
+  /**
+   * 会话状态（busy/idle/retry）——纯客户端内存映射，单一事实源：
+   * Tab 状态点、左栏指示器、消息流 TypingSlot 都消费它（design-typing-indicator §4）。
+   * idle 不落 map（缺省即 idle）；来源见 setSessionStatus/applyStatusSnapshot。
+   */
+  sessionStatus = new Map<string, SessionStatusValue>()
+  /** sessionID → 状态来源目录（REST 按目录覆盖合并的权威边界） */
+  private statusSources = new Map<string, string>()
   // 斜杠命令注册表缓存（全局单份 per-server，目录隔离见 command-cache.ts）
   commandCache: CommandCacheState = initialCommandCache()
 
@@ -227,7 +237,8 @@ export class AppStore {
     this.messagesBySession.clear()
     this.pendingPartsMap.clear()
     this.optimisticBySession.clear()
-    this.busySessions.clear()
+    this.sessionStatus.clear()
+    this.statusSources.clear()
     this.tabs = []
     this.activeTabKey = null
     this.commandCache = initialCommandCache()
@@ -399,6 +410,29 @@ export class AppStore {
         // 会话不存在了：对应 Tab 直接关 + 状态卸载
         this.closeTab(`chat:${info.id}`, { archive: false })
         this.cleanupSessionState(info.id)
+        this.setSessionStatus(info.id, { type: "idle" })
+        break
+      }
+      case "session.status": {
+        // 权威状态设置（含 retry 态）；事件到达的目录流即其作用域。
+        // 闸门（§4 事件闸门）：closeProject purge 与 startSse 重订之间有 async 窗口，
+        // 已关项目的迟到事件在此丢弃，防复活刚 purge 的条目
+        if (!this.isOpenedDirectory(directory)) return
+        const { sessionID, status } = ev.properties as {
+          sessionID: string
+          status: SessionStatusValue
+        }
+        if (!sessionID || !status?.type) return
+        this.setSessionStatus(sessionID, status, directory)
+        break
+      }
+      case "session.idle": {
+        // 仅状态实际变化时置 idle（防 spurious idle 抖动——移动端 wasBusy/wasRetry 守卫）；
+        // 无条目 = 已是缺省 idle，直接忽略。闸门同 session.status
+        if (!this.isOpenedDirectory(directory)) return
+        const { sessionID } = ev.properties as { sessionID: string }
+        if (!sessionID || !this.sessionStatus.has(sessionID)) return
+        this.setSessionStatus(sessionID, { type: "idle" }, directory)
         break
       }
       case "message.updated": {
@@ -419,11 +453,8 @@ export class AppStore {
         if (info.role === "user") {
           this.clearOptimistic(sessionID)
         }
-        if (info.role === "assistant") {
-          const completed = info.time.completed != null
-          if (completed) this.busySessions.delete(sessionID)
-          else this.busySessions.add(sessionID)
-        }
+        // busy/retry 不再从 message.completed 推断（中间步骤 tool-calls 完成会造成
+        // dots 闪烁）：状态由 session.status/session.idle 事件权威驱动（design-typing-indicator §4）
         break
       }
       case "message.removed": {
@@ -535,6 +566,56 @@ export class AppStore {
     }
   }
 
+  // ============ 会话状态（design-typing-indicator §4） ============
+
+  statusOf(sessionID: string): SessionStatusValue {
+    return this.sessionStatus.get(sessionID) ?? { type: "idle" }
+  }
+
+  /** busy/retry 均视为进行中（Tab 状态点、composer 停止按钮、关 Tab 确认） */
+  isSessionActive(sessionID: string): boolean {
+    return this.sessionStatus.has(sessionID)
+  }
+
+  private setSessionStatus(sessionID: string, status: SessionStatusValue, directory?: string) {
+    if (status.type === "idle") {
+      this.sessionStatus.delete(sessionID)
+      this.statusSources.delete(sessionID)
+    } else {
+      this.sessionStatus.set(sessionID, status)
+      if (directory) this.statusSources.set(sessionID, directory)
+    }
+  }
+
+  /**
+   * REST 状态快照按目录覆盖合并（冷启动/重连对账/项目打开）。
+   * 失败目录（null）保留旧值——严禁 clear()+addAll()（SS-1 回归）。
+   */
+  private applyStatusSnapshot(directory: string, fresh: Record<string, SessionStatusValue> | null) {
+    if (!fresh) return
+    const merged = mergeStatusSnapshot(this.sessionStatus, this.statusSources, directory, fresh)
+    this.sessionStatus = merged.status
+    this.statusSources = merged.sources
+  }
+
+  /** 卸载目录级状态（关项目/删工作区：该目录来源的状态随会话状态一并卸载） */
+  private purgeStatusForDirectories(dirs: string[]) {
+    const set = new Set(dirs)
+    for (const [sid, dir] of this.statusSources) {
+      if (set.has(dir)) {
+        this.statusSources.delete(sid)
+        this.sessionStatus.delete(sid)
+      }
+    }
+  }
+
+  /** 目录是否仍属于某个打开项目（root 或其 worktree）——在途状态快照的闸门 */
+  private isOpenedDirectory(dir: string): boolean {
+    return this.openedProjects.some(
+      (p) => p.worktree === dir || (p.sandboxes ?? []).includes(dir),
+    )
+  }
+
   // ============ 项目/工作区 ============
 
   get openedProjects(): Project[] {
@@ -608,10 +689,13 @@ export class AppStore {
       ps.currentProjectId = remaining[0]?.id ?? null
       ps.currentWorkspaceId = null
     }
-    // 卸载该项目的会话状态（关闭 = 不展示 + 不更新）
+    // 卸载该项目的会话状态（关闭 = 不展示 + 不更新）；状态随目录一并卸载（project-scoped）
     this.sessionsByProject.delete(projectId)
-    // 该项目的 chat Tab 随之关闭（仅关 Tab，不归档——归档只发生在显式关闭 Tab）
     const project = this.projects.find((p) => p.id === projectId)
+    if (project) {
+      this.purgeStatusForDirectories([project.worktree, ...(project.sandboxes ?? [])])
+    }
+    // 该项目的 chat Tab 随之关闭（仅关 Tab，不归档——归档只发生在显式关闭 Tab）
     for (const tab of [...this.tabs]) {
       if (tab.kind !== "chat") continue
       if (tab.projectId === projectId) {
@@ -687,12 +771,13 @@ export class AppStore {
     this.emit()
   }
 
-  /** 卸载单个会话的运行时状态（关 Tab/删会话/切项目时调用，防无界增长） */
+  /** 卸载单个会话的运行时状态（关 Tab/删会话/切项目时调用，防无界增长）。
+   *  注意：sessionStatus 不在此卸载——状态生命周期是 project-scoped（左栏指示器仍
+   *  消费它），只在关项目/删工作区/会话删除/拆连接时清理；idle 条目本身不落 map。 */
   private cleanupSessionState(sessionID: string) {
     this.messagesBySession.delete(sessionID)
     this.pendingPartsMap.delete(sessionID)
     this.optimisticBySession.delete(sessionID)
-    this.busySessions.delete(sessionID)
   }
 
   private resetFileTree() {
@@ -705,6 +790,8 @@ export class AppStore {
    * 拉取项目会话快照：项目根 + 各 worktree 目录**逐目录**拉取（实测
    * /session?directory=X 精确匹配，项目根快照不含 worktree 会话，切进工作区/
    * 左栏指示器都依赖 worktree 目录有自己的快照）；合并按 directory 分域。
+   * 同一批目录附带拉会话状态快照（GET /session/status，冷启动/项目打开路径；
+   * 重连对账由 Reconciler 负责）。
    */
   async refreshSessionsForProject(project: Project) {
     const client = this.client
@@ -713,6 +800,12 @@ export class AppStore {
     await AppStore.runLimited(dirs, 3, async (dir) => {
       const sessions = await client.listSessions(dir).catch(() => [] as Session[])
       this.applySessionsSnapshot(project.id, dir, sessions)
+      const statuses = await client.listSessionStatus(dir).catch(() => null)
+      // 闸门：在途快照落地时项目可能已关闭/目录可能已删——过期状态直接丢弃
+      const still = this.openedProjects.find((p) => p.id === project.id)
+      if (still && (still.worktree === dir || (still.sandboxes ?? []).includes(dir))) {
+        this.applyStatusSnapshot(dir, statuses)
+      }
     })
   }
 
@@ -744,16 +837,14 @@ export class AppStore {
       await this.client.removeWorktree(this.currentProject.worktree, directory)
       // worktree 列表数据源是 Project.sandboxes，重拉项目列表同步
       await this.refreshWorkspacesForProject(this.currentProject)
-      // 卸载已删目录的会话（目录已出 sandboxes，此后无快照/订阅通道覆盖它）
+      // 卸载已删目录的会话与状态（目录已出 sandboxes，此后无快照/订阅通道覆盖它）
       const map = this.sessionsByProject.get(this.currentProject.id)
       if (map) {
         for (const [id, s] of map) {
-          if (s.directory === directory) {
-            map.delete(id)
-            this.busySessions.delete(id)
-          }
+          if (s.directory === directory) map.delete(id)
         }
       }
+      this.purgeStatusForDirectories([directory])
       const ps = this.projectStateFor()
       if (ps.currentWorkspaceId === directory) {
         ps.currentWorkspaceId = null
@@ -868,23 +959,13 @@ export class AppStore {
     }
     pending.clear()
     this.messagesBySession.set(sessionID, merged)
-    this.reevaluateBusy(sessionID, merged)
-    this.emit()
-  }
-
-  /** busy 重估：仅当存在未完成 assistant 才 busy（防断线丢事件后永久卡 busy） */
-  private reevaluateBusy(sessionID: string, messages?: Map<string, MessageWithParts>) {
-    const msgs = messages ?? this.messagesBySession.get(sessionID)
-    if (!msgs) return
-    let busy = false
-    for (const m of msgs.values()) {
-      if (m.info.role === "assistant" && m.info.time.completed == null) {
-        busy = true
-        break
-      }
+    // finish 推断（design-typing-indicator §4 来源 5）：末条 assistant 终态 ⇒ idle；
+    // tool-calls/null 不触发（进行中消息在 REST 可见，D-SS-A）——兜底断线丢
+    // session.idle 的场景（手动刷新/激活重拉）
+    if (inferIdleFromMessages([...merged.values()].sort(sortMessages).map((m) => m.info))) {
+      this.setSessionStatus(sessionID, { type: "idle" })
     }
-    if (busy) this.busySessions.add(sessionID)
-    else this.busySessions.delete(sessionID)
+    this.emit()
   }
 
   async archiveSession(sessionID: string): Promise<boolean> {
@@ -944,6 +1025,10 @@ export class AppStore {
     this.emit()
     try {
       await this.client.promptAsync(sessionID, session.directory, [{ type: "text", text }])
+      // 乐观 busy（design-typing-indicator §4 来源 3）：不等 session.status 事件，
+      // 消除首字节延迟——dots 于预留槽内立即出现
+      this.setSessionStatus(sessionID, { type: "busy" }, session.directory)
+      this.emit()
       return { ok: true }
     } catch (e) {
       // 撤回乐观 + 提示（写操作不自动重试）；connectionError 经状态栏可见
@@ -1210,6 +1295,15 @@ export class AppStore {
     this.reconciler = new Reconciler({
       client: () => this.client,
       getOpenedDirectories: () => this.subscriptionDirectories(),
+      // 状态快照目录集 = 打开项目全集（非当前 worktree 无 SSE 通道，stale busy 靠这里纠正）
+      getStatusDirectories: () => {
+        const dirs = new Set<string>()
+        for (const p of this.openedProjects) {
+          dirs.add(p.worktree)
+          for (const d of p.sandboxes ?? []) dirs.add(d)
+        }
+        return [...dirs]
+      },
       getActiveSessions: () =>
         this.tabs
           .filter((t) => t.kind === "chat")
@@ -1225,20 +1319,23 @@ export class AppStore {
         for (const [pid, list] of byProject) {
           this.applySessionsSnapshot(pid, dir, list)
         }
-        // 无 Tab 的 busy 会话：会话快照到达即重置（若仍在流式，后续事件会重新置位）
-        const tabSessions = new Set(
-          this.tabs.filter((t) => t.kind === "chat").map((t) => t.key.slice(5)),
-        )
-        for (const sid of [...this.busySessions]) {
-          if (!tabSessions.has(sid)) this.busySessions.delete(sid)
-        }
+        // 旧"无 Tab busy 重置"启发式移除：权威修正由下方 onStatusSnapshot 的
+        // 按目录覆盖合并承担（失败目录保留旧值，不再有 SS-1 式误清）
+      },
+      onStatusSnapshot: (dir, statuses) => {
+        // 闸门：对账在途时项目可能已关/工作区可能已删——过期状态丢弃，
+        // 防复活 closeProject/removeWorkspace 刚 purge 掉的条目（与 sessions 快照同规则）
+        if (!this.isOpenedDirectory(dir)) return
+        this.applyStatusSnapshot(dir, statuses)
       },
       onMessagesSnapshot: (sessionID, msgs) => {
         const local = this.messagesBySession.get(sessionID) ?? new Map()
         const merged = mergeSnapshotIntoMessages(local, msgs)
         this.messagesBySession.set(sessionID, merged)
-        // 对账后重估 busy（断线期间完成的会话不再卡 busy）
-        this.reevaluateBusy(sessionID, merged)
+        // finish 推断兜底（断线期间完成的会话不再卡 busy）
+        if (inferIdleFromMessages([...merged.values()].sort(sortMessages).map((m) => m.info))) {
+          this.setSessionStatus(sessionID, { type: "idle" })
+        }
       },
       onReconcileStateChange: (active) => {
         this.reconciling = active
