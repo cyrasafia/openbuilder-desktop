@@ -31,6 +31,8 @@ export interface StoreShape {
     string,
     { agent?: string; model?: ModelRef }
   >
+  /** 消息流思考（reasoning）显隐，默认隐藏（同移动端 showThinking） */
+  "chat.showThinking": boolean
 }
 
 export interface ConnectionProfile {

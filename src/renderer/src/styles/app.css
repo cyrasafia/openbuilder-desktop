@@ -1796,6 +1796,37 @@
   margin: 8px 0;
 }
 
+/* 设置行内开关（checkbox）：横排，不受 .form-label input 的 32px 高度规则影响 */
+.settings-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 14px 0 4px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.settings-check input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+.settings-check-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--text-md);
+  color: var(--on-surface);
+}
+
+.settings-check-hint {
+  font-size: var(--text-sm);
+  color: var(--on-surface-variant);
+}
+
 /* 设置 */
 .settings-tabs {
   display: flex;

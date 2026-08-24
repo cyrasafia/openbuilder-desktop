@@ -728,6 +728,7 @@ function QuestionCard({
 
 function MessageBlock({ entry }: { entry: ChatEntry }) {
   const { t } = useI18n()
+  const store = useStore()
 
   if (entry.kind === "optimistic") {
     return (
@@ -747,7 +748,8 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
   }>
   // 斜杠命令回显：subtask part（展开 prompt 在 prompt 字段，text 恒空）
   const subtasks = parts.filter((p) => p.type === "subtask") as SubtaskPart[]
-  const reasonings = parts.filter((p) => p.type === "reasoning")
+  // 思考默认隐藏（设置开关控制，同移动端 showThinking；数据保留，仅不渲染）
+  const reasonings = store.showThinking ? parts.filter((p) => p.type === "reasoning") : []
   const tools = parts.filter((p) => p.type === "tool") as ToolPart[]
   const errored = info.role === "assistant" && info.error
 

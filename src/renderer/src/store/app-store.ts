@@ -104,6 +104,8 @@ export class AppStore {
   tabMemory: Record<string, Record<string, ScopeTabMemory>> = {}
   themeMode: "auto" | "dark" | "light" = "auto"
   localeMode: "auto" | "zh" | "en" = "auto"
+  /** 消息流思考（reasoning）显隐——默认隐藏，切换即时生效（数据仍在 store，只是不渲染） */
+  showThinking = false
 
   // ---- 连接运行时 ----
   connectionState: ConnectionState = "disconnected"
@@ -191,6 +193,7 @@ export class AppStore {
     this.themeMode = (await window.desktop.storeGet("theme.mode")) ?? "auto"
     this.localeMode = (await window.desktop.storeGet("locale.mode")) ?? "auto"
     this.defaults = (await window.desktop.storeGet("model.defaults")) ?? {}
+    this.showThinking = (await window.desktop.storeGet("chat.showThinking")) ?? false
 
     if (this.activeProfileId) {
       await this.connect()
@@ -1929,6 +1932,12 @@ export class AppStore {
   async setLocaleMode(mode: "auto" | "zh" | "en") {
     this.localeMode = mode
     await window.desktop.storeSet("locale.mode", mode)
+    this.emit()
+  }
+
+  async setShowThinking(value: boolean) {
+    this.showThinking = value
+    await window.desktop.storeSet("chat.showThinking", value)
     this.emit()
   }
 

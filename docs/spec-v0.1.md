@@ -7,7 +7,7 @@
 | # | 功能 | 说明 |
 |---|------|------|
 | 1 | 服务器配置 | 连接配置（profile）管理：attach 模式（URL + 凭据）为主；managed 模式（发现并 spawn 本机 opencode serve） |
-| 2 | 基础聊天 | 会话内发消息、流式接收回复（文本部分，assistant 文本与 reasoning 以 markdown 渲染，选型 streamdown 见 design-architecture §5；无语法高亮）；工具调用折叠为占位符，不展开渲染；会话进行中在消息流末尾显示输入中提示（固定预留槽位，显隐不引起消息位移，见 [design-typing-indicator.md](design-typing-indicator.md)） |
+| 2 | 基础聊天 | 会话内发消息、流式接收回复（文本部分，assistant 文本与 reasoning 以 markdown 渲染，选型 streamdown 见 design-architecture §5；无语法高亮）；**reasoning 默认隐藏**，设置弹窗"显示思考"开关控制显隐（同移动端 showThinking，数据保留仅控制渲染）；工具调用折叠为占位符，不展开渲染；会话进行中在消息流末尾显示输入中提示（固定预留槽位，显隐不引起消息位移，见 [design-typing-indicator.md](design-typing-indicator.md)） |
 | 2b | 待处理卡片（授权/问题） | agent 请求人工介入时在会话底部弹卡片应答（一次一张、队列计数），左栏/Tab/会话列表指示器同步 waiting 态（见 [design-pending-cards.md](design-pending-cards.md)） |
 | 3 | 项目管理 | 项目全集 = opencode 数据库所有项目（`GET /project`）；**打开/关闭为客户端本地状态**（按 profile 持久化），打开 ∪ 关闭 = 全集。打开 = 左栏展示 + 实时更新（事件应用）；关闭 = 不展示 + 事件忽略不更新，重开走 REST 快照 |
 | 3b | 工作区（worktree） | 工作区从属于项目，左栏项目下二级展示；会话列表、文件树均按 工作区 维度过滤（`?workspace=` 参数）。列表数据源 `Project.sandboxes`（`GET /project` 附带）；**创建 `POST /experimental/worktree`（名称可空=server 随机 slug；成功后默认切换到新 worktree）/ 删除 `DELETE /experimental/worktree` 均为 server 原生操作，v0.1 完整实现**（experimental API，契约不稳定需容忍；**不用** `/experimental/workspace` 的 create，其契约不稳定） |

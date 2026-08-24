@@ -23,7 +23,7 @@ export function SettingsDialog() {
             {t.connectionTitle}
           </button>
           <button className={tab === "appearance" ? "active" : ""} onClick={() => setTab("appearance")}>
-            {t.theme} / {t.language}
+            {t.appearanceTitle}
           </button>
           <button className={tab === "defaults" ? "active" : ""} onClick={() => setTab("defaults")}>
             {t.defaultsTitle}
@@ -228,6 +228,17 @@ function AppearanceSettings() {
           <option value="zh">{t.langZh}</option>
           <option value="en">{t.langEn}</option>
         </select>
+      </label>
+      <label className="settings-check">
+        <input
+          type="checkbox"
+          checked={store.showThinking}
+          onChange={(e) => void store.setShowThinking(e.target.checked)}
+        />
+        <span className="settings-check-text">
+          <span>{t.showThinking}</span>
+          <span className="settings-check-hint">{t.showThinkingHint}</span>
+        </span>
       </label>
     </div>
   )
