@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useRef, useState, type WheelEvent } from "react"
 import { LoaderCircle } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import { format, relativeTime } from "../i18n"
@@ -199,8 +199,22 @@ function ChatView({ sessionID }: { sessionID: string }) {
   const onScroll = () => {
     const el = scrollRef.current
     if (!el) return
-    // 距底 <40px 视为"钉在底部"；用户上滚即解除跟随
-    pinnedToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+    // 仅"吸附"：距底 <40px 恢复跟随。不在此清除 pinned——scroll 事件无法区分
+    // 用户滚动与程序滚动/smooth 动画：动画进行中每帧距底 >40px，若据此清 pinned，
+    // 流式更新会被误判"用户上滚"而停止跟随，且 smooth 目标是过期 scrollHeight、
+    // 动画终点仍距底 >40px，没有任何事件把 pinned 置回 → 跟随死锁
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) pinnedToBottom.current = true
+  }
+
+  // 解除跟随只认用户主动上滚（wheel deltaY<0）。滚动条已隐藏（app.css），
+  // wheel/触控板是唯一用户上滚入口；Chromium 已归一化自然滚动方向，deltaY<0 恒为"向上看历史"。
+  // 两类误触排除：ctrlKey=缩放手势（Ctrl+wheel 放大/触控板 pinch-out）；
+  // 内容未溢出时上滚是视觉 no-op——若此时清 pinned，流式增长越过容器后无
+  // scroll 事件可再吸附（scrollTop 未变），跟随将停摆到用户手动滚底
+  const onWheel = (e: WheelEvent) => {
+    if (e.ctrlKey) return
+    const el = scrollRef.current
+    if (e.deltaY < 0 && el && el.scrollHeight - el.clientHeight > 0) pinnedToBottom.current = false
   }
 
   // useLayoutEffect：DOM 变更后、绘制前同步置底，首帧即到底、无滚动动画
@@ -286,7 +300,7 @@ function ChatView({ sessionID }: { sessionID: string }) {
 
   return (
     <div className="chat-view">
-      <div className="message-list scroll" ref={scrollRef} onScroll={onScroll}>
+      <div className="message-list scroll" ref={scrollRef} onScroll={onScroll} onWheel={onWheel}>
         {entries.map((entry) => (
           <MessageBlock key={entry.kind === "optimistic" ? entry.data.localId : entry.data.info.id} entry={entry} />
         ))}

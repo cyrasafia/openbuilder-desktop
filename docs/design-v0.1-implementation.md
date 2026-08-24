@@ -218,6 +218,25 @@ E2E 回归：worktree 全流程（创建→切换→会话→发消息→**流�
 
 v0.2 上翻加载方向（预留）：保持正序 DOM + scroll-anchor 锚定（记录锚点元素 offset，插入更早消息后补偿 `scrollTop`），而非反转渲染顺序——与 Telegram/ChatGPT 等工业惯例一致，阅读习惯、流式锚定、乐观排序全部不动。
 
+## 7.9 流式跟随死锁修复——pinned 只由用户滚动意图解除（2026-08-24）
+
+现象：流式回复期间消息列表不跟随贴底（§7.8 之前即潜伏，其 smooth 策略使触发概率接近必然）。
+
+根因：`onScroll` 以"距底 >40px"清除 `pinnedToBottom`，但 scroll 事件无法区分用户滚动与程序滚动/smooth 动画：
+
+1. 发送、新条目（N→N+1）走 `scrollTo({behavior:"smooth"})`，动画逐帧派发 scroll 事件，未到位时距底恒 >40px → pinned 被误清为 false；
+2. 其后流式更新在 `useLayoutEffect` 命中 `!pinned` 分支直接 return——停止跟随；
+3. smooth 的目标是发起时刻的 scrollHeight（流式内容仍在增长，已过期），动画终点仍距底 >40px，scroll 事件只会再次确认"距底远"→ 没有任何事件把 pinned 置回 → **死锁**，直到用户手动滚到底。
+
+方案（与 §7.8 同思路的职责分离）：**吸附与解除分离**——
+
+- `onScroll` 只做**吸附**：距底 <40px → `pinned = true`（滚回底部附近自动恢复跟随）；
+- **解除**只认用户主动上滚：message-list `onWheel` 中 `deltaY < 0` → `pinned = false`。
+
+依据：滚动条已隐藏（`app.css` `.message-list` scrollbar-width:none），wheel/触控板是桌面端唯一用户上滚入口（列表不可聚焦，无键盘滚动）；Chromium 已把自然滚动方向归一到 wheel deltaY（deltaY<0 恒等于"向上看历史"），无需按输入设备分支。两类误触排除（review 补充）：`ctrlKey` 事件是缩放手势（Ctrl+wheel 放大/触控板 pinch-out），不解除；内容未溢出（`scrollHeight ≤ clientHeight`）时上滚是视觉 no-op，也不解除——否则流式增长越过容器后无 scroll 事件可再吸附（scrollTop 未变），跟随会停摆到用户手动滚底。效果：smooth 动画期间的 scroll 事件不再影响 pinned；流式更新 auto 精确贴底；用户上滚浏览历史不受流式打扰。
+
+改动：`workspace.tsx`（onScroll 改为仅吸附、新增 onWheel 挂到 `.message-list`）。typecheck 双侧 + vitest 36/36 全绿。
+
 ## 8. 已知限制（v0.1 接受）
 
 - 消息历史仅拉最新 100 条窗口，更早消息无上翻加载（spec 范围外，v0.2 分段加载；方向见 §7.8——正序 DOM + scroll-anchor，不反转渲染顺序）
