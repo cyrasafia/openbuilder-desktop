@@ -409,6 +409,7 @@
   padding: 16px 24px;
   display: flex;
   flex-direction: column;
+  justify-content: flex-end;
   gap: 16px;
   width: 100%;
   max-width: calc(var(--chat-max) + 48px); /* content ≤800 + padding 24×2 */

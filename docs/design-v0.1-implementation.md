@@ -198,9 +198,29 @@ E2E 回归：worktree 全流程（创建→切换→会话→发消息→**流�
 - **REST 扇出限并发**（P3 性能）：快照拉取改为 `runLimited`（项目 2 × 目录 3）——连接池被 5 条 SSE 常驻后仅 ~1 空闲槽，无限扇出会让排队请求的 15s 超时从分发起算、尾部饿死（超时降级为空快照虽保守保命，但该目录会陈旧到下次刷新）
 - **补窗口上边界断言**：`updated === max` 且不在快照的本地会话靠开区间 `(min, max)` 保留——此前测试未覆盖该契约点
 
+## 7.8 首屏滚动动画修复 + 列表贴底方案（2026-08-24）
+
+现象：首次打开已有消息的会话，列表有从顶部滚到底部的可见动画。
+
+根因：`ChatView` 的 `initialScrollDone` gate 与滚动 effect 竞态。gate 阻止渲染时 effect 对空容器 `scrollToBottom("auto")` 空滚无效（`scrollHeight≈clientHeight`），放行渲染后同一批 entries 的 effect 命中 `entries.length(N) > lastEntryCount(0)` 走 `smooth`，产生动画。gate 本想"先置底再显示"，但置底那一刻 DOM 里还没有消息。
+
+考虑过的替代方案与决策依据（架构决策记录）：
+
+- **反转渲染顺序（`column-reverse` / DOM 顶部=新消息，视觉底部=最新）**：**否决**。流式更新是同一条目 parts 增长而非新增条目，反转后增长的 DOM 顶部元素在 `column-reverse` 下会把视觉底部的旧消息推走——与正序"钉底部"对称的锚定难题，未省掉。且需改 `sortEntries` 比较方向、乐观消息排序语义、测试用例、a11y 阅读顺序。逆序的真实收益场景是"向上翻页 prepend 不跳动"，v0.1 不做翻页（见 §8），用不到。
+- **纯命令式 `scrollToBottom`（原方案）**：少消息会话内容不足容器高度时消息堆顶部、底部留白，必须靠 JS 拉底，是首屏动画的土壤之一。
+
+采用方案：`justify-content: flex-end` + `useLayoutEffect` 同步置底，职责分离：
+
+- **布局层**（`.message-list` 加 `justify-content: flex-end`）：内容不足容器高度时声明式贴底，零 JS、零滚动，首屏无动画可能；内容超出时自然进入滚动态。
+- **JS 层**（`useEffect`→`useLayoutEffect`）：仅处理内容超出时的精确跟随——`useLayoutEffect` 在 DOM 变更后、浏览器绘制前同步执行，`scrollTo({behavior:"auto"})` 瞬时定位，用户看不到中间帧；新条目 N→N+1 用 smooth，同条目流式更新用 auto。删除 `initialScrollDone` gate 及渲染时的 `{initialScrollDone && ...}` 条件，消除竞态土壤。
+
+改动：`workspace.tsx`（引入 `useLayoutEffect`、删 `initialScrollDone` state 与渲染 gate、滚动 effect 改 `useLayoutEffect`）、`app.css` `.message-list` 加 `justify-content: flex-end`。typecheck 双侧 + vitest 36/36 全绿。
+
+v0.2 上翻加载方向（预留）：保持正序 DOM + scroll-anchor 锚定（记录锚点元素 offset，插入更早消息后补偿 `scrollTop`），而非反转渲染顺序——与 Telegram/ChatGPT 等工业惯例一致，阅读习惯、流式锚定、乐观排序全部不动。
+
 ## 8. 已知限制（v0.1 接受）
 
-- 消息历史仅拉最新 100 条窗口，更早消息无上翻加载（spec 范围外，v0.2 分段加载）
+- 消息历史仅拉最新 100 条窗口，更早消息无上翻加载（spec 范围外，v0.2 分段加载；方向见 §7.8——正序 DOM + scroll-anchor，不反转渲染顺序）
 - 工具调用输入输出为 JSON.stringify 展示，无按工具类型的结构化渲染
 - 布局栏宽度固定（未实现拖拽调宽/折叠），localStorage 布局持久化未接
 - managed 模式仅实现 spawn + 健康等待，未实现崩溃自动拉起

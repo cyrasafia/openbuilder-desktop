@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { useI18n, useStore } from "../app"
 import { relativeTime } from "../i18n"
 import type { ChatEntry } from "@shared/message-merge"
@@ -174,9 +174,6 @@ function ChatView({ sessionID }: { sessionID: string }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const pinnedToBottom = useRef(true)
   const lastEntryCount = useRef(0)
-  // 初始置底未完成前不渲染消息：避免先画顶部再跳底的闪动
-  // （组件 key 隔离，每次打开会话都重新走一遍该流程）
-  const [initialScrollDone, setInitialScrollDone] = useState(false)
 
   // 激活即重拉（design-layout §5：切回 Tab 时重拉；快照与 SSE 状态合并不丢数据）
   useEffect(() => {
@@ -197,21 +194,20 @@ function ChatView({ sessionID }: { sessionID: string }) {
     pinnedToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
   }
 
-  useEffect(() => {
+  // useLayoutEffect：DOM 变更后、绘制前同步置底，首帧即到底、无滚动动画
+  // 0→N（含首次加载与切回 Tab 重拉快照）用 auto 瞬时定位；
+  // 之后新条目（N→N+1）才 smooth 跟随，同条目流式更新即时贴底。
+  useLayoutEffect(() => {
     const el = scrollRef.current
     if (!el) return
-    if (pinnedToBottom.current) {
-      if (!initialScrollDone) {
-        // 首批消息到达：直接置底（auto，无动画），完成后才放行渲染
-        scrollToBottom("auto")
-        setInitialScrollDone(true)
-      } else {
-        // 初始加载已完成：新条目 smooth；同条目流式更新即时贴底
-        scrollToBottom(entries.length > lastEntryCount.current ? "smooth" : "auto")
-      }
+    if (!pinnedToBottom.current) {
+      lastEntryCount.current = entries.length
+      return
     }
+    const grew = entries.length > lastEntryCount.current
+    scrollToBottom(grew ? "smooth" : "auto")
     lastEntryCount.current = entries.length
-  }, [entries, initialScrollDone])
+  }, [entries])
 
   const send = async () => {
     const text = draft.trim()
@@ -282,11 +278,9 @@ function ChatView({ sessionID }: { sessionID: string }) {
   return (
     <div className="chat-view">
       <div className="message-list scroll" ref={scrollRef} onScroll={onScroll}>
-        {/* 初始置底完成前不渲染，杜绝"顶部一帧→跳底"闪动 */}
-        {initialScrollDone &&
-          entries.map((entry) => (
-            <MessageBlock key={entry.kind === "optimistic" ? entry.data.localId : entry.data.info.id} entry={entry} />
-          ))}
+        {entries.map((entry) => (
+          <MessageBlock key={entry.kind === "optimistic" ? entry.data.localId : entry.data.info.id} entry={entry} />
+        ))}
       </div>
       {cmdMode && (
         <CommandHints
