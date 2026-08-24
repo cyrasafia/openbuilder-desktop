@@ -190,6 +190,11 @@
   background: var(--surface-container-low);
   border-bottom: 1px solid var(--outline-variant);
   flex-shrink: 0;
+  /* 全量开 Tab 后可能数十个：横向滚动（design-tab-memory §11）。
+     gutter 预留滚动条空间，溢出时 thin 滚动条不压缩 Tab 高度 */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-gutter: stable;
 }
 
 .tab {
@@ -201,6 +206,8 @@
   cursor: pointer;
   font-size: var(--text-md);
   max-width: 220px;
+  min-width: 96px;
+  flex-shrink: 0;
   position: relative;
 }
 
@@ -238,6 +245,7 @@
 
 .tabbar-new {
   width: 32px;
+  flex-shrink: 0;
 }
 
 .workspace-body {

@@ -7,6 +7,15 @@ import { SseSubscriber, type SseStatus } from "@shared/sse-subscriber"
 import { Reconciler } from "@shared/reconciler"
 import { mergeSessionsSnapshot } from "@shared/session-merge"
 import { inferIdleFromMessages, mergeStatusSnapshot } from "@shared/session-status"
+import { runLimited } from "@shared/run-limited"
+import {
+  buildFirstOpenMemory,
+  deriveMemory,
+  isSnapshotMissing,
+  resolveRestoreActive,
+  shrinkMemoryTabs,
+  type ScopeTabMemory,
+} from "@shared/scope-tab-memory"
 import {
   mergeSnapshotIntoMessages,
   sortEntries,
@@ -67,6 +76,8 @@ export class AppStore {
   profiles: ConnectionProfile[] = []
   activeProfileId: string | null = null
   projectStates: Record<string, ProjectState> = {}
+  /** worktree 级 Tab 记忆（design-tab-memory）：profileKey → directory → 记忆 */
+  tabMemory: Record<string, Record<string, ScopeTabMemory>> = {}
   themeMode: "auto" | "dark" | "light" = "auto"
   localeMode: "auto" | "zh" | "en" = "auto"
 
@@ -138,6 +149,7 @@ export class AppStore {
     this.activeProfileId = profileData.activeId
     const ps = await window.desktop.storeGet("project.state")
     if (ps) this.projectStates = ps
+    this.tabMemory = (await window.desktop.storeGet("tabs.memory")) ?? {}
     this.themeMode = (await window.desktop.storeGet("theme.mode")) ?? "auto"
     this.localeMode = (await window.desktop.storeGet("locale.mode")) ?? "auto"
 
@@ -211,6 +223,17 @@ export class AppStore {
 
     // 打开项目的快照 + 订阅
     await this.refreshAllOpenedProjects()
+    // 启动恢复（design-tab-memory §8）：逐作用域按记忆重建 Tab（不动激活），
+    // 当前作用域含激活规则；无记忆则首次打开。须在快照落地之后（WT-2 教训）
+    {
+      const slice = this.tabMemory[this.profileKey()] ?? {}
+      for (const p of this.openedProjects) {
+        for (const dir of new Set([p.worktree, ...(p.sandboxes ?? [])])) {
+          if (slice[dir]) this.restoreScopeTabs(dir, false)
+        }
+      }
+      this.restoreScopeTabs(this.scopeDirectory(), true)
+    }
     this.startSse()
     this.connectionState = "streaming"
     this.emit()
@@ -248,6 +271,7 @@ export class AppStore {
       clearTimeout(this.catalogRefreshTimer)
       this.catalogRefreshTimer = null
     }
+    this.snapshotFailed.clear()
     this.resetFileTree()
   }
 
@@ -274,7 +298,7 @@ export class AppStore {
   }
 
   private async refreshAllOpenedProjects() {
-    await AppStore.runLimited(this.openedProjects, 2, (p) => this.refreshSessionsForProject(p))
+    await runLimited(this.openedProjects, 2, (p) => this.refreshSessionsForProject(p))
   }
 
   /**
@@ -289,21 +313,6 @@ export class AppStore {
     const filtered = sessions.filter((s) => s.projectID === projectId)
     const local = this.sessionsByProject.get(projectId) ?? new Map<string, Session>()
     this.sessionsByProject.set(projectId, mergeSessionsSnapshot(local, directory, filtered))
-  }
-
-  /** 并发受限执行（REST 池约束：5 条 SSE 常驻后仅 ~1 空闲连接，无限扇出会让
-   *  排队请求的 AbortSignal.timeout 从分发起算、尾部请求饿死超时——降级为空
-   *  快照虽保守保命，但该目录会一直陈旧到下次刷新） */
-  private static async runLimited<T>(items: T[], limit: number, fn: (item: T) => Promise<void>) {
-    let next = 0
-    await Promise.all(
-      Array.from({ length: Math.min(limit, items.length) }, async () => {
-        while (next < items.length) {
-          const item = items[next++]
-          await fn(item)
-        }
-      }),
-    )
   }
 
   private startSse() {
@@ -706,6 +715,10 @@ export class AppStore {
         this.cleanupSessionState(tab.key.slice(5))
       }
     }
+    // 清除该项目全部 Tab 记忆（须在关 Tab 之后——closeTab 的记忆同步会重建条目，
+    // 此处最终清除；按 projectId 匹配而非 sandboxes 枚举，外部删除的 worktree
+    // 目录不在 sandboxes 里，按目录枚举会留孤儿条目永久残留 store.json）
+    this.forgetProjectMemory(projectId)
     await this.persistProjectState()
     await this.switchProjectContext()
     this.emit()
@@ -720,54 +733,142 @@ export class AppStore {
     const ps = this.projectStateFor()
     ps.currentWorkspaceId = directory
     await this.persistProjectState()
-    // 切工作区：重拉会话列表 + SSE 重订（scope 目录变化）+ 文件树重置 + 打开作用域会话 Tab
+    // 切工作区：重拉会话列表 + SSE 重订（scope 目录变化）+ 文件树重置 + 恢复作用域 Tab
     await this.refreshSessionsForProject(this.currentProject!)
     this.startSse()
     this.resetFileTree()
-    await this.openScopeSessionTabs()
+    this.restoreScopeTabs(this.scopeDirectory(), true)
     this.emit()
   }
 
-  /** 切项目/开项目后：快照 + SSE 重订阅 + 文件树重置 + 打开该作用域的会话 Tab */
+  /** 切项目/开项目后：快照 + SSE 重订阅 + 文件树重置 + 恢复该作用域的 Tab 记忆 */
   private async switchProjectContext() {
     if (!this.client) return
     await this.refreshAllOpenedProjects()
     this.startSse()
     this.resetFileTree()
-    // 打开当前作用域的未归档非 subagent 会话为 chat Tab（复用已开的）
-    await this.openScopeSessionTabs()
+    this.restoreScopeTabs(this.scopeDirectory(), true)
+  }
+
+  // ============ Tab 记忆（design-tab-memory） ============
+
+  private memorySlice(): Record<string, ScopeTabMemory> {
+    return this.tabMemory[this.profileKey()] ?? {}
+  }
+
+  /** 写入单作用域记忆并整体落盘（体量 KB 级，不做 debounce；写失败仅内存/持久暂不一致，重启回退旧记忆） */
+  private setMemory(directory: string, mem: ScopeTabMemory) {
+    const key = this.profileKey()
+    if (!this.tabMemory[key]) this.tabMemory[key] = {}
+    this.tabMemory[key][directory] = mem
+    void window.desktop.storeSet("tabs.memory", this.tabMemory).catch(() => {})
+  }
+
+  private findProjectOwningDirectory(directory: string): Project | null {
+    return (
+      this.projects.find(
+        (p) => p.worktree === directory || (p.sandboxes ?? []).includes(directory),
+      ) ?? null
+    )
+  }
+
+  /** live tabs → 记忆派生落盘（§5 挂点：openChatTab/closeTab/setActiveTab） */
+  private syncScopeMemory(directory: string) {
+    const project = this.findProjectOwningDirectory(directory)
+    if (!project) return
+    const prev = this.memorySlice()[directory]
+    this.setMemory(
+      directory,
+      deriveMemory(project.id, directory, this.tabs, this.activeTabKey, prev?.active ?? null),
+    )
+  }
+
+  /** 删除某项目的全部记忆条目（closeProject：按 projectId 匹配，含外部删除的 worktree 目录） */
+  private forgetProjectMemory(projectId: string) {
+    const key = this.profileKey()
+    const slice = this.tabMemory[key]
+    if (!slice) return
+    let changed = false
+    for (const dir of Object.keys(slice)) {
+      if (slice[dir].projectId === projectId) {
+        delete slice[dir]
+        changed = true
+      }
+    }
+    if (changed) void window.desktop.storeSet("tabs.memory", this.tabMemory).catch(() => {})
+  }
+
+  /** 无激活副作用的开 Tab（恢复路径专用，§5：不走 openChatTab 的记忆同步钩子） */
+  private openChatTabSilent(session: Session) {
+    const key = `chat:${session.id}`
+    if (this.tabs.some((t) => t.key === key)) return
+    this.tabs.push({
+      kind: "chat",
+      key,
+      projectId: session.projectID,
+      title: session.title || session.slug || "",
+      directory: session.directory,
+    })
   }
 
   /**
-   * 打开当前作用域的会话 Tab（不关不归档已有 Tab——Tab 跨项目混排）。
-   * 数量约束：最多打开 8 个最近活跃会话，避免一次灌入过多 Tab。
-   * 作用域无会话（或激活 Tab 不属于本作用域）时清空激活 → 中栏显示新 Tab 引导页。
+   * 切入作用域的 Tab 恢复（§6，替换原"补开最近活跃前 8"）：
+   * - 无记忆 / 记忆 projectId 不符（worktree 同路径重建）→ 首次打开：
+   *   全量开未归档会话（created 升序），active = 最近活跃；真实空目录也写入空记忆（§3.3）
+   * - 有记忆 → 按记忆顺序补齐 live Tab（复用已开、不补开记忆外会话）+ 校验收缩
+   * - 防御闸门：快照未落地（可见与全量皆空）时不动作，下次切入/重启再恢复
+   * - 恢复后无 Tab 时中栏显示会话列表视图（master 40459e9 后为无 Tab 引导页语义）
+   * applyActivation=false 供启动逐作用域重建（§8 不改变激活）。
    */
-  private async openScopeSessionTabs() {
-    const sessions = this.visibleSessions.slice(0, 8)
-    for (const s of sessions) {
-      const key = `chat:${s.id}`
-      if (!this.tabs.some((t) => t.key === key)) {
-        this.tabs.push({
-          kind: "chat",
-          key,
-          projectId: s.projectID,
-          title: s.title || s.slug || "",
-          directory: s.directory,
-        })
+  private restoreScopeTabs(directory: string, applyActivation = true) {
+    if (!directory) return
+    const project = this.findProjectOwningDirectory(directory)
+    if (!project) return
+    const visible = this.sessionsInDirectory(project.id, directory)
+    const all = [...(this.sessionsByProject.get(project.id)?.values() ?? [])].filter(
+      (s) => s.directory === directory,
+    )
+    const mem = this.memorySlice()[directory]
+
+    let next: ScopeTabMemory
+    if (!mem || mem.projectId !== project.id) {
+      // 快照失败 + 会话为空：无法与真实空目录区分，不写零 Tab 哨兵
+      //（§3.3 空记忆 = 用户已收敛到零 Tab 的承诺，误写会让该作用域永不
+      // 全量打开）——下次切入重试，幂等
+      if (visible.length === 0 && this.snapshotFailed.has(directory)) return
+      next = buildFirstOpenMemory(project.id, visible)
+      const byId = new Map(visible.map((s) => [s.id, s]))
+      for (const id of next.tabs) {
+        const s = byId.get(id)
+        if (s) this.openChatTabSilent(s)
+      }
+    } else {
+      if (isSnapshotMissing(mem, visible, all)) {
+        // 快照不可信：不动作，但激活不得指向其他作用域的 chat Tab——
+        // Tab 条按作用域过滤不显示它，中栏却会渲染其会话（旧实现此状态不可达）
+        const active = this.activeTab
+        if (active?.kind === "chat" && active.directory !== directory) {
+          this.activeTabKey = null
+          this.emit()
+        }
+        return
+      }
+      next = shrinkMemoryTabs(mem, visible)
+      const byId = new Map(visible.map((s) => [s.id, s]))
+      for (const id of next.tabs) {
+        const s = byId.get(id)
+        if (s) this.openChatTabSilent(s)
       }
     }
-    const scopeDir = this.scopeQuery.directory
-    const active = this.tabs.find((t) => t.key === this.activeTabKey)
-    if (active?.kind === "file") {
-      // file Tab 不受作用域切换影响
-    } else if (active && active.directory === scopeDir) {
-      // 激活的 chat Tab 已属于本作用域：保持
-    } else if (sessions.length > 0) {
-      this.activeTabKey = `chat:${sessions[0].id}`
-    } else {
-      this.activeTabKey = null
+
+    if (applyActivation) {
+      const resolved = resolveRestoreActive(next, this.activeTab?.kind ?? null)
+      if (resolved !== undefined) {
+        this.activeTabKey = resolved != null ? `chat:${resolved}` : null
+        next = { ...next, active: resolved }
+      }
     }
+    this.setMemory(directory, next)
     this.emit()
   }
 
@@ -792,13 +893,23 @@ export class AppStore {
    * 左栏指示器都依赖 worktree 目录有自己的快照）；合并按 directory 分域。
    * 同一批目录附带拉会话状态快照（GET /session/status，冷启动/项目打开路径；
    * 重连对账由 Reconciler 负责）。
+   * 失败的目录不合并空快照（会被 session-merge 保守保留、无法与真实空目录
+   * 区分），记入 snapshotFailed——Tab 记忆以此区分"真实空目录"（可写空记忆）
+   * 与"快照未落地"（不得写零 Tab 哨兵，design-tab-memory §6）。
    */
+  private snapshotFailed = new Set<string>()
+
   async refreshSessionsForProject(project: Project) {
     const client = this.client
     if (!client) return
     const dirs = [...new Set([project.worktree, ...(project.sandboxes ?? [])])]
-    await AppStore.runLimited(dirs, 3, async (dir) => {
-      const sessions = await client.listSessions(dir).catch(() => [] as Session[])
+    await runLimited(dirs, 3, async (dir) => {
+      const sessions = await client.listSessions(dir).catch(() => null)
+      if (sessions === null) {
+        this.snapshotFailed.add(dir)
+        return
+      }
+      this.snapshotFailed.delete(dir)
       this.applySessionsSnapshot(project.id, dir, sessions)
       const statuses = await client.listSessionStatus(dir).catch(() => null)
       // 闸门：在途快照落地时项目可能已关闭/目录可能已删——过期状态直接丢弃
@@ -845,6 +956,20 @@ export class AppStore {
         }
       }
       this.purgeStatusForDirectories([directory])
+      // 显式关闭该目录 live chat Tab：订阅即将拆除，session.deleted 事件
+      // 兜底存在窗口期（design-tab-memory §5）
+      for (const tab of [...this.tabs]) {
+        if (tab.kind === "chat" && tab.directory === directory) {
+          this.closeTab(tab.key)
+          this.cleanupSessionState(tab.key.slice(5))
+        }
+      }
+      // 删除该目录记忆（目录已死；须在关 Tab 之后——closeTab 同步会重建条目）
+      const key = this.profileKey()
+      if (this.tabMemory[key]) {
+        delete this.tabMemory[key][directory]
+        void window.desktop.storeSet("tabs.memory", this.tabMemory).catch(() => {})
+      }
       const ps = this.projectStateFor()
       if (ps.currentWorkspaceId === directory) {
         ps.currentWorkspaceId = null
@@ -853,6 +978,11 @@ export class AppStore {
       await this.refreshSessionsForProject(this.currentProject)
       this.resetFileTree()
       this.startSse()
+      // 删除的是当前 worktree → 作用域已切回项目根：与其他切换路径一致，
+      // 恢复根作用域的 Tab 与激活（否则有根 Tab 却落到会话列表视图）
+      if (!ps.currentWorkspaceId) {
+        this.restoreScopeTabs(this.currentProject.worktree, true)
+      }
       this.emit()
       return { ok: true }
     } catch (e) {
@@ -1154,6 +1284,8 @@ export class AppStore {
       existing.title = session.title || session.slug || ""
     }
     this.activeTabKey = key
+    // Tab 记忆同步（§5 挂点）：新 Tab 追加尾部 + active 更新
+    if (session.directory) this.syncScopeMemory(session.directory)
     this.emit()
   }
 
@@ -1219,11 +1351,16 @@ export class AppStore {
         candidates[0]?.key ??
         null
     }
+    // Tab 记忆同步（§5 挂点）：chat Tab 关闭 → 从所属目录记忆移除（active 按回退结果派生）
+    if (closed.kind === "chat" && closed.directory) this.syncScopeMemory(closed.directory)
     this.emit()
   }
 
   setActiveTab(key: string) {
     this.activeTabKey = key
+    // Tab 记忆同步（§5 挂点）：激活 chat Tab → 更新所属目录 active；file Tab 不改写
+    const tab = this.tabs.find((t) => t.key === key)
+    if (tab?.kind === "chat" && tab.directory) this.syncScopeMemory(tab.directory)
     this.emit()
   }
 

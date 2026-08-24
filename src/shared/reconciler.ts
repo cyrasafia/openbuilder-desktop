@@ -7,6 +7,7 @@ import type { Session, SessionStatusValue } from "./api-types"
 import type { RestClient } from "./rest-client"
 import { mergeSnapshotIntoMessages } from "./message-merge"
 import type { MessageWithParts } from "./api-types"
+import { runLimited } from "./run-limited"
 
 export interface ReconcilerDeps {
   /** 连接拆除后返回 null（reconcile 直接放弃，不再非空断言） */
@@ -82,31 +83,18 @@ export class Reconciler {
     )
     // 状态快照逐目录容错：失败目录回传 null（保留旧值），不拖垮其余目录。
     // 并发受限 2（浏览器对同 host 连接上限 6，5 条 SSE 常驻后仅 ~1 空闲——
-    // 无限扇出会让排队请求从分发起算超时、尾部饿死，见 app-store runLimited 注释）
+    // 无限扇出会让排队请求从分发起算超时、尾部饿死，见 run-limited 注释）
     const statusDirs = [...new Set(this.d.getStatusDirectories())]
-    await Reconciler.runLimited(statusDirs, 2, async (dir) => {
+    await runLimited(statusDirs, 2, async (dir) => {
       const statuses = await client.listSessionStatus(dir).catch(() => null)
       this.d.onStatusSnapshot(dir, statuses)
     })
-    await Promise.all(
-      this.d.getActiveSessions().map(async ({ sessionID, directory }) => {
-        const msgs = await client.listMessages(sessionID, directory, RECONCILE_WINDOW)
-        this.d.onMessagesSnapshot(sessionID, msgs)
-      }),
-    )
-  }
-
-  /** 并发受限执行（REST 连接池约束，与 AppStore.runLimited 同策略） */
-  private static async runLimited<T>(items: T[], limit: number, fn: (item: T) => Promise<void>) {
-    let next = 0
-    await Promise.all(
-      Array.from({ length: Math.min(limit, items.length) }, async () => {
-        while (next < items.length) {
-          const item = items[next++]
-          await fn(item)
-        }
-      }),
-    )
+    // 消息快照同样并发受限（3）：全量开 Tab 后 N 可达几十，Promise.all 无界
+    // 扇出会挤占 ~1 个空闲槽导致整批超时（一损俱损）
+    await runLimited(this.d.getActiveSessions(), 3, async ({ sessionID, directory }) => {
+      const msgs = await client.listMessages(sessionID, directory, RECONCILE_WINDOW)
+      this.d.onMessagesSnapshot(sessionID, msgs)
+    })
   }
 }
 

@@ -1,4 +1,6 @@
 /** 持久化 store 的形状（main 进程 electron-store 风格，自写 JSON 实现） */
+import type { ScopeTabMemory } from "./scope-tab-memory"
+
 export interface StoreShape {
   /** 连接配置列表 + 激活项 */
   "connection.profiles": {
@@ -10,6 +12,8 @@ export interface StoreShape {
     string,
     { opened: string[]; currentProjectId: string | null; currentWorkspaceId: string | null }
   >
+  /** worktree 级 Tab 记忆（design-tab-memory）：profileKey → directory → 记忆 */
+  "tabs.memory": Record<string, Record<string, ScopeTabMemory>>
   /** 布局状态：各栏尺寸/折叠 */
   "layout.state": {
     leftWidth: number
