@@ -45,6 +45,7 @@ src/
 | `GET /session?directory=X` 为 directory **精确匹配**：项目根查询不返回 worktree 会话（实测根快照 28 条全为根会话） | 会话快照逐目录拉取（项目根 ∪ sandboxes）；快照合并按 directory 分域（session-merge.ts） |
 | `GET /session`（server 源码 `V2Session.list` 核实，2026-08-24）：① 列表**含 archived 会话**（无归档过滤条件）② 按 `created desc` 排序 + `limit` 分页（不传默认 50，首页空 = 全表空）③ 单次快照可能截断 | ① 空≠全被归档：store 空快照清除本地同目录会话是安全的（applySessionsSnapshot）② "不在快照 = 已删除"不成立：merge 层维持 updated 开区间窗口保守删除 ③ 目录会话 >50 时窗口误删风险（旧会话落窗口内）为已知限制 |
 | Electron renderer 的 `fetch` 是绑定 window 的包装，`const f = fetch; f(...)` 抛 `Illegal invocation` | rest-client 必须 `fetch.bind(globalThis)` |
+| `GET /global/event`（v1.0.66+）为 GlobalBus 无过滤直通：单条连接收全部 directory 事件，信封 `{directory, project?, workspace?, payload}`；`/event?directory=X` 是同一总线按 directory 过滤的子集 | 通信层已实施单全局流（见 [design-sse-global-event.md](design-sse-global-event.md)，含 durable 事件 sync 双发须忽略、SSE 帧无 id 字段 Last-Event-ID 无效等事实与 E2E 记录） |
 
 ## 3. 通信层
 
@@ -56,6 +57,10 @@ src/
 - `directory` 走 query 参数（`?directory=<abs>`），所有目录级 API 统一 `dirQuery` helper
 
 ### SSE（sse-subscriber.ts）——移植移动端 design-sse-reconnect-recovery
+
+> **已迁移单全局流（2026-08-24）**：v0.1 期的"每打开项目一条 `GET /event?directory=`（上限 5）"方案已被
+> 单条 `GET /global/event` 全局流取代，重连状态机保留。背景、实测契约与 E2E 见
+> [design-sse-global-event.md](design-sse-global-event.md)。以下为历史方案记录。
 
 - 每个打开项目一条订阅：`GET /event?directory=<dir>`；打开集合变化 = 全组重建
 - 重连状态机：退避 `1→2→4→8→16→30s`（clamp 30）；**建连总超时 15s**（覆盖 TCP 挂起）；

@@ -1,18 +1,19 @@
 /**
- * SSE 订阅器（/event?directory=…）。
- * 策略来源：openbuilder design-sse-reconnect-recovery（退避 1→2→4→8→16→30s、
+ * SSE 订阅器（/global/event 单全局流，design-sse-global-event.md）。
+ * 一条连接覆盖全部 directory；信封 {directory, payload} 按目录回调，
+ * payload.type === "sync"（durable 事件重复包装）在此丢弃。
+ * 重连策略来源：openbuilder design-sse-reconnect-recovery（退避 1→2→4→8→16→30s、
  * 60s 心跳超时、15s 建连总超时、kick 无条件重置退避、health probe 门控）。
  */
-import type { OpencodeEvent } from "./api-types"
+import type { GlobalEventEnvelope, OpencodeEvent } from "./api-types"
 
 export type SseStatus = "connecting" | "connected" | "reconnecting" | "stopped"
 
 export interface SseSubscriberOptions {
   baseUrl: string
-  directory?: string
   username?: string
   password?: string
-  onEvent: (event: OpencodeEvent) => void
+  onEvent: (directory: string, event: OpencodeEvent) => void
   /** connecting->connected 或 reconnecting->connected 转换时触发（对账信号） */
   onReconnected?: () => void
   onStatus?: (status: SseStatus) => void
@@ -111,7 +112,7 @@ export class SseSubscriber {
       } else if (this.everConnected) {
         const delay = BACKOFF_SEQUENCE[Math.min(this.backoffIdx, BACKOFF_SEQUENCE.length - 1)]
         this.backoffIdx++
-        this.opts.log?.(`sse backoff ${delay}s dir=${this.opts.directory ?? ""}`)
+        this.opts.log?.(`sse backoff ${delay}s`)
         const slept = await this.interruptibleSleep(delay * 1000)
         if (this.stopped) return
         if (slept === KICK) {
@@ -161,10 +162,7 @@ export class SseSubscriber {
         resolve(v)
       }
 
-      const url =
-        this.opts.baseUrl +
-        "/event" +
-        (this.opts.directory ? `?directory=${encodeURIComponent(this.opts.directory)}` : "")
+      const url = this.opts.baseUrl + "/global/event"
       const headers: Record<string, string> = { Accept: "text/event-stream" }
       if (this.opts.username || this.opts.password) {
         headers.Authorization =
@@ -199,11 +197,11 @@ export class SseSubscriber {
         }
         this.startHeartbeatWatch()
         this.setStatus("connected")
-        this.opts.log?.(`sse connected dir=${this.opts.directory ?? ""}`)
+        this.opts.log?.("sse connected")
       }
 
       es.onerror = () => {
-        this.opts.log?.(`sse error (connected=${connected}) dir=${this.opts.directory ?? ""}`)
+        this.opts.log?.(`sse error (connected=${connected})`)
         settle(connected)
       }
 
@@ -211,9 +209,13 @@ export class SseSubscriber {
         this.bumpHeartbeat()
         if (!ev.data.trim()) return
         try {
-          const parsed = JSON.parse(ev.data) as OpencodeEvent
-          if (parsed && typeof parsed.type === "string") {
-            this.opts.onEvent(parsed)
+          const envelope = JSON.parse(ev.data) as GlobalEventEnvelope
+          // server.connected/heartbeat 帧无 directory（缺省 global）
+          const directory = envelope?.directory || "global"
+          const payload = envelope?.payload as OpencodeEvent | undefined
+          // durable 事件双发的 sync 包装，丢弃（实测契约）
+          if (payload && typeof payload.type === "string" && payload.type !== "sync") {
+            this.opts.onEvent(directory, payload)
           }
         } catch {
           this.opts.log?.("sse parse error", ev.data.slice(0, 100))

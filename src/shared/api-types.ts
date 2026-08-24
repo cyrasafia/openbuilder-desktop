@@ -255,3 +255,15 @@ export type OpencodeEvent =
   | { id: string; type: "question.asked" | "question.v2.asked"; properties: Record<string, unknown> }
   | { id: string; type: "question.replied" | "question.v2.replied" | "question.rejected" | "question.v2.rejected"; properties: Record<string, unknown> }
   | { id: string; type: string; properties: Record<string, unknown> }
+
+/**
+ * /global/event 信封（design-sse-global-event.md §3 实测契约）：
+ * - directory 缺省视为 "global"（server.connected/heartbeat 帧无 directory 字段）
+ * - payload.type === "sync" 是 durable 事件的重复包装，订阅层丢弃
+ */
+export interface GlobalEventEnvelope {
+  directory?: string
+  project?: string
+  workspace?: string
+  payload: OpencodeEvent | { type: "sync"; syncEvent: unknown }
+}

@@ -14,9 +14,9 @@ export interface ReconcilerDeps {
   client: () => RestClient | null
   getOpenedDirectories: () => string[]
   /**
-   * 状态快照目录集 = 打开项目全集（root ∪ sandboxes）。非当前 worktree 无 SSE
-   * 事件通道（订阅集合仅含当前 scope），其 busy/retry 只能靠对账快照纠正——
-   * 若与订阅集合一致，连上的 busy 会话结束后 dots 永久卡亮。
+   * 状态快照目录集 = 打开项目全集（与 getOpenedDirectories 同源）。单全局流下
+   * 全集每个目录都有事件通道，但断线窗口内丢失的 status 变化（busy→idle 等）
+   * 仍需快照纠正——范围若小于会话快照，会出现"会话复活、状态卡 busy"的错位。
    */
   getStatusDirectories: () => string[]
   getActiveSessions: () => Array<{ sessionID: string; directory: string }>
@@ -87,21 +87,20 @@ export class Reconciler {
     // 在途闸门：client() 变化（disconnect/切 profile/teardown）即丢弃本轮剩余
     // 结果——防止旧连接的迟到快照写回已清空/新连接的状态
     const stale = () => this.d.client() !== client
+    // 会话快照逐目录并发受限 + 容错：目录数 = 打开项目全集（单全局流后无
+    // 5 条订阅上限，可达几十），无界扇出会让排队请求的 15s 超时从分发起算、
+    // 尾部饿死（run-limited 注释记录过的失败模式）；单目录失败跳过回调
+    // （保留旧值），不拖垮其余目录
     const dirs = [...new Set(this.d.getOpenedDirectories())]
-    await Promise.all(
-      dirs.map(async (dir) => {
-        // 单目录失败跳过该目录快照（null），不让一个 reject 中断整个 reconcile——
-        // 否则 pending 回填阶段不执行，离线期间的授权/问题卡片要等下次重连才可见
-        const sessions = await client.listSessions(dir).catch(() => null)
-        if (stale()) return
-        if (sessions) this.d.onSessionsSnapshot(dir, sessions)
-      }),
-    )
+    await runLimited(dirs, 3, async (dir) => {
+      const sessions = await client.listSessions(dir).catch(() => null)
+      if (stale()) return
+      if (sessions !== null) this.d.onSessionsSnapshot(dir, sessions)
+    })
     if (this.d.onPendingSnapshot) {
-      // pending 拉取逐目录串行（预算克制：SSE 常驻 5 条后 REST 池仅 ~1 空闲，
-      // sessions 快照的并行是既有行为，新增请求不再放大扇出）；失败传 null
-      // （保留本地），与移动端 _backfillPermissions/_backfillQuestions 的
-      // failedDirs 语义一致；单目录失败不拖垮整个 reconcile
+      // pending 拉取逐目录串行（预算克制）；失败传 null（保留本地），与移动端
+      // _backfillPermissions/_backfillQuestions 的 failedDirs 语义一致；单目录
+      // 失败不拖垮整个 reconcile
       for (const dir of dirs) {
         const permissions = await client.listPendingPermissions(dir).catch(() => null)
         const questions = await client.listPendingQuestions(dir).catch(() => null)
@@ -109,21 +108,20 @@ export class Reconciler {
         this.d.onPendingSnapshot(dir, permissions, questions)
       }
     }
-    // 状态快照逐目录容错：失败目录回传 null（保留旧值），不拖垮其余目录。
-    // 并发受限 2（浏览器对同 host 连接上限 6，5 条 SSE 常驻后仅 ~1 空闲——
-    // 无限扇出会让排队请求从分发起算超时、尾部饿死，见 run-limited 注释）
+    // 状态快照同规则：失败目录回传 null（保留旧值，防 SS-1）
     const statusDirs = [...new Set(this.d.getStatusDirectories())]
-    await runLimited(statusDirs, 2, async (dir) => {
+    await runLimited(statusDirs, 3, async (dir) => {
       const statuses = await client.listSessionStatus(dir).catch(() => null)
       if (stale()) return
       this.d.onStatusSnapshot(dir, statuses)
     })
-    // 消息快照同样并发受限（3）：全量开 Tab 后 N 可达几十，Promise.all 无界
-    // 扇出会挤占 ~1 个空闲槽导致整批超时（一损俱损）
-    await runLimited(this.d.getActiveSessions(), 3, async ({ sessionID, directory }) => {
-      const msgs = await client.listMessages(sessionID, directory, RECONCILE_WINDOW)
+    // 消息快照同样并发受限：全量开 Tab 后 N 可达几十，无界扇出会挤占空闲槽
+    // 导致整批超时（一损俱损）。逐项容错同上两阶段：对账在途时会话可能已被
+    // 删除（404），失败项跳过回调，不拖垮整轮
+    await runLimited(this.d.getActiveSessions(), 4, async ({ sessionID, directory }) => {
+      const msgs = await client.listMessages(sessionID, directory, RECONCILE_WINDOW).catch(() => null)
       if (stale()) return
-      this.d.onMessagesSnapshot(sessionID, msgs)
+      if (msgs !== null) this.d.onMessagesSnapshot(sessionID, msgs)
     })
   }
 }

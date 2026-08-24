@@ -189,7 +189,7 @@ export class AppStore {
   async connect() {
     const profile = this.activeProfile
     if (!profile) return
-    // 连接前先拆干净旧连接（SSE 组、域数据、Tab）——防跨 profile 状态串台
+    // 连接前先拆干净旧连接（SSE、域数据、Tab）——防跨 profile 状态串台
     this.teardownConnection()
     this.connectionState = "connecting"
     this.connectionError = null
@@ -264,10 +264,10 @@ export class AppStore {
     this.emit()
   }
 
-  /** 拆除连接相关的一切运行时状态（SSE 组、域数据、Tab、managed 地址） */
+  /** 拆除连接相关的一切运行时状态（SSE、域数据、Tab、managed 地址） */
   private teardownConnection() {
-    for (const sub of this.sseGroup) sub.stop()
-    this.sseGroup = []
+    this.sseSubscriber?.stop()
+    this.sseSubscriber = null
     this.client = null
     this.managedBaseUrl = null
     this.projects = []
@@ -315,6 +315,8 @@ export class AppStore {
   }
 
   private async refreshAllOpenedProjects() {
+    // 嵌套限流的乘积才是总并发：外层 2 × 内层（refreshSessionsForProject 目录 3）
+    // = 6 ≈ 空闲槽（1 条 SSE 常驻后 5 槽 + 排队余量）——外层限值不可单独解读
     await runLimited(this.openedProjects, 2, (p) => this.refreshSessionsForProject(p))
   }
 
@@ -346,79 +348,60 @@ export class AppStore {
   private startSse() {
     const profile = this.activeProfile
     if (!profile || !this.client) return
-    // 先停旧组（关闭的项目/旧 profile 的订阅不得继续收事件——锁定语义）
-    for (const sub of this.sseGroup) sub.stop()
-    this.sseGroup = []
+    // 先拆旧连接（旧 profile 的订阅不得继续收事件——锁定语义）
+    this.sseSubscriber?.stop()
     const username = this.sseCreds?.username ?? profile.username
     const password = this.sseCreds?.password ?? profile.password
-    for (const dir of this.subscriptionDirectories()) {
-      const sub = new SseSubscriber({
-        baseUrl: this.activeBaseUrl!,
-        directory: dir,
-        username,
-        password,
-        onEvent: (ev) => this.handleEvent(dir, ev),
-        onReconnected: () => {
-          this.reconciler?.request()
-          // 命令缓存自愈：重连后重拉，让网络抖动恢复期的瞬时空被自动覆盖
-          // （openbuilder design-slash-command-refresh：事件驱动重拉 + 缓存保留两层互补）
-          const cmdDir = this.activeChatDirectory() ?? this.commandCache.cacheDir
-          if (cmdDir) void this.refreshCommands(cmdDir)
-        },
-        onStatus: () => this.updateSseAggregate(),
-        log: (...args) => console.debug("[sse]", ...args),
-      })
-      sub.start()
-      this.sseGroup.push(sub)
-    }
+    const sub = new SseSubscriber({
+      baseUrl: this.activeBaseUrl!,
+      username,
+      password,
+      onEvent: (dir, ev) => this.handleEvent(dir, ev),
+      onReconnected: () => {
+        this.reconciler?.request()
+        // 命令缓存自愈：重连后重拉，让网络抖动恢复期的瞬时空被自动覆盖
+        // （openbuilder design-slash-command-refresh：事件驱动重拉 + 缓存保留两层互补）
+        const cmdDir = this.activeChatDirectory() ?? this.commandCache.cacheDir
+        if (cmdDir) void this.refreshCommands(cmdDir)
+      },
+      onStatus: () => this.updateSseAggregate(),
+      log: (...args) => console.debug("[sse]", ...args),
+    })
+    sub.start()
+    this.sseSubscriber = sub
     this.updateSseAggregate()
   }
 
   /**
-   * SSE 订阅目录集合 = 打开项目的 worktree 根 ∪ 当前工作区目录，上限 MAX_SSE。
-   * 两个约束（第二轮 review 后实测发现）：
-   * 1. server 每条 /event 连接只圈定一个 directory（worktree 会话事件只在
-   *    /event?directory=<worktree> 流上）——当前 scope 的目录必须订阅；
-   * 2. 浏览器对同 host 的 HTTP/1.1 并发连接上限 6——SSE 占满后 REST 全部
-   *    排队超时，因此预算 5 条，永久留 ≥1 条给 REST。
-   * 非当前 worktree 的目录不订阅：其会话不在可见 scope 内，切换工作区时
-   * 重订 + REST 快照兜底。
+   * 打开项目目录全集（worktree ∪ sandboxes）——事件闸门、对账、状态快照的统一目录源。
+   * 单全局流（design-sse-global-event）下连接与打开集合解耦：开关项目/切工作区
+   * 不再触发任何连接操作，只影响此集合的过滤范围。
    */
-  private subscriptionDirectories(): string[] {
+  private openedDirectories(): string[] {
     const dirs = new Set<string>()
-    // 当前 scope 最优先（超预算截断时绝不能丢——它是聊天流式的命脉）
-    const scope = this.scopeQuery.directory
-    if (scope) dirs.add(scope)
-    for (const p of this.openedProjects) dirs.add(p.worktree)
-    return [...dirs].slice(0, 5)
+    for (const p of this.openedProjects) {
+      dirs.add(p.worktree)
+      for (const d of p.sandboxes ?? []) dirs.add(d)
+    }
+    return [...dirs]
   }
 
-  /** 对账范围与订阅集合一致 */
   private sseCreds: { username?: string; password?: string } | null = null
 
-  private sseGroup: SseSubscriber[] = []
+  private sseSubscriber: SseSubscriber | null = null
 
   private get activeBaseUrl(): string | null {
     return this.baseUrl
   }
 
   private updateSseAggregate() {
-    // 任一目录订阅非 connected 即 degraded（spec：degraded 态要明确提示）；
-    // 空组（如全部项目关闭）不触发 degraded——无订阅 ≠ 连接异常
-    const statuses = this.sseGroup.map((s) => s.getStatus())
-    if (statuses.length === 0) {
-      this.sseStatus = "stopped"
-      if (this.connectionState === "degraded") this.connectionState = "streaming"
-      this.emit()
-      return
-    }
-    let sseStatus: SseStatus
-    if (statuses.every((s) => s === "connected")) sseStatus = "connected"
-    else if (statuses.includes("reconnecting")) sseStatus = "reconnecting"
-    else sseStatus = "connecting"
-    this.sseStatus = sseStatus
-    if (this.connectionState !== "connecting" && this.connectionState !== "disconnected") {
-      this.connectionState = sseStatus === "connected" ? "streaming" : "degraded"
+    // 单流直映：connected→streaming，reconnecting/connecting→degraded；
+    // stopped（未连接/已拆除）不动 connectionState——由 connect/disconnect 主导
+    this.sseStatus = this.sseSubscriber?.getStatus() ?? "stopped"
+    if (this.sseStatus !== "stopped") {
+      if (this.connectionState !== "connecting" && this.connectionState !== "disconnected") {
+        this.connectionState = this.sseStatus === "connected" ? "streaming" : "degraded"
+      }
     }
     this.emit()
   }
@@ -426,7 +409,10 @@ export class AppStore {
   // ============ 事件处理（闸门 + 应用） ============
 
   private handleEvent(directory: string, ev: OpencodeEvent) {
-    // 闸门：关闭项目不更新（事件按订阅目录到达，订阅集合即打开集合）
+    // 前置闸门（design-sse-global-event §4.2）：单流收到 server 全部目录的事件，
+    // 仅打开项目的目录全集（worktree ∪ sandboxes）放行——关闭项目 = 事件忽略。
+    // 此前 message.*/session.created 等依赖"订阅集合即打开集合"隐式隔离，单流后必须显式过滤
+    if (!this.isOpenedDirectory(directory)) return
     switch (ev.type) {
       case "session.created":
       case "session.updated": {
@@ -482,10 +468,8 @@ export class AppStore {
         break
       }
       case "session.status": {
-        // 权威状态设置（含 retry 态）；事件到达的目录流即其作用域。
-        // 闸门（§4 事件闸门）：closeProject purge 与 startSse 重订之间有 async 窗口，
-        // 已关项目的迟到事件在此丢弃，防复活刚 purge 的条目
-        if (!this.isOpenedDirectory(directory)) return
+        // 权威状态设置（含 retry 态）；作用域目录 = 信封 directory
+        // （已过前置闸门：关闭项目的迟到事件不会到达此处）
         const { sessionID, status } = ev.properties as {
           sessionID: string
           status: SessionStatusValue
@@ -496,8 +480,7 @@ export class AppStore {
       }
       case "session.idle": {
         // 仅状态实际变化时置 idle（防 spurious idle 抖动——移动端 wasBusy/wasRetry 守卫）；
-        // 无条目 = 已是缺省 idle，直接忽略。闸门同 session.status
-        if (!this.isOpenedDirectory(directory)) return
+        // 无条目 = 已是缺省 idle，直接忽略（前置闸门已过滤关闭项目）
         const { sessionID } = ev.properties as { sessionID: string }
         if (!sessionID || !this.sessionStatus.has(sessionID)) return
         this.setSessionStatus(sessionID, { type: "idle" }, directory)
@@ -753,13 +736,13 @@ export class AppStore {
       this.projects.find((p) => p.id === projectId)?.sandboxes?.includes(workspaceDirectory)
         ? workspaceDirectory
         : null
-    // 立即登记：同步段（SSE 订阅目录/作用域派生）即读得到新状态
+    // 立即登记：同步段（事件闸门目录/作用域派生）即读得到新状态
     this.projectStates[this.profileKey()] = ps
     const expectedDir = this.scopeDirectory()
     this.resetFileTree()
-    this.startSse()
     this.restoreScopeTabs(expectedDir, true, true)
     this.emit()
+    // SSE 连接不动（单全局流）；快照刷新在后台
     await this.persistProjectState()
     await this.refreshAllOpenedProjects()
     if (this.currentProject?.id !== projectId || this.scopeDirectory() !== expectedDir) return
@@ -828,23 +811,22 @@ export class AppStore {
     ps.currentWorkspaceId = valid
     const expectedDir = this.scopeDirectory()
     this.resetFileTree()
-    this.startSse()
     this.restoreScopeTabs(expectedDir, true, true)
     // 新 scope 目录（worktree）的 pending 需要回填（此前无订阅通道）
     void this.backfillPending()
     this.emit()
-    // 再加载：持久化 + 本项目快照刷新（WT-1：worktree 会话只有逐目录快照可达）
+    // 再加载：持久化 + 本项目快照刷新（WT-1：worktree 会话只有逐目录快照可达）。
+    // SSE 连接不动（单全局流，闸门集合无变化——目录本就属于打开项目）
     await this.persistProjectState()
     await this.refreshSessionsForProject(project)
     if (this.currentProject?.id !== project.id || this.scopeDirectory() !== expectedDir) return
     this.restoreScopeTabs(expectedDir, true)
   }
 
-  /** 关闭当前项目后（openProject/closeProject 链）：快照 + SSE 重订阅 + 文件树重置 + 恢复该作用域的 Tab 记忆 */
+  /** 切项目/开项目后：快照 + 文件树重置 + 恢复该作用域的 Tab 记忆（SSE 连接不动） */
   private async switchProjectContext() {
     if (!this.client) return
     await this.refreshAllOpenedProjects()
-    this.startSse()
     this.resetFileTree()
     this.restoreScopeTabs(this.scopeDirectory(), true)
     // 新开项目目录的 pending（授权/问题）回填（SSE 只推 asked 一次）
@@ -1053,13 +1035,13 @@ export class AppStore {
       const result = await this.client.createWorktree(this.currentProject.worktree)
       // worktree API 返回轻量对象，重拉列表拿完整 Workspace 记录
       await this.refreshWorkspacesForProject(this.currentProject)
-      // 默认切换到新 worktree；setCurrentWorkspace 内含会话快照/SSE 重订/文件树重置/开作用域 Tab。
+      // 默认切换到新 worktree；setCurrentWorkspace 内含会话快照/文件树重置/开作用域 Tab。
       // 须校验重拉后 sandboxes 已含新目录（重拉失败/列表滞后时 currentWorkspace getter 会拒认，
-      // 先行切换会把幻影 currentWorkspaceId 持久化、下次启动才延迟生效）——此时退回仅订阅
+      // 先行切换会把幻影 currentWorkspaceId 持久化、下次启动才延迟生效）——此时仅刷新展示
+      // （SSE 单全局流常驻，新 worktree 事件天然到达，无需重订）
       if (this.currentProject?.sandboxes?.includes(result.directory)) {
         await this.setCurrentWorkspace(result.directory)
       } else {
-        this.startSse()
         this.emit()
       }
       return { ok: true }
@@ -1105,7 +1087,6 @@ export class AppStore {
       }
       await this.refreshSessionsForProject(this.currentProject)
       this.resetFileTree()
-      this.startSse()
       // 删除的是当前 worktree → 作用域已切回项目根：与其他切换路径一致，
       // 恢复根作用域的 Tab 与激活（否则有根 Tab 却落到会话列表视图）
       if (!ps.currentWorkspaceId) {
@@ -1417,7 +1398,7 @@ export class AppStore {
   private async backfillPending() {
     const client = this.client
     if (!client) return
-    const dirs = this.subscriptionDirectories()
+    const dirs = this.openedDirectories()
     let changed = false
     await runLimited(dirs, 3, async (dir) => {
       // 两类别串行：每任务在途 ≤1 条，并发上限 3（预算克制，与 reconciler 的
@@ -1425,8 +1406,8 @@ export class AppStore {
       const permissions = await client.listPendingPermissions(dir).catch(() => null)
       const questions = await client.listPendingQuestions(dir).catch(() => null)
       // 在途闸门（同 applySessionsSnapshot）：disconnect/切 profile 后丢弃旧连接的
-      // 迟到结果，防止写回已清空的 map；目录已出订阅集合（关项目/删 worktree）同理
-      if (this.client !== client || !this.subscriptionDirectories().includes(dir)) return
+      // 迟到结果，防止写回已清空的 map；目录已出打开集合（关项目/删 worktree）同理
+      if (this.client !== client || !this.openedDirectories().includes(dir)) return
       // 各类别独立合并；null = 失败保留本地（同 reconcile 路径）
       changed =
         mergePendingSnapshot(
@@ -1703,16 +1684,10 @@ export class AppStore {
   mountReconciler() {
     this.reconciler = new Reconciler({
       client: () => this.client,
-      getOpenedDirectories: () => this.subscriptionDirectories(),
-      // 状态快照目录集 = 打开项目全集（非当前 worktree 无 SSE 通道，stale busy 靠这里纠正）
-      getStatusDirectories: () => {
-        const dirs = new Set<string>()
-        for (const p of this.openedProjects) {
-          dirs.add(p.worktree)
-          for (const d of p.sandboxes ?? []) dirs.add(d)
-        }
-        return [...dirs]
-      },
+      // 对账目录源 = 打开项目全集（与事件闸门同源；单全局流下无"订阅集"概念）
+      getOpenedDirectories: () => this.openedDirectories(),
+      // 状态快照目录集同源（全集内每个目录都有事件通道，stale busy 纠正覆盖全部）
+      getStatusDirectories: () => this.openedDirectories(),
       getActiveSessions: () =>
         this.tabs
           .filter((t) => t.kind === "chat")
@@ -1747,9 +1722,9 @@ export class AppStore {
         }
       },
       onPendingSnapshot: (dir, permissions, questions) => {
-        // 在途闸门：连接已拆或目录已出订阅集合（in-flight reconcile 跨越了 teardown/
+        // 在途闸门：连接已拆或目录已出打开集合（in-flight reconcile 跨越了 teardown/
         // 关项目）时丢弃，防止写回已清空的 map
-        if (!this.client || !this.subscriptionDirectories().includes(dir)) return
+        if (!this.client || !this.openedDirectories().includes(dir)) return
         // 各类别独立合并；null = 该目录该类别抓取失败，保留本地
         mergePendingSnapshot(this.pendingPermissions, this.pendingQuestions, dir, permissions, questions)
       },
@@ -1761,9 +1736,9 @@ export class AppStore {
     })
   }
 
-  /** 窗口 focus：kick 所有退避（design-sse-reconnect-recovery 的 resume 语义） */
+  /** 窗口 focus：kick 退避（design-sse-reconnect-recovery 的 resume 语义） */
   kickReconnect() {
-    for (const sub of this.sseGroup) sub.reconnectNow()
+    this.sseSubscriber?.reconnectNow()
   }
 
   // ============ 派生 ============

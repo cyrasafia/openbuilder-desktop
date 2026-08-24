@@ -111,4 +111,38 @@ describe("Reconciler", () => {
       vi.useRealTimers()
     }
   })
+
+  it("会话快照多目录：单目录失败跳过回调，其余目录与 status/messages 阶段不受拖垮", async () => {
+    vi.useFakeTimers()
+    try {
+      const client = fakeClient()
+      ;(client.listSessions as ReturnType<typeof vi.fn>).mockImplementation(
+        async (dir: string) => {
+          if (dir === "/bad") throw new Error("boom")
+          return [{ id: "ses_1", projectID: "p1", directory: dir, time: { created: 1, updated: 2 } }] as Session[]
+        },
+      )
+      const onSessions = vi.fn()
+      const onStatus = vi.fn()
+      const onMessages = vi.fn()
+      const r = new Reconciler({
+        client: () => client,
+        getOpenedDirectories: () => ["/bad", "/good"],
+        getStatusDirectories: () => ["/bad", "/good"],
+        getActiveSessions: () => [{ sessionID: "ses_1", directory: "/good" }],
+        onSessionsSnapshot: onSessions,
+        onStatusSnapshot: onStatus,
+        onMessagesSnapshot: onMessages,
+        onReconcileStateChange: () => {},
+      })
+      r.request()
+      await vi.advanceTimersByTimeAsync(900)
+      expect(onSessions).toHaveBeenCalledTimes(1)
+      expect(onSessions).toHaveBeenCalledWith("/good", expect.any(Array))
+      expect(onStatus).toHaveBeenCalledTimes(2)
+      expect(onMessages).toHaveBeenCalledWith("ses_1", [])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

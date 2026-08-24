@@ -31,7 +31,7 @@
 ## 通信层设计（自写，不用 SDK）
 
 - 依据契约：`openbuilder/opencode_openapi.json`（与移动端同源）；类型从 OpenAPI 生成或手写最小子集，锁定在 client 层单点
-- 基础设施：fetch 封装（baseUrl、basic auth、`x-opencode-directory` 头）+ SSE 订阅器（`GET /event`）
+- 基础设施：fetch 封装（baseUrl、basic auth、`x-opencode-directory` 头）+ SSE 订阅器（单条 `GET /global/event`，信封按 directory 客户端路由，见 [design-sse-global-event.md](design-sse-global-event.md)）
 
 ### API 映射
 
@@ -46,7 +46,7 @@
 | 发消息 | `POST /session/{id}/prompt_async`（异步流式） |
 | 斜杠命令查询 | `GET /command?directory=`（v1 instance 路由，含 builtin/config/MCP/skill 全量注册表） |
 | 斜杠命令发送 | `POST /session/{id}/command`（服务端展开模板，回显见 [design-slash-command.md](design-slash-command.md)） |
-| 事件 | `GET /event`（SSE：`session.*`、`message.*`、`permission.*`、`question.*`） |
+| 事件 | `GET /global/event`（单条全局 SSE，覆盖全部 directory，信封 `{directory, payload}`；`session.*`、`message.*`、`permission.*`、`question.*`、`catalog.updated`、`mcp.tools.changed`；server ≥ v1.0.66） |
 | 待处理授权 | `GET /permission`；应答 `POST /session/{id}/permissions/{pid}`（body `{response}`，均带 `?directory=`） |
 | 待处理问题 | `GET /question`；回答 `POST /question/{qid}/reply`（body `{answers}`）；拒绝 `POST /question/{qid}/reject`（全局端点 + `?directory=` 路由，见 design-pending-cards） |
 | 文件树 | `GET /file?path=…` |

@@ -26,19 +26,30 @@ class FakeEventSource implements EventSourceLike {
   }
 }
 
-function heartbeatEvent(): OpencodeEvent {
-  return { id: "evt_hb", type: "__heartbeat__", properties: {} }
+/** /global/event 信封帧（心跳用于 bump 看门狗） */
+function heartbeatFrame(): { payload: OpencodeEvent } {
+  return { payload: { id: "evt_hb", type: "server.heartbeat", properties: {} } }
+}
+
+function sessionCreatedFrame(directory: string): { directory: string; payload: OpencodeEvent } {
+  return {
+    directory,
+    payload: {
+      id: "evt_1",
+      type: "session.created",
+      properties: { sessionID: "ses_1", info: { id: "ses_1" } } as never,
+    },
+  }
 }
 
 function makeSubscriber(opts: Partial<ConstructorParameters<typeof SseSubscriber>[0]> = {}) {
   const sources: FakeEventSource[] = []
-  const events: OpencodeEvent[] = []
+  const events: { directory: string; event: OpencodeEvent }[] = []
   const statuses: string[] = []
   const reconnected = vi.fn()
   const sub = new SseSubscriber({
     baseUrl: "http://x",
-    directory: "/proj",
-    onEvent: (e) => events.push(e),
+    onEvent: (directory, event) => events.push({ directory, event }),
     onReconnected: reconnected,
     onStatus: (s) => statuses.push(s),
     eventSourceFactory: (url) => {
@@ -53,12 +64,56 @@ function makeSubscriber(opts: Partial<ConstructorParameters<typeof SseSubscriber
 }
 
 describe("SseSubscriber", () => {
+  it("连接 /global/event（无 directory 参数）", async () => {
+    const { sub, sources } = makeSubscriber()
+    sub.start()
+    await vi.waitFor(() => expect(sources[0]).toBeTruthy())
+    expect(sources[0].url).toBe("http://x/global/event")
+    sub.stop()
+  })
+
+  it("信封事件按 directory 回调", async () => {
+    const { sub, sources, events } = makeSubscriber()
+    sub.start()
+    await vi.waitFor(() => expect(sources[0]).toBeTruthy())
+    sources[0].open()
+    sources[0].send(sessionCreatedFrame("/proj/worktree"))
+    expect(events).toHaveLength(1)
+    expect(events[0].directory).toBe("/proj/worktree")
+    expect(events[0].event.type).toBe("session.created")
+    sub.stop()
+  })
+
+  it("无 directory 字段的帧（connected/heartbeat）缺省 global", async () => {
+    const { sub, sources, events } = makeSubscriber()
+    sub.start()
+    await vi.waitFor(() => expect(sources[0]).toBeTruthy())
+    sources[0].open()
+    sources[0].send({ payload: { id: "evt_c", type: "server.connected", properties: {} } })
+    expect(events).toHaveLength(1)
+    expect(events[0].directory).toBe("global")
+    sub.stop()
+  })
+
+  it("durable 事件的 sync 双发包装被丢弃", async () => {
+    const { sub, sources, events } = makeSubscriber()
+    sub.start()
+    await vi.waitFor(() => expect(sources[0]).toBeTruthy())
+    sources[0].open()
+    sources[0].send({
+      directory: "/proj",
+      payload: { type: "sync", syncEvent: { type: "session.created.1", seq: 0 } },
+    })
+    expect(events).toHaveLength(0)
+    sub.stop()
+  })
+
   it("连接成功后收到事件", async () => {
     const { sub, sources, events } = makeSubscriber()
     sub.start()
     await vi.waitFor(() => expect(sources[0]).toBeTruthy())
     sources[0].open()
-    sources[0].send(heartbeatEvent())
+    sources[0].send(heartbeatFrame())
     expect(events).toHaveLength(1)
     sub.stop()
   })
@@ -139,7 +194,7 @@ describe("SseSubscriber", () => {
       sub.start()
       await vi.advanceTimersByTimeAsync(10)
       sources[0].open()
-      sources[0].send(heartbeatEvent())
+      sources[0].send(heartbeatFrame())
       // 静默 60s+：心跳看门狗（5s 间隔）在 65s tick 检测到，主动断开并重连
       await vi.advanceTimersByTimeAsync(70_000)
       await vi.advanceTimersByTimeAsync(1100)
@@ -156,6 +211,17 @@ describe("SseSubscriber", () => {
     await vi.waitFor(() => expect(sources[0]).toBeTruthy())
     sources[0].open()
     sources[0].sendRaw("{broken json")
+    expect(events).toHaveLength(0)
+    sub.stop()
+  })
+
+  it("非信封结构（payload 缺失）不炸、不发事件", async () => {
+    const { sub, sources, events } = makeSubscriber()
+    sub.start()
+    await vi.waitFor(() => expect(sources[0]).toBeTruthy())
+    sources[0].open()
+    sources[0].send({ directory: "/proj" })
+    sources[0].send({})
     expect(events).toHaveLength(0)
     sub.stop()
   })
