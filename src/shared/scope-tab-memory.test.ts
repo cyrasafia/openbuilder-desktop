@@ -3,8 +3,8 @@ import {
   buildFirstOpenMemory,
   deriveMemory,
   isSnapshotMissing,
+  reconcileMemoryTabs,
   resolveRestoreActive,
-  shrinkMemoryTabs,
 } from "./scope-tab-memory"
 import type { Session } from "./api-types"
 
@@ -39,25 +39,39 @@ describe("buildFirstOpenMemory", () => {
   })
 })
 
-describe("shrinkMemoryTabs", () => {
-  it("valid = mem.tabs ∩ 可见会话（保序）；记忆外会话不补开", () => {
+describe("reconcileMemoryTabs（§17 收缩 + 补开）", () => {
+  it("valid = mem.tabs ∩ 可见（保序）在前；记忆外可见会话按 created 升序追加尾部", () => {
     const mem = { projectId: "p1", tabs: ["x", "a", "y", "b"], active: "a" as string | null }
-    const next = shrinkMemoryTabs(mem, [mk("a"), mk("b")])
-    expect(next.tabs).toEqual(["a", "b"])
+    const n2 = mk("n2", { created: 5 })
+    const n1 = mk("n1", { created: 40 })
+    const next = reconcileMemoryTabs(mem, [n1, mk("a"), n2, mk("b")])
+    expect(next.tabs).toEqual(["a", "b", "n2", "n1"])
     expect(next.active).toBe("a")
   })
 
-  it("active 失效（被归档/删除）→ 置 null", () => {
+  it("active 失效（被归档/删除）→ 置 null，不因补开会话顶替（§7 末位回退）", () => {
     const mem = { projectId: "p1", tabs: ["x", "a"], active: "x" as string | null }
-    const next = shrinkMemoryTabs(mem, [mk("a")])
-    expect(next.tabs).toEqual(["a"])
+    const next = reconcileMemoryTabs(mem, [mk("a"), mk("n1", { created: 1 })])
+    expect(next.tabs).toEqual(["a", "n1"])
     expect(next.active).toBeNull()
   })
 
-  it("全部失效 → 收缩为空记忆（保留条目，不删）", () => {
+  it("记忆全部失效但可见集非空 → created 升序全量补开；active 置 null（≠首次打开的 updated 最大，§7 末位回退）", () => {
     const mem = { projectId: "p1", tabs: ["x", "y"], active: "x" as string | null }
-    const next = shrinkMemoryTabs(mem, [])
+    const next = reconcileMemoryTabs(mem, [mk("n2", { created: 20 }), mk("n1", { created: 10 })])
+    expect(next).toEqual({ projectId: "p1", tabs: ["n1", "n2"], active: null })
+  })
+
+  it("可见集为空 → 收缩为空记忆（保留条目，不删；不触发首次打开）", () => {
+    const mem = { projectId: "p1", tabs: ["x", "y"], active: "x" as string | null }
+    const next = reconcileMemoryTabs(mem, [])
     expect(next).toEqual({ projectId: "p1", tabs: [], active: null })
+  })
+
+  it("空记忆（零 Tab 哨兵）+ 新会话 → 补开（空作用域新会话唯一入口）", () => {
+    const mem = { projectId: "p1", tabs: [], active: null }
+    const next = reconcileMemoryTabs(mem, [mk("n1", { created: 1 })])
+    expect(next).toEqual({ projectId: "p1", tabs: ["n1"], active: null })
   })
 })
 

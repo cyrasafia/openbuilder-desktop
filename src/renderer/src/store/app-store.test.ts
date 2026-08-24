@@ -137,13 +137,69 @@ describe("先切换后加载：setCurrentWorkspace", () => {
     expect(store.tabMemory.default?.[WT2]).toBeUndefined()
   })
 
-  it("死会话 Tab 收敛：快照证实已归档的 Tab 关闭，可见但记忆外的 Tab 保留", async () => {
+  it("记忆外可见会话补开（§17，kind-engine 场景）：切走期间他端新建，切回即补开、active 保持", async () => {
+    const s1 = session("s1", WT1, { created: 1, updated: 1 })
+    const s2 = session("s2", WT1, { created: 2, updated: 20 }) // 切走期间他端新建
+    // SSE session.created 已达本地（sessionsByProject 有记录），但不开 Tab 不写记忆
+    store.sessionsByProject.set("proj1", sessionsOf(s1, s2))
+    store.tabMemory = { default: { [WT1]: { projectId: "proj1", tabs: ["s1"], active: "s1" } } }
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [s1, s2])
+    snapshots.set(WT2, [])
+
+    const p = store.setCurrentWorkspace(WT1)
+    // 同步段即补开（本地已有新会话）：记忆序在前、新会话 created 升序靠右
+    expect(store.tabs.map((t) => t.key)).toEqual(["chat:s1", "chat:s2"])
+    expect(store.activeTabKey).toBe("chat:s1")
+    await p
+    expect(store.tabMemory.default?.[WT1]).toEqual({
+      projectId: "proj1",
+      tabs: ["s1", "s2"],
+      active: "s1",
+    })
+  })
+
+  it("快照滞后补开：同步段本地无记录（防御闸门不动作），完整恢复落地后补齐", async () => {
+    const s1 = session("s1", WT1, { created: 1, updated: 1 })
+    const s2 = session("s2", WT1, { created: 2, updated: 2 })
+    store.tabMemory = { default: { [WT1]: { projectId: "proj1", tabs: ["s1"], active: "s1" } } }
+    const d1 = deferred<Session[]>()
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, d1.promise)
+    snapshots.set(WT2, [])
+
+    const p = store.setCurrentWorkspace(WT1)
+    // 同步段：本地快照全空 → isSnapshotMissing 闸门触发，不开不收缩
+    expect(store.tabs).toHaveLength(0)
+    d1.resolve([s1, s2])
+    await p
+    expect(store.tabs.map((t) => t.key)).toEqual(["chat:s1", "chat:s2"])
+    expect(store.activeTabKey).toBe("chat:s1")
+    expect(store.tabMemory.default?.[WT1]).toEqual({
+      projectId: "proj1",
+      tabs: ["s1", "s2"],
+      active: "s1",
+    })
+  })
+
+  it("零 Tab 哨兵作用域的他端新会话：切回补开（唯一可达入口）", async () => {
+    const s5 = session("s5", WT2, { created: 5, updated: 5 })
+    store.tabMemory = { default: { [WT2]: { projectId: "proj1", tabs: [], active: null } } }
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [s5])
+
+    await store.setCurrentWorkspace(WT2)
+    expect(store.tabs.map((t) => t.key)).toEqual(["chat:s5"])
+    expect(store.activeTabKey).toBe("chat:s5") // §7 末位回退
+    expect(store.tabMemory.default?.[WT2]).toEqual({ projectId: "proj1", tabs: ["s5"], active: "s5" })
+  })
+
+  it("死会话 Tab 收敛：快照证实已归档的记忆 Tab 关闭；记忆外可见会话补开并入记忆", async () => {
     const s2 = session("s2", WT1, { created: 2, updated: 2 })
     const s4 = session("s4", WT1, { created: 4, updated: 4 })
     store.sessionsByProject.set("proj1", sessionsOf(s2, s4))
     store.tabMemory = { default: { [WT1]: { projectId: "proj1", tabs: ["s2"], active: "s2" } } }
-    // 记忆外的可见会话 Tab（"不强制收敛"保护对象）
-    ;(store as unknown as { openChatTabSilent: (s: Session) => void }).openChatTabSilent(s4)
     const s2Archived = session("s2", WT1, { created: 2, updated: 5, archived: 5 })
     snapshots.set(ROOT, [])
     snapshots.set(WT1, [s2Archived, s4])
@@ -151,7 +207,8 @@ describe("先切换后加载：setCurrentWorkspace", () => {
 
     await store.setCurrentWorkspace(WT1)
     expect(store.tabs.map((t) => t.key)).toEqual(["chat:s4"])
-    expect(store.tabMemory.default?.[WT1]).toEqual({ projectId: "proj1", tabs: [], active: null })
+    expect(store.activeTabKey).toBe("chat:s4")
+    expect(store.tabMemory.default?.[WT1]).toEqual({ projectId: "proj1", tabs: ["s4"], active: "s4" })
   })
 
   it("幻影 directory 防御：不在 sandboxes 内的目录视为主工作区", async () => {

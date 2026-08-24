@@ -12,8 +12,8 @@ import {
   buildFirstOpenMemory,
   deriveMemory,
   isSnapshotMissing,
+  reconcileMemoryTabs,
   resolveRestoreActive,
-  shrinkMemoryTabs,
   type ScopeTabMemory,
 } from "@shared/scope-tab-memory"
 import {
@@ -1294,13 +1294,15 @@ export class AppStore {
    * 切入作用域的 Tab 恢复（§6，替换原"补开最近活跃前 8"）：
    * - 无记忆 / 记忆 projectId 不符（worktree 同路径重建）→ 首次打开：
    *   全量开未归档会话（created 升序），active = 最近活跃；真实空目录也写入空记忆（§3.3）
-   * - 有记忆 → 按记忆顺序补齐 live Tab（复用已开、不补开记忆外会话）+ 校验收缩
+   * - 有记忆 → 按记忆顺序补齐 live Tab（复用已开）+ 校验收缩 + 补开记忆外
+   *   可见会话（§17：他端新建/外部取消归档无其他 UI 入口，不补开即不可见）
    * - 防御闸门：快照未落地（可见与全量皆空）时不动作，下次切入/重启再恢复
    * - 恢复后无 Tab 时中栏显示会话列表视图（master 40459e9 后为无 Tab 引导页语义）
    * applyActivation=false 供启动逐作用域重建（§8 不改变激活）。
    * immediate=true 供"先切换后加载"的切换即时段（openProject/setCurrentWorkspace）：
-   * 内存快照可能滞后，首次打开分支不在此时做（新会话会因记忆已写入而不补开，
-   * 全量打开留给快照落地后的完整恢复），只做有记忆的即时恢复 + 激活清算；
+   * 内存快照可能滞后，首次打开分支不在此时做（空/滞后目录与真实状态不可区分，
+   * 全量打开留给快照落地后的完整恢复），只做有记忆的即时恢复 + 激活清算
+   * （补开为幂等增量：本地已有者即开，滞后漏开由完整恢复补齐）；
    * 也不在此时关闭死会话 Tab（数据滞后时保守不动，完整恢复统一收敛）。
    */
   private restoreScopeTabs(directory: string, applyActivation = true, immediate = false) {
@@ -1337,7 +1339,7 @@ export class AppStore {
         this.clearCrossScopeActivation(directory)
         return
       }
-      next = shrinkMemoryTabs(mem, visible)
+      next = reconcileMemoryTabs(mem, visible)
       const byId = new Map(visible.map((s) => [s.id, s]))
       for (const id of next.tabs) {
         const s = byId.get(id)
@@ -1346,8 +1348,8 @@ export class AppStore {
     }
 
     // 死会话 Tab 收敛（§6 完整恢复段）：会话已不可见（他端归档/删除/subagent 化，
-    // 未订阅目录收不到事件）的 live chat Tab 关闭。只关"会话不可见"的 Tab——
-    // 会话仍可见但记忆外的 Tab 按"不强制收敛"保留；immediate 段数据滞后不做；
+    // 未订阅目录收不到事件）的 live chat Tab 关闭。可见会话的 Tab 一律保留——
+    // 记忆外的已被上方补开吸收进记忆；immediate 段数据滞后不做；
     // snapshottedDirs 闸门保证只凭可信快照关闭（失败轮保守保留旧数据，不会误关）
     if (!immediate && this.snapshottedDirs.has(directory)) {
       const visibleIds = new Set(visible.map((s) => s.id))

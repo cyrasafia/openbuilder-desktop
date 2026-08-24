@@ -34,17 +34,30 @@ export function buildFirstOpenMemory(projectId: string, sessions: Session[]): Sc
 }
 
 /**
- * 恢复校验：valid = mem.tabs ∩ 可见会话（保序；可见 = 未归档 + 非 subagent，
- * 过滤在 store 层完成）。记忆外的会话不补开；active 失效则置 null
- * （运行时由 §7 激活规则回退到末位 Tab）。
+ * 恢复校验与增量吸收（2026-08-24 修订，原 shrinkMemoryTabs"记忆外不补开"，见
+ * design-tab-memory §17）：valid = mem.tabs ∩ 可见会话（保序；可见 = 未归档 +
+ * 非 subagent，过滤在 store 层完成）在前，"可见但不在记忆中"的会话按 created
+ * 升序追加尾部——他端新建（SSE session.created 只写 sessionsByProject，不开
+ * Tab 不写记忆）或外部取消归档的会话没有其他 UI 入口（引导页仅列归档会话），
+ * 不补开即在本端永久不可见；引导页发送失败的 pending 会话（openTab:false
+ * 先建后发）亦属此类——作用域往返后 GuidePage 卸载、草稿与复用引用已失，
+ * 补开是其唯一可达路径（review §17 第五轮）。用户关闭的 Tab 已归档（不可见），
+ * 不会因此复活；
+ * 空记忆（零 Tab 哨兵）同样补开——哨兵防的是"重新全量打开已收敛的旧会话"，
+ * 它们已归档不可见，不受影响。active 失效则置 null（运行时由 §7 激活规则
+ * 回退到末位 Tab，不因补开顶替）。
  */
-export function shrinkMemoryTabs(mem: ScopeTabMemory, sessions: Session[]): ScopeTabMemory {
-  const ids = new Set(sessions.map((s) => s.id))
-  const tabs = mem.tabs.filter((id) => ids.has(id))
+export function reconcileMemoryTabs(mem: ScopeTabMemory, sessions: Session[]): ScopeTabMemory {
+  const byId = new Map(sessions.map((s) => [s.id, s]))
+  const kept = mem.tabs.filter((id) => byId.has(id))
+  const known = new Set(mem.tabs)
+  const fresh = sessions
+    .filter((s) => !known.has(s.id))
+    .sort((a, b) => a.time.created - b.time.created)
   return {
     projectId: mem.projectId,
-    tabs,
-    active: mem.active != null && tabs.includes(mem.active) ? mem.active : null,
+    tabs: [...kept, ...fresh.map((s) => s.id)],
+    active: mem.active != null && kept.includes(mem.active) ? mem.active : null,
   }
 }
 
