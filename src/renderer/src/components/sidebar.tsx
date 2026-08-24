@@ -200,8 +200,8 @@ function ProjectTree() {
  * 会话状态指示器（项目/工作区行右侧）：该作用域未归档、非 subagent 会话的状态。
  * 状态投影同移动端 design-agent-status-indicator：waiting（待输入，琥珀静态）优先于
  * running（busy/retry = 运行色光晕呼吸，消费 dotStateFor——sessionStatus 单一事实源）。
- * ≤4 个逐会话状态点；>4 个收起为数字（任一 waiting/进行中时前置状态点，waiting 优先）。
- * 靠右浮层覆盖操作按钮，行 hover 时隐藏。
+ * ≤4 个逐会话状态点；>4 个按状态聚合为数字 chip（待输入数琥珀、运行数绿 chip、
+ * 空闲数灰 chip，各自为 0 时省略）。靠右浮层覆盖操作按钮，行 hover 时隐藏。
  */
 function SessionIndicator({ sessions }: { sessions: Session[] }) {
   const store = useStore()
@@ -214,6 +214,7 @@ function SessionIndicator({ sessions }: { sessions: Session[] }) {
     if (d === "waiting") waitingCount++
     else if (d === "running") busyCount++
   }
+  const idleCount = sessions.length - busyCount - waitingCount
   const title = t.sessionIndicatorTitle
     .replace("{count}", String(sessions.length))
     .replace("{busy}", String(busyCount))
@@ -222,9 +223,9 @@ function SessionIndicator({ sessions }: { sessions: Session[] }) {
     <span className="session-indicator" title={title}>
       {sessions.length > 4 ? (
         <>
-          {waitingCount > 0 && <span className="status-dot waiting" />}
-          {waitingCount === 0 && busyCount > 0 && <span className="status-dot session-running" />}
-          <span className="session-count">{sessions.length}</span>
+          {waitingCount > 0 && <span className="session-count waiting">{waitingCount}</span>}
+          {busyCount > 0 && <span className="session-count running">{busyCount}</span>}
+          {idleCount > 0 && <span className="session-count">{idleCount}</span>}
         </>
       ) : (
         sessions.map((s, i) => (

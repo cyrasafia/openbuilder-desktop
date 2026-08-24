@@ -223,6 +223,18 @@
   text-align: center;
 }
 
+/* >4 会话聚合数字的运行变体：绿色数字 + 运行色淡染底，与空闲灰 chip 并排区分状态 */
+.session-count.running {
+  background: color-mix(in srgb, var(--status-running) 16%, transparent);
+  color: var(--status-running);
+}
+
+/* >4 会话聚合数字的待输入变体：琥珀数字 + 待输入色淡染底（waiting 优先语义） */
+.session-count.waiting {
+  background: color-mix(in srgb, var(--status-waiting) 16%, transparent);
+  color: var(--status-waiting);
+}
+
 .sidebar-empty {
   display: flex;
   flex-direction: column;
