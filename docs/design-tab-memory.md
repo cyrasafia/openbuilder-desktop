@@ -91,11 +91,15 @@ restoreScopeTabs(dir):
     激活：见 §7
 ```
 
-**防御闸门（快照不可信）**：`mem.tabs 非空 && sessions 为空 && 该目录在 sessionsByProject 中完全无记录` → 视为快照拉取失败（catch 兜底空快照，session-merge 保守保留后仍空），**不打开 Tab、不收缩记忆**，但激活清算：若当前激活是其他作用域的 chat Tab → 置 null（Tab 条按作用域过滤不显示它、中栏却会渲染其会话；file Tab 保留）。恢复时机 = **下次切入该作用域或重启**；对账快照落地**不**自动重触发（避免引入"对账 → 恢复 → 激活变更"的副作用链，恢复只在显式切换路径发生）。区分依据：真"全部被归档/删除"时本地目录会话集非空（只是被过滤），唯快照从未落地才是全空。
+**防御闸门（快照不可信）**：`mem.tabs 非空 && sessions 为空 && 该目录在 sessionsByProject 中完全无记录` → 视为快照拉取失败（catch 兜底空快照，session-merge 保守保留后仍空），**不打开 Tab、不收缩记忆**，但激活清算：若当前激活是其他作用域的 chat Tab → 置 null（Tab 条按作用域过滤不显示它、中栏却会渲染其会话；file Tab 保留）。恢复时机 = **下次切入该作用域或重启**；对账快照落地**不**自动重触发（避免引入"对账 → 恢复 → 激活变更"的副作用链，恢复只在显式切换路径发生）。区分依据：真"全部被归档"时本地目录会话集非空（只是被过滤），唯快照从未落地才是全空。**例外（第四轮）**：`snapshottedDirs` 含该目录时空态可信（整目录被他端清空时 store 清空快照会移除本地会话，"全空"是真实状态而非未落地），闸门放行、照常收缩收敛。
 
-**首次打开的空集写入前置校验**：区分"真实空目录"与"快照拉取失败"的信号是**快照失败标记**（refreshSessionsForProject 对失败目录不合并空快照、记入 failed 集合，成功即清除）——失败时跳过写入（下次切入重试，幂等），仅真实空目录才写空记忆哨兵。否则失败瞬间写入的 `{tabs: []}` 会让该作用域永不触发全量打开。
+**首次打开的空集写入前置校验**：区分"真实空目录"与"快照未落地"的信号是**快照落地标记**（`snapshottedDirs` 成功集合：applySessionsSnapshot 落地即加入，refresh 失败不加，关项目/删工作区随目录清除）——未落地时跳过写入（下次切入重试，幂等），仅真实空目录才写空记忆哨兵。否则未落地瞬间写入的 `{tabs: []}` 会让该作用域永不触发全量打开。（2026-08-24 修订：原为失败集合 `snapshotFailed`，先切换后加载引入"从未拉取"目录后改为成功集合——失败集合无法覆盖"从未尝试"与"关项目后重开"两种未落地形态）
 
-**不强制收敛 live tabs 到记忆**：live 中该作用域超出记忆的 Tab（理论上不该出现——运行期记忆由 live 派生；仅异常路径可产生）保持原样，不静默关闭（关 chat Tab 牵涉归档语义，宁可冗余展示）。
+**切入作用域的两阶段恢复（先切换后加载，2026-08-24）**：`openProject`/`setCurrentWorkspace` 点击后同步段立即生效并渲染（左栏高亮/标题跟手、文件树即刻重置重载、SSE 重订、有记忆的作用域即时恢复 Tab+激活）；快照刷新在后台落地后再跑一遍完整恢复（含首次全量打开与激活收敛，闸门：在途时已切走则不动作）。同步段**不做**首次全量打开——内存快照可能滞后，此刻全量打开会把滞后集合固化为记忆（新会话因"记忆外不补开"而漏开），首次打开只认快照落地后的完整恢复；同步段无记忆时仅清算跨作用域激活。
+
+**死会话 Tab 收敛（2026-08-24 第四轮）**：完整恢复段（immediate=false 且 `snapshottedDirs` 含该目录）关闭"会话已不可见（他端归档/subagent 化，或已从快照消失——窗口删除/整目录清空）"的本作用域 live chat Tab——未订阅目录收不到归档事件，否则死会话 Tab 常驻且会经 `syncScopeMemory` 写回记忆。只关会话不可见/已消失的 Tab；会话仍可见但记忆外的 Tab 按"不强制收敛"保留；失败快照轮保守保留旧数据（不会误关）。
+
+**不强制收敛 live tabs 到记忆**：live 中该作用域超出记忆的 Tab（理论上不该出现——运行期记忆由 live 派生；仅异常路径可产生）保持原样，不静默关闭（关 chat Tab 牵涉归档语义，宁可冗余展示）。唯一例外见下方"死会话 Tab 收敛"——会话本身已不可见的 Tab 不在此保护范围。
 
 ## 7. 激活规则
 
@@ -135,8 +139,9 @@ restoreScopeTabs(dir):
 |---|---|
 | 首次切入 worktree（无记忆），3 个未归档会话 | 3 个 Tab 按 created 升序，激活最近活跃 |
 | 首次切入，0 个会话 | 空记忆写入，会话列表视图；此后外部新建会话**不**自动开 Tab |
-| 开 3 Tab → 切另一 worktree → 切回 | 3 Tab 按记忆顺序恢复，激活切走时的 Tab |
-| 切走期间某会话被他端归档 | 切回时该 Tab 不恢复，记忆收缩 |
+| 开 3 Tab → 切另一 worktree → 切回 | 点击即时恢复（记忆 + 已有快照，先切换后加载），快照刷新后再收敛 |
+| 切走期间某会话被他端归档 | 切回时该 Tab 不恢复，记忆收缩；若 Tab 一直未关，完整恢复凭新快照关闭（§16 第四轮） |
+| 切走期间该目录会话被他端全部删除 | 空快照清除本地死会话，Tab 收敛、记忆收缩至空（§16 第四轮） |
 | 切走期间他端新建会话 | 切回不自动开（记忆外）；会话列表可见、可点开（进记忆） |
 | 关闭某 Tab（= 归档） | 记忆移除；切走再切回不再出现 |
 | 关闭项目 | 项目 Tab 全关（不归档）+ 该项目记忆全清；重开 = 首次打开（全量按 created） |
@@ -149,7 +154,7 @@ restoreScopeTabs(dir):
 | 风险 | 对策 |
 |---|---|
 | **对账消息扇出**：`reconcileOnce` 对所有 chat Tab `Promise.all` 并行拉消息；全量开 Tab 后 N 可达几十，挤占 ~1 个 REST 空闲槽 → 整批超时 → 对账整体失败（Promise.all 一损俱损） | 消息快照拉取改并发受限（`runLimited` 3，与快照拉取同模式）；只改调度不改语义。附带：单个失败不再拖垮整批 |
-| **Tab 条溢出**：全量开 Tab 可能数十个，`.tabbar` 现状无横向滚动处理（flex 挤压） | `tabbar` 加 `overflow-x: auto` + `.tab` 不收缩（min-width），纯 CSS |
+| **Tab 条溢出**：全量开 Tab 可能数十个，`.tabbar` 现状无横向滚动处理（flex 挤压） | `tabbar` 加 `overflow-x: auto` + `.tab` 不收缩（min-width）+ `scrollbar-gutter: stable`（滚动条出现时 Tab 高度不跳变），纯 CSS |
 | 消息惰性累积上限（20 容器）对有 Tab 会话无条件 | 全量开 Tab 后订阅目录内会话全部累积——受订阅集合（≤5 目录）天然约束，可接受；v0.1 已知限制不变 |
 | **对账内存量级**：reconcile 对每个已开 chat Tab 拉 100 条消息窗口，N 个 Tab = N×100 条含 parts 的 `messagesBySession` 累积（SSE 路径按 Tab 数累积，不受 ≤5 目录约束） | 量级估算：几十 Tab × 100 条 ≈ 数千消息对象（~MB 级），桌面端可接受；`runLimited(3)` 已解决连接池饿死。若未来 Tab 数上百再考虑对非激活 Tab 降窗/跳过 |
 | 记忆写放大（每次 Tab 点击 IPC 写盘） | 记忆体量极小（KB 级），main 侧写队列串行；不引入 debounce（复杂度不值） |
@@ -192,6 +197,27 @@ restoreScopeTabs(dir):
 实现后 code review 三项修复（2026-08-24 第二轮）：
 
 - **闸门路径激活清算**：闸门 return 前若激活是其他作用域 chat Tab → 置 null（防跨作用域 ChatView 残留渲染——Tab 条过滤不显示但中栏仍渲染）
-- **快照失败标记**（`snapshotFailed`）：refreshSessionsForProject 失败目录不合并空快照、记入失败集合；首次打开遇"空会话 + 失败标记"跳过写入（见 §6 前置校验）；teardown 清空
+- **快照失败标记**（`snapshotFailed`）：refreshSessionsForProject 失败目录不合并空快照、记入失败集合；首次打开遇"空会话 + 失败标记"跳过写入（见 §6 前置校验）；teardown 清空（2026-08-24 第三轮起由 §16 的成功集合 `snapshottedDirs` 取代）
 - **removeWorkspace 删当前 worktree**：作用域切回项目根后补 `restoreScopeTabs`（与其他切换路径一致）
-- tabbar `scrollbar-gutter: stable`：溢出出现滚动条时 Tab 高度不跳变
+
+## 16. 切换跟手改造（2026-08-24 第三轮）
+
+**问题**：切 worktree 不跟手——`setCurrentWorkspace`/`openProject` 把 `persistProjectState`（IPC 落盘）与 `refreshSessionsForProject`（逐目录 REST，根 ∪ 全部 sandboxes）全部 `await` 完才 `emit`，点击后 UI（左栏高亮/中栏标题/右栏文件树）要等整轮网络才动。
+
+**方案（先切换后加载）**：
+
+- 同步段（点击即生效）：作用域状态写入 + 立即登记 projectStates + 文件树清空（FilePanel 侦听 workspace 变化自动重载右栏）+ SSE 重订到新 scope + `restoreScopeTabs(…, immediate=true)` + emit
+- 异步段（后台加载）：persist → 快照刷新 → 闸门（projectId + scope 未变）→ 完整 `restoreScopeTabs`（含首次全量打开）
+- `restoreScopeTabs` 新增 `immediate` 参数：只做有记忆的即时恢复；无记忆仅清算跨作用域激活（首次全量打开必须等快照落地，理由见 §6 两阶段恢复）
+- `snapshotFailed`（失败集合）改为 `snapshottedDirs`（成功集合，applySessionsSnapshot 统一维护含对账路径；closeProject/removeWorkspace 随目录清除）——immediate 恢复使"从未拉取"目录可达恢复路径，失败集合无法区分"从未尝试"
+- `loadFileNodes` 加作用域闸门：在途请求落地时若 scope 已切走，旧目录节点丢弃（旧实现此竞态窗口已存在，切换即时化后窗口变大，顺手封堵）
+- sidebar 跨项目点工作区行：原 `openProject().then(setCurrentWorkspace())` 两轮串行改为 `openProject(projectId, directory)` 单次直达；点项目行不再尾随 `setCurrentWorkspace(null)`（openProject 本身归位主工作区）
+
+**验证**：vitest 60/60、typecheck 双侧全绿（E2E 未重跑；§15 的作用域确定性信号断言方法不受影响——两阶段都在切换路径内写记忆）。
+
+实现后 code review 修复（2026-08-24 第四轮，先切换后加载改造复审）：
+
+- **死会话 Tab 收敛**：未订阅目录收不到他端归档事件，immediate 恢复会从滞后快照开 Tab 且完整恢复只收缩记忆不关 Tab——死会话 Tab 常驻，点击还会经 `syncScopeMemory` 写回记忆。修复：完整恢复段凭可信快照（`snapshottedDirs` 闸门）关闭"会话已不可见"的本作用域 live chat Tab（会话仍可见但记忆外的 Tab 按"不强制收敛"照旧保留）；immediate 段数据滞后，保守不动。删除覆盖 = 订阅目录的 `session.deleted` 事件 / merge 层窗口删除（updated 落快照 (min,max) 开区间内）/ 下方空快照清除；窗口外（最旧/最新会话被删、单条快照）仍是保守保留（merge 层既有取舍，服务端分页 limit 50 下"不在快照 = 已删除"不成立）
+- **空快照清除（applySessionsSnapshot）**：他端把整目录会话删光时快照成功返回 `[]`，merge 层 <2 条无开区间永远删不掉。修复：空快照逐条清除本地同目录会话。安全性依据（server 源码核实 `V2Session.list`）：到达 store 的快照必为成功响应；列表不过滤 archived（空 ≠ 全被归档，GuidePage 恢复列表不受影响）；分页按 created desc，首页空即全表空。附带：§6 防御闸门加 `snapshottedDirs` 例外——空快照清除后"本地全空"是可信状态而非"快照未落地"，闸门须放行（否则清空目录的死 Tab 永不收敛）
+- **setCurrentWorkspace 幻影 directory 防御 + 同值早退**：与 openProject 对齐——不在 sandboxes 内的目录视为主工作区；同值早退（不刷新不恢复），需要重同步须切走再切回
+- **补 store 级单测**（`src/renderer/src/store/app-store.test.ts`，8 用例）：同步段即时生效、首次全量打开只在快照落地后、异步段过期闸门、死会话收敛（含记忆外可见 Tab 保留）、幻影 directory 防御（在有效 worktree 上传入幻影，分支真实执行）、整目录清空收敛、openProject 直达 worktree + 幻影落回——注入 fake client + 手动 deferred 快照，SSE 不启动（activeProfileId 为空时 startSse 直接返回）。vitest 67/67、typecheck 双侧、build 全绿

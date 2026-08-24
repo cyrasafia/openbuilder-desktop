@@ -43,6 +43,7 @@ src/
 | worktree 列表的真实数据源是 `Project.sandboxes`（directory 数组）；`GET /experimental/workspace` 对 worktree API 创建的目录返回空 | 工作区列表从 sandboxes 派生 |
 | `?workspace=` 参数（wrk id 体系）传 worktree directory 会 500 | worktree 过滤是**纯客户端行为**：`session.directory === worktreeDir`（同移动端） |
 | `GET /session?directory=X` 为 directory **精确匹配**：项目根查询不返回 worktree 会话（实测根快照 28 条全为根会话） | 会话快照逐目录拉取（项目根 ∪ sandboxes）；快照合并按 directory 分域（session-merge.ts） |
+| `GET /session`（server 源码 `V2Session.list` 核实，2026-08-24）：① 列表**含 archived 会话**（无归档过滤条件）② 按 `created desc` 排序 + `limit` 分页（不传默认 50，首页空 = 全表空）③ 单次快照可能截断 | ① 空≠全被归档：store 空快照清除本地同目录会话是安全的（applySessionsSnapshot）② "不在快照 = 已删除"不成立：merge 层维持 updated 开区间窗口保守删除 ③ 目录会话 >50 时窗口误删风险（旧会话落窗口内）为已知限制 |
 | Electron renderer 的 `fetch` 是绑定 window 的包装，`const f = fetch; f(...)` 抛 `Illegal invocation` | rest-client 必须 `fetch.bind(globalThis)` |
 
 ## 3. 通信层

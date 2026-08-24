@@ -12,20 +12,19 @@ export function Sidebar() {
   const projects = store.openedProjects
   const current = store.currentProject
 
-  /** 选项目 = 选主工作区（并切换项目上下文） */
+  /** 选项目 = 选主工作区（openProject 内含切回主工作区，先切换后加载） */
   const selectProjectMain = (projectId: string) => {
     if (projectId === current?.id && !store.currentWorkspace) return
-    void store.setCurrentProject(projectId).then(() => store.setCurrentWorkspace(null))
+    void store.setCurrentProject(projectId)
   }
 
-  /** 选工作区（项目内 worktree） */
+  /** 选工作区（项目内 worktree）；跨项目点击 = 开项目并直达该工作区（单次切换） */
   const selectWorkspace = (projectId: string, directory: string) => {
-    if (projectId === current?.id && store.currentWorkspace?.directory === directory) return
-    if (projectId !== current?.id) {
-      void store.setCurrentProject(projectId).then(() => store.setCurrentWorkspace(directory))
-    } else {
-      void store.setCurrentWorkspace(directory)
+    if (projectId === current?.id) {
+      if (store.currentWorkspace?.directory !== directory) void store.setCurrentWorkspace(directory)
+      return
     }
+    void store.setCurrentProject(projectId, directory)
   }
 
   if (!store.activeProfile) {
