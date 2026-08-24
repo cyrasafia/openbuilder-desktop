@@ -1,5 +1,5 @@
 import { useState, type CSSProperties } from "react"
-import { FolderGit2 } from "lucide-react"
+import { FolderGit2, FolderPlus, Trash2 } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import { relativeTime } from "../i18n"
 import type { Project, Session } from "@shared/api-types"
@@ -49,18 +49,26 @@ function avatarImageSrc(icon?: Project["icon"]): string | undefined {
  * 项目头像（参考 openbuilder ProjectAvatar，按桌面密度缩至 26px）：
  * 图片（`icon.override` > `icon.url`，data:/https:）覆盖于瓷片上，加载失败回退；
  * 无图 = 项目名首字母；色 = `icon.color` 命名色，缺失按名哈希（与移动端同色）。
+ * 色框/淡染底仅字母瓷片有（同移动端 foregroundDecoration 仅 img==null），图片态裸图。
  */
 function ProjectAvatar({ name, icon }: { name: string; icon?: Project["icon"] }) {
   const imgSrc = avatarImageSrc(icon)
   return (
-    <span className="project-avatar" style={{ "--avatar-color": avatarColor(name, icon?.color) } as CSSProperties} aria-hidden>
+    <span
+      className={"project-avatar" + (imgSrc ? " has-img" : "")}
+      style={{ "--avatar-color": avatarColor(name, icon?.color) } as CSSProperties}
+      aria-hidden
+    >
       {imgSrc && (
         <img
           className="project-avatar-img"
           src={imgSrc}
           alt=""
           onError={(e) => {
-            e.currentTarget.style.display = "none"
+            // 失败回退字母瓷片：藏图并撤 has-img，恢复色框/淡染底
+            const img = e.currentTarget
+            img.style.display = "none"
+            img.parentElement?.classList.remove("has-img")
           }}
         />
       )}
@@ -208,7 +216,7 @@ function ProjectTree() {
                       void store.createWorkspace()
                     }}
                   >
-                    +
+                    <FolderPlus size={16} aria-hidden />
                   </button>
                 )}
                 {isCurrent && projects.length > 1 && (
@@ -247,9 +255,9 @@ function ProjectTree() {
                         e.stopPropagation()
                         if (confirm(t.confirmDeleteWorkspace)) void store.removeWorkspace(w.directory)
                       }}
-                    >
-                      ×
-                    </button>
+                  >
+                    <Trash2 size={16} aria-hidden />
+                  </button>
                   )}
                 </div>
               ))}

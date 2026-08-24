@@ -123,13 +123,32 @@
   position: relative;
 }
 
-.tree-row:hover {
-  background: var(--surface-container-low);
+/* 行三态纯背景色（DESIGN.md，2026-08-24 修订，弃用原左侧 2px primary 竖线）：
+   未选中透明（承面板 container-low 底）、hover container-high（原值与面板底同色，
+   左栏内不可见，顺带修复）、选中 container-highest（两档跳变独立承载选中信号）。
+   选中底取中性 surface 而非 primary 淡染：行右侧浮层有四色指示器
+   （waiting 琥珀 / running 绿光晕 / idle 灰 / error 红 + 聚合 chip），
+   绿 tint 会与 running 态争色；中性底保证状态点语义与光晕可读，深/浅主题均适用 */
+.tree-row:hover:not(.disabled) {
+  background: var(--surface-container-high);
 }
 
+/* 禁用行（空目录 "…" 占位等）：无点击语义，去 hover 高亮与 pointer 光标 */
+.tree-row.disabled {
+  cursor: default;
+}
+
+/* 选中 = highest 再叠 4% on-surface 微加深：浅色主题 high/highest 每通道仅差 ~5/255，
+   而背景是唯一选中信号（无竖线），纯阶梯档位不足以与 hover 区分；
+   color-mix 全走 token，同 project-avatar / session-count 先例 */
 .tree-row.active {
-  background: var(--surface-container);
-  box-shadow: inset 2px 0 0 var(--primary);
+  background: color-mix(in srgb, var(--surface-container-highest) 96%, var(--on-surface));
+}
+
+/* 选中行 hover 保持选中底（同一 color-mix 值）：背景是唯一选中信号（无竖线），
+   显式声明压过 :hover 防回退，亦防值漂移导致 hover 进出背景跳变 */
+.tree-row.active:hover {
+  background: color-mix(in srgb, var(--surface-container-highest) 96%, var(--on-surface));
 }
 
 .ws-row,
@@ -137,9 +156,10 @@
   height: var(--row-tree);
 }
 
-/* worktree 行相对项目行缩进 16（design-layout §3），强化与项目行的层级区分 */
+/* worktree 行缩进：名称文本与项目名文本左对齐——项目名起点 6(padding)+26(头像)+6(gap)=38，
+   16(图标)+6(gap) 前置占位 22，故 padding-left 16（2026-08-24，原 22 为任意值） */
 .ws-row {
-  padding-left: 22px;
+  padding-left: 16px;
 }
 
 /* worktree 行图标：16px 线性（lucide folder-git-2，DESIGN.md） */
@@ -180,6 +200,13 @@
   height: 100%;
   border-radius: inherit;
   object-fit: cover;
+}
+
+/* 图片态裸图：不展示色框/淡染底（openbuilder ProjectAvatar 同款——
+   foregroundDecoration 仅无图字母瓷片应用）；失败回退时 JS 撤 has-img 恢复 */
+.project-avatar.has-img {
+  border-color: transparent;
+  background: transparent;
 }
 
 .project-main {
@@ -236,6 +263,14 @@
   visibility: visible;
 }
 
+/* 行内最右操作钮与最右指示点同中心线：指示器 right:6px、点盒 12px → 中心在
+   右缘 12px；22px 按钮图标居中本来落在 17px，margin-right -5px（(22-12)/2）
+   拉回 12px，hover 显隐切换不横跳。:last-of-type 自动覆盖实际最右钮——
+   worktree 行 = 删除、项目行 = 关闭（单项目时为新建工作区 +） */
+.tree-row .row-action:last-of-type {
+  margin-right: -5px;
+}
+
 /* 会话状态指示器：靠右浮层，默认覆盖行内操作按钮；hover 行时隐藏让位给操作按钮 */
 .session-indicator {
   position: absolute;
@@ -251,25 +286,38 @@
   visibility: hidden;
 }
 
-/* 空闲点与运行点同用 12px 盒子（同 app 统一 glyph 盒），仅中心小灰点，避免同行混排尺寸不一 */
-.session-indicator .status-dot.idle {
+/* 空闲/待输入点与运行点同用 12px 盒子（同 app 统一 glyph 盒），实心视觉点经
+   ::after 居中（idle 灰 7px 半透明 / waiting 琥珀 8px），避免同行混排尺寸不一；
+   亦让最右点中心线稳定在右缘 12px——worktree 删除钮（.ws-row .row-action）按此对齐 */
+.session-indicator .status-dot.idle,
+.session-indicator .status-dot.waiting {
   position: relative;
   width: 12px;
   height: 12px;
   background: transparent;
 }
 
-.session-indicator .status-dot.idle::after {
+.session-indicator .status-dot.idle::after,
+.session-indicator .status-dot.waiting::after {
   content: "";
   position: absolute;
   left: 50%;
   top: 50%;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.session-indicator .status-dot.idle::after {
   width: 7px;
   height: 7px;
-  border-radius: 50%;
   background: var(--status-pending);
   opacity: 0.55;
-  transform: translate(-50%, -50%);
+}
+
+.session-indicator .status-dot.waiting::after {
+  width: 8px;
+  height: 8px;
+  background: var(--status-waiting);
 }
 
 .session-count {
