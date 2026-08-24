@@ -145,14 +145,6 @@ function GuidePage() {
             </button>
           </div>
         </div>
-        <div className="guide-actions">
-          <button className="guide-action" disabled title={t.comingSoon}>
-            {t.openTerminal}
-          </button>
-          <button className="guide-action" disabled title={t.comingSoon}>
-            {t.openBrowser}
-          </button>
-        </div>
       </div>
       {archived.length > 0 && (
         <div className="guide-archived">
