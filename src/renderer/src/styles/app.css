@@ -1172,6 +1172,12 @@
   overflow-y: auto;
   max-height: inherit;
 }
+/* 容器 tabIndex=-1 供键盘导航聚焦（行焦点由 .focused 背景表达）：
+   键盘交互触发 :focus-visible 后浏览器默认焦点环会整圈描边，
+   视觉上误读为浮层边框高亮——抑制之 */
+.ms-list:focus {
+  outline: none;
+}
 .ms-row {
   display: flex;
   align-items: center;
@@ -1228,9 +1234,15 @@
   height: var(--control-h);
   border-radius: var(--radius-chip);
   border: 1px solid var(--outline-variant);
-  background: var(--surface-container-lowest);
+  /* 亮色：与 composer 主输入框一致（lowest 纯白过亮） */
+  background: var(--surface-container-low);
   color: var(--on-surface);
   font-size: var(--text-sm);
+}
+/* 暗色：popover 背景是 surface-container-high，low 比它深一大截呈凹陷"洞"；
+   highest 比 high 浅一档，保持与亮色一致的"输入框微凸于底"观感 */
+:root[data-theme="dark"] .ms-search {
+  background: var(--surface-container-highest);
 }
 .ms-search:focus {
   outline: none;
@@ -1244,26 +1256,25 @@
 .ms-group {
   margin-bottom: 2px;
 }
+/* provider 组头：与组内行拉开层级——底色条带 + 全大写 mono，视觉上归属"分区标签"而非可选项 */
 .ms-group-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 4px 10px 2px;
-  color: var(--outline);
+  padding: 4px 10px;
+  margin-top: 2px;
+  border-radius: var(--radius-chip);
+  background: var(--surface-container-highest);
+  color: var(--on-surface-variant);
   font-size: var(--text-xs);
+}
+.ms-group-head .mono {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 .ms-group-count {
   opacity: 0.7;
-}
-.ms-footer {
-  border-top: 1px solid var(--outline-variant);
-  padding: 8px;
-  color: var(--primary);
-  font-size: var(--text-sm);
-  text-align: center;
-}
-.ms-footer:hover {
-  background: var(--surface-container-highest);
 }
 
 /* 设置对话框默认值区 */

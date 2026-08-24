@@ -156,3 +156,25 @@ export function setDefaults(
 export function hasDefaults(d: ModelDefaults): boolean {
   return d.agent != null || (d.model != null && !!d.model.id && !!d.model.providerID)
 }
+
+/**
+ * 解析生效默认模型（隐式默认，D-AM-4 修订）：显式默认值在目录内有效 → 用之
+ * （variant 失效只丢 variant 保模型，AM-IMPL4-1）；未设置 / 失效 → 回退模型列表首项
+ * ——「未手动选择时默认取第一项」。列表为空返回 undefined（回退服务器默认）。
+ * 目录未加载的场景由调用方处理（createSession 按原值应用，不进本函数）。
+ */
+export function effectiveDefaultModel(
+  model: ModelRef | undefined,
+  models: ModelInfo[],
+): ModelRef | undefined {
+  if (model) {
+    const target = findModel(models, model.providerID, model.id)
+    if (target) {
+      return model.variant && !target.variants.includes(model.variant)
+        ? { id: model.id, providerID: model.providerID }
+        : model
+    }
+  }
+  const first = models[0]
+  return first ? { id: first.id, providerID: first.providerID } : undefined
+}

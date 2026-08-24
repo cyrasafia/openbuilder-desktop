@@ -118,13 +118,13 @@ const zh = {
   model: "模型",
   thinkingLabel: "思考强度",
   thinkingDefault: "默认",
-  setAsDefault: "设为默认",
   clearDefaults: "清除默认值",
   modelLoadFailed: "加载失败，点击重试",
   modelSearchPlaceholder: "搜索模型…",
   noModelMatch: "无匹配模型",
   defaultsTitle: "默认值",
-  defaultsHint: "新建会话自动应用（仅本客户端）",
+  defaultsHint:
+    "新建会话自动应用：最后一次手动选择的模型即全局默认，未手动选择时取列表第一项（仅本客户端）",
 }
 
 const en: typeof zh = {
@@ -227,13 +227,13 @@ const en: typeof zh = {
   model: "Model",
   thinkingLabel: "Thinking",
   thinkingDefault: "Default",
-  setAsDefault: "Set as default",
   clearDefaults: "Clear defaults",
   modelLoadFailed: "Load failed — click to retry",
   modelSearchPlaceholder: "Search models…",
   noModelMatch: "No matching models",
   defaultsTitle: "Defaults",
-  defaultsHint: "Applied to new sessions (this client only)",
+  defaultsHint:
+    "Applied to new sessions: the last model you picked is the default; otherwise the first in the list (this client only)",
 }
 
 export type MessageKey = keyof typeof zh

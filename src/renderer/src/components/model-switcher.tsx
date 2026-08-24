@@ -2,8 +2,10 @@
  * composer 工具条：agent / 模型 / 思考强度切换 + 全局默认值编辑（design-agent-model-switch）。
  *
  * 两种模式（同一组件）：
- * - session 模式（chat 视图）：绑定当前会话，切换走 v2 POST（store 乐观更新）；
- * - defaults 模式（引导页无会话 / 设置对话框）：绑定 profile 默认值，切换只写本地持久化。
+ * - session 模式（chat 视图）：绑定当前会话，切换走 v2 POST（store 乐观更新），
+ *   成功后隐式写全局默认值（「上一次手动选择的模型 = 默认」，无显式「设为默认」动作）；
+ * - defaults 模式（引导页无会话 / 设置对话框）：绑定 profile 默认值，切换只写本地持久化；
+ *   未手动选择时展示生效默认 = 模型列表首项（effectiveDefaultModel）。
  *
  * 形态（D-AM-5）：agent 恰 2 个用分段开关、3+ 退化 pill+popover；model popover（分组+搜索）；
  * thinking popover 仅当前模型有 variants 时显示。「默认」= 省略 variant 字段（清掉已设值）。
@@ -16,6 +18,7 @@ import { createPortal } from "react-dom"
 import { useI18n, useStore } from "../app"
 import {
   carriedVariant,
+  effectiveDefaultModel,
   findModel,
   normalizeModelRef,
   type ModelCatalog,
@@ -38,6 +41,7 @@ interface PopoverProps {
 
 export function Popover({ open, anchorRef, onClose, children, maxHeight, width }: PopoverProps) {
   const [pos, setPos] = useState<{ left: number; top: number; w: number } | null>(null)
+  const popRef = useRef<HTMLDivElement>(null)
 
   // onClose 经 ref 稳定：父树每次 store emit 全量重渲染（流式中高频），
   // 内联箭头新身份不应触发监听器重注册/定位重算
@@ -52,6 +56,7 @@ export function Popover({ open, anchorRef, onClose, children, maxHeight, width }
     }
     const compute = () => {
       const anchor = anchorRef.current
+      const pop = popRef.current
       if (!anchor) return
       const r = anchor.getBoundingClientRect()
       if (r.bottom < -10 || r.top > window.innerHeight + 10) {
@@ -60,13 +65,18 @@ export function Popover({ open, anchorRef, onClose, children, maxHeight, width }
       }
       const margin = 4
       const w = width ? parseFloat(width) : Math.max(200, r.width)
+      // 高度用实测渲染值（短弹窗如 thinking 远小于 max-height，按 max-height 上翻
+      // 底部会悬空一段——AM-IMPL2-1"上翻后底边 ≤ 锚点上沿"须以实测高度保证）。
+      // 隐藏首帧先直接定宽再测量（宽度影响换行高度）；已定位后取实时值
+      if (pop) pop.style.width = `${w}px`
+      const actualH =
+        pop?.offsetHeight ??
+        (maxHeight ? parseFloat(maxHeight) : Math.min(window.innerHeight * 0.6, 480))
       let left = r.left
       let top = r.bottom + margin
-      // 溢出翻转：估算高度必须与渲染 max-height 一致（AM-IMPL2-1：
-      // 曾用 400 估高而实际是 min(60vh,480px)，上翻后底部侵入锚点区域遮挡工具条）
-      const actualMaxH = maxHeight ? parseFloat(maxHeight) : Math.min(window.innerHeight * 0.6, 480)
-      if (top + actualMaxH > window.innerHeight - margin && r.top - margin - actualMaxH > margin) {
-        top = r.top - margin - actualMaxH
+      // 溢出翻转：下方放不下且上方够 → 上翻，底边贴锚点上沿（margin）
+      if (top + actualH > window.innerHeight - margin && r.top - margin - actualH > margin) {
+        top = r.top - margin - actualH
       }
       // 右溢出收
       if (left + w > window.innerWidth - margin) left = window.innerWidth - margin - w
@@ -74,10 +84,14 @@ export function Popover({ open, anchorRef, onClose, children, maxHeight, width }
       setPos({ left, top, w })
     }
     compute()
+    // 内容高度变化（如搜索过滤收窄列表）重定位，保持底边贴锚点
+    const ro = popRef.current ? new ResizeObserver(() => compute()) : null
+    popRef.current && ro?.observe(popRef.current)
     // capture：捕获阶段先于内容 scroll，确保锚点滚动后也重定位
     window.addEventListener("resize", compute, true)
     window.addEventListener("scroll", compute, true)
     return () => {
+      ro?.disconnect()
       window.removeEventListener("resize", compute, true)
       window.removeEventListener("scroll", compute, true)
     }
@@ -112,16 +126,17 @@ export function Popover({ open, anchorRef, onClose, children, maxHeight, width }
     return () => window.removeEventListener("mousedown", onDown, true)
   }, [open, anchorRef])
 
-  if (!open || !pos) return null
+  if (!open) return null
   return createPortal(
     <div
+      ref={popRef}
       data-popover-content
       className="popover"
       style={{
         position: "fixed",
-        left: pos.left,
-        top: pos.top,
-        width: width ?? pos.w,
+        // 首帧未定位：隐藏渲染供测量（useLayoutEffect 同帧完成定位，无闪烁）
+        ...(pos ? { left: pos.left, top: pos.top } : { left: 0, top: 0, visibility: "hidden" }),
+        width: width ?? pos?.w,
         maxHeight: maxHeight ?? "min(60vh, 480px)",
       }}
     >
@@ -163,12 +178,18 @@ export function ModelSwitcherBar({ directory, mode, session, disabled }: BarProp
   const models = catalog.models
 
   // 当前值（session 模式来自会话，defaults 模式来自 profile 默认值）；
-  // 读边界归一化字面 "default" variant（AM-IMPL3-2）
+  // 读边界归一化字面 "default" variant（AM-IMPL3-2）。
+  // defaults 模式展示生效默认（隐式默认）：显式默认未设/失效 → 列表首项；
+  // 目录未加载/为空（catalogLoading/失败态）不做首项解析——保留显式默认原值显示
+  //（错误表"仍显示当前值"；effectiveDefaultModel 空列表返回 undefined 仅适用于 createSession）
   const def = mode === "defaults" ? store.defaultsFor() : null
   const currentAgent = mode === "session" ? session?.agent ?? "build" : def?.agent ?? "build"
-  const currentModel: ModelRef | undefined = normalizeModelRef(
-    mode === "session" ? session?.model : def?.model,
-  )
+  const currentModel: ModelRef | undefined =
+    mode === "session"
+      ? normalizeModelRef(session?.model)
+      : models.length
+        ? effectiveDefaultModel(normalizeModelRef(def?.model), models)
+        : normalizeModelRef(def?.model)
 
   const busy = switching || !!disabled
   const catalogLoading = !store.modelCatalogs.has(directory)
@@ -222,13 +243,13 @@ export function ModelSwitcherBar({ directory, mode, session, disabled }: BarProp
         current={currentModel}
         loading={catalogLoading}
         disabled={busy}
-        canSetDefault={mode === "session"}
         directory={directory}
         onPick={async (providerID, id) => {
           setSwitching(true)
           try {
             if (mode === "session") {
               if (!session) return // 防御：同上（AM-IMPL2-2）
+              // 成功切换后由 store 隐式写全局默认（最后一次手动选择）
               await store.switchSessionModel(session.id, providerID, id)
             } else {
               // defaults 模式同样执行携带规则（与 session 模式一致）：
@@ -241,12 +262,6 @@ export function ModelSwitcherBar({ directory, mode, session, disabled }: BarProp
             }
           } finally {
             setSwitching(false)
-          }
-        }}
-        onSetDefault={async () => {
-          // 用归一化后的 currentModel（不把字面 "default" variant 存进默认值）
-          if (mode === "session" && currentModel) {
-            await store.setModelDefaults({ model: currentModel })
           }
         }}
       />
@@ -315,7 +330,9 @@ function AgentControl({
 
   useEffect(() => {
     if (open) {
-      setSel(0)
+      // 初始焦点 = 当前选中项（未设/不在列表 → 首项）
+      const idx = agents.findIndex((a) => a.name === current)
+      setSel(idx >= 0 ? idx : 0)
       // popover 打开时 SWR（与 ModelControl 一致）
       void store.refreshModelCatalog(directory)
       requestAnimationFrame(() => listRef.current?.focus())
@@ -327,7 +344,8 @@ function AgentControl({
     listRef.current
       ?.querySelector<HTMLElement>(".ms-row.focused")
       ?.scrollIntoView({ block: "nearest" })
-  }, [sel])
+    // open：重开时 sel 可能不变（同一项），仍需把焦点行滚入视野
+  }, [sel, open])
 
   const selClamped = Math.min(sel, Math.max(0, agents.length - 1))
 
@@ -429,19 +447,15 @@ function ModelControl({
   current,
   loading,
   disabled,
-  canSetDefault,
   directory,
   onPick,
-  onSetDefault,
 }: {
   models: ModelCatalog["models"]
   current: ModelRef | undefined
   loading: boolean
   disabled: boolean
-  canSetDefault: boolean
   directory: string
   onPick: (providerID: string, id: string) => void
-  onSetDefault: () => void
 }) {
   const store = useStore()
   const { t } = useI18n()
@@ -449,6 +463,7 @@ function ModelControl({
   const [query, setQuery] = useState("")
   const anchorRef = useRef<HTMLButtonElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
   const [sel, setSel] = useState(0)
 
   // 打开时 SWR 重拉
@@ -456,7 +471,15 @@ function ModelControl({
     if (open) {
       void store.refreshModelCatalog(directory)
       setQuery("")
-      setSel(0)
+      // 初始焦点 = 当前选中项。空 query 下 flatRows 与 models 同序（分组保首现序），
+      // 直接在 models 上找索引；未设/不在列表（失效默认）→ 首项
+      const idx = current
+        ? models.findIndex((m) => m.providerID === current.providerID && m.id === current.id)
+        : -1
+      setSel(idx >= 0 ? idx : 0)
+      // rAF 聚焦搜索框（popover 首帧隐藏渲染供测量，autoFocus 在隐藏帧落空——
+      // 与 agent/thinking 列表同模式，此时定位已完成）
+      requestAnimationFrame(() => searchRef.current?.focus())
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, directory])
@@ -486,7 +509,8 @@ function ModelControl({
     listRef.current
       ?.querySelector<HTMLElement>(".ms-row.focused")
       ?.scrollIntoView({ block: "nearest" })
-  }, [selClamped])
+    // open：重开时 sel 可能不变（同一项），仍需把焦点行滚入视野
+  }, [selClamped, open])
 
   return (
     <>
@@ -502,9 +526,9 @@ function ModelControl({
       <Popover open={open} anchorRef={anchorRef} onClose={() => setOpen(false)} width="320px">
         <div className="ms-model">
           <input
+            ref={searchRef}
             className="ms-search"
             placeholder={t.modelSearchPlaceholder}
-            autoFocus
             value={query}
             onChange={(e) => {
               setQuery(e.target.value)
@@ -565,17 +589,6 @@ function ModelControl({
               </div>
             ))}
           </div>
-          {canSetDefault && current && (
-            <button
-              className="ms-footer"
-              onClick={() => {
-                setOpen(false)
-                onSetDefault()
-              }}
-            >
-              {t.setAsDefault}
-            </button>
-          )}
         </div>
       </Popover>
     </>
@@ -606,7 +619,9 @@ function ThinkingControl({
 
   useEffect(() => {
     if (open) {
-      setSel(0)
+      // 初始焦点 = 当前选中项（opts = [undefined, ...variants]；未设/不在列表 → 0 = 「默认」）
+      const idx = current ? 1 + variants.indexOf(current) : 0
+      setSel(idx >= 0 ? idx : 0)
       // popover 打开时 SWR（与 agent/model popover 一致）
       void store.refreshModelCatalog(directory)
       requestAnimationFrame(() => listRef.current?.focus())
@@ -618,7 +633,8 @@ function ThinkingControl({
     listRef.current
       ?.querySelector<HTMLElement>(".ms-row.focused")
       ?.scrollIntoView({ block: "nearest" })
-  }, [sel])
+    // open：重开时 sel 可能不变（同一项），仍需把焦点行滚入视野
+  }, [sel, open])
 
   // 选项 = 「默认」（undefined）+ variants keys
   const opts: (string | undefined)[] = [undefined, ...variants]

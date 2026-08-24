@@ -1,12 +1,14 @@
 /**
- * AppStore 切换链路测试（design-tab-memory §6/§16 先切换后加载 + 死会话收敛）：
- * 只测 store 纯状态机——注入 fake client 与项目/会话/记忆夹具，SSE 不启动
- * （activeProfileId 为空时 startSse 直接返回），快照落点用手动 deferred 控制。
+ * AppStore 切换链路测试（design-tab-memory §6/§16 先切换后加载 + 死会话收敛；
+ * design-agent-model-switch 隐式默认模型链路）：只测 store 纯状态机——注入 fake client
+ * 与项目/会话/记忆夹具，SSE 不启动（activeProfileId 为空时 startSse 直接返回），
+ * 快照落点用手动 deferred 控制。
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { AppStore } from "./app-store"
 import { SseSubscriber } from "@shared/sse-subscriber"
-import type { Project, Session } from "@shared/api-types"
+import type { ModelCatalog } from "@shared/model-catalog"
+import type { ModelRef, Project, Session } from "@shared/api-types"
 
 const ROOT = "/repo"
 const WT1 = "/repo/.git/opencode-worktrees/wt1"
@@ -324,5 +326,145 @@ describe("busy 补充发送（design-supplement-send）", () => {
     const res = await store.sendPrompt("s1", "补充")
     expect(res.ok).toBe(true)
     expect(store.statusOf("s1")).toEqual({ type: "retry", attempt: 2, message: "rate limited" })
+  })
+})
+
+describe("隐式默认模型（D-AM-4 修订）", () => {
+  const catalog: ModelCatalog = {
+    agents: [],
+    models: [
+      { id: "glm-5.3", providerID: "zai", name: "GLM 5.3", variants: ["low", "high", "max"] },
+      { id: "glm-4", providerID: "zai", name: "GLM 4", variants: ["low", "high"] },
+      { id: "glm-air", providerID: "zai", name: "GLM Air", variants: [] },
+    ],
+  }
+
+  function seedSwitchClient(
+    posted: ModelRef[],
+    fail = false,
+  ): { switchModel: (id: string, model: ModelRef) => Promise<void> } {
+    return {
+      switchModel: async (_id, model) => {
+        if (fail) throw new Error("boom")
+        posted.push(model)
+      },
+    }
+  }
+
+  it("会话内切模型成功 → 全局默认隐式写入（含携带 variant）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    s1.model = { id: "glm-5.3", providerID: "zai", variant: "high" }
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    store.modelCatalogs.set(ROOT, catalog)
+    const posted: ModelRef[] = []
+    ;(store as unknown as { client: unknown }).client = seedSwitchClient(posted)
+
+    expect(await store.switchSessionModel("s1", "zai", "glm-4")).toBe(true)
+    expect(posted).toEqual([{ id: "glm-4", providerID: "zai", variant: "high" }])
+    // 最后一次手动选择 = 全局默认（per-profile 持久化通道）
+    expect(store.defaultsFor().model).toEqual({ id: "glm-4", providerID: "zai", variant: "high" })
+  })
+
+  it("新模型无同名 variant → 默认值省略 variant（携带规则）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    s1.model = { id: "glm-5.3", providerID: "zai", variant: "high" }
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    store.modelCatalogs.set(ROOT, catalog)
+    ;(store as unknown as { client: unknown }).client = seedSwitchClient([])
+
+    await store.switchSessionModel("s1", "zai", "glm-air")
+    expect(store.defaultsFor().model).toEqual({ id: "glm-air", providerID: "zai" })
+  })
+
+  it("切模型失败 → 默认值不写", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    store.modelCatalogs.set(ROOT, catalog)
+    ;(store as unknown as { client: unknown }).client = seedSwitchClient([], true)
+
+    expect(await store.switchSessionModel("s1", "zai", "glm-4")).toBe(false)
+    expect(store.defaultsFor().model).toBeUndefined()
+  })
+
+  it("切思考强度成功 → 默认值同步 variant（undefined = 清除）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    s1.model = { id: "glm-5.3", providerID: "zai" }
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    store.modelCatalogs.set(ROOT, catalog)
+    ;(store as unknown as { client: unknown }).client = seedSwitchClient([])
+
+    await store.switchSessionVariant("s1", "zai", "glm-5.3", "max")
+    expect(store.defaultsFor().model).toEqual({ id: "glm-5.3", providerID: "zai", variant: "max" })
+
+    await store.switchSessionVariant("s1", "zai", "glm-5.3", undefined)
+    expect(store.defaultsFor().model).toEqual({ id: "glm-5.3", providerID: "zai" })
+  })
+
+  it("无显式默认且目录已加载 → 新会话应用列表首项", async () => {
+    store.modelCatalogs.set(ROOT, catalog)
+    let body: { agent?: string; model?: ModelRef } = {}
+    ;(store as unknown as { client: unknown }).client = {
+      createSession: async (
+        _d: string,
+        _w: unknown,
+        _t: unknown,
+        opts: { agent?: string; model?: ModelRef } = {},
+      ) => {
+        body = opts
+        return session("new1", ROOT, { created: 9, updated: 9 })
+      },
+    }
+
+    await store.createSession()
+    expect(body.model).toEqual({ id: "glm-5.3", providerID: "zai" })
+  })
+
+  it("显式默认有效 → 新会话按原值应用；失效 variant 只丢 variant；失效模型回退首项", async () => {
+    store.modelCatalogs.set(ROOT, catalog)
+    const bodies: Array<{ agent?: string; model?: ModelRef }> = []
+    ;(store as unknown as { client: unknown }).client = {
+      createSession: async (
+        _d: string,
+        _w: unknown,
+        _t: unknown,
+        opts: { agent?: string; model?: ModelRef } = {},
+      ) => {
+        bodies.push(opts)
+        return session(`new${bodies.length}`, ROOT, { created: 9, updated: 9 })
+      },
+    }
+
+    store.defaults = {
+      default: { model: { id: "glm-4", providerID: "zai", variant: "high" } },
+    }
+    await store.createSession({ openTab: false })
+    store.defaults = {
+      default: { model: { id: "glm-4", providerID: "zai", variant: "gone" } },
+    }
+    await store.createSession({ openTab: false })
+    store.defaults = { default: { model: { id: "gone", providerID: "zai" } } }
+    await store.createSession({ openTab: false })
+
+    expect(bodies[0].model).toEqual({ id: "glm-4", providerID: "zai", variant: "high" })
+    expect(bodies[1].model).toEqual({ id: "glm-4", providerID: "zai" })
+    expect(bodies[2].model).toEqual({ id: "glm-5.3", providerID: "zai" })
+  })
+
+  it("目录未加载且无显式默认 → 不带 model（服务器默认）", async () => {
+    let body: { agent?: string; model?: ModelRef } = {}
+    ;(store as unknown as { client: unknown }).client = {
+      createSession: async (
+        _d: string,
+        _w: unknown,
+        _t: unknown,
+        opts: { agent?: string; model?: ModelRef } = {},
+      ) => {
+        body = opts
+        return session("new1", ROOT, { created: 9, updated: 9 })
+      },
+    }
+
+    await store.createSession({ openTab: false })
+    expect(body.model).toBeUndefined()
   })
 })

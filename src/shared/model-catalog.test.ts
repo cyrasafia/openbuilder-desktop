@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   carriedVariant,
+  effectiveDefaultModel,
   emptyCatalog,
   findModel,
   getDefaults,
@@ -250,5 +251,48 @@ describe("defaults 读写", () => {
     const d: ModelDefaults = { model: { id: "glm-5.3", providerID: "zai", variant: "high" } }
     const r = setDefaults(null, "p", d)
     expect(getDefaults(r, "p")).toEqual(d)
+  })
+})
+
+describe("effectiveDefaultModel（隐式默认：显式优先，未设/失效回退首项）", () => {
+  const models = parseModels({
+    providers: [
+      {
+        id: "zai",
+        models: {
+          "glm-5.3": { status: "active", variants: { low: {}, high: {}, max: {} } },
+          "glm-air": { status: "active" },
+        },
+      },
+      { id: "deepseek", models: { "deepseek-v4-flash": { status: "active" } } },
+    ],
+  })
+
+  it("显式默认有效 → 原样返回（含合法 variant）", () => {
+    expect(effectiveDefaultModel({ id: "glm-5.3", providerID: "zai", variant: "high" }, models)).toEqual(
+      { id: "glm-5.3", providerID: "zai", variant: "high" },
+    )
+  })
+
+  it("显式默认 variant 失效 → 只丢 variant 保模型（AM-IMPL4-1）", () => {
+    expect(effectiveDefaultModel({ id: "glm-5.3", providerID: "zai", variant: "gone" }, models)).toEqual(
+      { id: "glm-5.3", providerID: "zai" },
+    )
+  })
+
+  it("显式默认模型失效（provider 下线/改名）→ 回退列表首项", () => {
+    expect(effectiveDefaultModel({ id: "gone", providerID: "zai" }, models)).toEqual({
+      id: "glm-5.3",
+      providerID: "zai",
+    })
+  })
+
+  it("未设置 → 列表首项（不含 variant）", () => {
+    expect(effectiveDefaultModel(undefined, models)).toEqual({ id: "glm-5.3", providerID: "zai" })
+  })
+
+  it("空列表 → undefined（回退服务器默认）", () => {
+    expect(effectiveDefaultModel(undefined, [])).toBeUndefined()
+    expect(effectiveDefaultModel({ id: "gone", providerID: "zai" }, [])).toBeUndefined()
   })
 })

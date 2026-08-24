@@ -68,7 +68,7 @@ rest-client 的 `dirQuery` 已统一编码，新增端点必须复用，不得�
 | **D-AM-1** | 模型/agent 列表数据源 = v1 `GET /config/providers?directory=` + `GET /agent?directory=` | LR-1：v2 `/api/model` 只返回 opencode 一家；v1 端点同时覆盖列表 + variants，单端点无合并 |
 | **D-AM-2** | 切换走 v2 `POST /api/session/:id/agent\|model`，成功后乐观写本地会话记录；消费 `session.next.*.switched` 事件做跨客户端增量补丁 | 204 无响应体；读路径实测即时一致，乐观与事件补丁收敛同一写路径即幂等 |
 | **D-AM-3** | 思考强度 = 模型 variant（`variants` dict 的 keys）；「默认」= 切换请求省略 variant 字段 | variant 是服务端原生概念（`reasoningEffort`）；实测省略字段可清掉已设值 |
-| **D-AM-4** | 全局默认模型存**客户端**（per-profile 持久化），经 `POST /session` body 应用；**不写** `PATCH /global/config` | 见「全局默认模型」小节三条理由 |
+| **D-AM-4** | 全局默认模型存**客户端**（per-profile 持久化），经 `POST /session` body 应用；**不写** `PATCH /global/config`。默认值**隐式**维护（2026-08-24 修订）：会话内手动切换模型/思考强度成功即写默认值，未手动选择时生效默认 = 模型列表首项——**无显式「设为默认」动作** | 见「全局默认模型」小节理由 + 隐式语义修订说明 |
 | **D-AM-5** | UI = composer-actions 行内工具条（不占新行）；agent 恰 2 个用分段开关、3+ 退化 popover；模型/思考 popover（分组 + 搜索） | 桌面密度；自适应规则沿用移动端实测结论 |
 
 ### UI：composer 工具条
@@ -97,19 +97,30 @@ rest-client 的 `dirQuery` 已统一编码，新增端点必须复用，不得�
 | 控件 | 形态 | 行为 |
 |---|---|---|
 | **Agent** | 可见 agent **恰好 2**（build/plan）→ 分段开关（segmented toggle），点击即切、无下拉；**≥3** → 退化为 pill + ▾ + popover；**≤1** → 静态 pill | 自适应规则沿用移动端（2 agent 胶囊开关），形态桌面化：扁平分段、当前项 `primary-container` 填充、150ms 高亮迁移（不做平移动画——桌面控件小，无需测量定位那套机制） |
-| **Model** | pill + ▾，点击弹 **popover**：顶部搜索框（autofocus）+ 按 provider 分组（组头 = provider id + 数量，保序）+ 当前项打勾 + 底部「设为默认」动作 | 搜索匹配 name/id/providerID（大小写不敏感）；高度上限 `min(60vh, 480px)` 内部滚动；provider 整组无匹配时隐藏 |
+| **Model** | pill + ▾，点击弹 **popover**：顶部搜索框（autofocus）+ 按 provider 分组（组头 = provider id + 数量，保序）+ 当前项打勾 | 搜索匹配 name/id/providerID（大小写不敏感）；高度上限 `min(60vh, 480px)` 内部滚动；provider 整组无匹配时隐藏。无底部动作——默认值隐式（见「全局默认模型」） |
 | **思考强度** | pill + ▾，**仅当前模型 `variants` 非空时显示**；选项 = 「默认」+ variants keys（low/high/max…） | 「默认」= 切 model 时省略 variant 字段；选中项打勾 |
 
 **切模型时 variant 的携带规则**：从 picker 选中**另一个模型**时，仅当新模型有**同名 variant**才沿用当前思考强度，否则省略 variant（重置为「默认」）——保留用户意图（如 high 普遍存在）且不发送新模型不认识的值；thinking pill 随之立即反映新模型的 variants（可能隐藏）。
 
 popover 通用行为（首个 popover 组件，后续终端/diff 复用）：受控 open、锚元素
 `getBoundingClientRect()` 定位（fixed，向下展开、溢出翻转）、点击外部 / Esc / 选中后关闭、
-列表 ↑↓ + Enter 键盘导航（对齐 CommandHints 交互词汇）；**打开期间**监听 window
-resize/scroll（capture）重定位，锚点滚出视口则直接关闭——不做跟踪会让复用方各自踩坑。
+列表 ↑↓ + Enter 键盘导航（对齐 CommandHints 交互词汇），初始焦点 = 当前选中项
+（打开即定位、长列表滚入视野；未设/失效 → 首项，搜索过滤时回退首项）；**打开期间**监听 window
+resize/scroll（capture）重定位 + ResizeObserver 跟踪内容高度变化（搜索过滤收窄列表时
+底边仍贴锚点），锚点滚出视口则直接关闭——不做跟踪会让复用方各自踩坑。
+翻转/贴边以**实测渲染高度**计算（首帧隐藏渲染测量后同帧定位，无闪烁）：短弹窗
+（thinking ~4 行）远小于 max-height，按 max-height 估高上翻会悬空一段（AM-IMPL2-1
+的"上翻后底边 ≤ 锚点上沿"不变式由此落实到实测值）。
 
 引导页与 chat 视图的差异仅数据绑定：chat 切换走 v2 POST（乐观更新会话记录）；引导页切换只写 store 默认值（本地持久化，无网络请求）。
 
 ### 全局默认模型（D-AM-4：客户端 per-profile 持久化，不写服务器配置）
+
+> **隐式默认修订（2026-08-24）**：去掉 model popover 底部「设为默认」动作，默认值改为
+> 隐式维护——**上一次手动选择的模型（含思考强度）即全局默认**，未手动选择时生效默认 =
+> **模型列表首项**；「清除默认值」= 回到隐式首项。理由：显式"设为默认"是冗余的状态
+> 管理（用户最后一次选择即意图，无需二次确认动作）；"未选择"空态此前在工具条展示为
+> 占位文案，落为具体首项后语义无歧义。
 
 **存储**（自写 JSON store（electron-store 风格，`window.desktop.storeSet`），与 theme/locale 同通道）。
 键形状对齐 `tabs.memory` / `project.state` 先例：**静态键 + `Record<profileKey, …>` 值**——
@@ -120,14 +131,21 @@ key: "model.defaults"   // StoreShape 新增静态键
 value: Record<profileKey, { agent?: string; model?: { id: string; providerID: string; variant?: string } }>
 ```
 
-**应用点**：`AppStore.createSession()` → `POST /session` body 追加 `{agent, model}`（契约实测可用）。未设置的字段不传 → 服务器自身默认（global config / provider default）生效，两级默认自然叠加。
+持久化记录**只存显式选择**（手动挑选 / 清除的结果），首项回退不落盘——列表变化时隐式
+默认自然跟随，不产生过期持久值。
 
-**入口**（同一 store 字段）：
+**生效规则**（`effectiveDefaultModel` 纯函数，createSession 与 defaults 模式工具条共用）：
+显式默认在目录内有效 → 用之（variant 失效只丢 variant 保模型，AM-IMPL4-1）；未设置 /
+模型失效 → 列表首项（不含 variant）；列表为空 → undefined。目录未加载时 createSession
+不解析首项：显式默认按原值应用、无则不传 → 服务器自身默认（global config / provider
+default）兜底，两级默认自然叠加（agent 同此路径）。
 
-1. 设置对话框新增「默认值」区：复用工具条编辑默认 agent/模型/思考强度；有默认值时显示
-   「清除默认值」（恢复服务器默认——`setDefaults` 传 `undefined` 删字段）；
-2. chat 视图 model popover 底部「设为默认」：把当前会话的 model（含 variant）一键写入默认值；
-3. 引导页工具条直接编辑（见上）。
+**写入点**（同一 store 字段）：
+
+1. **会话内手动切换**模型/思考强度（chat 视图 + 引导页 pendingSession 会话绑定）：
+   v2 POST 成功后 `setModelDefaults({ model })`——"上一次手动选择"的隐式写入，失败不写；
+2. 引导页工具条（无会话）直接编辑默认值（发首条消息时经 `POST /session` body 应用）；
+3. 设置对话框「默认值」区编辑 / 「清除默认值」（回到隐式首项）。
 
 **为何不用 `PATCH /global/config {model: "provider/model"}`（服务器端全局默认）**：
 
@@ -152,11 +170,13 @@ value: Record<profileKey, { agent?: string; model?: { id: string; providerID: st
 chat 视图切换 agent/model/variant
   → POST /api/session/:id/agent|model（204）
   → 乐观写 sessionsByProject 中该 session 的 agent/model 字段（AM-FIX-2：UI 从 store 重读）
+  → model/variant 成功后隐式写全局默认值（D-AM-4 修订：上一次手动选择 = 默认）
   → 失败：不改本地 + connectionError（状态栏可见）；进行中重入守卫（switching 状态禁用控件）
 
-引导页切换 / 设置对话框 / 「设为默认」
+引导页切换 / 设置对话框
   → 只写 store 默认值 + storeSet 持久化（无网络）
-  → createSession 时随 POST /session body 应用
+  → createSession 时按 effectiveDefaultModel 解析生效默认（显式优先，未设/失效 → 列表首项）
+     并随 POST /session body 应用
 ```
 
 ### 状态模型
@@ -202,7 +222,7 @@ defaults: Record<profileKey, { agent?: string; model?: ModelRef }>  // 持久化
 | `src/renderer/src/components/model-switcher.tsx` | 新组件：`ModelSwitcherBar`（agent 分段开关 + model picker + thinking picker）+ `Popover`（首个弹层原语） | ✅ |
 | `src/renderer/src/components/workspace.tsx` | ChatView / GuidePage composer-actions 挂工具条 | ✅ |
 | `src/renderer/src/components/settings-dialog.tsx` | 「默认值」区（agent + 默认模型选择器，复用 picker） | ✅ |
-| `src/renderer/src/i18n/index.ts` | zh/en 词条（agent/模型/思考强度/设为默认/加载失败等） | ✅ |
+| `src/renderer/src/i18n/index.ts` | zh/en 词条（agent/模型/思考强度/隐式默认提示/加载失败等） | ✅ |
 | `src/renderer/src/styles/app.css` | 工具条/分段开关/popover/分组列表样式（token 复用 `--control-h`/`--radius-chip`/`--text-sm`） | ✅ |
 
 实现落地时同步 `docs/spec-v0.1.md` 之后的版本范围（v0.2 spec 建档时纳入本功能）。
@@ -227,7 +247,9 @@ defaults: Record<profileKey, { agent?: string; model?: ModelRef }>  // 持久化
 | 切到另一模型（思考强度已设） | 新模型有同名 variant → 沿用；否则重置「默认」（省略字段），thinking pill 随新模型 variants 显隐 |
 | 引导页切模型/agent | 只写本地默认值；发送首条消息 → POST /session 带默认值 → 会话以所选 agent/model 创建 |
 | 引导页发送失败后改默认值再重试 | 工具条已切换为 pendingSession 会话绑定，显示/切换的是该会话实际值，重试所见即所发 |
-| 「设为默认」 | 当前会话 model（含 variant）写入默认值；设置对话框同步显示 |
+| chat 内切模型/思考强度 | POST 204 → 会话乐观更新 + 全局默认隐式同步（新会话沿用最后一次手动选择，含 variant） |
+| 从未手动选择模型 | 新会话（目录已加载）应用列表首项；引导页/设置工具条直接展示首项为当前值 |
+| 清除默认值 | 回到隐式首项；目录未加载/为空时回退服务器默认 |
 | 重启应用 | 默认值保留（per-profile 持久化）；新会话继续应用 |
 | 切目录/项目 | 工具条数据按目录重新解析（缓存命中即渲染） |
 | 跨 provider 重名模型 | `(providerID, id)` 匹配，勾选与切换不误选 provider |
@@ -344,3 +366,22 @@ D-AM-4（per-profile 默认值经 POST /session body）/ D-AM-5（2 agent 分段
 | 🟢 次要 | `ModelControl` groups `useRef` 改局部 `const`（每次渲染全量重建，ref 无跨渲染语义）；测试文件补尾换行 |
 | 🟡 文档补全 | 「未处理（评估后接受）」部分目录失败条目补 providers 源对称情形（此前只写了 agents 源） |
 | 已记录非问题 | GuidePage pendingSession 跨作用域存活 = 既有发送重试语义；popover 打开期逐滚动重渲染、`flatRows.findIndex`（66 模型 ~4k ops）在此规模可忽略 |
+
+### 第六轮评审（隐式默认修订落地之后）
+
+> 基线：D-AM-4 隐式默认修订（去「设为默认」、首项回退）。typecheck clean、128/128、build 通过。
+
+| 项 | 处理 |
+|---|---|
+| 🟡 defaults 模式空目录丢显式默认显示 | 工具条无条件走 `effectiveDefaultModel`，目录未加载/失败无缓存（`models` 为空）时返回 undefined——已持久化的显式默认不再显示（违背错误表"仍显示当前值"）。修复：调用侧 `models.length` 为空时保留归一化显式值（`effectiveDefaultModel` 空列表 → undefined 的语义仅适用于 `createSession` 回退服务器默认，不改函数本身） |
+| 已记录非问题 | 目录已加载时 `createSession` 恒带模型（显式或首项）——首项会遮蔽用户在 opencode 配置里的服务器默认，属隐式默认的既定义务（用户未手动选择即取第一项），修订说明已载明 |
+| 核对无误 | 隐式写默认仅挂本端手动切换成功路径（SSE `session.next.model.switched` 跨客户端补丁不写，语义限定"本客户端最后选择"）；失败不写；defaults 模式 onPick 携带规则与 session 模式一致 |
+
+#### 未处理（评估后接受）
+
+- **跨项目隐式写入放大 AM-IMPL3-4 盲收缺口**：默认值 per-profile、目录 per-directory——
+  项目 A 会话内切模型写默认后，打开 provider 集不同的项目 B 并在其目录拉取完成前发送
+  首条消息，`createSession` 走"目录未加载"分支按原值应用陈旧默认，服务器盲收、首条
+  prompt 报错。该竞态在显式「设为默认」时代即存在；隐式写入使陈旧跨项目默认更易出现，
+  但窗口窄（目录须恰在途）、目录已加载路径经首项回退已正确处理，且无低成本的按目录
+  溯源方案（不为边缘场景引入 per-directory 默认值）。后果可恢复（切换模型即可），接受。

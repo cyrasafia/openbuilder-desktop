@@ -19,6 +19,7 @@ import {
 import {
   carriedVariant,
   emptyCatalog,
+  effectiveDefaultModel,
   findModel,
   getDefaults,
   normalizeModelRef,
@@ -1207,7 +1208,7 @@ export class AppStore {
     const { directory } = this.scopeQuery
     // 全局默认值（per-profile）应用到 POST /session body（D-AM-4）。
     // 有效性校验（AM-IMPL3-4）：POST /session 不校验 model（实测无效模型 200 落库，
-    // 首条 prompt 才爆且无明确错误）——目录已加载时跳过无效默认值；
+    // 首条 prompt 才爆且无明确错误）——目录已加载时按目录解析生效默认值；
     // 未加载（如引导页首条消息先于目录拉取完成）不阻塞，按原值应用
     const def = getDefaults(this.defaults, this.profileKey())
     const catalog = this.modelCatalogs.get(directory)
@@ -1215,24 +1216,13 @@ export class AppStore {
       def.agent && (!catalog || catalog.agents.some((a) => a.name === def.agent))
         ? def.agent
         : undefined
-    // 模型：目录已加载且不存在 → 整体跳过；存在则进一步校验 variant——
-    // 无效 variant 只丢 variant 保模型（AM-IMPL4-1：与 AM-IMPL3-4 同类缺口，
-    // POST /session 对未知 variant 同样是盲收）
-    let model: ModelRef | undefined
-    if (def.model) {
-      const target = catalog
-        ? findModel(catalog.models, def.model.providerID, def.model.id)
-        : undefined
-      if (!catalog || target) {
-        const normalized = normalizeModelRef(def.model)
-        if (normalized) {
-          model =
-            normalized.variant && target && !target.variants.includes(normalized.variant)
-              ? { id: normalized.id, providerID: normalized.providerID }
-              : normalized
-        }
-      }
-    }
+    // 模型（隐式默认）：目录已加载 → effectiveDefaultModel 校验显式默认
+    // （模型失效回退首项、variant 失效只丢 variant 保模型，AM-IMPL4-1），
+    // 未手动选择时取列表首项；目录未加载 → 显式默认按原值应用（无则不传，服务器默认）
+    const explicitModel = normalizeModelRef(def.model)
+    const model = catalog
+      ? effectiveDefaultModel(explicitModel, catalog.models)
+      : explicitModel
     try {
       const session = await this.client.createSession(directory, undefined, undefined, {
         ...(agent ? { agent } : {}),
@@ -1599,7 +1589,7 @@ export class AppStore {
     return getDefaults(this.defaults, this.profileKey())
   }
 
-  /** 写入默认值并持久化（设置对话框 / 引导页工具条 / 「设为默认」共用）。 */
+  /** 写入默认值并持久化（设置对话框 / 引导页工具条 / 会话内手动切换隐式写入共用）。 */
   async setModelDefaults(patch: ModelDefaults): Promise<void> {
     const next = setDefaults(this.defaults, this.profileKey(), patch)
     if (next === this.defaults) return
@@ -1687,6 +1677,7 @@ export class AppStore {
   /**
    * 切换会话 model：POST 204 → 乐观写本地记录。
    * variant 携带规则（carriedVariant）：切到另一模型时同名 variant 沿用，否则省略。
+   * 隐式默认（D-AM-4 修订）：手动切换即最后一次选择 → 成功后同步写全局默认值。
    */
   async switchSessionModel(
     sessionID: string,
@@ -1710,6 +1701,7 @@ export class AppStore {
     try {
       await client.switchModel(sessionID, model)
       this.patchSessionModel(sessionID, model)
+      await this.setModelDefaults({ model })
       return true
     } catch (e) {
       this.connectionError = e instanceof Error ? e.message : String(e)
@@ -1718,7 +1710,10 @@ export class AppStore {
     }
   }
 
-  /** 切换会话思考强度（variant）。variant=undefined 表示「默认」（省略字段清掉已设值）。 */
+  /**
+   * 切换会话思考强度（variant）。variant=undefined 表示「默认」（省略字段清掉已设值）。
+   * 隐式默认（D-AM-4 修订）：同 switchSessionModel，成功后同步写全局默认值。
+   */
   async switchSessionVariant(
     sessionID: string,
     providerID: string,
@@ -1731,6 +1726,7 @@ export class AppStore {
     try {
       await client.switchModel(sessionID, model)
       this.patchSessionModel(sessionID, model)
+      await this.setModelDefaults({ model })
       return true
     } catch (e) {
       this.connectionError = e instanceof Error ? e.message : String(e)
