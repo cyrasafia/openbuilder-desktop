@@ -34,6 +34,12 @@ export interface SessionTokens {
   cache?: { read?: number; write?: number }
 }
 
+export interface ModelRef {
+  id: string
+  providerID: string
+  variant?: string
+}
+
 export interface Session {
   id: string
   slug?: string
@@ -42,7 +48,7 @@ export interface Session {
   directory: string
   title?: string
   agent?: string
-  model?: { id: string; providerID: string; variant?: string }
+  model?: ModelRef
   time: SessionTime
   [k: string]: unknown
 }
@@ -218,7 +224,44 @@ export type SessionStatusValue =
       }
     }
 
-/** SSE 事件（/event）。仅声明 v0.1 消费的事件，未知类型透传忽略。 */
+/**
+ * Agent 列表（`GET /agent?directory=`，v1 裸数组）。
+ * 过滤规则见 model-catalog.ts：`!hidden && mode !== 'subagent'`。
+ */
+export interface AgentInfo {
+  name: string
+  description?: string
+  /** "subagent" | "primary" | "all"（config 自定义 agent 默认 "all"） */
+  mode: string
+  hidden?: boolean
+}
+
+/**
+ * 模型（`GET /config/providers` 拍平后的项）。`variants` 为 dict/List 双形态解析后的 keys。
+ * 思考强度 = variant id（如 low/high/max）。
+ */
+export interface ModelInfo {
+  id: string
+  providerID: string
+  name: string
+  /** alpha | beta | deprecated | active | …；黑名单语义见 model-catalog.ts */
+  status?: string
+  variants: string[]
+}
+
+/** `GET /config/providers` 响应。`default` = 每家 provider 的默认 model id（v0.2 不展示）。 */
+export interface ConfigProviders {
+  providers: Array<{
+    id: string
+    name?: string
+    /** 明文 API key——解析期丢弃（LR-2），rest-client 不读此字段 */
+    key?: unknown
+    models: Record<string, { name?: string; status?: string; variants?: unknown }>
+  }>
+  default?: Record<string, string>
+}
+
+/** SSE 事件（/event）。仅声明 v0.1/v0.2 消费的事件，未知类型透传忽略。 */
 export type OpencodeEvent =
   | { id: string; type: "server.connected"; properties: Record<string, unknown> }
   | { id: string; type: "session.created"; properties: { sessionID: string; info: Session } }
@@ -230,6 +273,23 @@ export type OpencodeEvent =
       properties: { sessionID: string; status: SessionStatusValue }
     }
   | { id: string; type: "session.idle"; properties: { sessionID: string } }
+  | {
+      id: string
+      type: "session.next.agent.switched"
+      // timestamp 实测为 ISO 字符串（1.18.20）；pin 的 spec（1.17.18）标 number，以实测为准。
+      // 字段未被消费，仅契约记录。
+      properties: { sessionID: string; messageID: string; timestamp: string; agent: string }
+    }
+  | {
+      id: string
+      type: "session.next.model.switched"
+      properties: {
+        sessionID: string
+        messageID: string
+        timestamp: string
+        model: ModelRef
+      }
+    }
   | {
       id: string
       type: "message.updated"

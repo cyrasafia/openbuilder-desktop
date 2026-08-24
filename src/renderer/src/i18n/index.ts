@@ -111,6 +111,17 @@ const zh = {
     "切换项目将关闭并归档当前所有打开的会话。继续？",
   confirmDeleteWorkspace: "删除工作区？",
   errorTitle: "出错了",
+  // agent/模型/思考强度切换（design-agent-model-switch）
+  model: "模型",
+  thinkingLabel: "思考强度",
+  thinkingDefault: "默认",
+  setAsDefault: "设为默认",
+  clearDefaults: "清除默认值",
+  modelLoadFailed: "加载失败，点击重试",
+  modelSearchPlaceholder: "搜索模型…",
+  noModelMatch: "无匹配模型",
+  defaultsTitle: "默认值",
+  defaultsHint: "新建会话自动应用（仅本客户端）",
 }
 
 const en: typeof zh = {
@@ -207,6 +218,16 @@ const en: typeof zh = {
   confirmSwitchProject: "Switching projects closes and archives all open sessions. Continue?",
   confirmDeleteWorkspace: "Delete worktree?",
   errorTitle: "Something went wrong",
+  model: "Model",
+  thinkingLabel: "Thinking",
+  thinkingDefault: "Default",
+  setAsDefault: "Set as default",
+  clearDefaults: "Clear defaults",
+  modelLoadFailed: "Load failed — click to retry",
+  modelSearchPlaceholder: "Search models…",
+  noModelMatch: "No matching models",
+  defaultsTitle: "Defaults",
+  defaultsHint: "Applied to new sessions (this client only)",
 }
 
 export type MessageKey = keyof typeof zh

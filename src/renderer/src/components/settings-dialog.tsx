@@ -2,11 +2,13 @@ import { useState } from "react"
 import { useI18n, useStore } from "../app"
 import type { ConnectionProfile } from "@shared/ipc"
 import { ApiError, RestClient } from "@shared/rest-client"
+import { hasDefaults } from "@shared/model-catalog"
+import { ModelSwitcherBar } from "./model-switcher"
 
 export function SettingsDialog() {
   const store = useStore()
   const { t } = useI18n()
-  const [tab, setTab] = useState<"connection" | "appearance">("connection")
+  const [tab, setTab] = useState<"connection" | "appearance" | "defaults">("connection")
 
   const close = () => {
     store.closeSettings()
@@ -23,9 +25,18 @@ export function SettingsDialog() {
           <button className={tab === "appearance" ? "active" : ""} onClick={() => setTab("appearance")}>
             {t.theme} / {t.language}
           </button>
+          <button className={tab === "defaults" ? "active" : ""} onClick={() => setTab("defaults")}>
+            {t.defaultsTitle}
+          </button>
         </div>
         <div className="dialog-body">
-          {tab === "connection" ? <ConnectionSettings /> : <AppearanceSettings />}
+          {tab === "connection" ? (
+            <ConnectionSettings />
+          ) : tab === "appearance" ? (
+            <AppearanceSettings />
+          ) : (
+            <DefaultsSettings />
+          )}
         </div>
         <div className="dialog-actions">
           <button className="btn-primary" onClick={close}>
@@ -218,6 +229,35 @@ function AppearanceSettings() {
           <option value="en">{t.langEn}</option>
         </select>
       </label>
+    </div>
+  )
+}
+
+function DefaultsSettings() {
+  const store = useStore()
+  const { t } = useI18n()
+  const directory = store.scopeQuery.directory
+  const connected = !!store.getActiveClient()
+  return (
+    <div className="settings-defaults">
+      <div className="form-note">{t.defaultsHint}</div>
+      {!connected ? (
+        <div className="form-note">{t.connectFirst}</div>
+      ) : !directory ? (
+        // 已连接但无打开项目：无目录可解析模型列表，不渲染工具条（防永久"加载中"）
+        <div className="form-note">{t.noProject}</div>
+      ) : (
+        <>
+          <ModelSwitcherBar directory={directory} mode="defaults" />
+          {hasDefaults(store.defaultsFor()) && (
+            <button
+              onClick={() => void store.setModelDefaults({ agent: undefined, model: undefined })}
+            >
+              {t.clearDefaults}
+            </button>
+          )}
+        </>
+      )}
     </div>
   )
 }

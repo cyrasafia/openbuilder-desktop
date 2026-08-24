@@ -1,4 +1,5 @@
 /** 持久化 store 的形状（main 进程 electron-store 风格，自写 JSON 实现） */
+import type { ModelRef } from "./api-types"
 import type { ScopeTabMemory } from "./scope-tab-memory"
 
 export interface StoreShape {
@@ -25,6 +26,11 @@ export interface StoreShape {
   "theme.mode": "auto" | "dark" | "light"
   /** 语言：auto | zh | en */
   "locale.mode": "auto" | "zh" | "en"
+  /** 全局默认 agent/模型（design-agent-model-switch D-AM-4）：profileKey → 默认值 */
+  "model.defaults": Record<
+    string,
+    { agent?: string; model?: ModelRef }
+  >
 }
 
 export interface ConnectionProfile {

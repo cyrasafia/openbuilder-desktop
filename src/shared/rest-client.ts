@@ -3,10 +3,13 @@
  * 契约见 api-types.ts 头注释。
  */
 import type {
+  AgentInfo,
   CommandInfo,
+  ConfigProviders,
   FileNode,
   HealthInfo,
   MessageWithParts,
+  ModelRef,
   Project,
   Session,
   SessionStatusValue,
@@ -143,7 +146,12 @@ export class RestClient {
     )
   }
 
-  createSession(directory: string, workspace?: string, title?: string): Promise<Session> {
+  createSession(
+    directory: string,
+    workspace?: string,
+    title?: string,
+    opts: { agent?: string; model?: ModelRef } = {},
+  ): Promise<Session> {
     return this.request<Session>(
       `/session${RestClient.dirQuery(directory, { workspace })}`,
       {
@@ -151,6 +159,8 @@ export class RestClient {
         body: JSON.stringify({
           ...(workspace ? { workspaceID: workspace } : {}),
           ...(title ? { title } : {}),
+          ...(opts.agent ? { agent: opts.agent } : {}),
+          ...(opts.model ? { model: opts.model } : {}),
         }),
       },
     )
@@ -316,5 +326,44 @@ export class RestClient {
       `/question/${encodeURIComponent(questionID)}/reject${RestClient.dirQuery(directory)}`,
       { method: "POST" },
     )
+  }
+
+  // ---- agent / model（design-agent-model-switch）----
+
+  /** 列 agents（v1 `GET /agent?directory=`）。过滤逻辑在 model-catalog.ts。 */
+  listAgents(directory: string): Promise<AgentInfo[]> {
+    return this.request<AgentInfo[]>(`/agent${RestClient.dirQuery(directory)}`)
+  }
+
+  /**
+   * 列模型（v1 `GET /config/providers?directory=`，**不用** v2 `/api/model`——LR-1）。
+   * 响应 Provider 含明文 API `key`，此处按 ConfigProviders 类型只解构需要字段；
+   * key 解析期丢弃（不进任何对象/日志/持久化）。
+   */
+  listConfigProviders(directory: string): Promise<ConfigProviders> {
+    return this.request<ConfigProviders>(
+      `/config/providers${RestClient.dirQuery(directory)}`,
+    )
+  }
+
+  /** 切会话 agent（v2 `POST /api/session/:id/agent`，204）。无 directory 参数。 */
+  switchAgent(sessionID: string, agent: string): Promise<void> {
+    return this.request<void>(`/api/session/${encodeURIComponent(sessionID)}/agent`, {
+      method: "POST",
+      body: JSON.stringify({ agent }),
+    })
+  }
+
+  /**
+   * 切会话 model（v2 `POST /api/session/:id/model`，204）。
+   * variant 条件包含（AM-3）：「默认」= 省略字段（实测可清掉已设值）。
+   */
+  switchModel(sessionID: string, model: ModelRef): Promise<void> {
+    const body: Record<string, unknown> = { id: model.id, providerID: model.providerID }
+    if (model.variant) body.variant = model.variant
+    return this.request<void>(`/api/session/${encodeURIComponent(sessionID)}/model`, {
+      method: "POST",
+      body: JSON.stringify({ model: body }),
+    })
   }
 }

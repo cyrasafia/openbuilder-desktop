@@ -38,5 +38,9 @@
   "author": {
     "name": "cyrasafia",
     "email": "cyrasafia@users.noreply.github.com"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.2": true
   }
 }

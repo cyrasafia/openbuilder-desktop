@@ -58,6 +58,8 @@ beforeEach(() => {
     },
     listSessionStatus: async () => ({}),
     listProjects: async () => [project()],
+    listPendingPermissions: async () => [],
+    listPendingQuestions: async () => [],
   }
   store.projects = [project()]
   store.projectStates = {

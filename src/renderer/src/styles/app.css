@@ -1002,6 +1002,223 @@
 .composer-actions {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---------- agent/模型/思考强度工具条（design-agent-model-switch）---------- */
+.ms-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: auto;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.ms-bar.disabled {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.ms-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: var(--control-h);
+  padding: 0 8px;
+  border-radius: var(--radius-chip);
+  background: var(--surface-container-low);
+  border: 1px solid var(--outline-variant);
+  color: var(--on-surface);
+  font-size: var(--text-sm);
+  max-width: 240px;
+}
+.ms-pill:hover:not(:disabled) {
+  border-color: var(--outline);
+}
+.ms-pill:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.ms-pill > span {
+  white-space: nowrap;
+}
+.ms-pill-label,
+.ms-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ms-pill-prefix {
+  color: var(--outline);
+}
+.ms-chev {
+  font-size: 10px;
+  color: var(--outline);
+  flex-shrink: 0;
+}
+.ms-pill-static {
+  cursor: default;
+  border-style: dashed;
+}
+
+/* 加载失败重试态（设计错误表"目录加载失败"） */
+.ms-pill-error {
+  cursor: pointer;
+  border-color: var(--error-container);
+  color: var(--error);
+}
+.ms-pill-error:hover {
+  border-color: var(--error);
+}
+
+/* 分段开关（agent 恰 2 个） */
+.ms-segmented {
+  display: inline-flex;
+  border-radius: var(--radius-chip);
+  background: var(--surface-container-low);
+  border: 1px solid var(--outline-variant);
+  overflow: hidden;
+  height: var(--control-h);
+}
+.ms-seg {
+  height: 100%;
+  padding: 0 12px;
+  background: transparent;
+  color: var(--outline);
+  font-size: var(--text-sm);
+  transition: background 150ms ease, color 150ms ease;
+}
+.ms-seg.active {
+  background: var(--primary-container);
+  color: var(--on-primary-container);
+}
+.ms-seg:hover:not(.active):not(:disabled) {
+  color: var(--on-surface);
+}
+
+/* Popover */
+.popover {
+  background: var(--surface-container-high);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-card);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* 通用列表（agent / thinking） */
+.ms-list {
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  overflow-y: auto;
+  max-height: inherit;
+}
+.ms-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  text-align: left;
+  border-radius: var(--radius-chip);
+  color: var(--on-surface);
+  font-size: var(--text-sm);
+}
+.ms-row:hover:not(:disabled),
+.ms-row.focused {
+  background: var(--surface-container-highest);
+}
+.ms-row.selected {
+  color: var(--primary);
+  font-weight: var(--weight-semibold);
+}
+.ms-row-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.ms-row-id {
+  font-size: var(--text-xs);
+  color: var(--outline);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ms-check {
+  color: var(--primary);
+  flex-shrink: 0;
+}
+.ms-empty {
+  padding: 12px;
+  color: var(--outline);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+
+/* Model popover */
+.ms-model {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  max-height: inherit;
+}
+.ms-search {
+  margin: 6px 6px 0;
+  padding: 6px 10px;
+  height: var(--control-h);
+  border-radius: var(--radius-chip);
+  border: 1px solid var(--outline-variant);
+  background: var(--surface-container-lowest);
+  color: var(--on-surface);
+  font-size: var(--text-sm);
+}
+.ms-search:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+.ms-model-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px;
+}
+.ms-group {
+  margin-bottom: 2px;
+}
+.ms-group-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 10px 2px;
+  color: var(--outline);
+  font-size: var(--text-xs);
+}
+.ms-group-count {
+  opacity: 0.7;
+}
+.ms-footer {
+  border-top: 1px solid var(--outline-variant);
+  padding: 8px;
+  color: var(--primary);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+.ms-footer:hover {
+  background: var(--surface-container-highest);
+}
+
+/* 设置对话框默认值区 */
+.settings-defaults {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.settings-defaults .ms-bar {
+  margin-right: 0;
 }
 
 /* ---------- 斜杠命令菜单 ---------- */

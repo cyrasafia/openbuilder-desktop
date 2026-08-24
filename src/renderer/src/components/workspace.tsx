@@ -15,6 +15,7 @@ import type {
 import type { PendingPermission, PendingQuestion } from "@shared/pending-requests"
 import { externalDirectoryPath, permissionCommand } from "@shared/pending-requests"
 import { Markdown } from "./markdown"
+import { ModelSwitcherBar } from "./model-switcher"
 
 export function Workspace() {
   const store = useStore()
@@ -151,6 +152,20 @@ function GuidePage() {
             }}
           />
           <div className="composer-actions">
+            {/* pendingSession 时切会话绑定；会话记录从 store 重读（乐观补丁是新对象，
+                ref 持有的是创建时快照——AM-FIX-2：UI 不依赖父组件传参快照）。
+                目录用该会话自身的（AM-IMPL3-3：引导页 fiber 跨作用域切换仍存活，
+                用 scope 目录会加载与会话 provider 集不符的列表） */}
+            <ModelSwitcherBar
+              directory={pendingSession.current?.directory ?? store.scopeQuery.directory}
+              mode={pendingSession.current ? "session" : "defaults"}
+              session={
+                pendingSession.current
+                  ? (store.findSession(pendingSession.current.id) ?? pendingSession.current)
+                  : undefined
+              }
+              disabled={sending}
+            />
             <button className="btn-primary" disabled={!draft.trim() || sending} onClick={() => void send()}>
               {t.send}
             </button>
@@ -371,6 +386,12 @@ function ChatView({ sessionID }: { sessionID: string }) {
           }}
         />
         <div className="composer-actions">
+          {/* busy 不禁切换：服务端 next 语义（下一条消息生效）是预期行为（设计"不做的事"） */}
+          <ModelSwitcherBar
+            directory={store.findSession(sessionID)?.directory ?? ""}
+            mode="session"
+            session={store.findSession(sessionID)}
+          />
           {busy ? (
             <button className="btn-danger" onClick={() => void store.abortSession(sessionID)}>
               {t.abort}

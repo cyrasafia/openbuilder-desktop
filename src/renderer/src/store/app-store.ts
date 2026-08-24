@@ -17,6 +17,18 @@ import {
   type ScopeTabMemory,
 } from "@shared/scope-tab-memory"
 import {
+  carriedVariant,
+  emptyCatalog,
+  findModel,
+  getDefaults,
+  normalizeModelRef,
+  parseAgents,
+  parseModels,
+  setDefaults,
+  type ModelCatalog,
+  type ModelDefaults,
+} from "@shared/model-catalog"
+import {
   mergeSnapshotIntoMessages,
   sortEntries,
   sortMessages,
@@ -40,10 +52,14 @@ import {
   type CommandCacheState,
 } from "@shared/command-cache"
 import type {
+  AgentInfo,
   CommandInfo,
+  ConfigProviders,
   FileNode,
   Message,
   MessageWithParts,
+  ModelInfo,
+  ModelRef,
   OpencodeEvent,
   Part,
   Project,
@@ -111,6 +127,15 @@ export class AppStore {
   private statusSources = new Map<string, string>()
   // 斜杠命令注册表缓存（全局单份 per-server，目录隔离见 command-cache.ts）
   commandCache: CommandCacheState = initialCommandCache()
+
+  // ---- agent/模型目录（design-agent-model-switch）----
+  /** 目录级 agent/模型缓存（SWR：命中即渲染 + 后台重拉覆盖），teardown 清空 */
+  modelCatalogs = new Map<string, ModelCatalog>()
+  private modelCatalogLoading = new Map<string, Promise<void>>()
+  /** 完全加载失败且无缓存的目录——工具条显示「加载失败，点击重试」 */
+  private modelCatalogFailed = new Set<string>()
+  /** 全局默认 agent/模型（per-profile 持久化 model.defaults） */
+  defaults: Record<string, ModelDefaults> = {}
   /**
    * 待处理人机交互（store 级、跨 Tab 存活，与移动端 ServerStore 同构）：
    * 权限以 sessionID 为 key（一会话最多一张在队首）、问题以问题 id 为 key（可多张排队）。
@@ -165,6 +190,7 @@ export class AppStore {
     this.tabMemory = (await window.desktop.storeGet("tabs.memory")) ?? {}
     this.themeMode = (await window.desktop.storeGet("theme.mode")) ?? "auto"
     this.localeMode = (await window.desktop.storeGet("locale.mode")) ?? "auto"
+    this.defaults = (await window.desktop.storeGet("model.defaults")) ?? {}
 
     if (this.activeProfileId) {
       await this.connect()
@@ -289,6 +315,10 @@ export class AppStore {
       this.catalogRefreshTimer = null
     }
     this.snapshottedDirs.clear()
+    // agent/模型目录：切 profile 全量重建（与命令缓存同模式）
+    this.modelCatalogs.clear()
+    this.modelCatalogLoading.clear()
+    this.modelCatalogFailed.clear()
     this.resetFileTree()
   }
 
@@ -560,6 +590,17 @@ export class AppStore {
         // 服务端命令/skill 目录或 MCP 工具变化 → 重拉注册表（不必等下次输入 `/`）。
         // 事件在每条订阅流上都广播，多目录订阅会连发——去抖合并为一次刷新。
         this.scheduleCatalogRefresh()
+        break
+      }
+      case "session.next.agent.switched": {
+        // 跨客户端 agent 切换（本端切换已有乐观写，此事件幂等；TUI/CLI 切换靠这里补丁）
+        const { sessionID, agent } = ev.properties as { sessionID: string; agent: string }
+        if (sessionID && agent) this.patchSessionAgent(sessionID, agent)
+        break
+      }
+      case "session.next.model.switched": {
+        const { sessionID, model } = ev.properties as { sessionID: string; model: ModelRef }
+        if (sessionID && model?.id && model?.providerID) this.patchSessionModel(sessionID, model)
         break
       }
       default:
@@ -1161,8 +1202,39 @@ export class AppStore {
   async createSession(opts: { openTab?: boolean } = {}): Promise<Session | null> {
     if (!this.client || !this.currentProject) return null
     const { directory } = this.scopeQuery
+    // 全局默认值（per-profile）应用到 POST /session body（D-AM-4）。
+    // 有效性校验（AM-IMPL3-4）：POST /session 不校验 model（实测无效模型 200 落库，
+    // 首条 prompt 才爆且无明确错误）——目录已加载时跳过无效默认值；
+    // 未加载（如引导页首条消息先于目录拉取完成）不阻塞，按原值应用
+    const def = getDefaults(this.defaults, this.profileKey())
+    const catalog = this.modelCatalogs.get(directory)
+    const agent =
+      def.agent && (!catalog || catalog.agents.some((a) => a.name === def.agent))
+        ? def.agent
+        : undefined
+    // 模型：目录已加载且不存在 → 整体跳过；存在则进一步校验 variant——
+    // 无效 variant 只丢 variant 保模型（AM-IMPL4-1：与 AM-IMPL3-4 同类缺口，
+    // POST /session 对未知 variant 同样是盲收）
+    let model: ModelRef | undefined
+    if (def.model) {
+      const target = catalog
+        ? findModel(catalog.models, def.model.providerID, def.model.id)
+        : undefined
+      if (!catalog || target) {
+        const normalized = normalizeModelRef(def.model)
+        if (normalized) {
+          model =
+            normalized.variant && target && !target.variants.includes(normalized.variant)
+              ? { id: normalized.id, providerID: normalized.providerID }
+              : normalized
+        }
+      }
+    }
     try {
-      const session = await this.client.createSession(directory)
+      const session = await this.client.createSession(directory, undefined, undefined, {
+        ...(agent ? { agent } : {}),
+        ...(model ? { model } : {}),
+      })
       const map = this.sessionsByProject.get(this.currentProject.id) ?? new Map()
       map.set(session.id, session)
       this.sessionsByProject.set(this.currentProject.id, map)
@@ -1511,6 +1583,187 @@ export class AppStore {
       }
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     }
+  }
+
+  // ============ agent/模型目录与切换（design-agent-model-switch）===========
+
+  /** 当前 profile 的默认值（只读快照）。 */
+  defaultsFor(): ModelDefaults {
+    return getDefaults(this.defaults, this.profileKey())
+  }
+
+  /** 写入默认值并持久化（设置对话框 / 引导页工具条 / 「设为默认」共用）。 */
+  async setModelDefaults(patch: ModelDefaults): Promise<void> {
+    const next = setDefaults(this.defaults, this.profileKey(), patch)
+    if (next === this.defaults) return
+    this.defaults = next
+    await window.desktop.storeSet("model.defaults", this.defaults).catch(() => {})
+    this.emit()
+  }
+
+  /**
+   * 目录级 agent/模型缓存（SWR）：命中即返回缓存，未命中返回空 catalog，
+   * 同时触发后台拉取（in-flight 去重 + client 身份守卫）。
+   * popover 打开时再调一次以刷新（后台覆盖，失败保留缓存）。
+   */
+  modelCatalogFor(directory: string): ModelCatalog {
+    return this.modelCatalogs.get(directory) ?? emptyCatalog
+  }
+
+  refreshModelCatalog(directory: string | null): Promise<void> {
+    const client = this.client
+    if (!client || !directory) return Promise.resolve()
+    const existing = this.modelCatalogLoading.get(directory)
+    if (existing) return existing
+    let p!: Promise<void>
+    p = (async () => {
+      let agents: AgentInfo[] | null = null
+      let providers: ConfigProviders | null = null
+      try {
+        ;[agents, providers] = await Promise.all([
+          client.listAgents(directory).catch(() => null),
+          client.listConfigProviders(directory).catch(() => null),
+        ])
+      } catch {
+        // 两个请求均保留 null（失败即按失败处理）
+      }
+      // client 身份守卫：迟到于 teardown 的旧 fetch 不写新连接
+      if (this.client !== client) return
+      const prev = this.modelCatalogs.get(directory)
+      if (agents === null && providers === null) {
+        // 失败保留好缓存（设计错误表"目录加载失败"）；
+        // 完全失败且无缓存 → 记入失败态，工具条显示重试
+        if (!prev) this.modelCatalogFailed.add(directory)
+      } else {
+        this.modelCatalogFailed.delete(directory)
+        // 按数据源分别保留：单源失败不覆盖该源的好缓存
+        const catalog: ModelCatalog = {
+          agents: agents !== null ? parseAgents(agents) : (prev?.agents ?? []),
+          models: providers !== null ? parseModels(providers) : (prev?.models ?? []),
+        }
+        this.modelCatalogs.set(directory, catalog)
+      }
+      this.emit()
+    })().finally(() => {
+      if (this.modelCatalogLoading.get(directory) === p) this.modelCatalogLoading.delete(directory)
+    })
+    this.modelCatalogLoading.set(directory, p)
+    return p
+  }
+
+  /** 目录是否处于"加载失败且无缓存"态——工具条重试入口的判断依据。 */
+  modelCatalogFailedFor(directory: string): boolean {
+    return this.modelCatalogFailed.has(directory)
+  }
+
+  /** 拉取目录数据（首次挂载工具条用：缓存命中且非失败态才跳过）。 */
+  async ensureModelCatalog(directory: string): Promise<void> {
+    if (this.modelCatalogs.has(directory) && !this.modelCatalogFailed.has(directory)) return
+    await this.refreshModelCatalog(directory)
+  }
+
+  /** 切换会话 agent：POST 204 → 乐观写本地记录；失败不改本地。 */
+  async switchSessionAgent(sessionID: string, agent: string): Promise<boolean> {
+    const client = this.client
+    if (!client) return false
+    try {
+      await client.switchAgent(sessionID, agent)
+      this.patchSessionAgent(sessionID, agent)
+      return true
+    } catch (e) {
+      this.connectionError = e instanceof Error ? e.message : String(e)
+      this.emit()
+      return false
+    }
+  }
+
+  /**
+   * 切换会话 model：POST 204 → 乐观写本地记录。
+   * variant 携带规则（carriedVariant）：切到另一模型时同名 variant 沿用，否则省略。
+   */
+  async switchSessionModel(
+    sessionID: string,
+    providerID: string,
+    id: string,
+    variant?: string,
+  ): Promise<boolean> {
+    const client = this.client
+    if (!client) return false
+    const session = this.findSession(sessionID)
+    // 切模型时若未显式传 variant，按携带规则推导（仅当新模型有同名 variant 才沿用）
+    let model: ModelRef
+    let carryVariant = variant
+    if (carryVariant === undefined && session) {
+      const catalog = this.modelCatalogFor(session.directory)
+      const target = findModel(catalog.models, providerID, id)
+      if (target) carryVariant = carriedVariant(session.model?.variant, target)
+    }
+    if (carryVariant) model = { id, providerID, variant: carryVariant }
+    else model = { id, providerID }
+    try {
+      await client.switchModel(sessionID, model)
+      this.patchSessionModel(sessionID, model)
+      return true
+    } catch (e) {
+      this.connectionError = e instanceof Error ? e.message : String(e)
+      this.emit()
+      return false
+    }
+  }
+
+  /** 切换会话思考强度（variant）。variant=undefined 表示「默认」（省略字段清掉已设值）。 */
+  async switchSessionVariant(
+    sessionID: string,
+    providerID: string,
+    id: string,
+    variant: string | undefined,
+  ): Promise<boolean> {
+    const client = this.client
+    if (!client) return false
+    const model: ModelRef = variant ? { id, providerID, variant } : { id, providerID }
+    try {
+      await client.switchModel(sessionID, model)
+      this.patchSessionModel(sessionID, model)
+      return true
+    } catch (e) {
+      this.connectionError = e instanceof Error ? e.message : String(e)
+      this.emit()
+      return false
+    }
+  }
+
+  /**
+   * 乐观/事件补丁共用的写路径（幂等）：更新 sessionsByProject 中该会话的 agent 字段。
+   * 闸门同 session.updated：会话须仍存在（关项目/删会话的迟到事件/迟到写直接丢弃）。
+   */
+  private patchSessionAgent(sessionID: string, agent: string) {
+    const session = this.findSession(sessionID)
+    if (!session) return
+    if (session.agent === agent) return
+    const updated: Session = { ...session, agent }
+    this.mergeSessionUpdate(updated)
+  }
+
+  private patchSessionModel(sessionID: string, model: ModelRef) {
+    const session = this.findSession(sessionID)
+    if (!session) return
+    const prevModel = session.model
+    if (
+      prevModel &&
+      prevModel.id === model.id &&
+      prevModel.providerID === model.providerID &&
+      prevModel.variant === model.variant
+    )
+      return
+    const updated: Session = { ...session, model }
+    this.mergeSessionUpdate(updated)
+  }
+
+  /** 将更新后的 session 合并回 sessionsByProject 并触发 emit（与 session.updated 事件同路径）。 */
+  private mergeSessionUpdate(updated: Session) {
+    const map = this.sessionsByProject.get(updated.projectID)
+    if (map) map.set(updated.id, updated)
+    this.emit()
   }
 
   // ============ Tab ============
