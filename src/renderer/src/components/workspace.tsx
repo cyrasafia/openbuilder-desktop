@@ -832,7 +832,6 @@ function ToolChip({ part }: { part: ToolPart }) {
     <div className={"chip" + (open ? " open" : "")}>
       <button className="chip-header" onClick={() => setOpen(!open)}>
         <span className="chevron">{open ? "▾" : "▸"}</span>
-        <span className={"status-dot tool-" + status} data-status={status} />
         <span className="chip-label">{part.tool}</span>
         {summary && <span className="chip-summary">{summary}</span>}
       </button>

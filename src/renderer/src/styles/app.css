@@ -889,11 +889,16 @@
   font-size: var(--text-sm);
 }
 
-/* chip（工具调用/思考，骨架沿用移动端概念、规格桌面化） */
+/* chip（工具调用/思考，骨架沿用移动端概念、规格桌面化）
+ * 宽度跟随内容、封顶 100%：收起态即 header 摘要宽，展开态随 body 最宽行
+ * （超长输出由 .code-block 内部横滚兜底）——参考 openbuilder
+ * design-tool-call-expand 六次迭代"收起态不撑满"结论，桌面无展开动画故取纯 fit-content */
 .chip {
   border-radius: var(--radius-chip);
   background: var(--surface-container-highest);
   overflow: hidden;
+  width: fit-content;
+  max-width: 100%;
 }
 
 .chip-header {
@@ -921,7 +926,9 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex: 1;
+  /* chip 收窄为 fit-content 后不再有剩余空间可填（原 flex:1），
+     保留收缩能力：chip 触顶 100% 时摘要省略号截断 */
+  min-width: 0;
 }
 
 .chevron {
@@ -1353,15 +1360,14 @@
   flex-shrink: 0;
 }
 
-.status-dot.running,
-.status-dot.tool-running {
+.status-dot.running {
   background: var(--status-running);
 }
 
 /* 会话进行中：双层圆点 = 稳定中心点 + 外圈光晕呼吸（同 app，参数对齐
-   openbuilder design-agent-status-indicator.md §动效设计：1200ms easeInOut 往复，
-   外圈 scale 0.75→1.15、opacity 0.2→0.55，中心点不缩放；仅此类呼吸，
-   左栏连接状态点与 tool 卡片状态点保持静态实心） */
+    openbuilder design-agent-status-indicator.md §动效设计：1200ms easeInOut 往复，
+    外圈 scale 0.75→1.15、opacity 0.2→0.55，中心点不缩放；仅此类呼吸，
+    左栏连接状态点保持静态实心） */
 .status-dot.session-running {
   position: relative;
   width: 12px;
@@ -1417,18 +1423,6 @@
 /* 待输入（授权/问题）：琥珀静态，不做闪烁动效（design-agent-status-indicator） */
 .status-dot.waiting {
   background: var(--status-waiting);
-}
-
-.status-dot.tool-completed {
-  background: var(--status-completed);
-}
-
-.status-dot.tool-error {
-  background: var(--status-error);
-}
-
-.status-dot.tool-pending {
-  background: var(--status-pending);
 }
 
 .status-dot.blink {
