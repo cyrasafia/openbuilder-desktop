@@ -125,7 +125,7 @@ function GuidePage() {
           <textarea
             value={draft}
             placeholder={t.guidePlaceholder}
-            rows={Math.min(6, Math.max(1, draft.split("\n").length))}
+            rows={1}
             autoFocus
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
@@ -139,9 +139,11 @@ function GuidePage() {
               }
             }}
           />
-          <button className="btn-primary" disabled={!draft.trim() || sending} onClick={() => void send()}>
-            {t.send}
-          </button>
+          <div className="composer-actions">
+            <button className="btn-primary" disabled={!draft.trim() || sending} onClick={() => void send()}>
+              {t.send}
+            </button>
+          </div>
         </div>
         <div className="guide-actions">
           <button className="guide-action" disabled title={t.comingSoon}>
