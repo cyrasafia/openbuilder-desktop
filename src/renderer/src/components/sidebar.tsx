@@ -6,7 +6,83 @@ import type { Session } from "@shared/api-types"
 
 export function Sidebar() {
   const store = useStore()
-  const { t, locale } = useI18n()
+  const { t } = useI18n()
+
+  return (
+    <aside className="sidebar">
+      {store.activeProfile ? (
+        <ProjectTree />
+      ) : (
+        <div className="sidebar-empty">
+          <p>{t.connectFirst}</p>
+          <button className="btn-primary" onClick={() => store.openSettings()}>
+            {t.openSettings}
+          </button>
+        </div>
+      )}
+
+      {/* 服务器状态 + 设置行：置底常驻，不随项目区状态变化 */}
+      <div className="sidebar-footer">
+        <ServerStatus />
+        <button className="icon-btn" title={t.settings} onClick={() => store.openSettings()}>
+          ⚙
+        </button>
+      </div>
+    </aside>
+  )
+}
+
+/**
+ * 服务器连接状态（左栏底部，与设置同行）：SSE/对账状态点 + 文案，点击打开设置；
+ * connectionError 以 ⚠ 内联 + 悬浮提示可见。服务器版本不再展示。
+ */
+function ServerStatus() {
+  const store = useStore()
+  const { t } = useI18n()
+
+  const state = store.reconciling
+    ? "reconciling"
+    : store.connectionState === "streaming"
+      ? "streaming"
+      : store.connectionState === "degraded"
+        ? "degraded"
+        : store.connectionState === "connecting"
+          ? "degraded"
+          : "offline"
+
+  const label =
+    state === "reconciling"
+      ? t.statusReconciling
+      : state === "streaming"
+        ? t.statusStreaming
+        : state === "degraded"
+          ? t.statusDegraded
+          : t.statusOffline
+
+  const dotClass =
+    state === "streaming" || state === "reconciling"
+      ? "running"
+      : state === "degraded"
+        ? "pending"
+        : "error"
+
+  const title = [store.activeProfile?.name, store.baseUrl, store.connectionError]
+    .filter(Boolean)
+    .join("\n")
+
+  return (
+    <button className="status-cluster" title={title} onClick={() => store.openSettings()}>
+      <span className={"status-dot " + dotClass + (state === "reconciling" ? " blink" : "")} />
+      <span>{label}</span>
+      {store.connectionError && <span className="status-error">⚠</span>}
+    </button>
+  )
+}
+
+/** 项目/工作区两级树（有活跃 profile 时的左栏主体） */
+function ProjectTree() {
+  const store = useStore()
+  const { t } = useI18n()
   const [pickerOpen, setPickerOpen] = useState(false)
 
   const projects = store.openedProjects
@@ -27,21 +103,8 @@ export function Sidebar() {
     void store.setCurrentProject(projectId, directory)
   }
 
-  if (!store.activeProfile) {
-    return (
-      <aside className="sidebar">
-        <div className="sidebar-empty">
-          <p>{t.connectFirst}</p>
-          <button className="btn-primary" onClick={() => store.openSettings()}>
-            {t.openSettings}
-          </button>
-        </div>
-      </aside>
-    )
-  }
-
   return (
-    <aside className="sidebar">
+    <>
       <div className="sidebar-heading">
         <span>{t.projectsTitle}</span>
         <button
@@ -128,14 +191,8 @@ export function Sidebar() {
         })}
       </div>
 
-      <div className="sidebar-footer">
-        <button className="icon-btn" title={t.settings} onClick={() => store.openSettings()}>
-          ⚙
-        </button>
-      </div>
-
       {pickerOpen && <ProjectPicker onClose={() => setPickerOpen(false)} />}
-    </aside>
+    </>
   )
 }
 
@@ -202,4 +259,3 @@ function ProjectPicker({ onClose }: { onClose: () => void }) {
     </div>
   )
 }
-

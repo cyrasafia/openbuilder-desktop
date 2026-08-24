@@ -11,7 +11,6 @@ import { getCatalog, type Catalog, type Locale } from "./i18n"
 import { Sidebar } from "./components/sidebar"
 import { Workspace } from "./components/workspace"
 import { FilePanel } from "./components/file-panel"
-import { StatusBar } from "./components/status-bar"
 import { TitleBar } from "./components/title-bar"
 
 const StoreContext = createContext<AppStore | null>(null)
@@ -98,7 +97,6 @@ function Shell() {
         <Sidebar />
         <Workspace />
         <FilePanel />
-        <StatusBar />
       </div>
     </div>
   )

@@ -73,12 +73,11 @@ const zh = {
   testConnection: "测试连接",
   testOk: "连接正常（版本 {version}）",
   testFailed: "连接失败",
-  // 状态栏
+  // 服务器连接状态（左栏底部）
   statusStreaming: "实时",
   statusDegraded: "重连中",
   statusOffline: "离线",
   statusReconciling: "对账中",
-  serverInfo: "服务器",
   // 窗口控制（Linux 自定义头部）
   winMinimize: "最小化",
   winMaximize: "最大化",
@@ -169,7 +168,6 @@ const en: typeof zh = {
   statusDegraded: "reconnecting",
   statusOffline: "offline",
   statusReconciling: "reconciling",
-  serverInfo: "Server",
   winMinimize: "Minimize",
   winMaximize: "Maximize",
   winRestore: "Restore",

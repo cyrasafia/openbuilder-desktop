@@ -33,7 +33,6 @@ import {
 import type {
   CommandInfo,
   FileNode,
-  HealthInfo,
   Message,
   MessageWithParts,
   OpencodeEvent,
@@ -85,7 +84,6 @@ export class AppStore {
   connectionState: ConnectionState = "disconnected"
   sseStatus: SseStatus = "stopped"
   reconciling = false
-  health: HealthInfo | null = null
   connectionError: string | null = null
   managedBaseUrl: string | null = null
 
@@ -203,7 +201,8 @@ export class AppStore {
     const client = new RestClient({ baseUrl, username, password })
     let projects: Project[]
     try {
-      this.health = await client.health()
+      // 连通性探针（快照前的快速失败；版本信息仅设置弹窗"测试连接"时按需拉取）
+      await client.health()
       projects = await client.listProjects()
     } catch (e) {
       this.connectionState = "disconnected"
@@ -254,7 +253,6 @@ export class AppStore {
     this.sseGroup = []
     this.client = null
     this.managedBaseUrl = null
-    this.health = null
     this.projects = []
     this.sessionsByProject.clear()
     this.messagesBySession.clear()
@@ -1233,7 +1231,7 @@ export class AppStore {
       this.emit()
       return { ok: true }
     } catch (e) {
-      // 撤回乐观 + 提示（写操作不自动重试）；connectionError 经状态栏可见
+      // 撤回乐观 + 提示（写操作不自动重试）；connectionError 经左栏状态行可见
       this.connectionError = e instanceof Error ? e.message : String(e)
       this.optimisticBySession.set(
         sessionID,

@@ -20,7 +20,7 @@ typography:
     sans: "system-ui"          # GNOME: Adwaita Sans/Cantarell → mac: SF → Win: Segoe
     mono: "ui-monospace, monospace"  # GNOME: Source Code Pro/Adwaita Mono 优先
   scale:
-    ui-xs:    { size: 11, weight: 400, usage: 状态栏、Tab 徽标、时间戳 }
+    ui-xs:    { size: 11, weight: 400, usage: 左栏状态行、Tab 徽标、时间戳 }
     ui-sm:    { size: 12, weight: 400, usage: 次级标签、chip 标签、面包屑 }
     ui-md:    { size: 13, weight: 400, usage: 界面正文基准（列表、表单、菜单） }
     title-sm: { size: 14, weight: 600, usage: 面板标题、卡片标题 }
@@ -35,7 +35,6 @@ density:
   row-tree: 26px
   row-list: 30px
   tabbar: 36px
-  statusbar: 24px
   input: 32px
   button: 28px
   icon-inline: 16px
@@ -105,7 +104,7 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 | 消息 markdown（assistant 正文/reasoning） | 块间距 8（flex gap）；标题两档：h1/h2=`title-md` 600、h3+ =`title-sm` 600；行内代码 `code` 色 + `codeBackground` 底 + 4px 圆角 + 0.92em mono；代码块与 chip 展开体同款（`codeBackground` 底 + `border` 边 + `rounded.chip`，头部高 26 含语言标签 `ui-xs` `outline` + 复制按钮）；引用 3px `quoteBar` 左栏 + `onSurfaceVariant`；表格 `border` 全框 + 表头 600 + `surfaceContainerLow` 底；链接 `link` 色；任务列表去符号 + checkbox `primary` |
 | 输入区 | min-height 32 自增高，`surfaceContainerLow` 底 + 1px `outlineVariant` 边，focus 1px `primary`；发送按钮 28×28 |
 | 设置弹窗 | 640×min(480, 80vh)，`rounded.dialog`，遮罩 rgba(0,0,0,.5)；表单标签 `ui-sm`，控件 32 |
-| 状态栏 | 高 24，`ui-xs`；状态点 8px：streaming=`status.running`、degraded=`status.pending`、offline=`status.error`、对账中=running 闪烁 |
+| 服务器状态行（左栏底部） | 高 30（22 控件 + 上下 4 padding），`ui-xs`；状态点 8px：streaming=`status.running`、degraded=`status.pending`、offline=`status.error`、对账中=running 闪烁；左状态右设置齿轮，置底常驻不随项目区变化；服务器版本不展示（2026-08-24 收编自原全宽状态栏） |
 
 ### Agent 行为的呈现原则（参考 Agentic Design Patterns）
 

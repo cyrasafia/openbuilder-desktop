@@ -110,7 +110,7 @@ sessionStatus: Map<sessionID, 'busy' | 'idle' | 'retry'>
 
 ## 8. 已知残留 gap（沿用移动端结论）
 
-发消息后 SSE 断开且重连成功前：乐观 busy 无自动复位路径（`session.idle` 丢失、reconcile 未触发）。依赖状态栏 degraded 提示 + 手动刷新（刷新走消息 finish 推断兜底）。v0.2 可评估发送后延迟 status 检查——移动端 design-session-status 同结论，不重复发明。
+发消息后 SSE 断开且重连成功前：乐观 busy 无自动复位路径（`session.idle` 丢失、reconcile 未触发）。依赖左栏状态行 degraded 提示 + 手动刷新（刷新走消息 finish 推断兜底）。v0.2 可评估发送后延迟 status 检查——移动端 design-session-status 同结论，不重复发明。
 
 另一残留：非当前 worktree 的 busy 结束若期间无任何 SSE 重连，对账不触发，该目录左栏 dots 保持到下次 scope 切换/项目重开（对账快照目录集虽覆盖全集，但只在重连时跑）。v0.2 可评估低频周期刷新；移动端同样只在 bootstrap/reconcile 拉取，不超前发明。
 

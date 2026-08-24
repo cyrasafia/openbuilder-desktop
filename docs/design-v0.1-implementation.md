@@ -22,7 +22,7 @@ src/
 │   └─ reconciler.ts      # 对账引擎
 └─ renderer/src/
     ├─ store/app-store.ts # 一体化状态层（外置 store + subscribe/emit）
-    ├─ components/        # sidebar / workspace / file-panel / status-bar / settings-dialog
+    ├─ components/        # sidebar（含服务器状态行）/ workspace / file-panel / settings-dialog
     └─ styles/            # tokens.css（视觉令牌唯一权威）+ app.css
 ```
 
@@ -70,7 +70,7 @@ src/
 
 - 触发：SSE 重连成功（debounce 800ms 合并）
 - 内容：每个订阅目录（scope ∪ 打开项目根，见 7.5 #9）`GET /session`（directory 精确匹配）+ 每个**打开的 chat Tab** `GET /session/{id}/message?limit=100`（窗口 K=100）
-- 互斥锁防并发；被互斥跳过 ≠ 失败，pendingKick 重跑；失败静默（状态栏指示器复位）
+- 互斥锁防并发；被互斥跳过 ≠ 失败，pendingKick 重跑；失败静默（连接状态指示器复位）
 
 ### 消息合并（message-merge.ts）——移植 design-sort-order-race + message-accumulation
 
@@ -84,7 +84,7 @@ src/
 ## 4. 状态层（app-store.ts）
 
 - **持久化**（经 IPC 落 userData/store.json）：connection.profiles、project.state（opened/currentProjectId/currentWorkspaceId，按 profile 维度）、theme.mode、locale.mode
-- **连接状态机**：`disconnected → connecting → streaming ⇄ degraded`；sseGroup 聚合出 degraded；`reconciling` 独立标志（状态栏"对账中"）
+- **连接状态机**：`disconnected → connecting → streaming ⇄ degraded`；sseGroup 聚合出 degraded；`reconciling` 独立标志（状态行"对账中"）
 - **事件闸门**：订阅按打开项目建立，天然满足"关闭项目事件忽略"；`session.*` 事件再按 `info.directory` 与订阅目录比对双保险
 - **乐观消息**：发送即插 pending 态；收到任意真实 user `message.updated` 即清除该会话全部乐观；POST 失败撤回+错误提示；写操作不自动重试
 - **busy 判定**：assistant `time.completed` 为空 → busy（Tab/会话列表/输入区三处联动）；`abortSession` 支持停止
@@ -100,7 +100,7 @@ src/
 - 工作区：Tab 条（busy 状态点）+ 聊天视图（user 气泡 / assistant 全宽块 + reasoning 斜体 chip + tool chip 四态色）+ 文件视图（纯文本 pre mono）
 - 消息流 markdown（assistant 文本 + reasoning 体；user 消息保持纯文本，对齐移动端 app 的 TextPart 策略）：streamdown L0——流式不完整语法修复与块级 memo 由其承担；**组件层全量覆写回语义元素**（其内置默认件是 Tailwind 样式件如 strong→span.font-semibold，本项目无 Tailwind），样式收敛在 app.css `.md` 前缀、全部走 tokens 语义色；代码块带语言标签 + 复制按钮（沿用 chip 展开体 code-block 视觉）；链接 target=_blank 经 main 的 setWindowOpenHandler → shell.openExternal 走系统浏览器；无语法高亮（spec 范围外，shiki 留待后续）
 - 设置弹窗：profile CRUD + 激活（切换 = disconnect+connect 全量重对账）+ 测试连接 + 主题/语言
-- 状态栏：streaming/degraded/对账中 + server 版本；connectionError 悬浮提示
+- 服务器状态行（2026-08-24 修订，原全宽状态栏取消）：收入左栏底部与设置齿轮同行、置底常驻；streaming/degraded/对账中；connectionError ⚠ 悬浮提示；不展示 server 版本
 - i18n：ts catalog（zh/en），key 与移动端 ARB 场景对齐；`session: 4` 式单复数不敏感句式
 - 主题：`tokens.css` 双套 `:root[data-theme]`，auto 跟随 `prefers-color-scheme`
 

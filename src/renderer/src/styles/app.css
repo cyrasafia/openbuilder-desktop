@@ -58,10 +58,8 @@
 .app-shell {
   display: grid;
   grid-template-columns: var(--sidebar-w, 260px) minmax(0, 1fr) var(--filepanel-w, 300px);
-  grid-template-rows: minmax(0, 1fr) auto;
-  grid-template-areas:
-    "sidebar workspace filepanel"
-    "status status status";
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "sidebar workspace filepanel";
   flex: 1;
   min-height: 0;
   overflow: hidden;
@@ -236,11 +234,17 @@
   text-align: center;
 }
 
+/* 服务器状态行：置底常驻（margin-top:auto 吸收剩余空间），与设置齿轮同行 */
 .sidebar-footer {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
   padding: 4px 8px;
   border-top: 1px solid var(--outline-variant);
+  font-size: var(--text-xs);
+  color: var(--on-surface-variant);
   flex-shrink: 0;
 }
 
@@ -1026,32 +1030,20 @@
   overflow: hidden;
 }
 
-/* ---------- 状态栏 ---------- */
-.status-bar {
-  grid-area: status;
-  height: var(--statusbar-h);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 10px;
-  font-size: var(--text-xs);
-  color: var(--on-surface-variant);
-  background: var(--surface-container);
-  border-top: 1px solid var(--outline-variant);
-}
-
+/* ---------- 服务器连接状态（左栏底部） ---------- */
 .status-cluster {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
   color: inherit;
   font-size: inherit;
 }
 
-.status-right {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+.status-cluster > span:not(.status-dot) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-error {
@@ -1075,7 +1067,7 @@
 /* 会话进行中：双层圆点 = 稳定中心点 + 外圈光晕呼吸（同 app，参数对齐
    openbuilder design-agent-status-indicator.md §动效设计：1200ms easeInOut 往复，
    外圈 scale 0.75→1.15、opacity 0.2→0.55，中心点不缩放；仅此类呼吸，
-   status-bar 的 SSE running 点与 tool 卡片状态点保持静态实心） */
+   左栏连接状态点与 tool 卡片状态点保持静态实心） */
 .status-dot.session-running {
   position: relative;
   width: 12px;

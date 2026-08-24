@@ -113,7 +113,7 @@ function GuidePage() {
       store.openChatTab(pendingSession.current)
       pendingSession.current = null
     }
-    // 失败：草稿保留在输入框，connectionError 经状态栏可见，重试复用同一会话
+    // 失败：草稿保留在输入框，connectionError 经左栏状态行可见，重试复用同一会话
   }
 
   return (
