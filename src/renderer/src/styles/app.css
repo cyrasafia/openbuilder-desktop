@@ -520,6 +520,9 @@
   padding: 10px 16px;
   max-width: 80%;
   white-space: pre-wrap;
+  /* 长路径/URL 等无空格 token：优先在词边界断（min-content > max-width 时溢出），
+     溢出后再强制断字符，保证不撑破气泡 */
+  overflow-wrap: anywhere;
 }
 
 .bubble-pending {
