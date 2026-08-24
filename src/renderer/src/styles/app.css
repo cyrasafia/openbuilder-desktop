@@ -45,12 +45,14 @@
   color: var(--on-surface-variant);
 }
 
-.title-bar-btn:hover {
+.title-bar-btn:hover,
+.title-bar-btn:focus-visible {
   background: var(--surface-container-high);
   color: var(--on-surface);
 }
 
-.title-bar-btn.close:hover {
+.title-bar-btn.close:hover,
+.title-bar-btn.close:focus-visible {
   background: var(--error);
   color: var(--on-error);
 }
@@ -437,7 +439,8 @@
   flex-shrink: 0;
 }
 
-.icon-btn.tab-close:hover {
+.icon-btn.tab-close:hover,
+.icon-btn.tab-close:focus-visible {
   background: var(--surface-container-highest);
 }
 
@@ -1089,7 +1092,8 @@
   font-size: var(--text-sm);
   max-width: 240px;
 }
-.ms-pill:hover:not(:disabled) {
+.ms-pill:hover:not(:disabled),
+.ms-pill:focus-visible:not(:disabled) {
   border-color: var(--outline);
 }
 .ms-pill:disabled {
@@ -1123,7 +1127,8 @@
   border-color: var(--error-container);
   color: var(--error);
 }
-.ms-pill-error:hover {
+.ms-pill-error:hover,
+.ms-pill-error:focus-visible {
   border-color: var(--error);
 }
 
@@ -1148,7 +1153,8 @@
   background: var(--primary-container);
   color: var(--on-primary-container);
 }
-.ms-seg:hover:not(.active):not(:disabled) {
+.ms-seg:hover:not(.active):not(:disabled),
+.ms-seg:focus-visible:not(.active):not(:disabled) {
   color: var(--on-surface);
 }
 
@@ -1190,6 +1196,7 @@
   font-size: var(--text-sm);
 }
 .ms-row:hover:not(:disabled),
+.ms-row:focus-visible:not(:disabled),
 .ms-row.focused {
   background: var(--surface-container-highest);
 }
@@ -1277,6 +1284,7 @@
   opacity: 0.7;
 }
 
+
 /* 设置对话框默认值区 */
 .settings-defaults {
   display: flex;
@@ -1285,6 +1293,14 @@
 }
 .settings-defaults .ms-bar {
   margin-right: 0;
+}
+
+/* 焦点复用 hover（tokens.css）：清除默认值按钮原无 hover 样式，焦点环压制后
+   补齐（同 ms-footer idiom：container-highest 底 + 4px 圆角） */
+.settings-defaults > button:hover,
+.settings-defaults > button:focus-visible {
+  background: var(--surface-container-highest);
+  border-radius: 4px;
 }
 
 /* ---------- 斜杠命令菜单 ---------- */
@@ -1323,6 +1339,7 @@
 }
 
 .command-row:hover,
+.command-row:focus-visible,
 .command-row.selected {
   background: var(--surface-container-highest);
 }
@@ -1398,6 +1415,14 @@
   min-width: 0;
   color: inherit;
   font-size: inherit;
+}
+
+/* 焦点复用 hover（tokens.css）：原无 hover 样式，焦点环压制后补齐，
+   底色沿用 icon-btn 同层 idiom（container-high） */
+.status-cluster:hover,
+.status-cluster:focus-visible {
+  background: var(--surface-container-high);
+  border-radius: 4px;
 }
 
 .status-cluster > span:not(.status-dot) {
@@ -1507,7 +1532,8 @@
   line-height: 1;
 }
 
-.icon-btn:hover {
+.icon-btn:hover,
+.icon-btn:focus-visible {
   background: var(--surface-container-highest);
   color: var(--on-surface);
 }
@@ -1521,7 +1547,8 @@
   font-size: var(--text-md);
 }
 
-.btn-primary:hover:not(:disabled) {
+.btn-primary:hover:not(:disabled),
+.btn-primary:focus-visible:not(:disabled) {
   filter: brightness(1.08);
 }
 
@@ -1547,7 +1574,9 @@
 }
 
 .btn-tonal:hover:not(:disabled),
-.btn-danger:hover:not(:disabled) {
+.btn-tonal:focus-visible:not(:disabled),
+.btn-danger:hover:not(:disabled),
+.btn-danger:focus-visible:not(:disabled) {
   filter: brightness(1.1);
 }
 
@@ -1601,6 +1630,13 @@
 
 .pending-card-icon {
   flex-shrink: 0;
+}
+
+/* 焦点复用 hover（tokens.css）：原无 hover 样式，焦点环压制后补齐——
+   卡片自带 tint 底，叠 4% on-surface（同 tree-row.active 微加深 idiom） */
+.pending-card-header:hover,
+.pending-card-header:focus-visible {
+  background: color-mix(in srgb, var(--on-surface) 4%, transparent);
 }
 
 .pending-card.permission .pending-card-icon {
@@ -1685,7 +1721,8 @@
   border: 1px solid transparent;
 }
 
-.pending-option:hover:not(:disabled) {
+.pending-option:hover:not(:disabled),
+.pending-option:focus-visible:not(:disabled) {
   background: var(--surface-container-highest);
 }
 
@@ -1808,7 +1845,8 @@
   background: var(--surface-container-highest);
 }
 
-.dialog-actions button:hover {
+.dialog-actions button:hover,
+.dialog-actions button:focus-visible {
   filter: brightness(1.1);
 }
 
@@ -1896,6 +1934,12 @@
   border-bottom: 2px solid transparent;
 }
 
+/* 焦点复用 hover（tokens.css）：原无 hover 样式，焦点环压制后补齐（文字提亮，不动底线） */
+.settings-tabs button:hover,
+.settings-tabs button:focus-visible {
+  color: var(--on-surface);
+}
+
 .settings-tabs button.active {
   color: var(--on-surface);
   border-bottom-color: var(--primary);
@@ -1922,7 +1966,13 @@
   background: var(--surface-container-highest);
 }
 
-.profile-row button.danger:hover {
+.profile-row button:hover:not(:disabled):not(.danger),
+.profile-row button:focus-visible:not(:disabled):not(.danger) {
+  filter: brightness(1.1);
+}
+
+.profile-row button.danger:hover,
+.profile-row button.danger:focus-visible {
   background: var(--error-container);
   color: var(--on-error-container);
 }

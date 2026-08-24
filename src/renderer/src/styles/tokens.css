@@ -184,6 +184,24 @@ select {
   color: inherit;
 }
 
+/* 键盘焦点指示复用控件 hover 样式（2026-08-24 二次修订，弃独立焦点环）：
+   独立描边环在贴边控件（标题栏钮 / Tab 条 +）被容器裁剪只剩两条竖线、
+   在自带边框控件（ms-pill / ms-seg）上叠加成双框。改为 app.css 中各控件
+   hover 规则以 ", :focus-visible" 并列扩展，焦点即 hover 外观；UA 默认环
+   全局压制。文本输入类沿用各自 :focus 1px primary 边框；原生 checkbox 无
+   hover 可复用，保留 2px primary 环（否则 Space 切换无任何焦点反馈）；
+   原无 hover 的可聚焦控件（status-cluster / pending-card-header /
+   settings-tabs 钮 / profile-row 钮 / settings-defaults 清除钮）按同层
+   idiom 补齐 hover。 */
+:focus-visible {
+  outline: none;
+}
+
+input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;

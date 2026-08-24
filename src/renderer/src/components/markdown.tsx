@@ -23,6 +23,7 @@ function CopyButton({ getText }: { getText: () => string }) {
   return (
     <button
       className="md-copy"
+      tabIndex={-1}
       onClick={() => {
         void navigator.clipboard
           .writeText(getText())
@@ -48,7 +49,8 @@ function renderPre(children: ReactNode) {
         <span className="md-codeblock-lang">{lang}</span>
         <CopyButton getText={() => extractText(child?.props.children)} />
       </div>
-      <pre className="md-pre">{child ? cloneElement(child, { "data-block": "true" } as never) : children}</pre>
+      {/* tabIndex=-1：滚动容器不入焦点序列（消息流内容全部排除，同 chip/链接） */}
+      <pre className="md-pre" tabIndex={-1}>{child ? cloneElement(child, { "data-block": "true" } as never) : children}</pre>
     </div>
   )
 }
@@ -86,15 +88,16 @@ const mdComponents: Components = {
     return <code className="md-code-inline">{children}</code>
   },
   // 链接交给系统浏览器：main 进程 setWindowOpenHandler → shell.openExternal
+  // tabIndex=-1：消息流内容整体不参与键盘焦点序列（同 chip/复制按钮，鼠标点击不受影响）
   a: ({ node: _node, children, ...rest }) => (
-    <a {...rest} target="_blank" rel="noopener noreferrer">
+    <a {...rest} target="_blank" rel="noopener noreferrer" tabIndex={-1}>
       {children}
     </a>
   ),
   // 代码块：语言标签 + 复制 + 滚动体
   pre: ({ node: _node, children }) => renderPre(children),
   table: ({ node: _node, children }) => (
-    <div className="md-table-wrap">
+    <div className="md-table-wrap" tabIndex={-1}>
       <table>{children}</table>
     </div>
   ),

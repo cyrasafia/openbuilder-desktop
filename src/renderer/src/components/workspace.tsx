@@ -324,8 +324,10 @@ function ChatView({ sessionID }: { sessionID: string }) {
 
   return (
     <div className="chat-view">
-      {/* 全宽滚动层：空白处滚轮可滚（限宽在内层，见 app.css .message-list 注释） */}
-      <div className="message-list scroll" ref={scrollRef} onScroll={onScroll} onWheel={onWheel}>
+      {/* 全宽滚动层：空白处滚轮可滚（限宽在内层，见 app.css .message-list 注释）。
+          tabIndex=-1：Chromium 把滚动容器纳入焦点序列（Shift+Tab 会给整层画环，
+          实证见 2026-08-24 会话），移出后键盘焦点直达输入框/Tab 条 */}
+      <div className="message-list scroll" ref={scrollRef} tabIndex={-1} onScroll={onScroll} onWheel={onWheel}>
         <div className="message-list-inner">
           {entries.map((entry) => (
             <MessageBlock key={entry.kind === "optimistic" ? entry.data.localId : entry.data.info.id} entry={entry} />
@@ -449,7 +451,8 @@ function CommandHints({
 
   return (
     <div className="command-hints-slot">
-      <div className="command-hints scroll" ref={listRef}>
+      {/* tabIndex=-1：滚动容器不入焦点序列（同 .message-list），命令行按钮保持可达 */}
+      <div className="command-hints scroll" ref={listRef} tabIndex={-1}>
         {matches.map((c, i) => (
           <button
             key={c.name}
@@ -809,7 +812,7 @@ function ReasoningChip({ part }: { part: Part }) {
   const text = (part as { text?: string }).text ?? ""
   return (
     <div className={"chip" + (open ? " open" : "")}>
-      <button className="chip-header" onClick={() => setOpen(!open)}>
+      <button className="chip-header" tabIndex={-1} onClick={() => setOpen(!open)}>
         <span className="chevron">{open ? "▾" : "▸"}</span>
         <span className="chip-label">{t.thinking}</span>
       </button>
@@ -836,7 +839,7 @@ function ToolChip({ part }: { part: ToolPart }) {
 
   return (
     <div className={"chip" + (open ? " open" : "")}>
-      <button className="chip-header" onClick={() => setOpen(!open)}>
+      <button className="chip-header" tabIndex={-1} onClick={() => setOpen(!open)}>
         <span className="chevron">{open ? "▾" : "▸"}</span>
         <span className="chip-label">{part.tool}</span>
         {summary && <span className="chip-summary">{summary}</span>}
@@ -844,9 +847,9 @@ function ToolChip({ part }: { part: ToolPart }) {
       {open && (
         <div className="chip-body">
           <div className="code-block-label">{t.inputLabel}</div>
-          <pre className="code-block">{JSON.stringify(state.input, null, 2)}</pre>
+          <pre className="code-block" tabIndex={-1}>{JSON.stringify(state.input, null, 2)}</pre>
           <div className="code-block-label">{t.outputLabel}</div>
-          <pre className="code-block">
+          <pre className="code-block" tabIndex={-1}>
             {status === "completed" ? state.output : status === "error" ? state.error : "…"}
           </pre>
         </div>
