@@ -1120,6 +1120,11 @@
   }
 }
 
+/* 待输入（授权/问题）：琥珀静态，不做闪烁动效（design-agent-status-indicator） */
+.status-dot.waiting {
+  background: var(--status-waiting);
+}
+
 .status-dot.tool-completed {
   background: var(--status-completed);
 }
@@ -1184,6 +1189,220 @@
   border-radius: var(--radius-chip);
   height: var(--control-h);
   padding: 0 14px;
+}
+
+.btn-tonal {
+  background: var(--surface-container-high);
+  color: var(--on-surface);
+  border-radius: var(--radius-chip);
+  height: var(--control-h);
+  padding: 0 14px;
+}
+
+.btn-tonal:hover:not(:disabled),
+.btn-danger:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.btn-tonal:disabled,
+.btn-danger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---------- 待处理卡片（授权/问题）---------- */
+.chat-footer {
+  border-top: 1px solid var(--outline-variant);
+  padding: 8px 24px;
+  flex-shrink: 0;
+  background: var(--surface);
+  width: 100%;
+  max-width: calc(var(--chat-max) + 48px);
+  min-width: calc(var(--chat-min) + 48px);
+  margin: 0 auto;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pending-card {
+  border-radius: var(--radius-card);
+  border: 1px solid;
+  padding: 8px 12px;
+}
+
+/* 配色同移动端 _PermissionCard/_QuestionCard：权限 = primary 系，问题 = tertiary 系 */
+.pending-card.permission {
+  background: color-mix(in srgb, var(--primary-container) 45%, var(--surface));
+  border-color: color-mix(in srgb, var(--primary) 45%, transparent);
+}
+
+.pending-card.question {
+  background: color-mix(in srgb, var(--tertiary-container) 45%, var(--surface));
+  border-color: color-mix(in srgb, var(--tertiary) 45%, transparent);
+}
+
+.pending-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+}
+
+.pending-card-icon {
+  flex-shrink: 0;
+}
+
+.pending-card.permission .pending-card-icon {
+  color: var(--primary);
+}
+
+.pending-card.question .pending-card-icon {
+  color: var(--tertiary);
+}
+
+.pending-card-title {
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.pending-card-sub {
+  font-size: var(--text-sm);
+  color: var(--on-surface-variant);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.pending-queue {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  color: var(--outline);
+}
+
+.pending-card-chevron {
+  flex-shrink: 0;
+  color: var(--outline);
+}
+
+.pending-card-body {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.pending-card-detail {
+  background: var(--surface-container-lowest);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-chip);
+  padding: 6px 10px;
+  font-size: var(--text-mono);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.pending-question-text {
+  font-size: var(--text-md);
+  color: var(--on-surface);
+}
+
+.pending-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pending-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: var(--radius-chip);
+  background: var(--surface-container-high);
+  border: 1px solid transparent;
+}
+
+.pending-option:hover:not(:disabled) {
+  background: var(--surface-container-highest);
+}
+
+.pending-option.active {
+  background: color-mix(in srgb, var(--tertiary) 18%, var(--surface-container-high));
+  border-color: var(--tertiary);
+}
+
+.pending-option:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.pending-option-mark {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  border: 1.5px solid var(--outline);
+}
+
+.pending-option-mark.radio {
+  border-radius: 50%;
+}
+
+.pending-option-mark.checkbox {
+  border-radius: 3px;
+}
+
+.pending-option-mark.on {
+  border-color: var(--tertiary);
+  background: var(--tertiary);
+  box-shadow: inset 0 0 0 2px var(--surface);
+}
+
+.pending-option-mark.radio.on {
+  box-shadow: inset 0 0 0 3px var(--surface);
+}
+
+.pending-option-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--text-md);
+  min-width: 0;
+}
+
+.pending-option-desc {
+  font-size: var(--text-xs);
+  color: var(--outline);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pending-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.pending-card-error {
+  font-size: var(--text-sm);
+  color: var(--status-error);
+  text-align: right;
 }
 
 /* ---------- 弹窗 ---------- */

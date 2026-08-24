@@ -272,4 +272,49 @@ export class RestClient {
       return r.content
     })
   }
+
+  // ---- 待处理人机交互（授权/问题）。契约：opencode_openapi.json
+  // permission.list / permission.respond / question.list / question.reply / question.reject。
+  // pending 按 directory 隔离在 per-instance 内存 Map（移动端 design-question-card-reply.md
+  // 实测），所有调用必须带 directory query 才能命中所在实例。----
+
+  listPendingPermissions(directory: string): Promise<Record<string, unknown>[]> {
+    return this.request<Record<string, unknown>[]>(
+      `/permission${RestClient.dirQuery(directory)}`,
+    )
+  }
+
+  /** 会话作用域端点（移动端验证可用）；directory 透传给路由中间件兜底 */
+  respondPermission(
+    sessionID: string,
+    permissionID: string,
+    directory: string,
+    response: "once" | "always" | "reject",
+  ): Promise<void> {
+    return this.request<void>(
+      `/session/${encodeURIComponent(sessionID)}/permissions/${encodeURIComponent(permissionID)}${RestClient.dirQuery(directory)}`,
+      { method: "POST", body: JSON.stringify({ response }) },
+    )
+  }
+
+  listPendingQuestions(directory: string): Promise<Record<string, unknown>[]> {
+    return this.request<Record<string, unknown>[]>(
+      `/question${RestClient.dirQuery(directory)}`,
+    )
+  }
+
+  /** 全局端点 + directory（session 作用域端点契约上无 directory，移动端实测 404） */
+  replyQuestion(questionID: string, directory: string, answers: string[][]): Promise<void> {
+    return this.request<void>(
+      `/question/${encodeURIComponent(questionID)}/reply${RestClient.dirQuery(directory)}`,
+      { method: "POST", body: JSON.stringify({ answers }) },
+    )
+  }
+
+  rejectQuestion(questionID: string, directory: string): Promise<void> {
+    return this.request<void>(
+      `/question/${encodeURIComponent(questionID)}/reject${RestClient.dirQuery(directory)}`,
+      { method: "POST" },
+    )
+  }
 }

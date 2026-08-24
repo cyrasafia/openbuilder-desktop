@@ -249,4 +249,9 @@ export type OpencodeEvent =
       type: "message.part.removed"
       properties: { sessionID: string; messageID: string; partID: string }
     }
+  // ---- 待处理人机交互（授权/问题）。properties 防御式解析（pending-requests.ts 归一化）----
+  | { id: string; type: "permission.asked" | "permission.v2.asked" | "permission.updated"; properties: Record<string, unknown> }
+  | { id: string; type: "permission.replied" | "permission.v2.replied"; properties: Record<string, unknown> }
+  | { id: string; type: "question.asked" | "question.v2.asked"; properties: Record<string, unknown> }
+  | { id: string; type: "question.replied" | "question.v2.replied" | "question.rejected" | "question.v2.rejected"; properties: Record<string, unknown> }
   | { id: string; type: string; properties: Record<string, unknown> }

@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, type WheelEvent } from "react"
-import { LoaderCircle } from "lucide-react"
+import { ChevronDown, ChevronRight, CircleHelp, LoaderCircle, ShieldAlert } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import { format, relativeTime } from "../i18n"
+import type { Catalog } from "../i18n"
 import type { ChatEntry } from "@shared/message-merge"
 import type {
   CommandInfo,
@@ -11,6 +12,8 @@ import type {
   SubtaskPart,
   ToolPart,
 } from "@shared/api-types"
+import type { PendingPermission, PendingQuestion } from "@shared/pending-requests"
+import { externalDirectoryPath, permissionCommand } from "@shared/pending-requests"
 import { Markdown } from "./markdown"
 
 export function Workspace() {
@@ -32,8 +35,16 @@ export function Workspace() {
             className={"tab" + (tab.key === store.activeTabKey ? " active" : "")}
             onClick={() => store.setActiveTab(tab.key)}
           >
-            {tab.kind === "chat" && store.isSessionActive(tab.key.slice(5)) && (
-              <span className="status-dot session-running" />
+            {tab.kind === "chat" && store.dotStateFor(tab.key.slice(5)) !== "idle" && (
+              <span
+                className={
+                  "status-dot " +
+                  (store.dotStateFor(tab.key.slice(5)) === "running"
+                    ? "session-running"
+                    : store.dotStateFor(tab.key.slice(5)))
+                }
+              />
+
             )}
             <span className="tab-label">{tab.title || t.untitled}</span>
             <button
@@ -306,6 +317,7 @@ function ChatView({ sessionID }: { sessionID: string }) {
           <TypingSlot status={status} />
         </div>
       </div>
+      <ChatFooter sessionID={sessionID} />
       <div className="composer">
         {/* 覆盖层：锚在 composer 上沿悬浮于消息流（不占布局、不顶起消息） */}
         {cmdMode && (
@@ -432,6 +444,106 @@ function CommandHints({
 }
 
 /**
+ * 会话底部待处理面板：一次渲染一张卡（授权优先于问题，同移动端 _FooterPanel——
+ * 权限通常阻塞执行），队列 >1 时计数提示。卡片按 id 键控（review-73dcfa6：
+ * 队列推进时复用组件 State 导致选中/提交态残留的教训）。
+ */
+function ChatFooter({ sessionID }: { sessionID: string }) {
+  const store = useStore()
+  const permission = store.pendingPermissions.get(sessionID)
+  const questions = store.questionsForSession(sessionID)
+  const question = permission ? null : (questions[0] ?? null)
+  const queueTotal = (permission ? 1 : 0) + questions.length
+  if (queueTotal === 0) return null
+  return (
+    <div className="chat-footer">
+      {permission && (
+        <PermissionCard key={permission.id} permission={permission} queueTotal={queueTotal} />
+      )}
+      {question && <QuestionCard key={question.id} question={question} queueTotal={queueTotal} />}
+    </div>
+  )
+}
+
+/** 权限类型 → 可读标题（移动端 l10n_ext.dart permissionTitle 同源映射） */
+function permissionTitle(t: Catalog, p: PendingPermission): string {
+  switch (p.type) {
+    case "external_directory":
+      return t.permissionExternalDir
+    case "bash":
+      return t.permissionExecute
+    default:
+      return p.type || t.permissionRequest
+  }
+}
+
+function PermissionCard({
+  permission,
+  queueTotal,
+}: {
+  permission: PendingPermission
+  queueTotal: number
+}) {
+  const store = useStore()
+  const { t } = useI18n()
+  const [replying, setReplying] = useState(false)
+  const [collapsed, setCollapsed] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const title = permissionTitle(t, permission)
+  const detail =
+    permissionCommand(permission) ??
+    (permission.patterns.length > 0 ? permission.patterns.join("\n") : null) ??
+    externalDirectoryPath(permission)
+
+  const respond = async (response: "once" | "always" | "reject") => {
+    setReplying(true)
+    setError(null)
+    const res = await store.respondPermission(permission.sessionID, response)
+    if (!res.ok) {
+      setError(res.error ?? t.replyFailed)
+      setReplying(false)
+    }
+    // 成功：卡片随 store 移除而卸载，不回设状态
+  }
+
+  return (
+    <div className="pending-card permission">
+      <button className="pending-card-header" onClick={() => setCollapsed(!collapsed)}>
+        <ShieldAlert className="pending-card-icon" size={16} aria-hidden />
+        <span className="pending-card-title">{t.permissionRequest}</span>
+        <span className="pending-card-sub">{title}</span>
+        {queueTotal > 1 && (
+          <span className="pending-queue">{format(t.pendingQueue, { total: queueTotal })}</span>
+        )}
+        {collapsed ? (
+          <ChevronRight className="pending-card-chevron" size={16} aria-hidden />
+        ) : (
+          <ChevronDown className="pending-card-chevron" size={16} aria-hidden />
+        )}
+      </button>
+      {!collapsed && (
+        <div className="pending-card-body">
+          {detail && <pre className="pending-card-detail mono">{detail}</pre>}
+          <div className="pending-card-actions">
+            <button className="btn-danger" disabled={replying} onClick={() => void respond("reject")}>
+              {t.reject}
+            </button>
+            <button className="btn-tonal" disabled={replying} onClick={() => void respond("always")}>
+              {t.permissionAlwaysAllow}
+            </button>
+            <button className="btn-primary" disabled={replying} onClick={() => void respond("once")}>
+              {t.permissionAllowOnce}
+            </button>
+          </div>
+          {error && <div className="pending-card-error">{error}</div>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
  * 输入中提示常驻槽位（design-typing-indicator §3）：
  * - 高度恒定 28px + overflow hidden——busy ⇄ idle 切换零布局变化（INV-1）；
  * - idle 时兼作消息流底部呼吸留白；空会话时同样无害；
@@ -462,6 +574,133 @@ function TypingSlot({ status }: { status: SessionStatusValue }) {
         <LoaderCircle className="typing-spinner" size={16} aria-hidden="true" />
         <span className="typing-retry-text">{retryText}</span>
       </span>
+    </div>
+  )
+}
+
+function QuestionCard({
+  question,
+  queueTotal,
+}: {
+  question: PendingQuestion
+  queueTotal: number
+}) {
+  const store = useStore()
+  const { t } = useI18n()
+  const [selected, setSelected] = useState<Record<number, string[]>>({})
+  const [step, setStep] = useState(0)
+  const [replying, setReplying] = useState(false)
+  const [collapsed, setCollapsed] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const totalSub = question.questions.length
+  // 步进钳制：同 id 载荷重新归一化后子问题变短的防御（当前 server 不会变更已
+  // 排队问题，纯 hardening），防止 questions[step] 越界
+  const stepIdx = Math.min(step, Math.max(0, totalSub - 1))
+  const q = question.questions[stepIdx]
+  const sel = selected[stepIdx] ?? []
+  const stepAnswered = sel.length > 0
+  const isLast = stepIdx >= totalSub - 1
+
+  const toggle = (label: string) => {
+    if (replying) return
+    const i = stepIdx
+    setSelected((prev) => {
+      const cur = prev[i] ?? []
+      const next = cur.includes(label)
+        ? cur.filter((x) => x !== label)
+        : q.multiple
+          ? [...cur, label]
+          : [label]
+      return { ...prev, [i]: next }
+    })
+  }
+
+  const finish = async (action: "reply" | "reject") => {
+    setReplying(true)
+    setError(null)
+    const answers = question.questions.map((_, i) => selected[i] ?? [])
+    const res =
+      action === "reject"
+        ? await store.rejectQuestion(question.id)
+        : await store.replyQuestion(question.id, answers)
+    if (!res.ok) {
+      setError(res.error ?? t.replyFailed)
+      setReplying(false)
+    }
+  }
+
+  return (
+    <div className="pending-card question">
+      <button className="pending-card-header" onClick={() => setCollapsed(!collapsed)}>
+        <CircleHelp className="pending-card-icon" size={16} aria-hidden />
+        <span className="pending-card-title">{q.header}</span>
+        {totalSub > 1 && (
+          <span className="pending-queue">
+            {stepIdx + 1}/{totalSub}
+          </span>
+        )}
+        {queueTotal > 1 && (
+          <span className="pending-queue">{format(t.pendingQueue, { total: queueTotal })}</span>
+        )}
+        {collapsed ? (
+          <ChevronRight className="pending-card-chevron" size={16} aria-hidden />
+        ) : (
+          <ChevronDown className="pending-card-chevron" size={16} aria-hidden />
+        )}
+      </button>
+      {!collapsed && (
+        <div className="pending-card-body">
+          <div className="pending-question-text">{q.question}</div>
+          <div className="pending-options">
+            {q.options.map((opt) => {
+              const active = sel.includes(opt.label)
+              return (
+                <button
+                  key={opt.label}
+                  className={"pending-option" + (active ? " active" : "")}
+                  disabled={replying}
+                  onClick={() => toggle(opt.label)}
+                >
+                  <span
+                    className={
+                      "pending-option-mark " + (q.multiple ? "checkbox" : "radio") + (active ? " on" : "")
+                    }
+                    aria-hidden
+                  />
+                  <span className="pending-option-label">
+                    {opt.label}
+                    {opt.description && <span className="pending-option-desc">{opt.description}</span>}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+          <div className="pending-card-actions">
+            <button className="btn-danger" disabled={replying} onClick={() => void finish("reject")}>
+              {t.reject}
+            </button>
+            {isLast ? (
+              <button
+                className="btn-primary"
+                disabled={replying || !stepAnswered}
+                onClick={() => void finish("reply")}
+              >
+                {t.questionSubmit}
+              </button>
+            ) : (
+              <button
+                className="btn-primary"
+                disabled={replying || !stepAnswered}
+                onClick={() => setStep(stepIdx + 1)}
+              >
+                {t.questionNext}
+              </button>
+            )}
+          </div>
+          {error && <div className="pending-card-error">{error}</div>}
+        </div>
+      )}
     </div>
   )
 }

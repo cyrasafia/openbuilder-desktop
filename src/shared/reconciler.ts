@@ -24,6 +24,16 @@ export interface ReconcilerDeps {
   /** 目录状态快照；fetch 失败时以 null 回调（调用方保留旧值，防 SS-1） */
   onStatusSnapshot: (directory: string, statuses: Record<string, SessionStatusValue> | null) => void
   onMessagesSnapshot: (sessionID: string, messages: MessageWithParts[]) => void
+  /**
+   * 目录级 pending（授权/问题）回填。permissions/questions 为 null 表示该目录
+   * 抓取失败——调用方必须保留本地条目（review-permissions.md R-Perm-2 教训），
+   * 只把成功目录当权威。SSE 只在 asked 时推送一次，断线期间的请求全靠这里补齐。
+   */
+  onPendingSnapshot?: (
+    directory: string,
+    permissions: Record<string, unknown>[] | null,
+    questions: Record<string, unknown>[] | null,
+  ) => void
   onReconcileStateChange: (active: boolean) => void
   log?: (...args: unknown[]) => void
 }
@@ -74,25 +84,45 @@ export class Reconciler {
   private async reconcileOnce() {
     const client = this.d.client()
     if (!client) return
+    // 在途闸门：client() 变化（disconnect/切 profile/teardown）即丢弃本轮剩余
+    // 结果——防止旧连接的迟到快照写回已清空/新连接的状态
+    const stale = () => this.d.client() !== client
     const dirs = [...new Set(this.d.getOpenedDirectories())]
     await Promise.all(
       dirs.map(async (dir) => {
-        const sessions = await client.listSessions(dir)
-        this.d.onSessionsSnapshot(dir, sessions)
+        // 单目录失败跳过该目录快照（null），不让一个 reject 中断整个 reconcile——
+        // 否则 pending 回填阶段不执行，离线期间的授权/问题卡片要等下次重连才可见
+        const sessions = await client.listSessions(dir).catch(() => null)
+        if (stale()) return
+        if (sessions) this.d.onSessionsSnapshot(dir, sessions)
       }),
     )
+    if (this.d.onPendingSnapshot) {
+      // pending 拉取逐目录串行（预算克制：SSE 常驻 5 条后 REST 池仅 ~1 空闲，
+      // sessions 快照的并行是既有行为，新增请求不再放大扇出）；失败传 null
+      // （保留本地），与移动端 _backfillPermissions/_backfillQuestions 的
+      // failedDirs 语义一致；单目录失败不拖垮整个 reconcile
+      for (const dir of dirs) {
+        const permissions = await client.listPendingPermissions(dir).catch(() => null)
+        const questions = await client.listPendingQuestions(dir).catch(() => null)
+        if (stale()) return
+        this.d.onPendingSnapshot(dir, permissions, questions)
+      }
+    }
     // 状态快照逐目录容错：失败目录回传 null（保留旧值），不拖垮其余目录。
     // 并发受限 2（浏览器对同 host 连接上限 6，5 条 SSE 常驻后仅 ~1 空闲——
     // 无限扇出会让排队请求从分发起算超时、尾部饿死，见 run-limited 注释）
     const statusDirs = [...new Set(this.d.getStatusDirectories())]
     await runLimited(statusDirs, 2, async (dir) => {
       const statuses = await client.listSessionStatus(dir).catch(() => null)
+      if (stale()) return
       this.d.onStatusSnapshot(dir, statuses)
     })
     // 消息快照同样并发受限（3）：全量开 Tab 后 N 可达几十，Promise.all 无界
     // 扇出会挤占 ~1 个空闲槽导致整批超时（一损俱损）
     await runLimited(this.d.getActiveSessions(), 3, async ({ sessionID, directory }) => {
       const msgs = await client.listMessages(sessionID, directory, RECONCILE_WINDOW)
+      if (stale()) return
       this.d.onMessagesSnapshot(sessionID, msgs)
     })
   }

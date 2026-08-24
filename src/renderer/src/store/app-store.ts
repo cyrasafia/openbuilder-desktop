@@ -2,7 +2,7 @@
  * 应用状态层：连接 → 项目/工作区 → 会话 → 消息 → Tab。
  * 事件闸门、乐观消息、SSE 生命周期都在这里收敛。
  */
-import { RestClient } from "@shared/rest-client"
+import { RestClient, ApiError } from "@shared/rest-client"
 import { SseSubscriber, type SseStatus } from "@shared/sse-subscriber"
 import { Reconciler } from "@shared/reconciler"
 import { mergeSessionsSnapshot } from "@shared/session-merge"
@@ -23,6 +23,15 @@ import {
   type ChatEntry,
   type OptimisticMessage,
 } from "@shared/message-merge"
+import {
+  mergePendingSnapshot,
+  normalizePermission,
+  normalizeQuestion,
+  sessionDotState,
+  type PendingPermission,
+  type PendingQuestion,
+  type SessionDotState,
+} from "@shared/pending-requests"
 import type { ConnectionProfile } from "@shared/ipc"
 import "@shared/ipc-global"
 import {
@@ -102,6 +111,12 @@ export class AppStore {
   private statusSources = new Map<string, string>()
   // 斜杠命令注册表缓存（全局单份 per-server，目录隔离见 command-cache.ts）
   commandCache: CommandCacheState = initialCommandCache()
+  /**
+   * 待处理人机交互（store 级、跨 Tab 存活，与移动端 ServerStore 同构）：
+   * 权限以 sessionID 为 key（一会话最多一张在队首）、问题以问题 id 为 key（可多张排队）。
+   */
+  pendingPermissions = new Map<string, PendingPermission>()
+  pendingQuestions = new Map<string, PendingQuestion>()
 
   // ---- UI 状态 ----
   tabs: TabEntity[] = []
@@ -234,6 +249,8 @@ export class AppStore {
       this.restoreScopeTabs(this.scopeDirectory(), true)
     }
     this.startSse()
+    // 冷启动 pending 回填（离线期间产生的授权/问题请求）
+    void this.backfillPending()
     this.connectionState = "streaming"
     this.emit()
   }
@@ -260,6 +277,8 @@ export class AppStore {
     this.optimisticBySession.clear()
     this.sessionStatus.clear()
     this.statusSources.clear()
+    this.pendingPermissions.clear()
+    this.pendingQuestions.clear()
     this.tabs = []
     this.activeTabKey = null
     this.commandCache = initialCommandCache()
@@ -429,6 +448,37 @@ export class AppStore {
         this.closeTab(`chat:${info.id}`, { archive: false })
         this.cleanupSessionState(info.id)
         this.setSessionStatus(info.id, { type: "idle" })
+        this.dropPendingForSession(info.id)
+        break
+      }
+      // ---- 待处理人机交互（v1/v2 事件 + permission.updated 兼容兜底，同移动端）----
+      case "permission.asked":
+      case "permission.v2.asked":
+      case "permission.updated": {
+        const p = normalizePermission(ev.properties, directory)
+        if (p) this.pendingPermissions.set(p.sessionID, p)
+        break
+      }
+      case "permission.replied":
+      case "permission.v2.replied": {
+        // spec：id 在 requestID 字段（additionalProperties:false，无 permissionID）
+        const pid = String((ev.properties as { requestID?: unknown }).requestID ?? "")
+        for (const [sid, p] of [...this.pendingPermissions]) {
+          if (p.id === pid) this.pendingPermissions.delete(sid)
+        }
+        break
+      }
+      case "question.asked":
+      case "question.v2.asked": {
+        const q = normalizeQuestion(ev.properties, directory)
+        if (q) this.pendingQuestions.set(q.id, q)
+        break
+      }
+      case "question.replied":
+      case "question.v2.replied":
+      case "question.rejected":
+      case "question.v2.rejected": {
+        this.pendingQuestions.delete(String((ev.properties as { requestID?: unknown }).requestID ?? ""))
         break
       }
       case "session.status": {
@@ -736,6 +786,9 @@ export class AppStore {
       // 快照落地标记随目录一并卸载：重开项目时不因残留标记把"快照未落地"
       // 误判为"真实空目录"而写零 Tab 哨兵
       for (const d of dirs) this.snapshottedDirs.delete(d)
+      // 该项目的 pending（授权/问题）一并卸载：目录失去订阅，replied 事件收不到，
+      // 留着只会假亮；重开项目时 backfill 会按 server 权威重建
+      this.dropPendingForDirectories(dirs)
     }
     // 该项目的 chat Tab 随之关闭（仅关 Tab，不归档——归档只发生在显式关闭 Tab）
     for (const tab of [...this.tabs]) {
@@ -777,6 +830,8 @@ export class AppStore {
     this.resetFileTree()
     this.startSse()
     this.restoreScopeTabs(expectedDir, true, true)
+    // 新 scope 目录（worktree）的 pending 需要回填（此前无订阅通道）
+    void this.backfillPending()
     this.emit()
     // 再加载：持久化 + 本项目快照刷新（WT-1：worktree 会话只有逐目录快照可达）
     await this.persistProjectState()
@@ -792,6 +847,8 @@ export class AppStore {
     this.startSse()
     this.resetFileTree()
     this.restoreScopeTabs(this.scopeDirectory(), true)
+    // 新开项目目录的 pending（授权/问题）回填（SSE 只推 asked 一次）
+    void this.backfillPending()
   }
 
   // ============ Tab 记忆（design-tab-memory） ============
@@ -1040,6 +1097,7 @@ export class AppStore {
         delete this.tabMemory[key][directory]
         void window.desktop.storeSet("tabs.memory", this.tabMemory).catch(() => {})
       }
+      this.dropPendingForDirectories([directory])
       const ps = this.projectStateFor()
       if (ps.currentWorkspaceId === directory) {
         ps.currentWorkspaceId = null
@@ -1331,6 +1389,149 @@ export class AppStore {
     }
   }
 
+  // ============ 待处理人机交互（授权/问题） ============
+
+  /** 会话的问题卡（插入序排队） */
+  questionsForSession(sessionID: string): PendingQuestion[] {
+    return [...this.pendingQuestions.values()].filter((q) => q.sessionID === sessionID)
+  }
+
+  /** 会话待处理数（权限 ≤1 + 问题 N），指示器投影输入 */
+  pendingCountFor(sessionID: string): number {
+    return (this.pendingPermissions.has(sessionID) ? 1 : 0) + this.questionsForSession(sessionID).length
+  }
+
+  /**
+   * 会话状态点投影（design-agent-status-indicator：waiting > running > idle，
+   * waiting 显示时 busy 底层事实保留不覆写）。
+   */
+  dotStateFor(sessionID: string): SessionDotState {
+    return sessionDotState(this.pendingCountFor(sessionID), this.isSessionActive(sessionID))
+  }
+
+  /**
+   * 目录级 pending 回填：成功目录权威合并（失败目录跳过、保留本地）。
+   * 触发：冷启动 connect / 开项目 / 切工作区；SSE 重连走 reconciler 的
+   * onPendingSnapshot（同一合并函数）。
+   */
+  private async backfillPending() {
+    const client = this.client
+    if (!client) return
+    const dirs = this.subscriptionDirectories()
+    let changed = false
+    await runLimited(dirs, 3, async (dir) => {
+      // 两类别串行：每任务在途 ≤1 条，并发上限 3（预算克制，与 reconciler 的
+      // 逐目录串行同答案——SSE 常驻 5 条后 REST 池仅 ~1 空闲）
+      const permissions = await client.listPendingPermissions(dir).catch(() => null)
+      const questions = await client.listPendingQuestions(dir).catch(() => null)
+      // 在途闸门（同 applySessionsSnapshot）：disconnect/切 profile 后丢弃旧连接的
+      // 迟到结果，防止写回已清空的 map；目录已出订阅集合（关项目/删 worktree）同理
+      if (this.client !== client || !this.subscriptionDirectories().includes(dir)) return
+      // 各类别独立合并；null = 失败保留本地（同 reconcile 路径）
+      changed =
+        mergePendingSnapshot(
+          this.pendingPermissions,
+          this.pendingQuestions,
+          dir,
+          permissions,
+          questions,
+        ) || changed
+    })
+    if (changed) this.emit()
+  }
+
+  /** 卸载会话的全部 pending（会话删除时；归档不卸载——server 侧仍待处理，同移动端） */
+  private dropPendingForSession(sessionID: string) {
+    this.pendingPermissions.delete(sessionID)
+    for (const q of this.questionsForSession(sessionID)) this.pendingQuestions.delete(q.id)
+  }
+
+  /** 卸载一组目录的 pending（关项目/删 worktree：目录失去订阅通道） */
+  private dropPendingForDirectories(dirs: string[]) {
+    const set = new Set(dirs)
+    for (const [sid, p] of [...this.pendingPermissions]) {
+      if (set.has(p.directory)) this.pendingPermissions.delete(sid)
+    }
+    for (const [qid, q] of [...this.pendingQuestions]) {
+      if (set.has(q.directory)) this.pendingQuestions.delete(qid)
+    }
+  }
+
+  /**
+   * 回复权限卡。200 = 成功；404 = 已被其他端处理（静默移除，同移动端决策 3）；
+   * 其他错误保留卡片由 UI 提示。
+   */
+  async respondPermission(
+    sessionID: string,
+    response: "once" | "always" | "reject",
+  ): Promise<{ ok: boolean; error?: string }> {
+    const client = this.client
+    const p = this.pendingPermissions.get(sessionID)
+    if (!client || !p) return { ok: false, error: "no pending permission" }
+    try {
+      await client.respondPermission(sessionID, p.id, p.directory, response)
+      // 按 id 守卫移除（移动端 removeWhere(p.id == pid) 教训）：in-flight 期间他端
+      // 应答 + agent 立即发出同会话新卡会落入同 key，无条件 delete 会误删新卡
+      if (this.pendingPermissions.get(sessionID)?.id === p.id) {
+        this.pendingPermissions.delete(sessionID)
+      }
+      this.emit()
+      return { ok: true }
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) {
+        if (this.pendingPermissions.get(sessionID)?.id === p.id) {
+          this.pendingPermissions.delete(sessionID)
+        }
+        this.emit()
+        return { ok: true }
+      }
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  }
+
+  /** 回答问题卡（answers 按子问题顺序，每项为选中 label 数组）；404 语义同上 */
+  async replyQuestion(
+    questionID: string,
+    answers: string[][],
+  ): Promise<{ ok: boolean; error?: string }> {
+    const client = this.client
+    const q = this.pendingQuestions.get(questionID)
+    if (!client || !q) return { ok: false, error: "no pending question" }
+    try {
+      await client.replyQuestion(questionID, q.directory, answers)
+      this.pendingQuestions.delete(questionID)
+      this.emit()
+      return { ok: true }
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) {
+        this.pendingQuestions.delete(questionID)
+        this.emit()
+        return { ok: true }
+      }
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  }
+
+  /** 拒绝问题卡；404 语义同上 */
+  async rejectQuestion(questionID: string): Promise<{ ok: boolean; error?: string }> {
+    const client = this.client
+    const q = this.pendingQuestions.get(questionID)
+    if (!client || !q) return { ok: false, error: "no pending question" }
+    try {
+      await client.rejectQuestion(questionID, q.directory)
+      this.pendingQuestions.delete(questionID)
+      this.emit()
+      return { ok: true }
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) {
+        this.pendingQuestions.delete(questionID)
+        this.emit()
+        return { ok: true }
+      }
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  }
+
   // ============ Tab ============
 
   /** 打开 chat Tab = 取消归档（与"关闭 Tab = 归档"对称） */
@@ -1544,6 +1745,13 @@ export class AppStore {
         if (inferIdleFromMessages([...merged.values()].sort(sortMessages).map((m) => m.info))) {
           this.setSessionStatus(sessionID, { type: "idle" })
         }
+      },
+      onPendingSnapshot: (dir, permissions, questions) => {
+        // 在途闸门：连接已拆或目录已出订阅集合（in-flight reconcile 跨越了 teardown/
+        // 关项目）时丢弃，防止写回已清空的 map
+        if (!this.client || !this.subscriptionDirectories().includes(dir)) return
+        // 各类别独立合并；null = 该目录该类别抓取失败，保留本地
+        mergePendingSnapshot(this.pendingPermissions, this.pendingQuestions, dir, permissions, questions)
       },
       onReconcileStateChange: (active) => {
         this.reconciling = active

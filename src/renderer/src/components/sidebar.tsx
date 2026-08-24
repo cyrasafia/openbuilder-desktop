@@ -198,29 +198,39 @@ function ProjectTree() {
 
 /**
  * 会话状态指示器（项目/工作区行右侧）：该作用域未归档、非 subagent 会话的状态。
- * ≤4 个逐会话状态点（busy/retry = 运行色光晕呼吸，消费 sessionStatus 单一事实源）；
- * >4 个收起为数字（任一进行中时前置运行点）。靠右浮层覆盖操作按钮，行 hover 时隐藏。
+ * 状态投影同移动端 design-agent-status-indicator：waiting（待输入，琥珀静态）优先于
+ * running（busy/retry = 运行色光晕呼吸，消费 dotStateFor——sessionStatus 单一事实源）。
+ * ≤4 个逐会话状态点；>4 个收起为数字（任一 waiting/进行中时前置状态点，waiting 优先）。
+ * 靠右浮层覆盖操作按钮，行 hover 时隐藏。
  */
 function SessionIndicator({ sessions }: { sessions: Session[] }) {
   const store = useStore()
   const { t } = useI18n()
   if (sessions.length === 0) return null
-  const busyCount = sessions.reduce((n, s) => n + (store.isSessionActive(s.id) ? 1 : 0), 0)
+  let busyCount = 0
+  let waitingCount = 0
+  const dots = sessions.map((s) => store.dotStateFor(s.id))
+  for (const d of dots) {
+    if (d === "waiting") waitingCount++
+    else if (d === "running") busyCount++
+  }
   const title = t.sessionIndicatorTitle
     .replace("{count}", String(sessions.length))
     .replace("{busy}", String(busyCount))
+    .replace("{waiting}", String(waitingCount))
   return (
     <span className="session-indicator" title={title}>
       {sessions.length > 4 ? (
         <>
-          {busyCount > 0 && <span className="status-dot session-running" />}
+          {waitingCount > 0 && <span className="status-dot waiting" />}
+          {waitingCount === 0 && busyCount > 0 && <span className="status-dot session-running" />}
           <span className="session-count">{sessions.length}</span>
         </>
       ) : (
-        sessions.map((s) => (
+        sessions.map((s, i) => (
           <span
             key={s.id}
-            className={"status-dot" + (store.isSessionActive(s.id) ? " session-running" : " idle")}
+            className={"status-dot " + (dots[i] === "running" ? "session-running" : dots[i])}
           />
         ))
       )}
