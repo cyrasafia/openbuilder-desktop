@@ -307,7 +307,8 @@
   white-space: nowrap;
 }
 
-.tab-close {
+/* 提特异性（0,2,0）压过后方通用 .icon-btn（0,1,0），宽度/高度声明才生效 */
+.icon-btn.tab-close {
   width: 18px;
   height: 18px;
   line-height: 1;
@@ -315,13 +316,16 @@
   flex-shrink: 0;
 }
 
-.tab-close:hover {
+.icon-btn.tab-close:hover {
   background: var(--surface-container-highest);
 }
 
-.tabbar-new {
+.icon-btn.tabbar-new {
   width: 32px;
   flex-shrink: 0;
+  /* tabbar 是 align-items:stretch（Tab 撑满整高）；固定高的按钮 stretch 退化为
+     顶对齐，需显式居中 */
+  align-self: center;
 }
 
 .workspace-body {
