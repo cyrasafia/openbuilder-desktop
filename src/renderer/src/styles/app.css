@@ -485,11 +485,22 @@
   overflow: hidden;
 }
 
+/* 滚动层与限宽层分离：滚动层必须全宽——若与 max-width 居中合用同一元素，
+   窗口宽于限宽时两侧空白命中的是 .chat-view（overflow:hidden 不可滚），
+   祖先链不含滚动容器，滚轮事件被丢弃（空白处滚不动）。 */
 .message-list {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 16px 24px;
+  /* 滚动但不显示滚动条 */
+  scrollbar-width: none;
+}
+.message-list::-webkit-scrollbar {
+  display: none;
+}
+
+/* 限宽居中层：消息区动态宽度 [600, 800]px（不含 padding），相对工作区居中 */
+.message-list-inner {
   display: flex;
   flex-direction: column;
   /* safe：内容超出容器时退回 start 对齐。裸 flex-end 的溢出发生在 start 侧（上方），
@@ -497,15 +508,12 @@
      scrollHeight===clientHeight、scrollTop 恒 0：列表完全不可滚、历史消息被裁掉不可达 */
   justify-content: safe flex-end;
   gap: 16px;
-  width: 100%;
+  /* 内容不足视口高度时声明式贴底：占满滚动层可见高度，flex-end 才有下压空间 */
+  min-height: 100%;
+  padding: 16px 24px;
   max-width: calc(var(--chat-max) + 48px); /* content ≤800 + padding 24×2 */
   min-width: calc(var(--chat-min) + 48px);
   margin: 0 auto;
-  /* 滚动但不显示滚动条 */
-  scrollbar-width: none;
-}
-.message-list::-webkit-scrollbar {
-  display: none;
 }
 
 .msg.user {

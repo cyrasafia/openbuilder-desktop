@@ -296,12 +296,15 @@ function ChatView({ sessionID }: { sessionID: string }) {
 
   return (
     <div className="chat-view">
+      {/* 全宽滚动层：空白处滚轮可滚（限宽在内层，见 app.css .message-list 注释） */}
       <div className="message-list scroll" ref={scrollRef} onScroll={onScroll} onWheel={onWheel}>
-        {entries.map((entry) => (
-          <MessageBlock key={entry.kind === "optimistic" ? entry.data.localId : entry.data.info.id} entry={entry} />
-        ))}
-        {/* 常驻固定高槽位（INV-1）：显隐只动槽内内容，消息流总高度不变（design-typing-indicator §3） */}
-        <TypingSlot status={status} />
+        <div className="message-list-inner">
+          {entries.map((entry) => (
+            <MessageBlock key={entry.kind === "optimistic" ? entry.data.localId : entry.data.info.id} entry={entry} />
+          ))}
+          {/* 常驻固定高槽位（INV-1）：显隐只动槽内内容，消息流总高度不变（design-typing-indicator §3） */}
+          <TypingSlot status={status} />
+        </div>
       </div>
       <div className="composer">
         {/* 覆盖层：锚在 composer 上沿悬浮于消息流（不占布局、不顶起消息） */}

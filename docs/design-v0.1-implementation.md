@@ -252,6 +252,16 @@ v0.2 上翻加载方向（预留）：保持正序 DOM + scroll-anchor 锚定（
 
 改动：`app.css`（`.message-list` safe flex-end + 注释）、`workspace.tsx`（grew 条件）。typecheck 双侧 + vitest 60/60 全绿。
 
+## 7.11 消息两侧空白处滚轮失效——滚动层与限宽层分离（2026-08-24）
+
+现象：窗口宽于消息列限宽（848px）时，鼠标在消息**左右两侧空白处**滚轮完全无效；悬停在消息内容上滚动正常。
+
+根因：`.message-list` 同时承担**滚动容器**（overflow-y:auto）与**限宽居中**（max-width:848px + margin:0 auto）两个职责。窗口更宽时该元素水平居中，两侧空白处的命中元素是 `.chat-view`（overflow:hidden）——浏览器滚轮滚动只沿**命中元素的祖先链**找可滚动容器，`.chat-view` → `.workspace-body` → `.workspace` 全是 overflow:hidden 不可滚，而 `.message-list` 是 `.chat-view` 的**子元素**、不在空白处的祖先链上，找不到可滚容器，事件被丢弃。
+
+方案：职责分离为两层——`.message-list` 只做全宽滚动容器（flex:1 + overflow-y:auto，scrollRef/onWheel/onScroll 不动）；新增内层 `.message-list-inner` 承接限宽居中（max/min-width + margin:0 auto + padding + gap）与 §7.10 的 `safe flex-end`。贴底语义经 `min-height:100%` 保留：内容不足时内层占满滚动层可见高度，flex-end 才有下压空间（高度 auto 的内层 flex-end 是 no-op，消息会贴顶）。§7.10 的溢出可滚性不受影响（滚动容器为普通 block，内层高度完整计入 scrollHeight）。
+
+改动：`app.css`（两层拆分 + 注释）、`workspace.tsx`（MessageBlock/TypingSlot 包入 `.message-list-inner`）。typecheck 双侧 + vitest 63/63 全绿。
+
 ## 8. 已知限制（v0.1 接受）
 
 - 消息历史仅拉最新 100 条窗口，更早消息无上翻加载（spec 范围外，v0.2 分段加载；方向见 §7.8——正序 DOM + scroll-anchor，不反转渲染顺序）
