@@ -855,6 +855,7 @@
 
 /* ---------- 输入区 ---------- */
 .composer {
+  position: relative; /* 斜杠命令菜单槽位的定位锚点 */
   border-top: 1px solid var(--outline-variant);
   padding: 8px 24px;
   display: flex;
@@ -896,21 +897,26 @@
 }
 
 /* ---------- 斜杠命令菜单 ---------- */
+/* 覆盖层：槽位锚在 composer 上沿（absolute + bottom:100%），悬浮于消息流之上——
+   显隐不占布局、零位移（不把消息顶上去）；槽位随 composer 盒子拉伸（left/right:0），
+   经左右 24px padding 内缩后卡片与 textarea / 消息内容列边缘对齐 */
+.command-hints-slot {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  padding: 0 24px 4px;
+}
+
 .command-hints {
-  flex-shrink: 0;
-  max-height: 260px;
+  /* 矮窗口封顶：聊天区不足 264px 时顶部会被 .chat-view(overflow:hidden) 裁掉且不可滚动恢复 */
+  max-height: min(260px, 40vh);
   overflow-y: auto;
   background: var(--surface-container-high);
   border: 1px solid var(--outline-variant);
   border-radius: var(--radius-chip);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
   padding: 4px;
-  /* 与 composer 同宽约束（--chat-max/--chat-min 在 .chat-view 定义） */
-  width: 100%;
-  max-width: calc(var(--chat-max) + 48px);
-  min-width: calc(var(--chat-min) + 48px);
-  margin: 0 auto;
-  box-sizing: border-box;
 }
 
 .command-row {

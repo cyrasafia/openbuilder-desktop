@@ -303,15 +303,16 @@ function ChatView({ sessionID }: { sessionID: string }) {
         {/* 常驻固定高槽位（INV-1）：显隐只动槽内内容，消息流总高度不变（design-typing-indicator §3） */}
         <TypingSlot status={status} />
       </div>
-      {cmdMode && (
-        <CommandHints
-          matches={matches}
-          loading={store.commandsRefreshing && commands.length === 0}
-          selIndex={sel}
-          onPick={pickCommand}
-        />
-      )}
       <div className="composer">
+        {/* 覆盖层：锚在 composer 上沿悬浮于消息流（不占布局、不顶起消息） */}
+        {cmdMode && (
+          <CommandHints
+            matches={matches}
+            loading={store.commandsRefreshing && commands.length === 0}
+            selIndex={sel}
+            onPick={pickCommand}
+          />
+        )}
         <textarea
           value={draft}
           placeholder={t.inputPlaceholder}
@@ -396,29 +397,33 @@ function CommandHints({
     // 仅加载中提示（无匹配时静默，同 openbuilder _CommandHints）
     if (!loading) return null
     return (
-      <div className="command-hints">
-        <div className="command-empty">{t.commandListLoading}</div>
+      <div className="command-hints-slot">
+        <div className="command-hints">
+          <div className="command-empty">{t.commandListLoading}</div>
+        </div>
       </div>
     )
   }
 
   return (
-    <div className="command-hints scroll" ref={listRef}>
-      {matches.map((c, i) => (
-        <button
-          key={c.name}
-          className={"command-row" + (i === selIndex ? " selected" : "")}
-          // mousedown：先于 textarea blur，补全后焦点留在输入框
-          onMouseDown={(e) => {
-            e.preventDefault()
-            onPick(c)
-          }}
-        >
-          <span className="command-name mono">/{c.name}</span>
-          {c.description && <span className="command-desc">{c.description}</span>}
-        </button>
-      ))}
-      <div className="command-keys mono">{t.commandHintKeys}</div>
+    <div className="command-hints-slot">
+      <div className="command-hints scroll" ref={listRef}>
+        {matches.map((c, i) => (
+          <button
+            key={c.name}
+            className={"command-row" + (i === selIndex ? " selected" : "")}
+            // mousedown：先于 textarea blur，补全后焦点留在输入框
+            onMouseDown={(e) => {
+              e.preventDefault()
+              onPick(c)
+            }}
+          >
+            <span className="command-name mono">/{c.name}</span>
+            {c.description && <span className="command-desc">{c.description}</span>}
+          </button>
+        ))}
+        <div className="command-keys mono">{t.commandHintKeys}</div>
+      </div>
     </div>
   )
 }
