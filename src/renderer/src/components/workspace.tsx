@@ -203,6 +203,15 @@ function ChatView({ sessionID }: { sessionID: string }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const pinnedToBottom = useRef(true)
   const lastEntryCount = useRef(0)
+  // 上滚分页视口锚定（design-message-history-pagination §4.3）：触发时记录
+  // scrollHeight/scrollTop + 头部基准（最旧消息 id）；layout effect 只在**头部
+  // 真实增长**（更早页落地）时消费补差——loading 指示行出现、底部流式增长等
+  // 中间渲染不消费，避免 anchor 被提前花掉或按头部公式反向误补（review P1）
+  const anchorRef = useRef<{ height: number; top: number; headId: string | null } | null>(null)
+
+  /** entries 头部基准：最旧 message id（乐观恒排尾部，不构成头部） */
+  const headIdOf = (list: ChatEntry[]): string | null =>
+    list[0]?.kind === "message" ? list[0].data.info.id : null
 
   // 激活即重拉（design-layout §5：切回 Tab 时重拉；快照与 SSE 状态合并不丢数据）
   useEffect(() => {
@@ -216,6 +225,17 @@ function ChatView({ sessionID }: { sessionID: string }) {
     if (el) el.scrollTo({ top: el.scrollHeight, behavior })
   }
 
+  /**
+   * 上滚分页触发（store 侧守卫为权威：in-flight/exhausted/error 语义全在
+   * loadEarlierMessages，UI 不重复判定——无状态 = 种子路径，挂载加载失败的
+   * 唯一重试入口，review P2）
+   */
+  const maybeLoadEarlier = () => {
+    const el = scrollRef.current
+    if (el) anchorRef.current = { height: el.scrollHeight, top: el.scrollTop, headId: headIdOf(entries) }
+    void store.loadEarlierMessages(sessionID)
+  }
+
   const onScroll = () => {
     const el = scrollRef.current
     if (!el) return
@@ -224,6 +244,9 @@ function ChatView({ sessionID }: { sessionID: string }) {
     // 流式更新会被误判"用户上滚"而停止跟随，且 smooth 目标是过期 scrollHeight、
     // 动画终点仍距底 >40px，没有任何事件把 pinned 置回 → 跟随死锁
     if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) pinnedToBottom.current = true
+    // 触顶翻页：pinned 期间不触发（发送后 smooth 回底动画起点可能距顶很近，
+    // 会误触一次分页 + 锚定补差与回底动画互相拉扯）
+    if (!pinnedToBottom.current && el.scrollTop <= 64) maybeLoadEarlier()
   }
 
   // 解除跟随只认用户主动上滚（wheel deltaY<0）。滚动条已隐藏（app.css），
@@ -241,17 +264,37 @@ function ChatView({ sessionID }: { sessionID: string }) {
   useLayoutEffect(() => {
     const el = scrollRef.current
     if (!el) return
-    if (!pinnedToBottom.current) {
-      lastEntryCount.current = entries.length
-      return
+    const anchor = anchorRef.current
+    if (anchor && !pinnedToBottom.current) {
+      const head = headIdOf(entries)
+      if (head !== anchor.headId) {
+        anchorRef.current = null
+        if (entries.length > lastEntryCount.current) {
+          // 头部真实增长（分页/种子窗口落地——两个来源，见设计 §4.3）：
+          // prepend 增量按 scrollHeight 差补回，视口内容不动；随后**重新武装**
+          // anchor——种子路径同调用内窗口+before 两次落地，第二次 prepend 也要补偿
+          el.scrollTop = el.scrollHeight - anchor.height + anchor.top
+          anchorRef.current = { height: el.scrollHeight, top: el.scrollTop, headId: head }
+        }
+        // 头部 shrink（远端 message.removed 删了最旧消息）：陈旧 anchor 作废丢弃
+      }
+    } else if (pinnedToBottom.current) {
+      // 已回底：任何 armed anchor 过时作废（后续 prepend 由贴底逻辑接管）
+      anchorRef.current = null
+      // 0→N（含首次加载与切回 Tab 重拉快照）用 auto 瞬时定位——溢出态初始 scrollTop=0
+      // 在顶部，auto 在绘制前同步跳底，用户看不到顶部帧；smooth 则是可见的整屏滚动
+      // 动画（§7.8 症状回归）。lastEntryCount>0 排除 0→N，之后新条目（N→N+1）才
+      // smooth 跟随，同条目流式更新（N→N）即时贴底。
+      const grew = lastEntryCount.current > 0 && entries.length > lastEntryCount.current
+      scrollToBottom(grew ? "smooth" : "auto")
     }
-    // 0→N（含首次加载与切回 Tab 重拉快照）用 auto 瞬时定位——溢出态初始 scrollTop=0
-    // 在顶部，auto 在绘制前同步跳底，用户看不到顶部帧；smooth 则是可见的整屏滚动
-    // 动画（§7.8 症状回归）。lastEntryCount>0 排除 0→N，之后新条目（N→N+1）才
-    // smooth 跟随，同条目流式更新（N→N）即时贴底。
-    const grew = lastEntryCount.current > 0 && entries.length > lastEntryCount.current
-    scrollToBottom(grew ? "smooth" : "auto")
     lastEntryCount.current = entries.length
+    // 链式加载：内容不足以溢出视口（用户无从滚动）且还能加载更早历史 → 再拉一页
+    // （失败停链——error 守卫在 canLoadEarlier 内，design §4.3）
+    if (el.scrollHeight <= el.clientHeight && store.canLoadEarlier(sessionID)) {
+      maybeLoadEarlier()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entries])
 
   const send = async () => {
@@ -329,6 +372,7 @@ function ChatView({ sessionID }: { sessionID: string }) {
           实证见 2026-08-24 会话），移出后键盘焦点直达输入框/Tab 条 */}
       <div className="message-list scroll" ref={scrollRef} tabIndex={-1} onScroll={onScroll} onWheel={onWheel}>
         <div className="message-list-inner">
+          <HistoryRow sessionID={sessionID} onRetry={maybeLoadEarlier} />
           {entries.map((entry) => (
             <MessageBlock key={entry.kind === "optimistic" ? entry.data.localId : entry.data.info.id} entry={entry} />
           ))}
@@ -735,6 +779,31 @@ function QuestionCard({
   )
 }
 
+/**
+ * 上滚翻页顶部指示行（design-message-history-pagination §4.3）：
+ * loading → spinner + 文案；error → 可点击重试（继续上滑同样触发）；穷尽不渲染。
+ */
+function HistoryRow({ sessionID, onRetry }: { sessionID: string; onRetry: () => void }) {
+  const store = useStore()
+  const { t } = useI18n()
+  const hs = store.sessionPages.get(sessionID)
+  if (hs?.loading) {
+    return (
+      <div className="history-row" role="status">
+        <LoaderCircle className="history-spinner" size={14} aria-hidden />
+        <span>{t.loadingEarlier}</span>
+      </div>
+    )
+  }
+  if (hs && !hs.loading && hs.error) {
+    return (
+      <button type="button" className="history-row error" onClick={onRetry}>
+        {t.loadEarlierFailed}
+      </button>
+    )
+  }
+  return null
+}
 function MessageBlock({ entry }: { entry: ChatEntry }) {
   const { t } = useI18n()
   const store = useStore()

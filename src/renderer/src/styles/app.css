@@ -773,6 +773,35 @@
   }
 }
 
+/* ---------- 上滚翻页指示行（design-message-history-pagination §4.4） ----------
+ * 穷尽态不渲染（极简）；loading/error 均为小字居中，不参与布局动画 */
+.history-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 20px;
+  font-size: var(--text-xs);
+  color: var(--on-surface-variant);
+}
+
+.history-spinner {
+  color: var(--outline);
+  flex-shrink: 0;
+  animation: typing-spin 1s linear infinite;
+}
+
+/* 失败重试：可点击（继续上滑同样触发）。全局 button 重置已含
+ * font/border/background/cursor（tokens.css），此处只补宽度与反馈色 */
+.history-row.error {
+  width: 100%;
+}
+
+.history-row.error:hover,
+.history-row.error:focus-visible {
+  color: var(--on-surface);
+}
+
 /* ---------- markdown（.md = streamdown 根；令牌语义见 DESIGN.md appColors） ---------- */
 .md {
   display: flex;

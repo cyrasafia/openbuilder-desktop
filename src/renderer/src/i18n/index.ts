@@ -36,6 +36,9 @@ const zh = {
   copy: "复制",
   copied: "已复制",
   retry: "重试",
+  // 上滚翻页（design-message-history-pagination）
+  loadingEarlier: "加载更早消息",
+  loadEarlierFailed: "加载失败，点击重试",
   // 输入中提示（design-typing-indicator §5；文案对齐移动端 ARB 同场景）
   generating: "正在生成…",
   retrying: "重试中",
@@ -156,6 +159,8 @@ const en: typeof zh = {
   copy: "Copy",
   copied: "Copied",
   retry: "Retry",
+  loadingEarlier: "Loading earlier messages",
+  loadEarlierFailed: "Failed to load, click to retry",
   generating: "Generating…",
   retrying: "Retrying",
   retryingMessage: "Retrying: {message}",

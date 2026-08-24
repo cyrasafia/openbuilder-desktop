@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { AppStore } from "./app-store"
 import { SseSubscriber } from "@shared/sse-subscriber"
 import type { ModelCatalog } from "@shared/model-catalog"
-import type { ModelRef, Project, Session } from "@shared/api-types"
+import type { MessageWithParts, ModelRef, Project, Session } from "@shared/api-types"
 
 const ROOT = "/repo"
 const WT1 = "/repo/.git/opencode-worktrees/wt1"
@@ -383,6 +383,359 @@ describe("busy 补充发送（design-supplement-send）", () => {
     const res = await store.sendPrompt("s1", "补充")
     expect(res.ok).toBe(true)
     expect(store.statusOf("s1")).toEqual({ type: "retry", attempt: 2, message: "rate limited" })
+  })
+})
+
+describe("消息历史上滚翻页（design-message-history-pagination）", () => {
+  function msg(id: string, created: number) {
+    return { info: { id, sessionID: "s1", role: "user", time: { created } }, parts: [] }
+  }
+
+  /** 顺序页夹具：每次 listMessagesPage 调用按序消费；耗尽后复用最后一页 */
+  function seedPageClient(pages: Array<{ entries: ReturnType<typeof msg>[]; nextCursor: string | null }>) {
+    const calls: Array<{ limit?: number; before?: string }> = []
+    return {
+      calls,
+      client: {
+        listMessagesPage: async (
+          _sid: string,
+          _dir: string,
+          opts: { limit?: number; before?: string } = {},
+        ) => {
+          calls.push(opts)
+          return pages[Math.min(calls.length - 1, pages.length - 1)]
+        },
+      },
+    }
+  }
+
+  function seedSession() {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    return s1
+  }
+
+  it("窗口加载种子 cursor；上滚分页 before 推进；无 cursor 头判穷尽后不再请求", async () => {
+    seedSession()
+    const { client, calls } = seedPageClient([
+      { entries: [msg("m8", 8), msg("m9", 9), msg("m10", 10)], nextCursor: "c8" },
+      { entries: [msg("m5", 5), msg("m6", 6), msg("m7", 7)], nextCursor: "c5" },
+      { entries: [msg("m1", 1)], nextCursor: null },
+      { entries: [], nextCursor: null },
+    ])
+    ;(store as unknown as { client: unknown }).client = client
+
+    await store.loadSessionMessages("s1", ROOT)
+    expect(store.sessionPages.get("s1")).toEqual({
+      nextCursor: "c8",
+      exhausted: false,
+      loading: false,
+      error: false,
+    })
+
+    await store.loadEarlierMessages("s1")
+    expect(calls[1]).toEqual({ limit: 100, before: "c8" })
+    expect(store.sessionPages.get("s1")?.nextCursor).toBe("c5")
+    expect(store.chatEntries("s1").map((e) => (e.kind === "message" ? e.data.info.id : e.kind))).toEqual([
+      "m5",
+      "m6",
+      "m7",
+      "m8",
+      "m9",
+      "m10",
+    ])
+
+    await store.loadEarlierMessages("s1")
+    expect(store.sessionPages.get("s1")?.exhausted).toBe(true)
+    expect(store.sessionPages.get("s1")?.nextCursor).toBeNull()
+    expect(store.chatEntries("s1")).toHaveLength(7)
+
+    // 穷尽后 no-op：不产生新请求
+    await store.loadEarlierMessages("s1")
+    expect(calls).toHaveLength(3)
+  })
+
+  it("无状态种子路径：loadEarlierMessages 先窗口加载种子再分页；种子失败置 error 可重试", async () => {
+    seedSession()
+    let fail = false
+    const calls: Array<{ limit?: number; before?: string }> = []
+    ;(store as unknown as { client: unknown }).client = {
+      listMessagesPage: async (
+        _sid: string,
+        _dir: string,
+        opts: { limit: number; before?: string },
+      ) => {
+        calls.push(opts)
+        if (fail) throw new Error("boom")
+        if (opts.before) return { entries: [msg("m1", 1)], nextCursor: null }
+        return { entries: [msg("m8", 8)], nextCursor: "c8" }
+      },
+    }
+
+    // 种子失败（模拟挂载窗口加载失败后的上滚重试）
+    fail = true
+    await store.loadEarlierMessages("s1")
+    expect(store.sessionPages.get("s1")).toEqual({
+      nextCursor: null,
+      exhausted: false,
+      loading: false,
+      error: true,
+    })
+
+    // 重试：种子成功 → 同一调用继续分页（before 落地）
+    fail = false
+    await store.loadEarlierMessages("s1")
+    expect(calls).toEqual([
+      { limit: 100 }, // 失败的种子
+      { limit: 100 }, // 重试种子
+      { limit: 100, before: "c8" }, // 同调用内继续分页
+    ])
+    expect(store.sessionPages.get("s1")).toEqual({
+      nextCursor: null,
+      exhausted: true,
+      loading: false,
+      error: false,
+    })
+    expect(store.chatEntries("s1")).toHaveLength(2)
+  })
+
+  it("挂载窗口加载失败置 error 种子：空会话的 error 行可达（无滚动也可重试）", async () => {
+    seedSession()
+    ;(store as unknown as { client: unknown }).client = {
+      listMessagesPage: async () => {
+        throw new Error("boom")
+      },
+    }
+    await store.loadSessionMessages("s1", ROOT)
+    // 失败种子：cursor null + 未穷尽 = 可重试态
+    expect(store.sessionPages.get("s1")).toEqual({
+      nextCursor: null,
+      exhausted: false,
+      loading: false,
+      error: true,
+    })
+
+    // 网络恢复后点 error 行（= loadEarlierMessages 种子重试）：成功后正常分页
+    const d = deferred<{ entries: ReturnType<typeof msg>[]; nextCursor: string | null }>()
+    ;(store as unknown as { client: unknown }).client = {
+      listMessagesPage: async (_sid: string, _dir: string, opts: { before?: string }) => {
+        if (opts.before) return d.promise
+        return { entries: [msg("m8", 8)], nextCursor: "c8" }
+      },
+    }
+    const p = store.loadEarlierMessages("s1")
+    expect(store.sessionPages.get("s1")?.loading).toBe(true)
+    d.resolve({ entries: [msg("m1", 1)], nextCursor: null })
+    await p
+    expect(store.sessionPages.get("s1")).toEqual({
+      nextCursor: null,
+      exhausted: true,
+      loading: false,
+      error: false,
+    })
+    expect(store.chatEntries("s1")).toHaveLength(2)
+  })
+
+  it("error 种子不残留：重激活成功覆盖（review R3-P2 路径 A）", async () => {
+    seedSession()
+    ;(store as unknown as { client: unknown }).client = {
+      listMessagesPage: async () => {
+        throw new Error("boom")
+      },
+    }
+    await store.loadSessionMessages("s1", ROOT)
+    expect(store.sessionPages.get("s1")?.error).toBe(true)
+
+    // 切回 Tab 重挂载重拉成功 → error 种子被覆盖为正常种子（不残留失败行）
+    ;(store as unknown as { client: unknown }).client = {
+      listMessagesPage: async () => ({ entries: [msg("m8", 8)], nextCursor: "c8" }),
+    }
+    await store.loadSessionMessages("s1", ROOT)
+    expect(store.sessionPages.get("s1")).toEqual({
+      nextCursor: "c8",
+      exhausted: false,
+      loading: false,
+      error: false,
+    })
+  })
+
+  it("error 种子不残留：对账回填清除（review R3-P2 路径 B）", async () => {
+    seedSession()
+    ;(store as unknown as { client: unknown }).client = {
+      listMessagesPage: async () => {
+        throw new Error("boom")
+      },
+    }
+    await store.loadSessionMessages("s1", ROOT)
+    expect(store.sessionPages.get("s1")?.error).toBe(true)
+
+    // SSE 重连对账回填（直驱 mountReconciler 的真实 onMessagesSnapshot 挂点）
+    store.mountReconciler()
+    const deps = (
+      (store as unknown as { reconciler: { d: unknown } }).reconciler as {
+        d: { onMessagesSnapshot: (sid: string, msgs: ReturnType<typeof msg>[]) => void }
+      }
+    ).d
+    deps.onMessagesSnapshot("s1", [msg("m8", 8)])
+    expect(store.sessionPages.has("s1")).toBe(false)
+    expect(store.chatEntries("s1")).toHaveLength(1)
+  })
+
+  it("分页失败置 error 不穷尽；重试成功清 error 并推进", async () => {
+    seedSession()
+    let fail = false
+    const calls: Array<{ limit?: number; before?: string }> = []
+    ;(store as unknown as { client: unknown }).client = {
+      listMessagesPage: async (
+        _sid: string,
+        _dir: string,
+        opts: { limit: number; before?: string },
+      ) => {
+        calls.push(opts)
+        if (fail) throw new Error("boom")
+        if (opts.before) return { entries: [msg("m1", 1)], nextCursor: null }
+        return { entries: [msg("m8", 8)], nextCursor: "c8" }
+      },
+    }
+
+    await store.loadSessionMessages("s1", ROOT)
+    fail = true
+    await store.loadEarlierMessages("s1")
+    expect(store.sessionPages.get("s1")).toEqual({
+      nextCursor: "c8",
+      exhausted: false,
+      loading: false,
+      error: true,
+    })
+    expect(store.canLoadEarlier("s1")).toBe(false)
+
+    fail = false
+    await store.loadEarlierMessages("s1")
+    expect(store.sessionPages.get("s1")).toEqual({
+      nextCursor: null,
+      exhausted: true,
+      loading: false,
+      error: false,
+    })
+    expect(store.chatEntries("s1")).toHaveLength(2)
+  })
+
+  it("in-flight 去重：分页在途时再次触发不重复请求", async () => {
+    seedSession()
+    const calls: Array<{ limit?: number; before?: string }> = []
+    const d = deferred<{ entries: ReturnType<typeof msg>[]; nextCursor: string | null }>()
+    ;(store as unknown as { client: unknown }).client = {
+      listMessagesPage: async (
+        _sid: string,
+        _dir: string,
+        opts: { limit: number; before?: string },
+      ) => {
+        calls.push(opts)
+        if (opts.before) return d.promise
+        return { entries: [msg("m8", 8)], nextCursor: "c8" }
+      },
+    }
+
+    await store.loadSessionMessages("s1", ROOT)
+    const p1 = store.loadEarlierMessages("s1")
+    const p2 = store.loadEarlierMessages("s1")
+    await p2
+    expect(calls).toHaveLength(2) // 窗口 1 次 + before 1 次（第二次触发被 loading 守卫挡下）
+    d.resolve({ entries: [msg("m5", 5)], nextCursor: null })
+    await p1
+    expect(calls).toHaveLength(2)
+  })
+
+  it("在途竞态：关 Tab 清状态后重开（新状态对象），旧页落地整体丢弃", async () => {
+    seedSession()
+    const calls: Array<{ limit?: number; before?: string }> = []
+    const d = deferred<{ entries: ReturnType<typeof msg>[]; nextCursor: string | null }>()
+    ;(store as unknown as { client: unknown }).client = {
+      listMessagesPage: async (
+        _sid: string,
+        _dir: string,
+        opts: { limit: number; before?: string },
+      ) => {
+        calls.push(opts)
+        if (opts.before) return d.promise
+        return { entries: [msg("m8", 8)], nextCursor: "c8" }
+      },
+    }
+
+    await store.loadSessionMessages("s1", ROOT)
+    const p = store.loadEarlierMessages("s1")
+    // 在途期间关 Tab + 重开（挂载窗口加载重建状态）
+    ;(store as unknown as { cleanupSessionState: (id: string) => void }).cleanupSessionState("s1")
+    await store.loadSessionMessages("s1", ROOT)
+    const freshState = store.sessionPages.get("s1")
+    expect(freshState?.nextCursor).toBe("c8")
+    expect(freshState?.loading).toBe(false)
+
+    d.resolve({ entries: [msg("m5", 5)], nextCursor: "c5" })
+    await p
+    // 旧页被身份守卫丢弃：新状态未推进、无 loading 残留；消息未合并
+    expect(store.sessionPages.get("s1")).toBe(freshState)
+    expect(store.chatEntries("s1").map((e) => (e.kind === "message" ? e.data.info.id : e.kind))).toEqual([
+      "m8",
+    ])
+    expect(calls).toHaveLength(3)
+  })
+
+  it("违约 server 防御：空页/全重复页 + 非 null cursor → 零新增判穷尽停链", async () => {
+    seedSession()
+    const { client } = seedPageClient([
+      { entries: [msg("m8", 8)], nextCursor: "c8" },
+      // 全重复页（本地已有 m8）+ cursor 仍在：链式条件若只看 cursor 会死循环
+      { entries: [msg("m8", 8)], nextCursor: "c8" },
+      { entries: [], nextCursor: null },
+    ])
+    ;(store as unknown as { client: unknown }).client = client
+
+    await store.loadSessionMessages("s1", ROOT)
+    await store.loadEarlierMessages("s1")
+    expect(store.sessionPages.get("s1")?.exhausted).toBe(true)
+    expect(store.sessionPages.get("s1")?.nextCursor).toBeNull()
+  })
+
+  it("重激活窗口重拉不回退已深入的 cursor；更早消息不被窗口区间删除", async () => {
+    seedSession()
+    const { client, calls } = seedPageClient([
+      { entries: [msg("m8", 8), msg("m9", 9), msg("m10", 10)], nextCursor: "c8" },
+      { entries: [msg("m5", 5), msg("m6", 6), msg("m7", 7)], nextCursor: "c5" },
+      // 重激活的窗口响应（服务端可能又长了）：cursor 锚点更新（c9），但不得覆盖 c5
+      { entries: [msg("m9", 9), msg("m10", 10), msg("m11", 11)], nextCursor: "c9" },
+    ])
+    ;(store as unknown as { client: unknown }).client = client
+
+    await store.loadSessionMessages("s1", ROOT)
+    await store.loadEarlierMessages("s1")
+    expect(store.sessionPages.get("s1")?.nextCursor).toBe("c5")
+
+    await store.loadSessionMessages("s1", ROOT)
+    expect(calls[2]).toEqual({ limit: 100 })
+    expect(store.sessionPages.get("s1")?.nextCursor).toBe("c5")
+    // 更早累积消息（m5..m7）在窗口删除区间 (9, 11) 之外，全部保留
+    expect(store.chatEntries("s1").map((e) => (e.kind === "message" ? e.data.info.id : e.kind))).toEqual([
+      "m5",
+      "m6",
+      "m7",
+      "m8",
+      "m9",
+      "m10",
+      "m11",
+    ])
+  })
+
+  it("关 Tab 清理分页状态（cleanupSessionState）", async () => {
+    seedSession()
+    const { client } = seedPageClient([
+      { entries: [msg("m8", 8)], nextCursor: "c8" },
+    ])
+    ;(store as unknown as { client: unknown }).client = client
+    await store.loadSessionMessages("s1", ROOT)
+    expect(store.sessionPages.has("s1")).toBe(true)
+    ;(store as unknown as { cleanupSessionState: (id: string) => void }).cleanupSessionState("s1")
+    expect(store.sessionPages.has("s1")).toBe(false)
   })
 })
 

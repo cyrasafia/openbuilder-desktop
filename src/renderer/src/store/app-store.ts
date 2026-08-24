@@ -142,6 +142,14 @@ export class AppStore {
   messagesBySession = new Map<string, Map<string, MessageWithParts>>()
   optimisticBySession = new Map<string, OptimisticMessage[]>()
   /**
+   * 会话消息历史分页状态（design-message-history-pagination §4.2）：
+   * cursor 锚定当前最旧已加载消息；不变式 `exhausted ⇒ nextCursor == null`，
+   * 逆命题不成立——`nextCursor == null` 为「穷尽（exhausted）**或**可重试的
+   * 失败态（error，含挂载窗口加载失败种子）」。无条目 = 尚未做过窗口加载
+   * （SSE-only/断线重连后），上滚触发时种子。
+   */
+  sessionPages = new Map<string, { nextCursor: string | null; exhausted: boolean; loading: boolean; error: boolean }>()
+  /**
    * 会话状态（busy/idle/retry）——纯客户端内存映射，单一事实源：
    * Tab 状态点、左栏指示器、消息流 TypingSlot 都消费它（design-typing-indicator §4）。
    * idle 不落 map（缺省即 idle）；来源见 setSessionStatus/applyStatusSnapshot。
@@ -343,6 +351,7 @@ export class AppStore {
     this.projects = []
     this.sessionsByProject.clear()
     this.messagesBySession.clear()
+    this.sessionPages.clear()
     this.pendingPartsMap.clear()
     this.optimisticBySession.clear()
     this.sessionStatus.clear()
@@ -1388,6 +1397,7 @@ export class AppStore {
     this.messagesBySession.delete(sessionID)
     this.pendingPartsMap.delete(sessionID)
     this.optimisticBySession.delete(sessionID)
+    this.sessionPages.delete(sessionID)
   }
 
   private resetFileTree() {
@@ -1607,13 +1617,10 @@ export class AppStore {
     }
   }
 
-  async loadSessionMessages(sessionID: string, directory: string) {
-    if (!this.client) return
-    const msgs = await this.client
-      .listMessages(sessionID, directory, 100)
-      .catch(() => null)
-    if (!msgs) return
+  /** REST 页合并进会话 map（快照合并 + pending parts 回放），返回本页新增的消息条数 */
+  private mergeMessagePage(sessionID: string, msgs: MessageWithParts[]) {
     const local = this.messagesBySession.get(sessionID) ?? new Map()
+    const hadIds = new Set(local.keys())
     const merged = mergeSnapshotIntoMessages(local, msgs)
     // 应用 pending parts
     const pending = this.pendingParts(sessionID)
@@ -1629,11 +1636,133 @@ export class AppStore {
     }
     pending.clear()
     this.messagesBySession.set(sessionID, merged)
+    return msgs.filter((m) => !hadIds.has(m.info.id)).length
+  }
+
+  async loadSessionMessages(sessionID: string, directory: string) {
+    const client = this.client
+    if (!client) return
+    const page = await client
+      .listMessagesPage(sessionID, directory, { limit: 100 })
+      .catch(() => null)
+    // 世代守卫：await 期间断开/切 profile → 迟到响应不写新连接（同 loadEarlierMessages 模式）
+    if (this.client !== client) return
+    if (!page) {
+      // 失败且无既有状态：置 error 种子（cursor null + 未穷尽 = 可重试态）——
+      // 空内容会话无法触发滚动，error 行是唯一重试入口（review P2-1）
+      if (!this.sessionPages.has(sessionID)) {
+        this.sessionPages.set(sessionID, {
+          nextCursor: null,
+          exhausted: false,
+          loading: false,
+          error: true,
+        })
+        this.emit()
+      }
+      return
+    }
+    this.mergeMessagePage(sessionID, page.entries)
+    // 种子分页状态（design-message-history-pagination §4.2）：
+    // - 无状态（首次成功）→ 写入；
+    // - 既有状态是**纯 error 种子**（挂载失败后内容经其他通道落地，本形状唯一
+    //   标识"无任何需保护的分页进度"）→ 覆盖为正常种子——防"有完整内容却常驻
+    //   加载失败行、链式加载被 error 态堵死"的矛盾态（review R3-P2）；
+    // - 其余（已分页深入）不写——重激活窗口的 cursor 锚点更"新"，回退会重复
+    //   拉取已加载区间
+    const prev = this.sessionPages.get(sessionID)
+    const isErrorSeed =
+      prev != null && prev.error && prev.nextCursor == null && !prev.exhausted && !prev.loading
+    if (!prev || isErrorSeed) {
+      this.sessionPages.set(sessionID, {
+        nextCursor: page.nextCursor,
+        exhausted: page.nextCursor == null,
+        loading: false,
+        error: false,
+      })
+    }
     // finish 推断（design-typing-indicator §4 来源 5）：末条 assistant 终态 ⇒ idle；
     // tool-calls/null 不触发（进行中消息在 REST 可见，D-SS-A）——兜底断线丢
     // session.idle 的场景（手动刷新/激活重拉）
-    if (inferIdleFromMessages([...merged.values()].sort(sortMessages).map((m) => m.info))) {
+    const merged = this.messagesBySession.get(sessionID)
+    if (
+      merged &&
+      inferIdleFromMessages([...merged.values()].sort(sortMessages).map((m) => m.info))
+    ) {
       this.setSessionStatus(sessionID, { type: "idle" })
+    }
+    this.emit()
+  }
+
+  /** 是否还能加载更早历史（UI 链式加载消费；error 态不算——失败停链，重试走显式入口） */
+  canLoadEarlier(sessionID: string): boolean {
+    const s = this.sessionPages.get(sessionID)
+    return s != null && !s.exhausted && !s.loading && !s.error
+  }
+
+  /**
+   * 上滚分页加载更早消息（design-message-history-pagination §4.2）。
+   * - 无状态（挂载窗口加载失败/SSE-only）→ 先窗口加载种子 cursor；种子失败置
+   *   error——本路径是挂载加载失败的唯一重试入口（error 行点击/上滑可达）；
+   * - in-flight 去重；穷尽直返（error 态允许重试）；
+   * - 在途落地按状态对象身份守卫：关 Tab 快速重开重建了新状态时，旧页整体丢弃；
+   * - 失败置 error（UI 重试行），不判穷尽可重试。
+   */
+  async loadEarlierMessages(sessionID: string) {
+    const client = this.client
+    const session = this.findSession(sessionID)
+    if (!client || !session) return
+    let state = this.sessionPages.get(sessionID)
+    if (!state || state.nextCursor == null) {
+      // 穷尽且非 error 态：无操作（error + cursor null = 种子失败，允许重试）
+      if (state && state.exhausted && !state.error) return
+      if (state?.loading) return
+      state = { nextCursor: null, exhausted: false, loading: true, error: false }
+      this.sessionPages.set(sessionID, state)
+      this.emit()
+      const seed = await client
+        .listMessagesPage(sessionID, session.directory, { limit: 100 })
+        .catch(() => null)
+      if (this.sessionPages.get(sessionID) !== state) return
+      state.loading = false
+      if (!seed) {
+        state.error = true
+        this.emit()
+        return
+      }
+      this.mergeMessagePage(sessionID, seed.entries)
+      state.nextCursor = seed.nextCursor
+      state.exhausted = seed.nextCursor == null
+      state.error = false
+      this.emit()
+      if (state.exhausted) return
+    }
+    if (state.loading || state.exhausted) return
+    const before = state.nextCursor!
+    state.loading = true
+    state.error = false
+    this.emit()
+    try {
+      const page = await client.listMessagesPage(sessionID, session.directory, {
+        limit: 100,
+        before,
+      })
+      // 身份守卫：在途期间关 Tab 重开/断开重建了状态 → 旧页整体丢弃
+      const cur = this.sessionPages.get(sessionID)
+      if (cur !== state) return
+      const added = this.mergeMessagePage(sessionID, page.entries)
+      cur.loading = false
+      cur.error = false
+      // 无 cursor 头 = 历史穷尽；空页同理。防御违约 server（空/全重复页 + 非 null
+      // cursor）触发链式死循环：本页零新增同样判穷尽停链
+      cur.exhausted = page.nextCursor == null || added === 0
+      // 保持不变式 exhausted ⇒ nextCursor == null（错误态除外，见字段注释）
+      cur.nextCursor = cur.exhausted ? null : page.nextCursor
+    } catch {
+      const cur = this.sessionPages.get(sessionID)
+      if (cur === state) {
+        cur.loading = false
+        cur.error = true
+      }
     }
     this.emit()
   }
@@ -2345,6 +2474,12 @@ export class AppStore {
         const local = this.messagesBySession.get(sessionID) ?? new Map()
         const merged = mergeSnapshotIntoMessages(local, msgs)
         this.messagesBySession.set(sessionID, merged)
+        // 对账回填成功：清同形状 error 种子（挂载失败种子 vs 已回填内容的矛盾态，
+        // review R3-P2）——回到无状态，重激活/上滚走正常种子
+        const prev = this.sessionPages.get(sessionID)
+        if (prev && prev.error && prev.nextCursor == null && !prev.exhausted && !prev.loading) {
+          this.sessionPages.delete(sessionID)
+        }
         // finish 推断兜底（断线期间完成的会话不再卡 busy）
         if (inferIdleFromMessages([...merged.values()].sort(sortMessages).map((m) => m.info))) {
           this.setSessionStatus(sessionID, { type: "idle" })

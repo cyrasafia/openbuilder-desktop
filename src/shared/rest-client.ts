@@ -69,10 +69,11 @@ export class RestClient {
     this.f = opts.fetchImpl ?? fetch.bind(globalThis)
   }
 
-  private async request<T>(
+  /** 底层 fetch（鉴权 + 超时 + 错误分类）；需要读响应头的端点（cursor 分页）也走这里 */
+  private async fetchResponse(
     path: string,
     init: RequestInit & { timeoutMs?: number } = {},
-  ): Promise<T> {
+  ): Promise<Response> {
     const { timeoutMs = 15000, ...rest } = init
     let res: Response
     try {
@@ -99,6 +100,14 @@ export class RestClient {
               : "unknown"
       throw new ApiError(res.status, kind, `HTTP ${res.status}`)
     }
+    return res
+  }
+
+  private async request<T>(
+    path: string,
+    init: RequestInit & { timeoutMs?: number } = {},
+  ): Promise<T> {
+    const res = await this.fetchResponse(path, init)
     if (res.status === 204) return undefined as T
     // void 端点可能返回 200 空体（如 prompt_async）；空体不解析
     const text = await res.text()
@@ -202,6 +211,36 @@ export class RestClient {
       // 对账窗口 K=100（参考 openbuilder design-incremental-reconcile）
       { timeoutMs: 20000 },
     )
+  }
+
+  /**
+   * cursor 分页版消息拉取（design-message-history-pagination §2）：
+   * `X-Next-Cursor` 头存在 = 还有更早历史（值锚定本页最旧消息）；
+   * 无头 = 穷尽。旧 server 忽略 limit 返回全量且无头 → entries 全量 + nextCursor
+   * null，天然降级。`before` 不配 limit 会 400（server 契约），调用方保证成对传。
+   */
+  async listMessagesPage(
+    sessionID: string,
+    directory: string,
+    opts: { limit: number; before?: string },
+  ): Promise<{ entries: MessageWithParts[]; nextCursor: string | null }> {
+    const res = await this.fetchResponse(
+      `/session/${encodeURIComponent(sessionID)}/message${RestClient.dirQuery(directory, {
+        limit: opts.limit,
+        before: opts.before,
+      })}`,
+      { timeoutMs: 20000 },
+    )
+    const text = await res.text()
+    let entries: MessageWithParts[] = []
+    if (text) {
+      try {
+        entries = JSON.parse(text) as MessageWithParts[]
+      } catch {
+        throw new ApiError(res.status, "unknown", "响应解析失败")
+      }
+    }
+    return { entries, nextCursor: res.headers.get("x-next-cursor") }
   }
 
   /** 异步发消息：立即返回，回复走 SSE 事件流（长回复不受 HTTP 超时影响） */
