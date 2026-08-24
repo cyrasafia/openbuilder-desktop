@@ -80,7 +80,8 @@ export function Workspace() {
         {!active && <GuidePage />}
         {/* key 隔离：防止 chat→chat 切换时复用 fiber 导致草稿/pinned ref 跨会话残留 */}
         {active?.kind === "chat" && <ChatView key={active.key} sessionID={active.key.slice(5)} />}
-        {active?.kind === "file" && <FileView absolutePath={active.key.slice(5)} />}
+        {/* key 隔离：file Tab 切换时防 mode（预览/源码）等局部 state 跨文件残留（同 ChatView） */}
+        {active?.kind === "file" && <FileView key={active.key} absolutePath={active.key.slice(5)} />}
       </div>
 
       {store.settingsOpen && <SettingsDialog />}
@@ -927,10 +928,31 @@ function ToolChip({ part }: { part: ToolPart }) {
   )
 }
 
-function FileView({ absolutePath }: { absolutePath: string }) {
+/**
+ * markdown 文件判定（design-markdown-preview §2.1）：basename 取最后一个**非前导**
+ * 点的后缀，大小写不敏感。`.md`/`.markdown` 命中；`.mdx` 不识别；无扩展名与
+ * 点文件（前导点，如名字恰为 `.md` 的文件）不命中。
+ */
+function isMarkdownPath(path: string): boolean {
+  const base = path.split("/").pop() ?? ""
+  const dot = base.lastIndexOf(".")
+  if (dot <= 0) return false
+  const ext = base.slice(dot + 1).toLowerCase()
+  return ext === "md" || ext === "markdown"
+}
+
+/**
+ * 文件 Tab 视图。markdown 预览（design-markdown-preview）：按 isMarkdownPath
+ * 分发——默认预览态 + 工具条二态切换（分组按钮，非 tabs 模式——无方向键导航
+ * 不冒充 tablist）；模式为组件局部 state，Tab 重开/切文件重置（key 隔离）。
+ * 其余文件纯文本源码（现状）。
+ */
+export function FileView({ absolutePath }: { absolutePath: string }) {
   const store = useStore()
   const { t } = useI18n()
   const cached = store.fileContents.get(absolutePath)
+  const isMarkdown = isMarkdownPath(absolutePath)
+  const [mode, setMode] = useState<"preview" | "source">("preview")
 
   // 激活即重拉（缓存仅作首帧显示）
   useEffect(() => {
@@ -938,11 +960,52 @@ function FileView({ absolutePath }: { absolutePath: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [absolutePath])
 
-  if (!cached) return <div className="file-view">{t.loading}</div>
-  if (cached.error) return <div className="file-view error">{cached.error}</div>
+  if (!isMarkdown) {
+    if (!cached) return <div className="file-view">{t.loading}</div>
+    if (cached.error) return <div className="file-view error">{cached.error}</div>
+    return (
+      <div className="file-view">
+        <pre className="file-content mono">{cached.content}</pre>
+      </div>
+    )
+  }
+
+  // markdown：工具条常驻（loading/error 也渲染）——避免内容落地/重试成功时
+  // 工具条弹入造成 ~32px 布局跳动
   return (
-    <div className="file-view">
-      <pre className="file-content mono">{cached.content}</pre>
+    <div className="file-view-wrap">
+      <div className="file-toolbar">
+        <div className="ms-segmented" role="group" aria-label={t.viewModeLabel}>
+          <button
+            type="button"
+            aria-pressed={mode === "preview"}
+            className={"ms-seg" + (mode === "preview" ? " active" : "")}
+            onClick={() => setMode("preview")}
+          >
+            {t.previewMode}
+          </button>
+          <button
+            type="button"
+            aria-pressed={mode === "source"}
+            className={"ms-seg" + (mode === "source" ? " active" : "")}
+            onClick={() => setMode("source")}
+          >
+            {t.sourceMode}
+          </button>
+        </div>
+      </div>
+      <div className="file-view">
+        {!cached && <div>{t.loading}</div>}
+        {cached?.error && <div className="file-error">{cached.error}</div>}
+        {cached && !cached.error && mode === "preview" && (
+          <div className="file-md">
+            <Markdown>{cached.content}</Markdown>
+          </div>
+        )}
+        {cached && !cached.error && mode === "source" && (
+          <pre className="file-content mono">{cached.content}</pre>
+        )}
+      </div>
     </div>
   )
 }

@@ -1161,7 +1161,7 @@
   border-color: var(--error);
 }
 
-/* 分段开关（agent 恰 2 个） */
+/* 分段开关（model-switcher agent 二态与文件视图预览/源码共用） */
 .ms-segmented {
   display: inline-flex;
   border-radius: var(--radius-chip);
@@ -1407,6 +1407,14 @@
 }
 
 /* ---------- 文件视图 ---------- */
+/* 列 flex 容器：markdown mode 的工具条 + 滚动层（design-markdown-preview §2.2） */
+.file-view-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .file-view {
   flex: 1;
   overflow: auto;
@@ -1422,6 +1430,30 @@
   line-height: 1.55;
   white-space: pre;
   tab-size: 4;
+}
+
+/* 工具条：右对齐分段开关（预览/源码），markdown 文件常驻渲染；
+ * 分段控件复用 .ms-segmented/.ms-seg（单一来源，不另起一套） */
+.file-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 6px 16px 0;
+}
+
+.file-error {
+  color: var(--error);
+}
+
+/* markdown 预览体：限宽居中（与聊天区 --chat-max 同一阅读度量级）。
+ * 覆写消息流 .md 的代码块高度上限——文档预览长代码块不套内滚（渲染阅读优先） */
+.file-md {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 4px 8px 24px;
+}
+
+.file-md .md-pre {
+  max-height: none;
 }
 
 /* ---------- 右栏 ---------- */

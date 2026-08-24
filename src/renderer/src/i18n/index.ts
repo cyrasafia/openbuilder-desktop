@@ -62,6 +62,10 @@ const zh = {
   loading: "加载中…",
   empty: "空",
   loadFailed: "加载失败",
+  // 文件视图 markdown 预览（design-markdown-preview）
+  previewMode: "预览",
+  sourceMode: "源码",
+  viewModeLabel: "查看方式",
   // 设置
   settings: "设置",
   connectionTitle: "服务器连接",
@@ -181,6 +185,9 @@ const en: typeof zh = {
   loading: "Loading…",
   empty: "Empty",
   loadFailed: "Failed to load",
+  previewMode: "Preview",
+  sourceMode: "Source",
+  viewModeLabel: "View mode",
   settings: "Settings",
   connectionTitle: "Server",
   profileName: "Name",
