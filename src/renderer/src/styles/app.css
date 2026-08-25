@@ -1598,6 +1598,20 @@
   padding: 4px 24px 24px;
 }
 
+/* ---------- html 预览（design-html-preview §3.2） ----------
+ * iframe 自管滚动与背景；容器不滚不出血 */
+.file-view.html-view {
+  padding: 0;
+  overflow: hidden;
+}
+
+.html-preview {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: var(--surface-container-lowest);
+}
+
 .file-md .md-pre {
   max-height: none;
 }

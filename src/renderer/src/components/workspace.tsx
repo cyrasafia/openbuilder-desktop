@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type WheelEvent } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type WheelEvent } from "react"
 import { ChevronDown, ChevronRight, CircleHelp, LoaderCircle, ShieldAlert } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import { format, relativeTime } from "../i18n"
@@ -17,6 +17,7 @@ import { externalDirectoryPath, permissionCommand } from "@shared/pending-reques
 import { Markdown } from "./markdown"
 import { ModelSwitcherBar } from "./model-switcher"
 import { CodeView } from "./code-view"
+import { buildHtmlPreviewDocument } from "./html-preview"
 
 export function Workspace() {
   const store = useStore()
@@ -943,17 +944,36 @@ function isMarkdownPath(path: string): boolean {
 }
 
 /**
- * 文件 Tab 视图。markdown 预览（design-markdown-preview）：按 isMarkdownPath
- * 分发——默认预览态 + 工具条二态切换（分组按钮，非 tabs 模式——无方向键导航
- * 不冒充 tablist）；模式为组件局部 state，Tab 重开/切文件重置（key 隔离）。
- * 其余文件纯文本源码（现状）。
+ * html 文件判定（design-html-preview §3.2）：与 isMarkdownPath 同解析规则。
+ */
+function isHtmlPath(path: string): boolean {
+  const base = path.split("/").pop() ?? ""
+  const dot = base.lastIndexOf(".")
+  if (dot <= 0) return false
+  const ext = base.slice(dot + 1).toLowerCase()
+  return ext === "html" || ext === "htm"
+}
+
+/**
+ * 文件 Tab 视图。预览文件（design-markdown-preview / design-html-preview）：
+ * `.md`/`.markdown` 渲染 markdown；`.html`/`.htm` 渲染 sandboxed iframe——
+ * 默认预览态 + 工具条二态切换；模式为组件局部 state，Tab 重开/切文件重置
+ * （key 隔离）。其余文件代码视图（行号+语法高亮，design-code-view）。
  */
 export function FileView({ absolutePath }: { absolutePath: string }) {
   const store = useStore()
   const { t, locale } = useI18n()
   const cached = store.fileContents.get(absolutePath)
   const isMarkdown = isMarkdownPath(absolutePath)
+  const isHtml = isHtmlPath(absolutePath)
+  const previewable = isMarkdown || isHtml
   const [mode, setMode] = useState<"preview" | "source">("preview")
+  // CSP 注入是 O(n) 扫描 + 拼接：只在内容变化时重算（SSE emit 重渲染不重复付出）
+  const htmlDoc = useMemo(
+    () => (isHtml && cached ? buildHtmlPreviewDocument(cached.content) : ""),
+    [isHtml, cached?.content],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  )
 
   // 激活即重拉（缓存仅作首帧显示）
   useEffect(() => {
@@ -961,7 +981,7 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [absolutePath])
 
-  if (!isMarkdown) {
+  if (!previewable) {
     if (!cached) return <div className="file-view">{t.loading}</div>
     if (cached.error) return <div className="file-view error">{cached.error}</div>
     return (
@@ -972,7 +992,7 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
     )
   }
 
-  // markdown：工具条常驻（loading/error 也渲染）——避免内容落地/重试成功时
+  // 预览文件：工具条常驻（loading/error 也渲染）——避免内容落地/重试成功时
   // 工具条弹入造成 ~32px 布局跳动
   return (
     <div className="file-view-wrap">
@@ -996,13 +1016,24 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
           </button>
         </div>
       </div>
-      <div className="file-view code-view">
+      <div className={"file-view" + (isHtml ? " html-view" : " code-view")}>
         {!cached && <div className="file-state">{t.loading}</div>}
         {cached?.error && <div className="file-state file-error">{cached.error}</div>}
-        {cached && !cached.error && mode === "preview" && (
+        {cached && !cached.error && mode === "preview" && isMarkdown && (
           <div className="file-md">
             <Markdown>{cached.content}</Markdown>
           </div>
+        )}
+        {cached && !cached.error && mode === "preview" && isHtml && (
+          <iframe
+            className="html-preview"
+            title={absolutePath}
+            // 全沙箱：禁脚本 / opaque origin（触不到父页面与 preload 桥）/ 禁顶层
+            // 导航与弹窗；CSP 注入屏蔽外链资源（design-html-preview §2）
+            sandbox=""
+            referrerPolicy="no-referrer"
+            srcDoc={htmlDoc}
+          />
         )}
         {cached && !cached.error && mode === "source" && (
           <CodeView key={locale} path={absolutePath} content={cached.content} locale={locale} />

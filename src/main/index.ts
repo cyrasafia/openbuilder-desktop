@@ -56,6 +56,14 @@ function createMainWindow() {
     if (!devUrl || !url.startsWith(devUrl)) e.preventDefault()
   })
 
+  // 子帧（html 预览的 sandboxed iframe）禁止一切导航：will-navigate 只覆盖主帧，
+  // meta refresh / 链接点击可导航 iframe 自身——新文档不携带注入的 CSP，
+  // 主动外发请求即绕过预览安全模型（design-html-preview §2）。srcdoc 初始
+  // 建档不走 renderer-initiated 的 WillStartRequest 路径，不触发本事件、无误伤
+  win.webContents.on("will-frame-navigate", (details) => {
+    if (!details.isMainFrame) details.preventDefault()
+  })
+
   const devUrl = process.env.ELECTRON_RENDERER_URL
   if (devUrl) {
     void win.loadURL(devUrl)

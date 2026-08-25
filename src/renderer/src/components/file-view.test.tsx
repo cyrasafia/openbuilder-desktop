@@ -121,6 +121,39 @@ describe("FileView markdown 预览", () => {
     expect(document.querySelector(".cm-content")?.textContent).toContain("# 标题")
   })
 
+  it(".html 默认 sandboxed iframe 预览（CSP 注入）；切源码为高亮代码", () => {
+    fileContentsStub.set("/repo/page.html", { content: "<html><head><title>t</title></head><body><p>hi</p></body></html>" })
+    render(<FileView absolutePath="/repo/page.html" />)
+    const iframe = document.querySelector("iframe.html-preview") as HTMLIFrameElement
+    expect(iframe).not.toBeNull()
+    expect(iframe.getAttribute("sandbox")).toBe("")
+    expect(iframe.getAttribute("referrerpolicy")).toBe("no-referrer")
+    expect(iframe.getAttribute("srcdoc")).toContain("Content-Security-Policy")
+
+    fireEvent.click(screen.getByRole("button", { name: "源码" }))
+    expect(document.querySelector(".cm-content")?.textContent).toContain("<html>")
+    expect(document.querySelector("iframe.html-preview")).toBeNull()
+  })
+
+  it(".htm 与大小写不敏感（.HTML）均走预览", () => {
+    fileContentsStub.set("/repo/old.htm", { content: "<div>x</div>" })
+    const { unmount } = render(<FileView absolutePath="/repo/old.htm" />)
+    expect(document.querySelector("iframe.html-preview")).not.toBeNull()
+    unmount()
+
+    fileContentsStub.set("/repo/BIG.HTML", { content: "<div>y</div>" })
+    render(<FileView absolutePath="/repo/BIG.HTML" />)
+    expect(document.querySelector("iframe.html-preview")).not.toBeNull()
+  })
+
+  it(".xhtml 不识别（走代码视图）", () => {
+    fileContentsStub.set("/repo/page.xhtml", { content: "<div>xml</div>" })
+    render(<FileView absolutePath="/repo/page.xhtml" />)
+    expect(document.querySelector("iframe.html-preview")).toBeNull()
+    expect(document.querySelector(".ms-segmented")).toBeNull()
+    expect(document.querySelector(".cm-content")?.textContent).toContain("<div>xml</div>")
+  })
+
   it("错误/加载态：markdown 工具条常驻（防内容落地时布局跳动）", () => {
     fileContentsStub.set("/repo/broken.md", { content: "", error: "HTTP 500" })
     render(<FileView absolutePath="/repo/broken.md" />)
