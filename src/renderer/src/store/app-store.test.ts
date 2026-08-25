@@ -6,6 +6,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { AppStore, diffTabKey } from "./app-store"
+import { ApiError } from "@shared/rest-client"
 import { SseSubscriber } from "@shared/sse-subscriber"
 import type { ModelCatalog } from "@shared/model-catalog"
 import type { MessageWithParts, ModelRef, Project, Session } from "@shared/api-types"
@@ -514,6 +515,59 @@ describe("busy 补充发送（design-supplement-send）", () => {
     const res = await store.sendPrompt("s1", "补充")
     expect(res.ok).toBe(true)
     expect(store.statusOf("s1")).toEqual({ type: "retry", attempt: 2, message: "rate limited" })
+  })
+})
+
+describe("斜杠命令发送（design-slash-command SC-4：同步端点无限等待）", () => {
+  function dispatch(ev: { type: string; properties: unknown }) {
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, ev)
+  }
+
+  it("长时执行在途：乐观保留不误判失败，完成后 ok:true；真实 user 事件到达即清乐观", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    const run = deferred<void>()
+    const sent: unknown[] = []
+    client.sendCommand = (...args: unknown[]) => {
+      sent.push(...args)
+      return run.promise
+    }
+
+    const p = store.sendCommand("s1", "review", "--help")
+    await Promise.resolve()
+    const entries = store.chatEntries("s1")
+    expect(entries.map((e) => (e.kind === "optimistic" ? e.data.text : null))).toEqual([
+      "/review --help",
+    ])
+
+    run.resolve()
+    const res = await p
+    expect(res.ok).toBe(true)
+    expect(sent).toEqual(["s1", ROOT, "review", "--help"])
+
+    dispatch({
+      type: "message.updated",
+      properties: {
+        sessionID: "s1",
+        info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
+        parts: [{ id: "prt_1", type: "subtask", command: "review", prompt: "展开正文" }],
+      },
+    })
+    expect(store.chatEntries("s1").every((e) => e.kind === "message")).toBe(true)
+  })
+
+  it("真实失败（秒回的 400 类错误）：撤回乐观 + ok:false，由调用方回填草稿", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    client.sendCommand = async () => {
+      throw new ApiError(400, "unknown", "HTTP 400")
+    }
+
+    const res = await store.sendCommand("s1", "no-such", "")
+    expect(res.ok).toBe(false)
+    expect(store.chatEntries("s1")).toHaveLength(0)
   })
 })
 

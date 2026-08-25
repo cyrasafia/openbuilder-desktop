@@ -67,3 +67,25 @@ describe("listMessagesPage", () => {
     ).rejects.toBeInstanceOf(ApiError)
   })
 })
+
+describe("超时策略（design-slash-command SC-4）", () => {
+  it("sendCommand 不挂超时 signal：同步端点执行完才响应，无限等待", async () => {
+    let seen: RequestInit | undefined
+    const client = mkClient((_url, init) => {
+      seen = init
+      return new Response("")
+    })
+    await client.sendCommand("ses_1", "/repo", "review", "--help")
+    expect(seen?.signal).toBeUndefined()
+  })
+
+  it("默认端点仍挂 15s AbortSignal（回归防护）", async () => {
+    let seen: RequestInit | undefined
+    const client = mkClient((_url, init) => {
+      seen = init
+      return new Response("[]")
+    })
+    await client.listCommands("/repo")
+    expect(seen?.signal).toBeInstanceOf(AbortSignal)
+  })
+})

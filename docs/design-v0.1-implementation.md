@@ -53,7 +53,9 @@ src/
 
 ### REST（rest-client.ts）
 
-- `RestClient`：baseUrl 尾斜杠归一、可选 basic auth、`AbortSignal.timeout`（默认 15s，health 5s，文件 30s）
+- `RestClient`：baseUrl 尾斜杠归一、可选 basic auth、`AbortSignal.timeout`（默认 15s，health 5s，文件 30s；
+  `timeoutMs: 0` = 无限等待，仅 `sendCommand` 用——`POST /session/:id/command` 是同步端点、执行完才响应，
+  官方 SDK v2 对该链路整体关超时（`req.timeout = false`），详见 design-slash-command.md 评审 SC-4）
 - 错误分类 `ApiError{status, kind}`：401/403→auth、404→not-found、≥500→server、AbortError→timeout、TypeError→network；
   **不暴露响应体**（可能含密钥，同移动端 friendlyError 原则）
 - `directory` 走 query 参数（`?directory=<abs>`），所有目录级 API 统一 `dirQuery` helper

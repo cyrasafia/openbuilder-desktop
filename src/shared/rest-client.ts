@@ -70,7 +70,8 @@ export class RestClient {
     this.f = opts.fetchImpl ?? fetch.bind(globalThis)
   }
 
-  /** 底层 fetch（鉴权 + 超时 + 错误分类）；需要读响应头的端点（cursor 分页）也走这里 */
+  /** 底层 fetch（鉴权 + 超时 + 错误分类）；需要读响应头的端点（cursor 分页）也走这里。
+   *  `timeoutMs: 0` = 不设超时、无限等待（同步长时端点专用，见 sendCommand 注释） */
   private async fetchResponse(
     path: string,
     init: RequestInit & { timeoutMs?: number } = {},
@@ -85,7 +86,7 @@ export class RestClient {
           ...(rest.body ? { "Content-Type": "application/json" } : {}),
           ...(rest.headers ?? {}),
         },
-        signal: AbortSignal.timeout(timeoutMs),
+        ...(timeoutMs > 0 ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
       })
     } catch (e) {
       throw classifyFetchError(e)
@@ -278,14 +279,22 @@ export class RestClient {
 
   /**
    * 执行斜杠命令：服务端展开模板（$1..$n/$ARGUMENTS/sh 代码块/model/agent/subtask
-   * 均服务端解析），客户端零展开。实测语义与 prompt_async 同：立即返回
-   * （openbuilder opencode_client.dart 注释），回复与 user 回显走 SSE。
+   * 均服务端解析），客户端零展开。
+   *
+   * **同步端点**（早期文档误以为"与 prompt_async 同、立即返回"，2026-08-25 订正）：
+   * server handler 直接 await 完整执行循环，执行完才响应（openapi success =
+   * 最终 assistant 消息 WithParts，对比 prompt_async 的 NoContent）。但执行
+   * runner 挂在 server instance scope，客户端断连**不取消执行**——user 回显与
+   * 回复全走 SSE。因此 timeoutMs: 0 无限等待，与参考实现一致：官方 app 走的
+   * SDK v2 client 默认 `req.timeout = false`（整体关超时），移动端 dio 无
+   * receiveTimeout。失败只剩快速真错误（400 未注册/404 会话不存在）与断网；
+   * 若沿用 15s 默认超时，命令跑超 15s 即误判失败→撤乐观+草稿回填（回显 bug）。
    * 未注册命令走此端点会 400——发送前应先在注册表里匹配。
    */
   sendCommand(sessionID: string, directory: string, command: string, arguments_: string): Promise<void> {
     return this.request<void>(
       `/session/${encodeURIComponent(sessionID)}/command${RestClient.dirQuery(directory)}`,
-      { method: "POST", body: JSON.stringify({ command, arguments: arguments_ }) },
+      { method: "POST", body: JSON.stringify({ command, arguments: arguments_ }), timeoutMs: 0 },
     )
   }
 

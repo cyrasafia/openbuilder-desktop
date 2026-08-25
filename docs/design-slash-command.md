@@ -68,7 +68,11 @@ interface CommandCacheState {
   - 未命中：按字面文本走 `prompt_async`（服务端不会展开未注册命令，当普通消息处理是正确降级）。
 - 命令名与参数以**任意空白**分隔（空格/换行/Tab——Shift+Enter 多行参数可达），
   参数取首段空白之后的剩余文本（trim）。
-- 实测语义：POST 立即返回（同 prompt_async），user 回显与回复全走 SSE——15s 默认超时足够。
+- 端点语义：**同步**——server handler await 完整执行循环，执行完才响应（openapi success =
+  最终 assistant 消息，对比 prompt_async 的 NoContent）；但执行 runner 挂 server instance
+  scope，客户端断连不取消执行，user 回显与回复全走 SSE。故 `sendCommand` 传 `timeoutMs: 0`
+  **无限等待**（对齐官方 SDK v2 `req.timeout = false` 与移动端 dio 无 receiveTimeout）；
+  失败只剩快速真错误（400 未注册/404）与断网。~~15s 默认超时~~是回显 bug 根源，见评审 SC-4。
 - 乐观消息：回显原始 `/cmd args`（与 prompt 路径共用机制，真实 user `message.updated` 到达即清）；
   POST 失败撤回乐观 + **草稿回填输入框**（文本不丢，普通消息路径同样补了回填）。
 
@@ -168,9 +172,14 @@ SSE `catalog.updated` 事件驱动重拉兜底。
 ## 验证
 
 - 15120 实机（server 1.18.x）：`GET /command` 44 项（builtin+插件+skill）；
-  `POST /session/:id/command` 立即返回，user 消息 part `subtask`/`prompt` 有值、`text` 空
-  （与移动端实测一致）；
-- vitest 36/36（含新增 command-cache 8 用例）、typecheck 双侧、electron-vite build 通过。
+  user 消息 part `subtask`/`prompt` 有值、`text` 空（与移动端实测一致）。
+  **订正**：初版记录"`POST /session/:id/command` 立即返回"有误——对照官方 `packages/app`
+  提交链（fire-and-forget + 仅 `.catch` 回填）与 SDK v2 client（`req.timeout = false`）、
+  及 server 源码（handler await 完整执行循环、openapi success=WithParts），该端点为同步
+  端点，见评审 SC-4；
+- vitest：初版落地 36/36（含 command-cache 8 用例）；SC-4 新增 4 用例（rest-client
+  超时策略 2 + app-store sendCommand 分支 2），全量 265/265 通过、typecheck 双侧、
+  electron-vite build 通过。
 
 ## 评审意见
 
@@ -204,9 +213,46 @@ SSE `catalog.updated` 事件驱动重拉兜底。
 
 **修复**：分隔符改 `rest.search(/\s/)`（决策 5），`cmdMode` 判定改 `/\s/.test()`。
 
+### SC-4（🔴 线上反馈）15s 默认超时误杀执行中的命令 → 草稿回显至输入框
+
+**症状**：发送斜杠命令后约 15s，命令文本回显到输入框；聊天里命令却照常执行。
+
+**根因**：`POST /session/:id/command` 是**同步端点**——server handler（opencode 官方
+`httpapi/handlers/session.ts` 的 `command`）直接 await `promptSvc.command` → 完整执行
+循环，openapi success 是最终 assistant 消息（WithParts），与 `prompt`（同步）同型、
+与 `prompt_async`（fork 后立即 NoContent）相反。本文初版"实测立即返回"的结论沿用了
+移动端 `opencode_client.dart` 的过期注释，未对照 openapi 契约（契约本身就写着
+WithParts）。`RestClient.sendCommand` 未指定 `timeoutMs`，走默认 15s：命令执行超 15s
+（几乎所有真实命令）→ `AbortSignal.timeout` 掐断 → `ApiError(timeout)` →
+`sendCommand` 返回 `{ok:false}` → `workspace.tsx` 失败分支 `setDraft(text)` 回填 +
+误撤乐观消息。而执行 runner 挂 server instance scope（`Runner.make(data.scope)`），
+客户端断连不取消执行，SSE 照常吐回显与回复——输入框与聊天流两份状态打架。
+
+**参考实现对照**（2026-08-25 用户指示）：
+- 官方 `packages/app`（opencode-desktop renderer 即此包）`prompt-input/submit.ts`：
+  命令分支 `clearInput()` 后对 `api.session.command(...)` **fire-and-forget**，仅
+  `.catch`（真实错误）才 toast + `restoreInput()` 回填 + 状态回 idle；
+- 官方 SDK v2 `createOpencodeClient` 默认 fetch 显式 `req.timeout = false`——
+  对该链路整体关闭超时；
+- 移动端 dio 无 receiveTimeout，无限等待执行完成。
+三者同答案：**命令请求不设客户端超时；仅真实错误（秒回的 400/404 或断网）触发回填**。
+
+**修复**：`fetchResponse` 支持 `timeoutMs: 0` = 无限等待（不挂 `AbortSignal.timeout`）；
+`sendCommand` 传 `timeoutMs: 0`。失败分支语义不变（撤乐观 + 回填），但现在只有真实
+错误能到达。乐观消息保留（真实 user 消息 SSE 到达即清），与官方"无乐观、纯等 SSE"
+相比即时反馈更好，无副作用。
+
+**验证**：rest-client 测试断言 `sendCommand` 不挂超时 signal、默认端点仍挂；
+app-store 测试覆盖长时执行在途时乐观保留、成功/失败两分支。用户中止路径经
+server 源码核实无回填风险：`runner.cancel` 使在途 command 请求走 `onInterrupt`
+（= lastAssistant，返回被打断消息）→ **200**，不进失败分支。
+
 ### 未处理（评估后接受）
 
-- 发送失败草稿回填（`setDraft(text)`）会覆盖请求在途期间用户的新输入：窗口短（POST 15s
-  超时内），恢复原文本优于丢弃，接受；
+- 发送失败草稿回填（`setDraft(text)`）会覆盖请求在途期间用户的新输入：SC-4 后回填仅由
+  快速真错误（400/404/断网）触发，窗口更短，恢复原文本优于丢弃，接受；
+- `timeoutMs: 0` 下若 server 进程被 `kill -9`（无 TCP FIN），sendCommand 的 fetch 永久
+  悬挂、乐观消息滞留：SSE 同死，重连/对账与状态行 degraded 提示兜底，与移动端同暴露面，
+  接受（官方 app 同行为）；
 - 菜单 `key={c.name}` 依赖 server 注册表命令名全局唯一：builtin/config/MCP/skill 四类
   共享一个命名空间，server 侧注册时已保证（同名后注册覆盖前注册），接受。
