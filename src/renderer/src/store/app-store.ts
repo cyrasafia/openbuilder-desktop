@@ -567,6 +567,9 @@ export class AppStore {
           this.sessionsByProject.set(info.projectID, map)
         }
         map.set(info.id, info)
+        // 同步更新已打开 chat Tab 的 title（会话重命名后 Tab 名跟随刷新）
+        const tab = this.tabs.find((t) => t.kind === "chat" && t.key === `chat:${info.id}`)
+        if (tab) tab.title = info.title || info.slug || ""
         break
       }
       case "session.deleted": {
