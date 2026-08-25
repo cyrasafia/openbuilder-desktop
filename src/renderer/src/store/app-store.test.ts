@@ -5,7 +5,7 @@
  * 快照落点用手动 deferred 控制。
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { AppStore } from "./app-store"
+import { AppStore, diffTabKey } from "./app-store"
 import { SseSubscriber } from "@shared/sse-subscriber"
 import type { ModelCatalog } from "@shared/model-catalog"
 import type { MessageWithParts, ModelRef, Project, Session } from "@shared/api-types"
@@ -876,5 +876,60 @@ describe("隐式默认模型（D-AM-4 修订）", () => {
 
     await store.createSession({ openTab: false })
     expect(body.model).toBeUndefined()
+  })
+})
+
+describe("diff Tab：每作用域单 Tab + segment 切换（design-diff-view §2/§3）", () => {
+  /** 在既有 fake client 上挂 listVcsDiff spy */
+  function vcsClient() {
+    const listVcsDiff = vi.fn(async (_dir: string, _mode: "git" | "branch") => [])
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    client.listVcsDiff = listVcsDiff
+    return listVcsDiff
+  }
+
+  it("openDiffTab 开单 Tab：缺省选中 uncommitted 并按其加载", async () => {
+    const listVcsDiff = vcsClient()
+    store.openDiffTab()
+    expect(store.tabs.map((t) => t.key)).toEqual([diffTabKey(ROOT)])
+    expect(store.diffTypeFor(diffTabKey(ROOT))).toBe("uncommitted")
+    await vi.waitFor(() => expect(listVcsDiff).toHaveBeenCalledWith(ROOT, "git"))
+  })
+
+  it("重复点击缺省选中不重拉（守卫比对有效选中，含兜底值）", async () => {
+    const listVcsDiff = vcsClient()
+    store.openDiffTab()
+    await vi.waitFor(() => expect(listVcsDiff).toHaveBeenCalledTimes(1))
+    store.switchDiffType(diffTabKey(ROOT), "uncommitted")
+    expect(listVcsDiff).toHaveBeenCalledTimes(1)
+  })
+
+  it("切换 segment：更新选中并加载该来源；再点当前选中不重拉", async () => {
+    const listVcsDiff = vcsClient()
+    store.openDiffTab()
+    await vi.waitFor(() => expect(listVcsDiff).toHaveBeenCalledTimes(1))
+    store.switchDiffType(diffTabKey(ROOT), "branch")
+    expect(store.diffTypeFor(diffTabKey(ROOT))).toBe("branch")
+    await vi.waitFor(() => expect(listVcsDiff).toHaveBeenCalledTimes(2))
+    expect(listVcsDiff).toHaveBeenLastCalledWith(ROOT, "branch")
+    store.switchDiffType(diffTabKey(ROOT), "branch")
+    expect(listVcsDiff).toHaveBeenCalledTimes(2)
+  })
+
+  it("关闭 Tab 卸载三来源缓存与选中：重开回到缺省", async () => {
+    const listVcsDiff = vcsClient()
+    const key = diffTabKey(ROOT)
+    store.openDiffTab()
+    await vi.waitFor(() => expect(listVcsDiff).toHaveBeenCalledTimes(1))
+    store.switchDiffType(key, "branch")
+    await vi.waitFor(() => expect(listVcsDiff).toHaveBeenCalledTimes(2))
+    store.closeTab(key)
+    expect(store.tabs).toHaveLength(0)
+    expect(store.diffSelectedTypes.has(key)).toBe(false)
+    expect(store.diffData.size).toBe(0)
+    // 重开：选中回缺省并重新加载（不复用旧缓存）
+    store.openDiffTab()
+    expect(store.diffTypeFor(key)).toBe("uncommitted")
+    await vi.waitFor(() => expect(listVcsDiff).toHaveBeenCalledTimes(3))
   })
 })

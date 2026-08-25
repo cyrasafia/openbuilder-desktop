@@ -81,23 +81,32 @@ import type {
 
 export type TabKind = "chat" | "file" | "diff"
 
-/** diff Tab 的来源类型（design-diff-view §2） */
+/** diff 的来源类型（design-diff-view §2）：单 Tab 内 segment 切换 */
 export type DiffTabType = "round" | "uncommitted" | "branch"
 
-export function diffTabKey(type: DiffTabType, directory: string): string {
-  return `diff\0${type}\0${directory}`
+export const DIFF_TAB_TYPES: readonly DiffTabType[] = ["round", "uncommitted", "branch"]
+
+/** diff Tab key：每作用域单 Tab（2026-08-25 修订，原按 type 拆三 Tab） */
+export function diffTabKey(directory: string): string {
+  return `diff\0${directory}`
 }
 
-export function parseDiffTabKey(key: string): { type: DiffTabType; directory: string } | null {
+export function parseDiffTabKey(key: string): { directory: string } | null {
   if (!key.startsWith("diff\0")) return null
-  const [, type, directory] = key.split("\0")
-  if (type !== "round" && type !== "uncommitted" && type !== "branch") return null
-  return { type, directory }
+  const directory = key.slice("diff\0".length)
+  // 防御：数据 key（diffDataKey）含两段 \0，误传时返回 null
+  if (!directory || directory.includes("\0")) return null
+  return { directory }
+}
+
+/** diff 数据缓存 key（type+directory 独立缓存，segment 切换互不丢数据） */
+export function diffDataKey(type: DiffTabType, directory: string): string {
+  return `diff\0${type}\0${directory}`
 }
 
 export interface TabEntity {
   kind: TabKind
-  /** chat: sessionID; file: absolute path; diff: `diff\0{type}\0{directory}` */
+  /** chat: sessionID; file: absolute path; diff: `diff\0{directory}` */
   key: string
   projectId: string
   title: string
@@ -197,8 +206,10 @@ export class AppStore {
   fileTreeExpanded = new Map<string, boolean>()
   fileTreeNodes = new Map<string, FileNode[]>()
   fileContents = new Map<string, { content: string; error?: string }>()
-  /** diff Tab 数据（design-diff-view §3）：key = diffTabKey(type, directory) */
+  /** diff 数据（design-diff-view §3）：key = diffDataKey(type, directory) */
   diffData = new Map<string, { files: FileDiff[]; error?: string; loading?: boolean }>()
+  /** diff Tab 选中来源（design-diff-view §2）：key = diffTabKey(directory)；缺省 = uncommitted */
+  diffSelectedTypes = new Map<string, DiffTabType>()
 
   // ---- 内部 ----
   private client: RestClient | null = null
@@ -378,6 +389,7 @@ export class AppStore {
     this.tabs = []
     this.activeTabKey = null
     this.diffData.clear()
+    this.diffSelectedTypes.clear()
     this.commandCache = initialCommandCache()
     // 在途 fetch 无法中断；迟到的结果由 refreshCommands 的 client 身份守卫丢弃
     this.commandsInFlight.clear()
@@ -2331,24 +2343,42 @@ export class AppStore {
     this.emit()
   }
 
-  /** 打开（或复用）当前作用域的 diff Tab 并触发加载（design-diff-view §3） */
-  openDiffTab(type: DiffTabType) {
+  /**
+   * 打开（或复用）当前作用域的 diff Tab 并触发加载（design-diff-view §3）。
+   * 每作用域单 Tab；来源类型 = 既有选中（复用时保留用户选择），缺省 uncommitted。
+   */
+  openDiffTab() {
     const directory = this.scopeDirectory()
     const project = this.currentProject
     if (!directory || !project) return
-    const key = diffTabKey(type, directory)
+    const key = diffTabKey(directory)
     const existing = this.tabs.find((t) => t.key === key)
     if (!existing) {
       this.tabs.push({
         kind: "diff",
         key,
         projectId: project.id,
-        title: type,
+        title: "diff",
         directory,
       })
     }
     this.activeTabKey = key
-    void this.loadDiffTab(type, directory)
+    void this.loadDiffTab(this.diffTypeFor(key), directory)
+    this.emit()
+  }
+
+  /** diff Tab 选中来源（design-diff-view §2；缺省 uncommitted，同移动端 DiffListScreen 默认） */
+  diffTypeFor(tabKey: string): DiffTabType {
+    return this.diffSelectedTypes.get(tabKey) ?? "uncommitted"
+  }
+
+  /** segment 切换：更新选中 + 加载该来源数据（缓存作首帧；重复点击不动作，同移动端） */
+  switchDiffType(tabKey: string, type: DiffTabType) {
+    const parsed = parseDiffTabKey(tabKey)
+    // 守卫比对有效选中（含缺省兜底）：新 Tab 无条目时 get 为 undefined，直接比对会漏
+    if (!parsed || this.diffTypeFor(tabKey) === type) return
+    this.diffSelectedTypes.set(tabKey, type)
+    void this.loadDiffTab(type, parsed.directory)
     this.emit()
   }
 
@@ -2360,7 +2390,8 @@ export class AppStore {
   async loadDiffTab(type: DiffTabType, directory: string) {
     const client = this.client
     if (!client) return
-    const key = diffTabKey(type, directory)
+    const tabKey = diffTabKey(directory)
+    const key = diffDataKey(type, directory)
     const prev = this.diffData.get(key)
     this.diffData.set(key, { files: prev?.files ?? [], loading: true })
     this.emit()
@@ -2394,7 +2425,7 @@ export class AppStore {
       error = e instanceof Error ? e.message : String(e)
     }
     // 守卫：在途期间 Tab 可能已关闭/连接已拆（与项目其余 async 路径一致）
-    if (this.client !== client || !this.tabs.some((t) => t.key === key)) return
+    if (this.client !== client || !this.tabs.some((t) => t.key === tabKey)) return
     this.diffData.set(key, { files: files ?? [], error })
     this.emit()
   }
@@ -2437,8 +2468,11 @@ export class AppStore {
     if (idx < 0) return
     const closed = this.tabs[idx]
     this.tabs.splice(idx, 1)
-    // diff Tab 关闭即卸载数据（无归档语义；重开走 loadDiffTab）
-    if (closed.kind === "diff") this.diffData.delete(key)
+    // diff Tab 关闭即卸载数据与选中（无归档语义；重开走 loadDiffTab）
+    if (closed.kind === "diff") {
+      for (const ty of DIFF_TAB_TYPES) this.diffData.delete(diffDataKey(ty, closed.directory ?? ""))
+      this.diffSelectedTypes.delete(key)
+    }
     if (this.activeTabKey === key) {
       // 回退激活：优先同作用域的相邻 Tab（Tab 条按作用域过滤显示，不能激活到隐藏 Tab）
       const scopeDir = closed.kind === "file" ? null : closed.directory

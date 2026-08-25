@@ -69,13 +69,13 @@
 | Tab 类型 | 内容 | 版本 |
 |---|---|---|
 | `chat` 会话 Tab | 聊天视图（消息流 + 底部输入区）；标题 = 会话标题（无标题时取首条消息摘要），流式进行中显示动态指示 | v0.1 || `file` 文件 Tab | 文件树点击文件 → 新开（或复用同文件）纯文本视图；标题 = 文件名；无 dirty 态（只读） | v0.1 |
-| `diff` | 会话内变更 diff（@pierre/diffs，会话事件触发） | v0.2（M2） |
+| `diff` | 作用域改动详情（上一轮/未提交/分支三来源，单 Tab + 页内 segment 切换），见 [design-diff-view.md](./design-diff-view.md) | v0.2（已落地） |
 | `terminal` | xterm.js + pty 会话（server pty API） | v0.2（M2） |
 | `browser` | WebContentsView 内嵌浏览器 tab | v0.3+ |
 | `editor` | CodeMirror 6 编辑器 | v0.3+ |
 
 - Tab 规则：可关闭；同 kind 内按打开顺序，不同 kind 混排（注册制下统一顺序 + kind 图标区分）；切换用 Ctrl+PgUp/PgDn（快捷键体系 v0.2 再统一）
-- Tab 标识稳定：chat = sessionID、file/diff = 文件路径、terminal = ptyID、browser = URL；重复打开同标识复用已开 Tab 并激活
+- Tab 标识稳定：chat = sessionID、file = 文件路径、diff = 作用域目录、terminal = ptyID、browser = URL；重复打开同标识复用已开 Tab 并激活
 - **chat Tab 与 session 生命周期绑定（对称语义）**：
   - 新建 chat Tab = 新建 session（`POST /session`），Tab 即 session 的工作区化身
   - **关闭 chat Tab = 归档 session**（`PATCH time.archived`）——Tab 关闭不提供"仅关闭不归档"的路径，交互语义唯一
@@ -94,7 +94,7 @@
 - 默认视图（无激活 Tab）＝ **新 Tab 引导页**（2026-08-23 修订，原"作用域会话列表"）：
   - 居中大输入框：输入消息发送即 **新建会话 + 发送首条消息**——首条消息发送成功才开 Tab 并激活（引导页退出）；失败保留草稿、重试复用同一会话（不产生空 Tab），错误经左栏状态行可见；Enter 语义与聊天输入区一致（裸 Enter 发送、修饰键+Enter 换行、IME 组合中不触发）
   - 输入框下方 **已归档会话列表**（当前作用域，按最近活跃排序）：点击 = 取消归档并开 Tab（与"打开 Tab = 取消归档"对称语义一致）
-  - 终端/网页 Tab 入口以禁用态预留（`terminal` v0.2、`browser` v0.3+）
+  - **Tab 入口行**（2026-08-25 增补）：单个「改动」入口（开作用域唯一 diff Tab，三种改动来源在页内 segment 切换，见 [design-diff-view.md](./design-diff-view.md)）；终端/网页 Tab 入口以禁用态预留（`terminal` v0.2、`browser` v0.3+），三者同行平级
   - 触发时机：新建项目/工作区后（作用域无 Tab）、Tab 栏 **"+"**（2026-08-23 修订，原直接新建会话）、作用域无任何 Tab
   - 已知取舍：会话"重命名/删除"UI 暂无入口（随 v0.2 chat 视图头部补齐）；未归档会话仅经作用域切换的自动开 Tab（上限 8）可达，超出部分暂无列表入口
 

@@ -534,14 +534,22 @@
   margin-top: 8px;
 }
 
-/* 终端/网页 Tab 预留入口（v0.2/v0.3，禁用态） */
+/* Tab 入口（design-diff-view §4.4）：diff 可用；终端/网页禁用态预留（v0.2/v0.3） */
 .guide-action {
   background: var(--surface-container-low);
   border: 1px solid var(--outline-variant);
   border-radius: var(--radius-chip);
-  color: var(--outline);
+  color: var(--on-surface);
   padding: 6px 14px;
   font-size: var(--text-sm);
+  cursor: pointer;
+  transition: background 150ms ease;
+}
+.guide-action:hover:not(:disabled) {
+  background: var(--surface-container-high);
+}
+.guide-action:disabled {
+  color: var(--outline);
   cursor: default;
 }
 
@@ -2251,8 +2259,22 @@
 }
 
 /* ---------- diff 详情页（design-diff-view §4.3） ---------- */
+.diff-view-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 顶部 segment 工具条：常驻渲染（加载/错误态不弹入，同 .file-toolbar 决策） */
+.diff-toolbar {
+  display: flex;
+  padding: 8px 16px 0;
+}
+
 .diff-view {
   flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: 12px 16px 24px;
 }
@@ -2427,27 +2449,3 @@
   color: var(--on-surface-variant);
 }
 
-/* GuidePage diff 入口（design-diff-view §4.4） */
-.guide-diff-entries {
-  display: flex;
-  gap: 8px;
-  margin: 8px 0 4px;
-  flex-wrap: wrap;
-}
-.guide-diff-entry {
-  border: 1px solid var(--outline-variant);
-  background: var(--surface-container-low);
-  color: var(--on-surface);
-  border-radius: var(--radius-chip);
-  padding: 6px 12px;
-  font-size: var(--text-sm);
-  cursor: pointer;
-  transition: background 150ms ease;
-}
-.guide-diff-entry:hover:not(:disabled) {
-  background: var(--surface-container-high);
-}
-.guide-diff-entry:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}

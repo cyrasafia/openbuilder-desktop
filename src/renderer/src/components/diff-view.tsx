@@ -1,5 +1,7 @@
 /**
- * Diff 详情视图（design-diff-view §4）：文件块（可折叠）→ hunk 头 + 行。
+ * Diff 详情视图（design-diff-view §4）：顶部 segment 切换三种来源
+ * （上一轮/未提交/分支，同移动端 DiffListScreen 的 SegmentedButton），
+ * 主体 = 文件块（可折叠）→ hunk 头 + 行。
  * 行 = 双 gutter（old|new）+ marker + 内容；added/removed 底色 tint 为主标识，
  * token 走 --syntax-*（与代码视图同表）。高亮 = 双路重建（new/old 各整段
  * tokenize 再映射回行，openbuilder design-diff-view 同法），headless
@@ -12,11 +14,24 @@ import { EditorState } from "@codemirror/state"
 import { ensureSyntaxTree } from "@codemirror/language"
 import { highlightCode } from "@lezer/highlight"
 import { useI18n, useStore } from "../app"
-import type { DiffTabType } from "../store/app-store"
+import { DIFF_TAB_TYPES, diffDataKey, type DiffTabType } from "../store/app-store"
+import type { Catalog } from "../i18n"
 import { languageForPath } from "./cm-lang"
 import { classHighlighter } from "./cm-theme"
 import { parseDiffHunks, type DiffHunk } from "@shared/diff-parse"
 import type { FileDiff } from "@shared/api-types"
+
+/** segment 短标签（移动端 diffMode* 同源；完整语义在 Tab 标题「改动」之下） */
+function diffSegLabel(t: Catalog, type: DiffTabType): string {
+  switch (type) {
+    case "round":
+      return t.diffRound
+    case "uncommitted":
+      return t.diffUncommitted
+    case "branch":
+      return t.diffBranch
+  }
+}
 
 /** 单行内的 token 片段（cls 为空 = 无样式） */
 interface Token {
@@ -116,22 +131,54 @@ const STATUS_LETTER: Record<FileDiff["status"], string> = {
 
 export function DiffView({
   tabKey,
-  type,
   directory,
 }: {
   tabKey: string
+  directory: string
+}) {
+  const store = useStore()
+  const { t } = useI18n()
+  const type = store.diffTypeFor(tabKey)
+
+  // 激活即重拉当前选中来源（同 FileView 语义；旧数据作首帧）
+  useEffect(() => {
+    void store.loadDiffTab(store.diffTypeFor(tabKey), directory)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabKey])
+
+  // segment 常驻渲染（同 FileView 工具条——避免内容落地时工具条弹入的布局跳动）
+  return (
+    <div className="diff-view-wrap">
+      <div className="diff-toolbar">
+        <div className="ms-segmented" role="group" aria-label={t.diffTitle}>
+          {DIFF_TAB_TYPES.map((ty) => (
+            <button
+              key={ty}
+              type="button"
+              aria-pressed={ty === type}
+              className={"ms-seg" + (ty === type ? " active" : "")}
+              onClick={() => store.switchDiffType(tabKey, ty)}
+            >
+              {diffSegLabel(t, ty)}
+            </button>
+          ))}
+        </div>
+      </div>
+      <DiffBody type={type} directory={directory} />
+    </div>
+  )
+}
+
+function DiffBody({
+  type,
+  directory,
+}: {
   type: DiffTabType
   directory: string
 }) {
   const store = useStore()
   const { t } = useI18n()
-  const data = store.diffData.get(tabKey)
-
-  // 激活即重拉（同 FileView 语义；旧数据作首帧）
-  useEffect(() => {
-    void store.loadDiffTab(type, directory)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tabKey])
+  const data = store.diffData.get(diffDataKey(type, directory))
 
   if (!data || (data.loading && data.files.length === 0)) {
     return (
@@ -154,9 +201,12 @@ export function DiffView({
     )
   }
   if (data.files.length === 0) {
+    // round 空态区分：作用域无会话（入口语义）与有会话但无改动
+    const emptyText =
+      type === "round" && !store.visibleSessions.length ? t.diffRoundNoSession : t.diffEmpty
     return (
       <div className="diff-view">
-        <div className="diff-empty">{t.diffEmpty}</div>
+        <div className="diff-empty">{emptyText}</div>
       </div>
     )
   }

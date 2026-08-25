@@ -1,9 +1,10 @@
 # Diff 详情页（上一轮 / 未提交 / 分支改动）— 设计文档
 
-> 目标：从新 Tab 引导页进入当前作用域的改动详情——三种来源：**上一轮**（最近会话最后一轮的改动）、**未提交**（工作区 vs HEAD）、**分支**（当前分支 vs 默认分支）。统一 unified diff 渲染：行号 + 语法高亮 + 增删底色，按文件分段、按 hunk 分节。
+> 目标：从新 Tab 引导页进入当前作用域的改动详情——三种来源：**上一轮**（最近会话最后一轮的改动）、**未提交**（工作区 vs HEAD）、**分支**（当前分支 vs 默认分支）。**三种来源集成于单个 diff Tab，页内 segment control 切换**（2026-08-25 修订，原为三入口三 Tab，见 §2 修订说明）。统一 unified diff 渲染：行号 + 语法高亮 + 增删底色，按文件分段、按 hunk 分节。
 >
 > 参考来源（按 AGENTS.md 约定先行检索）：
 > - `openbuilder/docs/design-diff-view.md` —— diff 详情页渲染总设计：`parseDiffHunks` 解析规则（第一个 `@@` 切文件头、内容行只做单字符前缀判定、多文件兜底停止）、**双路重建高亮**（new/old 各整段 tokenize 再映射回行）、底色为主标识 + token 保留语法色、单 gutter 行号策略、hunk 头部（序号 + 行范围 + 增删统计）
+> - `openbuilder/lib/features/files/diff_list_screen.dart` —— **移动端正是单页 + `SegmentedButton<DiffMode>` 切换三来源**（默认 `uncommitted`、切换即重拉、重复点击不动作）；本修订（2026-08-25）即对齐该实证形态
 > - `openbuilder/docs/design-file-browsing-container.md` —— 移动端 diff 入口与文件浏览容器的关系（桌面端以 Tab 体系对应）
 > - 本仓库 `design-code-view.md` —— CodeMirror 6 基础设施（cm-lang 语言映射 / cm-theme class 化 HighlightStyle / --syntax-* 令牌），diff 行高亮直接复用
 > - `../openchamber` 的 `@pierre/diffs`（AGENTS.md 实证选型来源）**评估后不采用**：其接口要求整文件 original/modified 内容（本项目只有 patch），且 Shadow DOM 主题桥接成本高（openchamber 为此写了两层注入 CSS）；自研 DOM 渲染 + CM 生态 headless 高亮更薄
@@ -22,16 +23,20 @@
 
 ## 2. Tab 模型
 
-- `TabKind` 增 `diff`；key = `diff\0{type}\0{directory}`（type ∈ `round|uncommitted|branch`；\0 分隔沿用 global entry 先例）——同作用域同类型复用 Tab。
+**2026-08-25 修订（单 Tab + segment）**：原设计按来源拆三个 Tab（key = `diff\0{type}\0{directory}`），实测形态与移动端 `DiffListScreen` 背离——移动端是单页 + `SegmentedButton` 切换。修订为：
+
+- `TabKind` 含 `diff`；key = `diff\0{directory}`——**每作用域单 Tab**，同作用域重复打开复用。
+- 来源类型（`DiffTabType = round|uncommitted|branch`）是 Tab 的**选中状态**而非 Tab 身份：`store.diffSelectedTypes: Map<tabKey, DiffTabType>`（内存，缺省 `uncommitted`，同移动端默认）；`diffTypeFor(tabKey)` 读取、`switchDiffType(tabKey, type)` 切换（重复点击不动作，同移动端 `_onModeChanged` 守卫）。选中跨 Tab 切换存活（store 级），关闭 Tab 清除。
+- Tab 标题固定「改动 / Changes」（不随 segment 变，同移动端 AppBar 恒 "Diff"）；segment 用短标签「上一轮 / 未提交 / 分支」（移动端 `diffMode*` 同源）。
 - project-scoped：Tab 条按 `directory === scopeDir` 过滤显示（同 chat）；关闭项目/删工作区/关 global 目录时关闭其 diff Tab（不归档——归档语义仅 chat）。Tab 记忆（scope-tab-memory）只收 chat，diff 不入记忆（每次按需打开）。
-- 标题：`上一轮改动 / 未提交改动 / 分支改动`（+作用域切换后同 key 不复用——directory 在 key 内）。
 
 ## 3. 数据流
 
-- store：`diffsByTab: Map<key, { files: SnapshotFileDiff[]; error?: string }>`；`openDiffTab(type)`（开 Tab + 激活 + 触发加载）；`loadDiffTab(type, directory)`：
+- store：`diffData: Map<dataKey, { files: SnapshotFileDiff[]; error?: string; loading?: boolean }>`，**dataKey = `diff\0{type}\0{directory}`**（`diffDataKey`）——三种来源独立缓存，segment 切换互不丢数据，切回已加载来源以缓存作首帧；`openDiffTab()`（开/复用 Tab + 激活 + 按选中来源触发加载）；`switchDiffType`（更新选中 + 加载该来源）；`loadDiffTab(type, directory)`：
   - `uncommitted|branch` → `listVcsDiff`；
   - `round` → 作用域最近会话 → `listMessagesPage(limit 100)` 取最后一条 user → 无 user 消息或无会话 = 空态；有则 `listSessionDiff(messageID)`。
-- 激活即重拉（同 FileView）；失败显示错误 + 重试按钮；空 diff 显示「无改动」。
+- **激活即重拉当前选中来源**（同 FileView）；segment 切换即拉对应来源（同移动端）；失败显示错误 + 重试按钮；空 diff 显示「无改动」（`round` 且作用域无会话时显示「当前作用域暂无会话」——2026-08-25 修订前该文案只作禁用入口 tooltip）。
+- 关闭 Tab 卸载该目录全部三来源缓存与选中（重开走 `loadDiffTab`）。
 
 ## 4. 渲染（`diff-view.tsx`）
 
@@ -56,6 +61,7 @@
 
 ### 4.3 视图层
 
+- **顶部 segment 工具条（2026-08-25 修订）**：`.diff-toolbar` 常驻渲染（同 `.file-toolbar` 决策——loading/error 态也渲染，避免内容落地时工具条弹入的布局跳动）；分段控件复用 `.ms-segmented`/`.ms-seg`（单一来源，不另起一套，同 FileView 预览/源码切换）；`role="group"` + `aria-pressed` 分组按钮（不冒充 tabs，无方向键导航）。三段 = `round|uncommitted|branch`，短标签。
 - 文件块（可折叠，chip 头部模式）：状态图标（added +/deleted −/modified M）+ 文件路径（mono）+ `+N −N` 统计；折叠只渲染头部。
 - hunk 头：`第 N 段 · L{newStart}–{newEnd} · +a −d`。
 - 行：双 gutter（oldNo | newNo，等宽两列——桌面宽裕，信息全）+ marker（+/−）+ 内容；added 绿底 tint / removed 红底 tint / context 透明，token 色 = `--syntax-*`（GitHub 风格与代码视图一致）；`diffAddBg/diffDelBg/diffAddFg/diffDelFg` 令牌进 tokens.css 双主题。
@@ -65,8 +71,11 @@
 
 ### 4.4 入口（GuidePage）
 
-- hero/composer 下方一行三个入口 chip：上一轮改动 / 未提交改动 / 分支改动；
-- `round` 在作用域无会话时禁用（title 提示）；非 git 作用域（global 根目录等）vcs 两种禁用——server 对非 git 目录返回错误，UI 以错误态呈现亦可接受（简化：不禁用，靠错误态）。
+**2026-08-25 修订（单入口）**：原为三个来源入口 chip，修订为**单个「改动」入口**，与预留的终端/网页入口平级（同一行 `.guide-actions`）：
+
+- 点「改动」= `openDiffTab()`——开/复用作用域唯一 diff Tab；来源类型在页内 segment 切换，入口不再暴露三来源；
+- 终端（`terminal`，v0.2）/ 网页（`browser`，v0.3+）为禁用态预留（`title` = 「即将支持」），与 design-layout §4 一致；
+- 入口不因作用域状态禁用：`round` 无会话的提示下沉到页内空态文案（「当前作用域暂无会话」）；非 git 作用域 vcs 两来源由错误态呈现（与原设计一致，不禁用）。
 
 ## 5. 不做的事
 
@@ -86,15 +95,17 @@
 | `src/shared/api-types.ts` | `SnapshotFileDiff` 类型 |
 | `src/shared/rest-client.ts` | `listVcsDiff` / `listSessionDiff` |
 | `src/shared/diff-parse.ts` + `.test.ts` | 解析层（新） |
-| `src/renderer/src/components/diff-view.tsx` + `.test.tsx` | 渲染层（新） |
-| `src/renderer/src/store/app-store.ts` | TabKind diff / diffsByTab / openDiffTab / loadDiffTab / 清理挂点（closeProject/closeGlobalDirectory/removeWorkspace/closeTab） |
-| `src/renderer/src/components/workspace.tsx` | GuidePage 入口 + Tab 条过滤/关闭 + Workspace 渲染分支 |
-| `src/renderer/src/i18n/index.ts` | diff 文案 |
-| `src/renderer/src/styles/tokens.css` + `app.css` | diff 令牌与样式 |
+| `src/renderer/src/components/diff-view.tsx` + `.test.tsx` | 渲染层（segment 工具条 + 来源内容） |
+| `src/renderer/src/store/app-store.ts` | TabKind diff / `diffTabKey(directory)` / `diffDataKey(type,directory)` / `diffSelectedTypes`+`diffTypeFor`+`switchDiffType` / openDiffTab / loadDiffTab / 清理挂点（closeProject/closeGlobalDirectory/removeWorkspace/closeTab/teardown） |
+| `src/renderer/src/components/workspace.tsx` | GuidePage 单入口 + 预留终端/网页 + Tab 条过滤/关闭 + Workspace 渲染分支 |
+| `src/renderer/src/i18n/index.ts` | diff 文案（标题「改动」+ 短标签） |
+| `src/renderer/src/styles/tokens.css` + `app.css` | diff 令牌与样式（`.diff-view-wrap`/`.diff-toolbar`/`.guide-actions`/`.guide-action`） |
 
 ## 7. 验收
 
-- 三种入口分别打开对应 Tab（同作用域同类型复用）；上一轮无会话/无 user 消息 → 空态；vcs 空 → 「无改动」；非 git 目录 → 错误态可重试；
+- GuidePage 单「改动」入口开/复用作用域唯一 diff Tab，与终端/网页预留入口同行平级（后两者禁用、`title`=即将支持）；
+- 页内 segment 切换三来源：默认未提交；切换即拉对应来源、缓存作首帧、重复点击不动作；选中跨 Tab 切换存活、关 Tab 清除；
+- 上一轮无会话 → 「当前作用域暂无会话」；无 user 消息/无改动 → 「无改动」；vcs 空 → 「无改动」；非 git 目录 → 错误态可重试；
 - 文件块折叠/展开、hunk 头、行号、增删底色、语法高亮（ts/md 等已映射语言）、长行横滚；
 - 解析器单测（含 `+++i` 内容行、多文件兜底、`\ No newline`）；
 - `npm run test` / `npm run typecheck` 全绿；本机 15120 实测三端点。

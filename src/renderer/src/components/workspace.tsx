@@ -19,19 +19,7 @@ import { ModelSwitcherBar } from "./model-switcher"
 import { CodeView } from "./code-view"
 import { buildHtmlPreviewDocument } from "./html-preview"
 import { DiffView } from "./diff-view"
-import { parseDiffTabKey, type DiffTabType } from "../store/app-store"
-
-/** diff Tab 标题（i18n；store.title 存的是类型标签） */
-function diffTitleOf(t: Catalog, type: DiffTabType): string {
-  switch (type) {
-    case "round":
-      return t.diffRound
-    case "uncommitted":
-      return t.diffUncommitted
-    case "branch":
-      return t.diffBranch
-  }
-}
+import { parseDiffTabKey } from "../store/app-store"
 
 export function Workspace() {
   const store = useStore()
@@ -49,7 +37,6 @@ export function Workspace() {
     <main className="workspace">
       <div className="tabbar">
         {tabs.map((tab) => {
-          const diffInfo = tab.kind === "diff" ? parseDiffTabKey(tab.key) : null
           return (
           <div
             key={tab.key}
@@ -68,7 +55,7 @@ export function Workspace() {
 
             )}
             <span className="tab-label">
-              {diffInfo ? diffTitleOf(t, diffInfo.type) : tab.title || t.untitled}
+              {tab.kind === "diff" ? t.diffTitle : tab.title || t.untitled}
             </span>
             <button
               className="icon-btn tab-close"
@@ -110,9 +97,7 @@ export function Workspace() {
         {active?.kind === "diff" &&
           (() => {
             const diff = parseDiffTabKey(active.key)
-            return diff ? (
-              <DiffView key={active.key} tabKey={active.key} type={diff.type} directory={diff.directory} />
-            ) : null
+            return diff ? <DiffView key={active.key} tabKey={active.key} directory={diff.directory} /> : null
           })()}
       </div>
 
@@ -166,30 +151,17 @@ function GuidePage() {
       <div className="guide-main">
         <div className="hero">{scopeName}</div>
         <div className="guide-hint">{t.guideHint}</div>
-        {/* diff 入口（design-diff-view §4.4）：当前作用域三种改动来源 */}
-        <div className="guide-diff-entries">
-          <button
-            type="button"
-            className="guide-diff-entry"
-            disabled={!store.visibleSessions.length}
-            title={store.visibleSessions.length ? t.diffRound : t.diffRoundNoSession}
-            onClick={() => store.openDiffTab("round")}
-          >
-            {t.diffRound}
+        {/* Tab 入口（design-diff-view §4.4 / design-layout §4）：diff 单入口（页内
+            segment 切换三种来源）；终端/网页为禁用态预留（v0.2/v0.3） */}
+        <div className="guide-actions">
+          <button type="button" className="guide-action" onClick={() => store.openDiffTab()}>
+            {t.diffTitle}
           </button>
-          <button
-            type="button"
-            className="guide-diff-entry"
-            onClick={() => store.openDiffTab("uncommitted")}
-          >
-            {t.diffUncommitted}
+          <button type="button" className="guide-action" disabled title={t.comingSoon}>
+            {t.openTerminal}
           </button>
-          <button
-            type="button"
-            className="guide-diff-entry"
-            onClick={() => store.openDiffTab("branch")}
-          >
-            {t.diffBranch}
+          <button type="button" className="guide-action" disabled title={t.comingSoon}>
+            {t.openBrowser}
           </button>
         </div>
         <div className="guide-composer">

@@ -1,27 +1,45 @@
 /**
- * DiffView 渲染测试（design-diff-view §4）：加载/错误/空态/多 hunk 渲染/
- * 二进制空 hunk 兜底/文件块折叠。store 经 vi.mock 提供 diffData + loadDiffTab。
+ * DiffView 渲染测试（design-diff-view §4）：segment 切换、加载/错误/空态、
+ * 多 hunk 渲染、二进制空 hunk 兜底、文件块折叠。store 经 vi.mock 提供
+ * diffData + diffTypeFor/switchDiffType/loadDiffTab/visibleSessions。
  * CodeMirror headless 高亮依赖 ResizeObserver（jsdom 缺失），补 stub。
  */
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { DiffView } from "./diff-view"
-import type { FileDiff } from "@shared/api-types"
+import type { DiffTabType } from "../store/app-store"
+import type { Session, FileDiff } from "@shared/api-types"
 
 const loadDiffTab = vi.fn()
+const switchDiffType = vi.fn()
+
+/** 当前选中来源（测试按用例设置，模拟 store.diffSelectedTypes） */
+let selType: DiffTabType
+let visibleSessions: Session[]
 
 vi.mock("../app", () => ({
   useI18n: () => ({
     t: {
       loading: "加载中…",
       retry: "重试",
+      diffTitle: "改动",
+      diffRound: "上一轮",
+      diffUncommitted: "未提交",
+      diffBranch: "分支",
+      diffRoundNoSession: "当前作用域暂无会话",
       diffEmpty: "无改动",
       diffHunkSegment: "第 {n} 段",
       diffNoTextDiff: "无文本差异或二进制文件",
     },
     locale: "zh" as const,
   }),
-  useStore: () => ({ diffData: dataStub, loadDiffTab }),
+  useStore: () => ({
+    diffData: dataStub,
+    loadDiffTab,
+    switchDiffType,
+    diffTypeFor: () => selType,
+    visibleSessions,
+  }),
 }))
 
 let dataStub: Map<string, { files: FileDiff[]; error?: string; loading?: boolean }>
@@ -42,7 +60,10 @@ afterAll(() => {
 beforeEach(() => {
   cleanup()
   loadDiffTab.mockClear()
+  switchDiffType.mockClear()
   dataStub = new Map()
+  selType = "uncommitted"
+  visibleSessions = []
 })
 
 const file = (patch: string, status: "added" | "deleted" | "modified" = "modified") => ({
@@ -56,30 +77,59 @@ const file = (patch: string, status: "added" | "deleted" | "modified" = "modifie
 const PATCH =
   "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,2 +1,3 @@\n const x = 1\n-const y = 2\n+const y = 3\n+const z = 4\n"
 
+const TAB_KEY = "diff\0/repo"
+
 describe("DiffView", () => {
+  it("segment 常驻：三来源按钮，选中态跟随 store", () => {
+    dataStub.set("diff\0uncommitted\0/repo", { files: [] })
+    render(<DiffView tabKey={TAB_KEY} directory="/repo" />)
+    expect(screen.getByText("上一轮")).not.toBeNull()
+    expect(screen.getByText("未提交")).not.toBeNull()
+    expect(screen.getByText("分支")).not.toBeNull()
+    expect(screen.getByText("未提交").classList.contains("active")).toBe(true)
+    expect(screen.getByText("上一轮").classList.contains("active")).toBe(false)
+  })
+
+  it("点击 segment 调用 switchDiffType", () => {
+    dataStub.set("diff\0uncommitted\0/repo", { files: [] })
+    render(<DiffView tabKey={TAB_KEY} directory="/repo" />)
+    fireEvent.click(screen.getByText("分支"))
+    expect(switchDiffType).toHaveBeenCalledWith(TAB_KEY, "branch")
+  })
+
   it("加载态（loading 且无旧数据）", () => {
+    selType = "round"
     dataStub.set("diff\0round\0/repo", { files: [], loading: true })
-    render(<DiffView tabKey={"diff\0round\0/repo"} type="round" directory="/repo" />)
+    render(<DiffView tabKey={TAB_KEY} directory="/repo" />)
     expect(screen.getByText("加载中…")).not.toBeNull()
   })
 
   it("错误态显示错误 + 重试按钮", () => {
     dataStub.set("diff\0uncommitted\0/repo", { files: [], error: "HTTP 500" })
-    render(<DiffView tabKey={"diff\0uncommitted\0/repo"} type="uncommitted" directory="/repo" />)
+    render(<DiffView tabKey={TAB_KEY} directory="/repo" />)
     expect(screen.getByText("HTTP 500")).not.toBeNull()
     fireEvent.click(screen.getByText("重试"))
     expect(loadDiffTab).toHaveBeenCalledWith("uncommitted", "/repo")
   })
 
   it("空 diff 显示无改动", () => {
+    selType = "branch"
     dataStub.set("diff\0branch\0/repo", { files: [] })
-    render(<DiffView tabKey={"diff\0branch\0/repo"} type="branch" directory="/repo" />)
+    render(<DiffView tabKey={TAB_KEY} directory="/repo" />)
     expect(screen.getByText("无改动")).not.toBeNull()
   })
 
+  it("round 空态且无会话：显示无会话文案", () => {
+    selType = "round"
+    dataStub.set("diff\0round\0/repo", { files: [] })
+    render(<DiffView tabKey={TAB_KEY} directory="/repo" />)
+    expect(screen.getByText("当前作用域暂无会话")).not.toBeNull()
+  })
+
   it("多 hunk 渲染：行号/marker/底色 class/统计", () => {
+    selType = "round"
     dataStub.set("diff\0round\0/repo", { files: [file(PATCH)] })
-    render(<DiffView tabKey={"diff\0round\0/repo"} type="round" directory="/repo" />)
+    render(<DiffView tabKey={TAB_KEY} directory="/repo" />)
     // 文件路径
     expect(screen.getByTitle("src/a.ts")).not.toBeNull()
     // 行：context(1/1)、removed(2/无)、added(无/2)、added(无/3)
@@ -100,14 +150,16 @@ describe("DiffView", () => {
   })
 
   it("无 hunk（二进制）显示兜底文案", () => {
+    selType = "round"
     dataStub.set("diff\0round\0/repo", { files: [file("Binary files differ\n")] })
-    render(<DiffView tabKey={"diff\0round\0/repo"} type="round" directory="/repo" />)
+    render(<DiffView tabKey={TAB_KEY} directory="/repo" />)
     expect(screen.getByText("无文本差异或二进制文件")).not.toBeNull()
   })
 
   it("文件块折叠：点击头部收起行", () => {
+    selType = "round"
     dataStub.set("diff\0round\0/repo", { files: [file(PATCH)] })
-    render(<DiffView tabKey={"diff\0round\0/repo"} type="round" directory="/repo" />)
+    render(<DiffView tabKey={TAB_KEY} directory="/repo" />)
     expect(document.querySelectorAll(".diff-row").length).toBe(4)
     fireEvent.click(screen.getByTitle("src/a.ts"))
     expect(document.querySelectorAll(".diff-row").length).toBe(0)
@@ -116,8 +168,9 @@ describe("DiffView", () => {
     expect(document.querySelectorAll(".diff-row").length).toBe(4)
   })
 
-  it("激活即重拉（useEffect 调用 loadDiffTab）", () => {
-    render(<DiffView tabKey={"diff\0round\0/repo"} type="round" directory="/repo" />)
+  it("激活即重拉当前选中来源（useEffect 调用 loadDiffTab）", () => {
+    selType = "round"
+    render(<DiffView tabKey={TAB_KEY} directory="/repo" />)
     expect(loadDiffTab).toHaveBeenCalledWith("round", "/repo")
   })
 })
