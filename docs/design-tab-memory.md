@@ -37,7 +37,7 @@ interface ScopeTabMemory {
 // 持久化：Record<profileKey, Record<directory, ScopeTabMemory>>
 ```
 
-- 只记 **chat Tab**。file Tab 跨作用域全局显示、不受切换影响（design-layout §4 既有语义），不参与记忆
+- 只记 **chat Tab**。file Tab 虽作用域化（2026-08-25 修订，见 §18；原为跨作用域全局显示）但仍不参与记忆——只读视图重开成本为零，冷启动不恢复，激活经 §7 回退
 - 顺序 = Tab 条顺序。v0.1 无拖拽排序，顺序即打开顺序；记忆结构预留顺序语义，拖拽（v0.2+）落地后天然兼容
 
 ### 3.3 关键不变量
@@ -92,7 +92,7 @@ restoreScopeTabs(dir):
     激活：见 §7（active 保持记忆值，失效按 §7 回退，不因补开顶替）
 ```
 
-**防御闸门（快照不可信）**：`mem.tabs 非空 && sessions 为空 && 该目录在 sessionsByProject 中完全无记录` → 视为快照拉取失败（catch 兜底空快照，session-merge 保守保留后仍空），**不打开 Tab、不收缩记忆**，但激活清算：若当前激活是其他作用域的 chat Tab → 置 null（Tab 条按作用域过滤不显示它、中栏却会渲染其会话；file Tab 保留）。恢复时机 = **下次切入该作用域或重启**；对账快照落地**不**自动重触发（避免引入"对账 → 恢复 → 激活变更"的副作用链，恢复只在显式切换路径发生）。区分依据：真"全部被归档"时本地目录会话集非空（只是被过滤），唯快照从未落地才是全空。**例外（第四轮）**：`snapshottedDirs` 含该目录时空态可信（整目录被他端清空时 store 清空快照会移除本地会话，"全空"是真实状态而非未落地），闸门放行、照常收缩收敛。
+**防御闸门（快照不可信）**：`mem.tabs 非空 && sessions 为空 && 该目录在 sessionsByProject 中完全无记录` → 视为快照拉取失败（catch 兜底空快照，session-merge 保守保留后仍空），**不打开 Tab、不收缩记忆**，但激活清算：若当前激活的 Tab（任意 kind）不属于该作用域 → 置 null（Tab 条按作用域过滤不显示它、中栏却会渲染其内容；2026-08-25 起 file Tab 同样作用域化，见 §18）。恢复时机 = **下次切入该作用域或重启**；对账快照落地**不**自动重触发（避免引入"对账 → 恢复 → 激活变更"的副作用链，恢复只在显式切换路径发生）。区分依据：真"全部被归档"时本地目录会话集非空（只是被过滤），唯快照从未落地才是全空。**例外（第四轮）**：`snapshottedDirs` 含该目录时空态可信（整目录被他端清空时 store 清空快照会移除本地会话，"全空"是真实状态而非未落地），闸门放行、照常收缩收敛。
 
 **首次打开的空集写入前置校验**：区分"真实空目录"与"快照未落地"的信号是**快照落地标记**（`snapshottedDirs` 成功集合：applySessionsSnapshot 落地即加入，refresh 失败不加，关项目/删工作区随目录清除）——未落地时跳过写入（下次切入重试，幂等），仅真实空目录才写空记忆哨兵。否则未落地瞬间写入的 `{tabs: []}` 会让该作用域永不触发全量打开。（2026-08-24 修订：原为失败集合 `snapshotFailed`，先切换后加载引入"从未拉取"目录后改为成功集合——失败集合无法覆盖"从未尝试"与"关项目后重开"两种未落地形态）
 
@@ -106,13 +106,14 @@ restoreScopeTabs(dir):
 
 切入作用域后：
 
-1. 当前激活是 **file Tab → 保持**（file Tab 全局可见，现状语义）
+1. 当前激活**属于目标作用域（任意 kind，按 `activeTab.directory` 判定）→ 保持**（覆盖两阶段恢复异步窗口内用户已在新作用域打开的 file/diff 或点选的 chat——不得被记忆解析顶替；2026-08-25 修订，原规则 1 为"激活是 file Tab → 保持"，file Tab 全局化后废除，见 §18）
 2. 否则 `mem.active ∈ valid` → 激活之（回到切走时的位置）
 3. 否则 valid 末位 Tab（最右）
 4. 否则 null → 中栏会话列表视图
 
 - 首次打开的 active = 该作用域最近活跃会话（updated 最大），与"激活最新动态"直觉一致；顺序仍按 created 排
-- 运行期激活 file Tab 不改写记忆 active：用户切走再切回时，若 file Tab 仍激活则继续file（规则 1），关掉后回退到记忆 active（规则 2）
+- 运行期激活 file Tab 不改写记忆 active：切走后激活随新作用域清算；切回时激活回退到记忆 active（规则 2），file Tab 恢复可见但不占据激活（2026-08-25 修订）
+- 保持分支的 chat 激活仍回写记忆 `active`：死会话收敛的 `closeTab` 可能已经同步钩子派生了新 active，恢复收尾的 `setMemory` 不得用陈旧解析结果覆写（实现约束，2026-08-25）
 
 ## 8. 启动恢复
 
@@ -240,3 +241,25 @@ restoreScopeTabs(dir):
 **幂等性**：immediate 段与完整恢复段跑同一 reconcile——本地已有者即时段即开（SSE 单全局流下他端新建事件已实时入 `sessionsByProject`），滞后漏开由完整恢复补齐，无固化风险（对比：首次打开仍须等快照落地，空/滞后目录与真实状态不可区分）。
 
 **验证**：vitest 125/125（纯函数新增：补开排序/active 不顶替/全失效等价首次打开/零哨兵补开；store 级新增：kind-engine 场景同步段即补开 + active 保持、快照滞后幂等补齐、零哨兵可达；"死会话收敛"用例期望更新——记忆外可见 Tab 由补开吸收进记忆而非仅保留）；typecheck 双侧全绿。
+
+## 18. file Tab 作用域化（2026-08-25 修订）
+
+**问题**：file Tab 原为"跨作用域全局显示、不受切换影响"（design-layout §4 原语义，§7 原规则 1"激活是 file Tab → 保持"）。实测病灶：非聊天 Tab 激活时切换 worktree，Tab 条与中栏**不随作用域变化**——旧作用域的 file Tab 常显且仍占据激活，与"切 worktree = 切上下文"的直觉冲突；其跨作用域残留渲染与 chat Tab 同根源（Tab 条按作用域过滤不显示、中栏却渲染其内容），而 chat 侧已经闸门清算、file 侧豁免，语义不一致。
+
+**决策**：file Tab 与 chat/diff 一律作用域化：
+
+- `openFileTab` 记 `directory` = 打开时作用域目录；复用已开的同路径 Tab 时归属当前作用域（嵌套 global 目录下同文件可从两个作用域打开，显式重开 = 要在当前作用域看）
+- Tab 条过滤统一 `tab.directory === scopeDir`（全 kind，不再豁免 file）
+- §7 规则 1 由"激活是 file Tab → 保持"改为"激活**属于目标作用域**（任意 kind，按 directory 判定）→ 保持"；`resolveRestoreActive` 去掉 kind 参数，退化为纯记忆解析——作用域归属判定收敛在 store（它才有 live tab 的 directory）
+- 闸门激活清算（`clearCrossScopeActivation`）覆盖任意 kind（原仅 chat）
+- `closeTab` 激活回退限同作用域（原 file Tab 走全局候选，可回退到其他作用域的 Tab）；顺带修原实现缺陷——splice 后再 `findIndex` 恒得 -1、回退恒落候选取样首位，改为 splice 前取相邻（左邻优先、无则右邻）
+- 目录卸载随关 file Tab：`closeProject`（目录归属匹配）/`closeGlobalDirectory`（directory + projectId=global——双行目录下不误关 git 项目的 Tab）/`removeWorkspace`（directory 匹配）；否则关闭后它们成永久不可见的孤儿
+- 关项目条目同步修订（design-layout §4）：关项目随关 file/diff Tab（原"其余 Tab 不动"）
+
+**不变**：
+
+- file Tab 仍不参与记忆（§3.2）——只读视图重开成本为零；冷启动不恢复、切走不关闭（隐藏，切回恢复显示，与 chat Tab 的"切换不关不归档"一致）
+- 激活 file Tab 不改写记忆 active（§5）；关 file Tab 无归档副作用
+- chat Tab 的全部语义（记忆/补开/死会话收敛/两阶段恢复）不动
+
+**验证**：vitest 231/231（纯函数 `resolveRestoreActive` 签名简化 3 用例；store 级新增 6 用例：file Tab 激活时切 worktree 激活随作用域走 + 切回恢复、闸门清算覆盖 file、关 file Tab 回退限同作用域、关 Tab 回退取相邻（左邻优先/pos=0 取右邻）、关项目随关 file Tab 且不误伤他项目、删 worktree 随关 file Tab）；typecheck 双侧全绿。

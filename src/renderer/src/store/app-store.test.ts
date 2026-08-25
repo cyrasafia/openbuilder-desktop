@@ -251,6 +251,137 @@ describe("先切换后加载：setCurrentWorkspace", () => {
   })
 })
 
+describe("非聊天 Tab 作用域化（design-tab-memory §18）", () => {
+  it("file Tab 激活时切 worktree：激活随新作用域走；file Tab 不关闭（隐藏），切回恢复可见", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    const s2 = session("s2", WT1, { created: 2, updated: 2 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1, s2))
+    store.tabMemory = {
+      default: {
+        [ROOT]: { projectId: "proj1", tabs: ["s1"], active: "s1" },
+        [WT1]: { projectId: "proj1", tabs: ["s2"], active: "s2" },
+      },
+    }
+    snapshots.set(ROOT, [s1])
+    snapshots.set(WT1, [s2])
+    snapshots.set(WT2, [])
+
+    store.openFileTab("/repo/README.md")
+    expect(store.activeTabKey).toBe("file:/repo/README.md")
+    expect(store.tabs.find((t) => t.key === "file:/repo/README.md")?.directory).toBe(ROOT)
+
+    // 切到 WT1：激活随作用域走（WT1 记忆 chat Tab）；file Tab 保留、directory 仍为 ROOT
+    await store.setCurrentWorkspace(WT1)
+    expect(store.activeTabKey).toBe("chat:s2")
+    expect(store.tabs.find((t) => t.key === "file:/repo/README.md")?.directory).toBe(ROOT)
+
+    // 切回主工作区：file Tab 恢复可见（切换不关不归档），激活回退记忆 chat Tab
+    await store.setCurrentWorkspace(null)
+    expect(store.tabs.some((t) => t.key === "file:/repo/README.md")).toBe(true)
+    expect(store.activeTabKey).toBe("chat:s1")
+  })
+
+  it("切到无记忆作用域：闸门激活清算覆盖 file Tab（不再跨作用域保留激活）", async () => {
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+    store.openFileTab("/repo/a.md")
+    expect(store.activeTabKey).toBe("file:/repo/a.md")
+
+    await store.setCurrentWorkspace(WT1)
+    expect(store.activeTabKey).toBeNull()
+    expect(store.tabs.some((t) => t.key === "file:/repo/a.md")).toBe(true)
+  })
+
+  it("关 file Tab：激活回退限同作用域（不落到先开的其他作用域 Tab）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    const s2 = session("s2", WT1, { created: 2, updated: 2 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1, s2))
+    store.tabMemory = {
+      default: {
+        [ROOT]: { projectId: "proj1", tabs: ["s1"], active: "s1" },
+        [WT1]: { projectId: "proj1", tabs: ["s2"], active: "s2" },
+      },
+    }
+    snapshots.set(ROOT, [s1])
+    snapshots.set(WT1, [s2])
+    snapshots.set(WT2, [])
+
+    await store.setCurrentWorkspace(WT1) // WT1 先开：全局 Tab 序 chat:s2 在前
+    await store.setCurrentWorkspace(null)
+    store.openFileTab(ROOT + "/a.md")
+    expect(store.activeTabKey).toBe(`file:${ROOT}/a.md`)
+
+    store.closeTab(`file:${ROOT}/a.md`)
+    expect(store.activeTabKey).toBe("chat:s1")
+  })
+
+  it("关 Tab 激活回退取相邻（左邻优先），而非恒落候选取样首位", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    store.tabMemory = { default: { [ROOT]: { projectId: "proj1", tabs: ["s1"], active: "s1" } } }
+    snapshots.set(ROOT, [s1])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+
+    await store.setCurrentWorkspace(WT1) // 先切走再切回，触发 restoreScopeTabs 开 chat:s1
+    await store.setCurrentWorkspace(null)
+    store.openFileTab(ROOT + "/a.md")
+    store.openFileTab(ROOT + "/b.md")
+    expect(store.tabs.map((t) => t.key)).toEqual(["chat:s1", `file:${ROOT}/a.md`, `file:${ROOT}/b.md`])
+
+    // 关中间的 a.md：左邻 = chat:s1（不取右邻 b.md）
+    store.setActiveTab(`file:${ROOT}/a.md`)
+    store.closeTab(`file:${ROOT}/a.md`)
+    expect(store.activeTabKey).toBe("chat:s1")
+
+    // 关最左 chat:s1：右邻 = file b.md（pos=0 分支取右邻）
+    store.setActiveTab("chat:s1")
+    store.closeTab("chat:s1")
+    expect(store.activeTabKey).toBe(`file:${ROOT}/b.md`)
+  })
+
+  it("closeProject 随项目目录关闭 file Tab（其他项目 file Tab 不受影响）", async () => {
+    const p2: Project = { id: "proj2", worktree: "/other", time: { created: 0, updated: 0 }, sandboxes: [] }
+    store.projects = [project(), p2]
+    store.projectStates.default.opened = ["proj1", "proj2"]
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+    snapshots.set("/other", [])
+
+    store.openFileTab(ROOT + "/README.md")
+    expect(store.tabs.find((t) => t.kind === "file")?.directory).toBe(ROOT)
+    await store.openProject("proj2")
+    store.openFileTab("/other/x.md")
+    expect(store.tabs.filter((t) => t.kind === "file")).toHaveLength(2)
+
+    await store.closeProject("proj1")
+    expect(store.tabs.map((t) => t.key)).toEqual(["file:/other/x.md"])
+    expect(store.activeTabKey).toBe("file:/other/x.md")
+  })
+
+  it("removeWorkspace 随 worktree 关闭 file Tab（无事件兜底的 kind 不残留孤儿）", async () => {
+    const s2 = session("s2", WT1, { created: 2, updated: 2 })
+    store.sessionsByProject.set("proj1", sessionsOf(s2))
+    store.tabMemory = { default: { [WT1]: { projectId: "proj1", tabs: ["s2"], active: "s2" } } }
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [s2])
+    snapshots.set(WT2, [])
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    client.removeWorktree = async () => {}
+    client.listProjects = async () => [{ ...project(), sandboxes: [WT2] }]
+
+    await store.setCurrentWorkspace(WT1)
+    store.openFileTab(WT1 + "/a.md")
+    expect(store.tabs.some((t) => t.key === `file:${WT1}/a.md`)).toBe(true)
+
+    const res = await store.removeWorkspace(WT1)
+    expect(res.ok).toBe(true)
+    expect(store.tabs.some((t) => t.directory === WT1)).toBe(false)
+  })
+})
+
 describe("先切换后加载：openProject 直达工作区", () => {
   it("跨项目直达 worktree 单次切换；幻影 worktree 落回主工作区", async () => {
     const p2: Project = {

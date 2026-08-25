@@ -77,8 +77,9 @@ export function isSnapshotMissing(
 }
 
 /**
- * live tabs → 记忆派生（§5）。只投影该目录的 chat Tab（file Tab 跨作用域全局
- * 显示，不参与记忆）。active 派生：当前激活为该目录 chat Tab → 该会话；
+ * live tabs → 记忆派生（§5）。只投影该目录的 chat Tab（file Tab 虽作用域化
+ * 但仍不参与记忆——只读视图重开成本为零，冷启动不恢复，见 §18）。
+ * active 派生：当前激活为该目录 chat Tab → 该会话；
  * 激活 file Tab / 无激活 → 保留原值（若仍在 tabs 中，否则 null）。
  */
 export function deriveMemory(
@@ -102,14 +103,12 @@ export function deriveMemory(
 }
 
 /**
- * §7 激活规则。返回值：undefined = 保持现状（当前激活是 file Tab）；
- * string = 激活该会话；null = 清空激活（会话列表视图）。
+ * §7 激活规则（纯记忆解析）。返回值：string = 激活该会话；
+ * null = 清空激活（会话列表视图）。
+ * "当前激活是否属于目标作用域 → 保持现状"由调用方按 `activeTab.directory`
+ * 判定（全 kind 作用域化，2026-08-25，见 §18），不在此函数内。
  */
-export function resolveRestoreActive(
-  mem: ScopeTabMemory,
-  activeTabKind: string | null,
-): string | null | undefined {
-  if (activeTabKind === "file") return undefined
+export function resolveRestoreActive(mem: ScopeTabMemory): string | null {
   if (mem.active != null && mem.tabs.includes(mem.active)) return mem.active
   return mem.tabs[mem.tabs.length - 1] ?? null
 }

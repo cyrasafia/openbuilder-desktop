@@ -25,13 +25,10 @@ import { parseDiffTabKey } from "../store/app-store"
 export function Workspace() {
   const store = useStore()
   const { t } = useI18n()
-  // Tab 条只显示当前作用域的 Tab（chat/diff: directory 匹配；file: 跟随显示）
+  // Tab 条只显示当前作用域的 Tab（全 kind 按 directory 匹配，2026-08-25 §18：
+  // chat = 会话目录、diff = 作用域目录、file = 打开时作用域目录）
   const scopeDir = store.scopeQuery.directory
-  const tabs = store.tabs.filter(
-    (tab) =>
-      tab.kind === "file" ||
-      ((tab.kind === "chat" || tab.kind === "diff") && tab.directory === scopeDir),
-  )
+  const tabs = store.tabs.filter((tab) => tab.directory === scopeDir)
   const active = store.activeTab
 
   return (

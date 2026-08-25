@@ -110,7 +110,8 @@ export interface TabEntity {
   key: string
   projectId: string
   title: string
-  /** chat/diff: 会话/作用域目录（事件路由、Tab 条过滤） */
+  /** 全 kind 作用域归属（Tab 条按 directory 过滤）：chat = 会话目录；
+   *  diff = 作用域目录；file = 打开时作用域目录 */
   directory?: string
 }
 
@@ -1091,11 +1092,16 @@ export class AppStore {
       }
     }
     this.purgeStatusForDirectories([directory])
-    // 该目录 global 会话的 chat Tab 与 diff Tab 随之关闭（仅关 Tab，不归档——
-    // 归档只发生在显式关闭 Tab）。双行目录（git 项目 + global 会话共存）下按
+    // 该目录的 file/diff Tab 与 global 会话的 chat Tab 随之关闭（仅关 Tab，不归档——
+    // 归档只发生在显式关闭 Tab；file Tab 作用域化后随目录卸载，2026-08-25 §18）。
+    // 双行目录（git 项目 + global 会话共存）下按
     // projectId 过滤：git 项目的 Tab 归 closeProject 管，不随 global entry 关闭
     for (const tab of [...this.tabs]) {
-      if (tab.kind === "diff" && tab.directory === directory) {
+      if (
+        (tab.kind === "diff" || tab.kind === "file") &&
+        tab.directory === directory &&
+        tab.projectId === GLOBAL_PROJECT_ID
+      ) {
         this.closeTab(tab.key)
         continue
       }
@@ -1197,12 +1203,13 @@ export class AppStore {
       // 留着只会假亮；重开项目时 backfill 会按 server 权威重建
       this.dropPendingForDirectories(dirs)
     }
-    // 该项目的 chat/diff Tab 随之关闭（仅关 Tab，不归档——归档只发生在显式关闭 Tab）
+    // 该项目的 chat/file/diff Tab 随之关闭（仅关 Tab，不归档——归档只发生在显式
+    // 关闭 Tab；file/diff 按 projectId 归属，否则成永久不可见的孤儿，2026-08-25 §18）。
+    // 双行目录下按 projectId 过滤：global entry 的 Tab 归 closeGlobalDirectory 管，
+    // 不随 git 项目关闭（与 chat 分支一致）
     for (const tab of [...this.tabs]) {
-      if (tab.kind === "diff") {
-        if (tab.directory && project && (project.worktree === tab.directory || (project.sandboxes ?? []).includes(tab.directory))) {
-          this.closeTab(tab.key)
-        }
+      if (tab.kind === "file" || tab.kind === "diff") {
+        if (tab.projectId === projectId) this.closeTab(tab.key)
         continue
       }
       if (tab.kind !== "chat") continue
@@ -1413,8 +1420,19 @@ export class AppStore {
     }
 
     if (applyActivation) {
-      const resolved = resolveRestoreActive(next, this.activeTab?.kind ?? null)
-      if (resolved !== undefined) {
+      // 激活必须属于当前作用域：当前激活（任意 kind）属于本作用域 → 保持
+      // （两阶段恢复异步窗口内用户已在新作用域开的 file/diff/点的 chat 不被顶替）；
+      // 否则按记忆解析（§7）——切作用域后旧作用域 Tab（含 file）不得占据激活。
+      // 保持分支的 chat 激活仍回写 next.active：上方死会话收敛的 closeTab 可能已
+      // 经同步钩子派生了新 active，setMemory(next) 不得用陈旧解析结果覆写它
+      const active = this.activeTab
+      if (active != null && active.directory === directory) {
+        if (active.kind === "chat") {
+          const sid = active.key.slice(5)
+          if (next.tabs.includes(sid)) next = { ...next, active: sid }
+        }
+      } else {
+        const resolved = resolveRestoreActive(next)
         this.activeTabKey = resolved != null ? `chat:${resolved}` : null
         next = { ...next, active: resolved }
       }
@@ -1423,11 +1441,11 @@ export class AppStore {
     this.emit()
   }
 
-  /** 激活不得指向其他作用域的 chat Tab——Tab 条按作用域过滤不显示它，
-   *  中栏却会渲染其会话；file Tab 全局可见，保留 */
+  /** 激活不得指向其他作用域的 Tab（任意 kind）——Tab 条按作用域过滤不显示它，
+   *  中栏却会渲染其内容（全 kind 作用域化，2026-08-25，design-tab-memory §18） */
   private clearCrossScopeActivation(directory: string) {
     const active = this.activeTab
-    if (active?.kind === "chat" && active.directory !== directory) {
+    if (active && active.directory !== directory) {
       this.activeTabKey = null
       this.emit()
     }
@@ -1529,10 +1547,11 @@ export class AppStore {
       }
       this.purgeStatusForDirectories([directory])
       this.snapshottedDirs.delete(directory)
-      // 显式关闭该目录 live chat Tab：订阅即将拆除，session.deleted 事件
-      // 兜底存在窗口期（design-tab-memory §5）；diff Tab 同随目录卸载
+      // 显式关闭该目录全部 live Tab：订阅即将拆除，chat 的 session.deleted 事件
+      // 兜底存在窗口期（design-tab-memory §5）；file/diff 无事件兜底，随目录卸载
+      // （全 kind 作用域化，2026-08-25 §18）
       for (const tab of [...this.tabs]) {
-        if (tab.directory === directory && (tab.kind === "diff" || tab.kind === "chat")) {
+        if (tab.directory === directory) {
           this.closeTab(tab.key)
           if (tab.kind === "chat") this.cleanupSessionState(tab.key.slice(5))
         }
@@ -2335,12 +2354,25 @@ export class AppStore {
     this.emit()
   }
 
+  /** file Tab 作用域化（§18）：directory = 打开时作用域；复用已开同路径 Tab 时
+   *  归属当前作用域（directory + projectId 一并更新，使关项目/关 global entry 的
+   *  projectId 守卫可靠——双行目录下同文件可从两个作用域打开，显式重开 = 要在当前作用域看） */
   openFileTab(absolutePath: string) {
     const key = `file:${absolutePath}`
-    if (!this.tabs.find((t) => t.key === key)) {
+    const existing = this.tabs.find((t) => t.key === key)
+    if (!existing) {
       const name = absolutePath.split("/").pop() ?? absolutePath
-      this.tabs.push({ kind: "file", key, projectId: this.currentProject?.id ?? "", title: name })
+      this.tabs.push({
+        kind: "file",
+        key,
+        projectId: this.currentProject?.id ?? "",
+        title: name,
+        directory: this.scopeDirectory(),
+      })
       void this.loadFileContent(absolutePath)
+    } else {
+      existing.directory = this.scopeDirectory()
+      existing.projectId = this.currentProject?.id ?? ""
     }
     this.activeTabKey = key
     this.emit()
@@ -2470,6 +2502,20 @@ export class AppStore {
     const idx = this.tabs.findIndex((t) => t.key === key)
     if (idx < 0) return
     const closed = this.tabs[idx]
+    // 激活回退须在 splice 之前算（splice 后 findIndex 恒得 -1，会恒落候选取样首位
+    // 而非相邻）：同作用域候选取样中闭 Tab 的下标 → 左邻优先、无则右邻、再无则 null。
+    // 全 kind 作用域化（2026-08-25 §18）：不能激活到隐藏的跨作用域 Tab
+    let fallbackKey: string | null = null
+    if (this.activeTabKey === key) {
+      const scopeDir = closed.directory ?? null
+      const sameScope =
+        scopeDir != null ? this.tabs.filter((t) => t.directory === scopeDir) : this.tabs
+      const pos = sameScope.findIndex((t) => t.key === key)
+      // splice 后左邻下标不变（pos-1）；右邻 = before[pos]（闭 Tab 移除后右移补位）
+      const after = sameScope.filter((t) => t.key !== key)
+      fallbackKey =
+        (pos > 0 ? after[pos - 1] : after[pos])?.key ?? null
+    }
     this.tabs.splice(idx, 1)
     // diff Tab 关闭即卸载数据与选中（无归档语义；重开走 loadDiffTab）
     if (closed.kind === "diff") {
@@ -2477,17 +2523,7 @@ export class AppStore {
       this.diffSelectedTypes.delete(key)
     }
     if (this.activeTabKey === key) {
-      // 回退激活：优先同作用域的相邻 Tab（Tab 条按作用域过滤显示，不能激活到隐藏 Tab）
-      const scopeDir = closed.kind === "file" ? null : closed.directory
-      const candidates =
-        scopeDir != null
-          ? this.tabs.filter((t) => t.kind === "file" || t.directory === scopeDir)
-          : this.tabs
-      const pos = candidates.findIndex((t) => t.key === key)
-      this.activeTabKey =
-        candidates[Math.min(Math.max(pos, 0), candidates.length - 1)]?.key ??
-        candidates[0]?.key ??
-        null
+      this.activeTabKey = fallbackKey
     }
     // Tab 记忆同步（§5 挂点）：chat Tab 关闭 → 从所属目录记忆移除（active 按回退结果派生）
     if (closed.kind === "chat" && closed.directory) this.syncScopeMemory(closed.directory)

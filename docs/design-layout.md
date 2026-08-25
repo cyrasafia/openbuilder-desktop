@@ -84,11 +84,11 @@
 - 生命周期约束：关闭 Tab 即卸载其订阅/状态；非 chat Tab 重开无状态恢复成本，chat Tab 重开走 REST 消息快照 + 增量
 - **Tab 跨项目混排（2026-08-23 修订，原"切项目 = Tab 全关 + 归档"）**：
   - **切换项目/工作区不关闭、不归档任何 Tab**——已有 chat Tab 保留（后台作用域的事件仍正常累积）
-  - **Tab 条按作用域过滤显示**：只显示当前作用域的 chat Tab（directory 匹配）+ 全部 file Tab；其他项目的 Tab 隐藏（不关闭），切回时恢复显示——Tab 全集跨项目保留，呈现作用域隔离
+  - **Tab 条按作用域过滤显示**：只显示当前作用域的 Tab——全 kind 按 `directory` 匹配（chat = 会话目录、diff = 作用域目录、file = 打开时作用域目录；2026-08-25 修订，原"全部 file Tab"全局显示，见 design-tab-memory §18）；其他作用域的 Tab 隐藏（不关闭），切回时恢复显示——Tab 全集跨项目保留，呈现作用域隔离
   - 打开/切换项目（含工作区）时按 **worktree 级 Tab 记忆**恢复（2026-08-24 修订，原"自动打开最近活跃前 8"）：首次打开的作用域全量开未归档会话（created 升序），有记忆的作用域按记忆恢复 Tab 与顺序，并补开记忆外可见会话（他端新建等，2026-08-24 增补见 [design-tab-memory.md](./design-tab-memory.md) §17）；关闭项目清除该项目记忆；作用域无 Tab 则显示会话列表视图。详见 [design-tab-memory.md](./design-tab-memory.md)
   - 关闭 Tab 后的激活回退：只在当前作用域可见 Tab 内选择（不会激活到隐藏 Tab）
-  - **关闭项目**：仅关闭该项目所属的 chat Tab（不归档），其余 Tab 不动
-  - file Tab 不受作用域切换影响
+  - **关闭项目**：关闭该项目所属的 chat Tab（不归档）及目录归属的 file/diff Tab（2026-08-25 修订，原仅 chat；file/diff 作用域化后不随项目关闭即成永久不可见孤儿）
+  - ~~file Tab 不受作用域切换影响~~（2026-08-25 修订：file Tab 作用域化，随作用域切换隐藏/恢复、激活随之清算，见 [design-tab-memory.md](./design-tab-memory.md) §18）
 - 输入区仅在会话 Tab 存在；多行输入、**Enter 发送**（Ctrl/Shift/Alt/Meta+Enter 换行；2026-08-23 修订，原约定 Ctrl+Enter 发送）
 - **待处理卡片区**（消息流与输入区之间，2026-08-24 增）：agent 请求人工介入（授权/问题）时显示应答卡片，一次一张（授权优先）、队列计数；宽度对齐消息区 [600, 800]px；设计细节见 [design-pending-cards.md](design-pending-cards.md)。Tab 状态点增加 waiting 态（琥珀，优先于运行光晕点）
 - 默认视图（无激活 Tab）＝ **新 Tab 引导页**（2026-08-23 修订，原"作用域会话列表"）：

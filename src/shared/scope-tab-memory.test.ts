@@ -116,24 +116,16 @@ describe("deriveMemory（live tabs → 记忆派生）", () => {
   })
 })
 
-describe("resolveRestoreActive（§7 激活规则）", () => {
-  it("file Tab 已激活 → 保持（undefined）", () => {
-    expect(resolveRestoreActive({ projectId: "p1", tabs: ["a"], active: "a" }, "file")).toBeUndefined()
-  })
-
+describe("resolveRestoreActive（§7 激活规则，纯记忆解析；作用域归属判定在调用方）", () => {
   it("mem.active 有效 → 激活之（回到切走时的位置）", () => {
-    expect(
-      resolveRestoreActive({ projectId: "p1", tabs: ["a", "b", "c"], active: "b" }, "chat"),
-    ).toBe("b")
+    expect(resolveRestoreActive({ projectId: "p1", tabs: ["a", "b", "c"], active: "b" })).toBe("b")
   })
 
   it("mem.active 失效 → valid 末位（最右）", () => {
-    expect(
-      resolveRestoreActive({ projectId: "p1", tabs: ["a", "b"], active: "gone" }, null),
-    ).toBe("b")
+    expect(resolveRestoreActive({ projectId: "p1", tabs: ["a", "b"], active: "gone" })).toBe("b")
   })
 
   it("valid 为空 → null（会话列表视图）", () => {
-    expect(resolveRestoreActive({ projectId: "p1", tabs: [], active: null }, "chat")).toBeNull()
+    expect(resolveRestoreActive({ projectId: "p1", tabs: [], active: null })).toBeNull()
   })
 })
