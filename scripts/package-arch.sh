@@ -12,7 +12,7 @@ npx electron-builder --linux dir --config electron-builder.config.ts
 ARCH_DIR=release/arch
 mkdir -p "$ARCH_DIR"
 cp packaging/arch/PKGBUILD packaging/arch/openbuilder-desktop.install "$ARCH_DIR/"
-cp build/icon.png "$ARCH_DIR/icon-512.png"
+cp -r build/icons "$ARCH_DIR/icons"
 
 cd "$ARCH_DIR"
 makepkg -f

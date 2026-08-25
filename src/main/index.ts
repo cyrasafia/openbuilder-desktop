@@ -1,6 +1,7 @@
 import { app, BrowserWindow, shell } from "electron"
 import { fileURLToPath } from "node:url"
 import { join, dirname } from "node:path"
+import { existsSync } from "node:fs"
 import { registerIpc, bindMainWindow } from "./ipc"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -20,6 +21,15 @@ function preloadPath(): string {
   return join(__dirname, "../preload/index.cjs")
 }
 
+// 窗口/任务栏图标：打包后来自 extraResources（electron-builder.config.ts），
+// 开发态直接用仓库内 build/icons/512.png（gen-icons.sh 生成）
+function windowIconPath(): string | undefined {
+  const p = app.isPackaged
+    ? join(process.resourcesPath, "icon.png")
+    : join(app.getAppPath(), "build/icons/512.png")
+  return existsSync(p) ? p : undefined
+}
+
 function createMainWindow() {
   const win = new BrowserWindow({
     width: 1280,
@@ -29,6 +39,7 @@ function createMainWindow() {
     show: false,
     autoHideMenuBar: true,
     title: "openbuilder desktop",
+    icon: windowIconPath(),
     // Linux 用自定义头部（renderer title-bar.tsx：拖拽区 + 窗口控制，颜色随主题）；
     // GNOME/Wayland 下 CSD 由应用自绘；其他平台保留系统装饰
     frame: process.platform !== "linux",

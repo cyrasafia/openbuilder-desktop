@@ -14,6 +14,8 @@ const config: Configuration = {
     buildResources: "build",
   },
   files: ["out/**"],
+  // 运行时窗口图标（main 进程 windowIconPath；开发态直接读 build/icons/512.png）
+  extraResources: [{ from: "build/icons/512.png", to: "icon.png" }],
   linux: {
     target: [{ target: "dir", arch: ["x64"] }],
     category: "Development",

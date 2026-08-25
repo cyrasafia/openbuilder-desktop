@@ -18,10 +18,10 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE"
 cp -a release/linux-unpacked/. "$STAGE/app"
 cp packaging/fedora/openbuilder-desktop.desktop "$FED_DIR/src/"
-cp build/icon.png "$FED_DIR/src/icon-512.png"
+cp -r build/icons "$STAGE/icons"
 
 tar -cJf "$FED_DIR/src/openbuilder-desktop-0.1.0.tar.xz" -C "$FED_DIR/src" \
-  openbuilder-desktop-0.1.0 openbuilder-desktop.desktop icon-512.png
+  openbuilder-desktop-0.1.0 openbuilder-desktop.desktop
 
 # 容器内 rpmbuild（挂载整个仓库；产物属主修正为当前用户）
 docker run --rm \

@@ -14,7 +14,6 @@ URL:            https://github.com/cyrasafia/openbuilder-desktop
 Packager:       cyrasafia <cyrasafia@users.noreply.github.com>
 Source0:        %{name}-%{version}.tar.xz
 Source1:        %{name}.desktop
-Source2:        icon-512.png
 BuildArch:      x86_64
 # 运行时库依赖（electron 43 发行版要求，参照 Chromium fedora 打包惯例）
 Requires:       alsa-lib, gtk3, nss, libXtst, libXScrnSaver, libnotify, libgcrypt, cups-libs, hicolor-icon-theme
@@ -43,12 +42,22 @@ install -dm755 %{buildroot}%{_bindir}
 ln -s ../lib64/%{name}/%{name} %{buildroot}%{_bindir}/%{name}
 
 install -Dm644 %{SOURCE1} %{buildroot}%{_datadir}/applications/%{name}.desktop
-install -Dm644 %{SOURCE2} %{buildroot}%{_datadir}/icons/hicolor/512x512/apps/%{name}.png
+# 图标（hicolor 全尺寸集，随 Source0 内 icons/ 提供，由 scripts/gen-icons.sh 生成）
+for s in 16 24 32 48 64 128 256 512; do
+  install -Dm644 icons/$s.png %{buildroot}%{_datadir}/icons/hicolor/${s}x${s}/apps/%{name}.png
+done
 
 %files
 %{_bindir}/%{name}
 %{_libdir}/%{name}/
 %{_datadir}/applications/%{name}.desktop
+%{_datadir}/icons/hicolor/16x16/apps/%{name}.png
+%{_datadir}/icons/hicolor/24x24/apps/%{name}.png
+%{_datadir}/icons/hicolor/32x32/apps/%{name}.png
+%{_datadir}/icons/hicolor/48x48/apps/%{name}.png
+%{_datadir}/icons/hicolor/64x64/apps/%{name}.png
+%{_datadir}/icons/hicolor/128x128/apps/%{name}.png
+%{_datadir}/icons/hicolor/256x256/apps/%{name}.png
 %{_datadir}/icons/hicolor/512x512/apps/%{name}.png
 
 %changelog

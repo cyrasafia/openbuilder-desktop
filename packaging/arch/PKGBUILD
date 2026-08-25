@@ -52,6 +52,8 @@ Terminal=false
 StartupWMClass=$pkgname
 EOF
 
-  # 图标（目前 512 单尺寸；后续补全尺寸集）
-  install -Dm644 "$startdir/icon-512.png" "$pkgdir/usr/share/icons/h512x512/apps/$pkgname.png"
+  # 图标（hicolor 全尺寸集，由 scripts/gen-icons.sh 从 build/icon-source.png 生成）
+  for s in 16 24 32 48 64 128 256 512; do
+    install -Dm644 "$startdir/icons/$s.png" "$pkgdir/usr/share/icons/hicolor/${s}x${s}/apps/$pkgname.png"
+  done
 }
