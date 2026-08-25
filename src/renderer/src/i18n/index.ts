@@ -45,7 +45,6 @@ const zh = {
   retryingMessage: "重试中：{message}",
   // 斜杠命令
   commandListLoading: "正在获取命令…",
-  commandHintKeys: "↑↓ 选择　Enter/Tab 补全　Esc 关闭",
   // 授权/问题卡片
   permissionRequest: "授权请求",
   permissionAllowOnce: "允许一次",
@@ -187,7 +186,6 @@ const en: typeof zh = {
   retrying: "Retrying",
   retryingMessage: "Retrying: {message}",
   commandListLoading: "Loading commands…",
-  commandHintKeys: "↑↓ select  Enter/Tab complete  Esc close",
   // Permission/question cards
   permissionRequest: "Permission request",
   permissionAllowOnce: "Allow once",

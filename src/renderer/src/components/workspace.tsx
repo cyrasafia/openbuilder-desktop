@@ -540,7 +540,6 @@ function CommandHints({
             {c.description && <span className="command-desc">{c.description}</span>}
           </button>
         ))}
-        <div className="command-keys mono">{t.commandHintKeys}</div>
       </div>
     </div>
   )

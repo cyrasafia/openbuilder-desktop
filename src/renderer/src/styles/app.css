@@ -1427,14 +1427,6 @@
   font-size: var(--text-md);
 }
 
-.command-keys {
-  padding: 4px 10px;
-  color: var(--on-surface-variant);
-  font-size: var(--text-sm);
-  border-top: 1px solid var(--outline-variant);
-  margin-top: 2px;
-}
-
 /* subtask 命令回显：用户气泡内的 markdown 块 */
 .bubble-subtask {
   margin-top: 4px;
