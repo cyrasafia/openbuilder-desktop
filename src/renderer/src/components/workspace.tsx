@@ -16,6 +16,7 @@ import type { PendingPermission, PendingQuestion } from "@shared/pending-request
 import { externalDirectoryPath, permissionCommand } from "@shared/pending-requests"
 import { Markdown } from "./markdown"
 import { ModelSwitcherBar } from "./model-switcher"
+import { CodeView } from "./code-view"
 
 export function Workspace() {
   const store = useStore()
@@ -949,7 +950,7 @@ function isMarkdownPath(path: string): boolean {
  */
 export function FileView({ absolutePath }: { absolutePath: string }) {
   const store = useStore()
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const cached = store.fileContents.get(absolutePath)
   const isMarkdown = isMarkdownPath(absolutePath)
   const [mode, setMode] = useState<"preview" | "source">("preview")
@@ -964,8 +965,9 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
     if (!cached) return <div className="file-view">{t.loading}</div>
     if (cached.error) return <div className="file-view error">{cached.error}</div>
     return (
-      <div className="file-view">
-        <pre className="file-content mono">{cached.content}</pre>
+      <div className="file-view code-view">
+        {/* key 并入 locale：搜索面板短语随语言设置即时重建（CM phrases 是创建期 facet） */}
+        <CodeView key={locale} path={absolutePath} content={cached.content} locale={locale} />
       </div>
     )
   }
@@ -994,16 +996,16 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
           </button>
         </div>
       </div>
-      <div className="file-view">
-        {!cached && <div>{t.loading}</div>}
-        {cached?.error && <div className="file-error">{cached.error}</div>}
+      <div className="file-view code-view">
+        {!cached && <div className="file-state">{t.loading}</div>}
+        {cached?.error && <div className="file-state file-error">{cached.error}</div>}
         {cached && !cached.error && mode === "preview" && (
           <div className="file-md">
             <Markdown>{cached.content}</Markdown>
           </div>
         )}
         {cached && !cached.error && mode === "source" && (
-          <pre className="file-content mono">{cached.content}</pre>
+          <CodeView key={locale} path={absolutePath} content={cached.content} locale={locale} />
         )}
       </div>
     </div>

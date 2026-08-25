@@ -1432,6 +1432,152 @@
   tab-size: 4;
 }
 
+/* ---------- 代码视图（CodeMirror 6 只读，design-code-view §2.4） ----------
+ * 不 import CM base theme：chrome 全部此处令牌化，data-theme 切换即时生效 */
+/* 代码视图的滚动层：CM 自管布局，外层 padding 归零（全出血） */
+.file-view.code-view {
+  padding: 0;
+}
+
+.code-view-host,
+.code-view-host .cm-editor {
+  height: 100%;
+}
+
+.code-view-host .cm-editor {
+  background: transparent;
+  color: var(--on-surface);
+  font-size: var(--text-mono);
+}
+
+.code-view-host .cm-editor.cm-focused {
+  outline: none;
+}
+
+.code-view-host .cm-scroller {
+  overflow: auto;
+  font-family: var(--font-mono);
+}
+
+.code-view-host .cm-gutters {
+  background: transparent;
+  color: var(--outline);
+  border: none;
+  min-width: 44px;
+  /* 只读浏览无行交互，gutter 不抢指针 */
+  pointer-events: none;
+}
+
+.code-view-host .cm-activeLineGutter,
+.code-view-host .cm-activeLine {
+  background: transparent;
+}
+
+.code-view-host .cm-content {
+  caret-color: transparent;
+  padding: 8px 0 24px;
+}
+
+/* markdown 分支的加载/错误态文案容器（该分支外层无 padding） */
+.file-state {
+  padding: 12px 16px;
+}
+
+.file-state.file-error {
+  color: var(--error);
+}
+
+/* 选区：不装 drawSelection（装饰层自绘），走原生 ::selection 令牌化——
+ * 此前误写的 .cm-selectionBackground 规则对应的 DOM 只由 drawSelection 创建 */
+.code-view-host .cm-content ::selection,
+.code-view-host .cm-content::selection {
+  background: color-mix(in srgb, var(--primary) 26%, transparent);
+}
+
+/* 搜索面板（Ctrl+F，top: true） */
+.code-view-host .cm-panels {
+  background: var(--surface-container-high);
+  color: var(--on-surface);
+  border-bottom: 1px solid var(--outline-variant);
+}
+
+.code-view-host .cm-panels input,
+.code-view-host .cm-panels button {
+  font: inherit;
+  font-size: var(--text-sm);
+}
+
+.code-view-host .cm-panels input.cm-textfield {
+  background: var(--surface-container-lowest);
+  color: var(--on-surface);
+  border: 1px solid var(--outline-variant);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.code-view-host .cm-panels button {
+  background: var(--surface-container);
+  color: var(--on-surface-variant);
+  border: 1px solid var(--outline-variant);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.code-view-host .cm-panels button:hover {
+  color: var(--on-surface);
+}
+
+.code-view-host .cm-searchMatch {
+  background: color-mix(in srgb, var(--status-waiting) 40%, transparent);
+  border-radius: 2px;
+}
+
+.code-view-host .cm-searchMatch.cm-searchMatch-selected {
+  background: color-mix(in srgb, var(--primary) 45%, transparent);
+}
+
+/* 语法 token 颜色（class 化 HighlightStyle，令牌见 tokens.css --syntax-*） */
+.code-view-host .cm-comment {
+  color: var(--syntax-comment);
+}
+.code-view-host .cm-keyword {
+  color: var(--syntax-keyword);
+}
+.code-view-host .cm-string {
+  color: var(--syntax-string);
+}
+.code-view-host .cm-string-2 {
+  color: var(--syntax-string-2);
+}
+.code-view-host .cm-number {
+  color: var(--syntax-number);
+}
+.code-view-host .cm-function {
+  color: var(--syntax-function);
+}
+.code-view-host .cm-variable,
+.code-view-host .cm-def,
+.code-view-host .cm-property,
+.code-view-host .cm-attribute {
+  color: var(--syntax-variable);
+}
+.code-view-host .cm-type {
+  color: var(--syntax-type);
+}
+.code-view-host .cm-tag {
+  color: var(--syntax-tag);
+}
+.code-view-host .cm-link {
+  color: var(--syntax-link);
+}
+.code-view-host .cm-operator {
+  color: var(--syntax-operator);
+}
+.code-view-host .cm-punctuation {
+  color: var(--syntax-punctuation);
+}
+
 /* 工具条：右对齐分段开关（预览/源码），markdown 文件常驻渲染；
  * 分段控件复用 .ms-segmented/.ms-seg（单一来源，不另起一套） */
 .file-toolbar {
@@ -1449,7 +1595,7 @@
 .file-md {
   max-width: 820px;
   margin: 0 auto;
-  padding: 4px 8px 24px;
+  padding: 4px 24px 24px;
 }
 
 .file-md .md-pre {

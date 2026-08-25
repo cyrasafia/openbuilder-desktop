@@ -96,6 +96,20 @@
   /* 待输入（授权/问题）：琥珀静态，取值同移动端 AgentStatusIndicator paused 色 */
   --status-waiting: #fbbf24;
 
+  /* 语法高亮（design-code-view §2.4）：GitHub dark 色板，两主题可读性经大规模验证 */
+  --syntax-comment: #8b949e;
+  --syntax-keyword: #ff7b72;
+  --syntax-string: #a5d6ff;
+  --syntax-string-2: #79c0ff;
+  --syntax-number: #79c0ff;
+  --syntax-function: #d2a8ff;
+  --syntax-variable: var(--on-surface);
+  --syntax-type: #ffa657;
+  --syntax-tag: #7ee787;
+  --syntax-link: #58a6ff;
+  --syntax-operator: var(--on-surface);
+  --syntax-punctuation: #8b949e;
+
   color-scheme: dark;
 }
 
@@ -143,6 +157,20 @@
   --status-error: #f85149;
   --status-pending: #8b949e;
   --status-waiting: #92400e;
+
+  /* 语法高亮（design-code-view §2.4）：GitHub light 色板 */
+  --syntax-comment: #6e7781;
+  --syntax-keyword: #cf222e;
+  --syntax-string: #0a3069;
+  --syntax-string-2: #0550ae;
+  --syntax-number: #0550ae;
+  --syntax-function: #8250df;
+  --syntax-variable: var(--on-surface);
+  --syntax-type: #953800;
+  --syntax-tag: #116329;
+  --syntax-link: #0969da;
+  --syntax-operator: var(--on-surface);
+  --syntax-punctuation: #57606a;
 
   color-scheme: light;
 }

@@ -45,6 +45,13 @@ beforeAll(() => {
     }
   }
   globalThis.IntersectionObserver = IntersectionObserverStub as unknown as typeof IntersectionObserver
+  // CodeMirror 视图测量依赖 ResizeObserver（jsdom 缺失）
+  class ResizeObserverStub implements ResizeObserver {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+  globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver
 })
 
 afterAll(() => {
@@ -59,7 +66,7 @@ beforeEach(() => {
 })
 
 describe("FileView markdown 预览", () => {
-  it(".md 默认渲染预览 + 工具条二态（分组按钮）；切换源码显示原文", async () => {
+  it(".md 默认渲染预览 + 工具条二态（分组按钮）；切换源码为代码视图", async () => {
     fileContentsStub.set("/repo/README.md", { content: "# 标题\n\n正文 `code`" })
     render(<FileView absolutePath="/repo/README.md" />)
     // 默认预览：markdown 解析为 h1
@@ -67,9 +74,9 @@ describe("FileView markdown 预览", () => {
     const preview = screen.getByRole("button", { name: "预览" })
     expect(preview.getAttribute("aria-pressed")).toBe("true")
 
-    // 切源码：pre 显示原文
+    // 切源码：CodeMirror 视图显示原文
     fireEvent.click(screen.getByRole("button", { name: "源码" }))
-    expect(document.querySelector(".file-content")?.textContent).toBe("# 标题\n\n正文 `code`")
+    expect(document.querySelector(".cm-content")?.textContent).toContain("# 标题")
     expect(screen.getByRole("button", { name: "源码" }).getAttribute("aria-pressed")).toBe("true")
   })
 
@@ -84,7 +91,7 @@ describe("FileView markdown 预览", () => {
     expect((await screen.findByText("B")).tagName).toBe("H1")
   })
 
-  it(".mdx / 点文件 .md / 无扩展名：均不识别（纯文本源码、无工具条）", () => {
+  it(".mdx / 点文件 .md / 无扩展名：均不识别（纯文本代码视图、无工具条）", () => {
     for (const [path, text] of [
       ["/repo/page.mdx", "# not md"],
       ["/repo/.md", "dotfile named .md"],
@@ -93,16 +100,25 @@ describe("FileView markdown 预览", () => {
       cleanup()
       fileContentsStub.set(path, { content: text })
       render(<FileView absolutePath={path} />)
-      expect(document.querySelector(".file-content")?.textContent, path).toBe(text)
+      expect(document.querySelector(".cm-content")?.textContent, path).toContain(text)
       expect(document.querySelector(".ms-segmented"), path).toBeNull()
     }
   })
 
-  it("非 markdown 文件行为不变：源码、无工具条", () => {
-    fileContentsStub.set("/repo/src/main.ts", { content: "const x = 1" })
+  it("非 markdown 文件行为不变：代码视图（行号 + 内容）、无工具条", () => {
+    fileContentsStub.set("/repo/src/main.ts", { content: "const x = 1\nconst y = 2" })
     render(<FileView absolutePath="/repo/src/main.ts" />)
-    expect(document.querySelector(".file-content")?.textContent).toBe("const x = 1")
+    expect(document.querySelector(".cm-content")?.textContent).toContain("const x = 1")
+    expect(document.querySelector(".cm-gutters")).not.toBeNull()
     expect(document.querySelector(".ms-segmented")).toBeNull()
+  })
+
+  it("markdown 源码态：代码视图渲染原文", async () => {
+    fileContentsStub.set("/repo/doc.md", { content: "# 标题\n\n正文" })
+    render(<FileView absolutePath="/repo/doc.md" />)
+    expect((await screen.findByText("标题")).tagName).toBe("H1")
+    fireEvent.click(screen.getByRole("button", { name: "源码" }))
+    expect(document.querySelector(".cm-content")?.textContent).toContain("# 标题")
   })
 
   it("错误/加载态：markdown 工具条常驻（防内容落地时布局跳动）", () => {
