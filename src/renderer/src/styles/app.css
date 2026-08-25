@@ -673,9 +673,8 @@
   border-radius: var(--radius-bubble);
   padding: 10px 16px;
   max-width: 80%;
-  white-space: pre-wrap;
-  /* 长路径/URL 等无空格 token：优先在词边界断（min-content > max-width 时溢出），
-     溢出后再强制断字符，保证不撑破气泡 */
+  /* markdown 渲染由 .markdown-body.md 接管排版；不再 pre-wrap（纯文本期保留换行）。
+   * 长路径/URL 等无空格 token：溢出后再强制断字符，保证不撑破气泡 */
   overflow-wrap: anywhere;
 }
 
@@ -816,81 +815,81 @@
   color: var(--on-surface);
 }
 
-/* ---------- markdown（.md = streamdown 根；令牌语义见 DESIGN.md appColors） ---------- */
+/* ---------- markdown（.markdown-body = github-markdown-css；本地覆写见下方） ----------
+ * 排版主体由 vendor/github-markdown-{light,dark}.css 提供（按 [data-theme] 切换）。
+ * vendor 每条规则带 :root[data-theme] 前缀（特异性 (0,3,0) 量级），本地覆写须用
+ * 同等或更高前缀才能生效——统一用 :root[data-theme] .markdown-body.md（(0,4,0)）。
+ * 仅覆写本地结构：代码块外壳（语言标签+复制按钮）、表格滚动包裹、GFM 任务列表、
+ * 链接色回归 --color-link、消息流布局（flex/gap）、字号/底色继承容器等。 */
+
+/* 消息流布局根：vendor 已用 margin 控制块间距，不叠 flex gap 否则双倍空行 */
 .md {
   display: flex;
   flex-direction: column;
-  gap: 8px;
 }
 
-.md p {
+/* github-markdown-css 用 16px 基准 + 白/黑底 + 硬编码文字色 + Apple/Mac 字体栈；
+ * 回落到聊天正文尺寸、透明底（消息流/用户气泡/文件预览各有自己背景）、
+ * 颜色继承容器、字体走项目 --font-sans token（Linux 下不漂到 Helvetica/Arial） */
+:root[data-theme] .markdown-body.md {
+  font-size: var(--text-chat);
+  line-height: 1.6;
+  background-color: transparent;
+  color: inherit;
+  font-family: var(--font-sans);
+}
+
+:root[data-theme] .markdown-body.md p {
   word-break: break-word;
 }
 
-.md h1,
-.md h2 {
-  font-size: var(--text-title-md);
-  font-weight: var(--weight-semibold);
-  line-height: 1.4;
-}
-
-.md h3,
-.md h4,
-.md h5,
-.md h6 {
-  font-size: var(--text-title-sm);
-  font-weight: var(--weight-semibold);
-  line-height: 1.4;
-}
-
-.md strong {
-  font-weight: var(--weight-semibold);
-}
-
-.md a {
+:root[data-theme] .markdown-body.md a {
   color: var(--color-link);
 }
 
-.md ul,
-.md ol {
-  padding-left: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+/* vendor 的 li>p 设了 margin-top:1rem，在紧凑聊天流中把列表项内容推到序号下方，
+ * 产生"序号后多一行"的观感；清零使其贴序号 */
+:root[data-theme] .markdown-body.md li > p {
+  margin-top: 0;
 }
 
-.md li::marker {
-  color: var(--outline);
-}
-
-/* GFM 任务列表：去项目符号，checkbox 贴左 */
-.md li:has(> input[type="checkbox"]) {
-  list-style: none;
-  margin-left: -20px;
-}
-
-.md input[type="checkbox"] {
-  margin-right: 6px;
-  accent-color: var(--primary);
-}
-
-.md blockquote {
+/* blockquote：vendor 用硬编码灰边/灰字，回归项目调色板（--color-quote-bar /
+ * --on-surface-variant），保持与移动端 openbuilder 一致的引用块语义 */
+:root[data-theme] .markdown-body.md blockquote {
   border-left: 3px solid var(--color-quote-bar);
   padding: 2px 0 2px 12px;
   color: var(--on-surface-variant);
 }
 
-.md hr {
-  border: none;
+/* 分隔线：vendor 用 height:0.25em + background + border-bottom 画粗实线（两条线
+ * 叠加），聊天流里过重；改为单条细线，高度归零、只用 border-top + 项目描边色 */
+:root[data-theme] .markdown-body.md hr {
+  height: 0;
+  background-color: transparent;
+  border: 0;
   border-top: 1px solid var(--outline-variant);
+  margin: 1rem 0;
 }
 
-.md img {
+/* GFM 任务列表：去项目符号，checkbox 贴左
+ * vendor 的 ul/ol padding-left:2em（约 28px@14px），-20px 抵不全；
+ * 用 -2em 精确抵消（前缀使其覆盖 vendor 的 li 规则） */
+:root[data-theme] .markdown-body.md li:has(> input[type="checkbox"]) {
+  list-style: none;
+  margin-left: -2em;
+}
+
+:root[data-theme] .markdown-body.md input[type="checkbox"] {
+  margin-right: 6px;
+  accent-color: var(--primary);
+}
+
+:root[data-theme] .markdown-body.md img {
   max-width: 100%;
   border-radius: var(--radius-chip);
 }
 
-.md .md-code-inline {
+:root[data-theme] .markdown-body.md .md-code-inline {
   font-family: var(--font-mono);
   font-size: 0.92em;
   background: var(--color-code-bg);
@@ -936,14 +935,25 @@
   background: var(--surface-container-high);
 }
 
-.md-pre {
+/* 代码块滚动体：vendor 的 .markdown-body pre 设了 padding/bg/border-radius，
+ * 本项目用 md-codeblock 外壳 + md-pre 滚动体分离，须撤回 vendor 的 pre 样式 */
+:root[data-theme] .markdown-body.md .md-pre {
   margin: 0;
   padding: 8px 10px;
   overflow: auto;
   max-height: 300px;
+  background-color: transparent;
+  border-radius: 0;
+  font-size: 100%;
+  line-height: 1.5;
+  color: inherit;
 }
 
-.md-codeblock-code {
+/* 代码块内 code 元素：vendor 的 .markdown-body pre 设了 font-size:85%（经继承
+ * 作用于 code），.markdown-body code 设了 font-family:monospace；.markdown-body
+ * pre code 虽 reset 了 padding/bg 但未覆盖 font-size/family。须用同等前缀让本地
+ * 等宽字体 + 正文尺寸在 code 上直接生效（而非依赖 pre 的继承值） */
+:root[data-theme] .markdown-body.md .md-codeblock-code {
   font-family: var(--font-mono);
   font-size: var(--text-mono);
   line-height: 1.5;
@@ -956,23 +966,34 @@
   border-radius: var(--radius-chip);
 }
 
-.md table {
+/* vendor 让 table 自身 display:block + 自管滚动；本项目用 md-table-wrap 包裹，
+ * 撤回 vendor 的 block/overflow，回归正常表格布局由外层 wrap 滚动 */
+:root[data-theme] .markdown-body.md table {
+  display: table;
   border-collapse: collapse;
   width: 100%;
+  overflow: visible;
   font-size: var(--text-sm);
 }
 
-.md th,
-.md td {
+:root[data-theme] .markdown-body.md th,
+:root[data-theme] .markdown-body.md td {
   border: 1px solid var(--color-border);
   padding: 6px 10px;
   text-align: left;
   vertical-align: top;
 }
 
-.md th {
+:root[data-theme] .markdown-body.md th {
   font-weight: var(--weight-semibold);
   background: var(--surface-container-low);
+}
+
+/* vendor 给 table tr 硬编码白/黑底（#ffffff/#0d1117）；清回透明，由 th 的底色 + 边框担纲。
+ * 注意 nth-child(2n) 的 vendor 规则特异性更高（(0,4,1)），须单独覆盖否则斑马纹底色残留 */
+:root[data-theme] .markdown-body.md table tr,
+:root[data-theme] .markdown-body.md table tr:nth-child(2n) {
+  background-color: transparent;
 }
 
 .error-card {
@@ -1643,7 +1664,9 @@
   background: var(--surface-container-lowest);
 }
 
-.file-md .md-pre {
+/* 文件预览覆写消息流 .md-pre 的代码块高度上限——文档预览长代码块不套内滚
+ * （渲染阅读优先）。须用 vendor 同等前缀覆盖上方 .md-pre 的 max-height */
+:root[data-theme] .file-md .markdown-body.md .md-pre {
   max-height: none;
 }
 

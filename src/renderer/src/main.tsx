@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client"
 import { App } from "./app"
 import { ensureDesktopApi } from "./browser-shim"
 import "./styles/tokens.css"
+import "./styles/vendor/github-markdown-light.css"
+import "./styles/vendor/github-markdown-dark.css"
 import "./styles/app.css"
 
 ensureDesktopApi()

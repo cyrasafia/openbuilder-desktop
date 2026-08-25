@@ -1,8 +1,10 @@
 /**
  * 消息流 markdown 渲染（架构决策 design-architecture §5 L0：streamdown）。
  * 流式解析/块级 memo 由 streamdown 承担；组件层全部覆写——
- * 其内置样式依赖 Tailwind（本项目无），样式以 tokens.css 语义令牌重写。
- * 用户参考移动端 app：assistant 文本与 reasoning 走 markdown，用户消息保持纯文本。
+ * 其内置样式依赖 Tailwind（本项目无），排版主体改由 vendor/github-markdown-css
+ * （按 [data-theme] 切明暗）承担，本地仅覆写代码块外壳/表格包裹/链接色等结构。
+ * 用户参考移动端 app：assistant 与 user 文本均走 markdown（用户消息气泡内），
+ * reasoning 同走 markdown。
  */
 import { cloneElement, isValidElement, useState, type ReactNode } from "react"
 import { Streamdown, type Components, type LinkSafetyConfig } from "streamdown"
@@ -57,7 +59,7 @@ function renderPre(children: ReactNode) {
 
 const mdComponents: Components = {
   // streamdown 的默认组件全部是 Tailwind 样式件（strong→span.font-semibold 等），
-  // 本项目无 Tailwind，全部覆写回语义元素，样式由 app.css 的 .md 承担
+  // 本项目无 Tailwind，全部覆写回语义元素，排版样式由 vendor/github-markdown-css 承担
   p: ({ node: _node, children }) => <p>{children}</p>,
   strong: ({ node: _node, children }) => <strong>{children}</strong>,
   em: ({ node: _node, children }) => <em>{children}</em>,
@@ -108,7 +110,7 @@ const mdLinkSafety: LinkSafetyConfig = { enabled: false }
 
 export function Markdown({ children }: { children: string }) {
   return (
-    <Streamdown className="md" components={mdComponents} linkSafety={mdLinkSafety}>
+    <Streamdown className="markdown-body md" components={mdComponents} linkSafety={mdLinkSafety}>
       {children}
     </Streamdown>
   )

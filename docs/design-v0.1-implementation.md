@@ -105,7 +105,7 @@ src/
 - 三栏 grid：`260px | minmax(800px,1fr) | 300px`，CSS 变量驱动
 - 左栏两段：项目区（打开的，含活跃时间/关闭按钮）+ 工作区二级（主工作区 + sandboxes 列表）+ 会话区（当前作用域，归档折叠）
 - 工作区：Tab 条（busy 状态点）+ 聊天视图（user 气泡 / assistant 全宽块 + reasoning 斜体 chip + tool chip 四态色）+ 文件视图（纯文本 pre mono）
-- 消息流 markdown（assistant 文本 + reasoning 体；user 消息保持纯文本，对齐移动端 app 的 TextPart 策略）：streamdown L0——流式不完整语法修复与块级 memo 由其承担；**组件层全量覆写回语义元素**（其内置默认件是 Tailwind 样式件如 strong→span.font-semibold，本项目无 Tailwind），样式收敛在 app.css `.md` 前缀、全部走 tokens 语义色；代码块带语言标签 + 复制按钮（沿用 chip 展开体 code-block 视觉）；链接 target=_blank 经 main 的 setWindowOpenHandler → shell.openExternal 走系统浏览器；无语法高亮（spec 范围外，shiki 留待后续）
+- 消息流 markdown（assistant 文本 + reasoning 体 + user 文本，对齐移动端 app 的 TextPart 策略——user 也走 markdown 渲染）：streamdown L0——流式不完整语法修复与块级 memo 由其承担；**组件层全量覆写回语义元素**（其内置默认件是 Tailwind 样式件如 strong→span.font-semibold，本项目无 Tailwind），排版主体由 vendor/github-markdown-css 提供（按 [data-theme] 切明暗，vendor CSS 经 `scripts/regen-github-markdown-css.mjs` 加 `:root[data-theme]` 前缀），本地覆写收敛在 app.css `:root[data-theme] .markdown-body.md` 前缀、全部走 tokens 语义色；代码块带语言标签 + 复制按钮（沿用 chip 展开体 code-block 视觉）；链接 target=_blank 经 main 的 setWindowOpenHandler → shell.openExternal 走系统浏览器；无语法高亮（spec 范围外，shiki 留待后续）
 - 待处理卡片（授权/问题，2026-08-24）：ChatView 底部单卡队列 + 三处指示器 waiting 态；契约事实与踩坑对策集中在 [design-pending-cards.md](design-pending-cards.md)（reply 必带 directory、404 静默移除、按目录合并回填）
 - 设置弹窗：profile CRUD + 激活（切换 = disconnect+connect 全量重对账）+ 测试连接 + 主题/语言
 - 服务器状态行（2026-08-24 修订，原全宽状态栏取消）：收入左栏底部与设置齿轮同行、置底常驻；streaming/degraded/对账中；connectionError ⚠ 悬浮提示；不展示 server 版本

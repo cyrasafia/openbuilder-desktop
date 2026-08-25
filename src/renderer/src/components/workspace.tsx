@@ -841,7 +841,7 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
     return (
       <div className="msg user">
         <div className="bubble">
-          <p>{entry.data.text}</p>
+          <Markdown>{entry.data.text}</Markdown>
           <div className="bubble-pending">{t.sending}</div>
         </div>
       </div>
@@ -865,7 +865,7 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
       <div className="msg user">
         <div className="bubble">
           {texts.map((p) => (
-            <p key={p.id}>{p.text}</p>
+            <Markdown key={p.id}>{p.text}</Markdown>
           ))}
           {subtasks.map((p) => {
             // 标签行 + 正文合并为单一 Markdown（openbuilder 二次评审结论：
