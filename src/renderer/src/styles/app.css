@@ -293,9 +293,9 @@
 }
 
 /* 空闲/待输入点与运行点同用 12px 盒子（同 app 统一 glyph 盒），实心视觉点经
-   ::after 居中，idle/waiting 统一 8px（与全应用通用实心点同径；2026-08-25 修订，
-   原 idle 7px 为任意值，造成 8/7/6 三档尺寸不一）——idle 弱化仅靠 0.55 透明度，
-   不靠缩尺寸；running 中心点 6px 属光晕呼吸规格（对齐移动端）不在此列。
+   ::after 居中，idle/waiting 统一 6px（同运行光晕中心点，即全应用通用实心点径；
+   2026-08-25 二次修订，原统一 8px 与 running 中心 6px 仍两档，现全量归一到 6px）
+   ——idle 弱化仅靠 0.55 透明度，不靠缩尺寸。
    12px 盒亦让最右点中心线稳定在右缘 12px——worktree 删除钮按此对齐 */
 .session-indicator .status-dot.idle,
 .session-indicator .status-dot.waiting {
@@ -316,15 +316,15 @@
 }
 
 .session-indicator .status-dot.idle::after {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   background: var(--status-pending);
   opacity: 0.55;
 }
 
 .session-indicator .status-dot.waiting::after {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   background: var(--status-waiting);
 }
 
@@ -1879,10 +1879,12 @@
   color: var(--status-error);
 }
 
-/* ---------- 状态点 ---------- */
+/* ---------- 状态点 ----------
+   全应用实心点统一 6px（同运行光晕中心点；2026-08-25 修订，原 8px 与
+   running 中心 6px 两档不一）；左栏连接点与 Tab 待输入点直接取此基类 */
 .status-dot {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--status-pending);
   flex-shrink: 0;
