@@ -4,8 +4,8 @@
  * 与项目/会话/记忆夹具，SSE 不启动（activeProfileId 为空时 startSse 直接返回），
  * 快照落点用手动 deferred 控制。
  */
-import { beforeEach, describe, expect, it, vi } from "vitest"
-import { AppStore, diffTabKey } from "./app-store"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { AppStore, diffTabKey, FILE_WATCH_DEBOUNCE_MS } from "./app-store"
 import { ApiError } from "@shared/rest-client"
 import { SseSubscriber } from "@shared/sse-subscriber"
 import type { ModelCatalog } from "@shared/model-catalog"
@@ -1116,5 +1116,175 @@ describe("diff Tab：每作用域单 Tab + segment 切换（design-diff-view §2
     store.openDiffTab()
     expect(store.diffTypeFor(key)).toBe("uncommitted")
     await vi.waitFor(() => expect(listVcsDiff).toHaveBeenCalledTimes(3))
+  })
+})
+
+describe("文件监听（design-file-watcher）", () => {
+  function dispatch(dir: string, ev: { type: string; properties: unknown }) {
+    ;(store as unknown as { handleEvent: (d: string, e: unknown) => void }).handleEvent(dir, ev)
+  }
+
+  function watcherEvent(dir: string, file: string, event: string) {
+    dispatch(dir, { type: "file.watcher.updated", properties: { file, event } })
+  }
+
+  /** file Tab 夹具：直接入列（避免 openFileTab 的首拉副作用），缓存置 v1 */
+  function fileTab(path: string, directory = ROOT) {
+    store.tabs.push({
+      kind: "file",
+      key: `file:${path}`,
+      projectId: "proj1",
+      title: path.split("/").pop() ?? path,
+      directory,
+    })
+    store.fileContents.set(path, { content: "v1" })
+  }
+
+  function clientRef(): Record<string, unknown> {
+    return (store as unknown as { client: Record<string, unknown> }).client
+  }
+
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it("change 已打开文件 Tab：去抖后按 Tab 作用域重拉刷新内容", async () => {
+    fileTab(ROOT + "/src/a.ts")
+    const readFileContent = vi.fn(async () => "v2")
+    clientRef().readFileContent = readFileContent
+
+    watcherEvent(ROOT, ROOT + "/src/a.ts", "change")
+    expect(readFileContent).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS)
+    expect(readFileContent).toHaveBeenCalledWith(ROOT, ROOT + "/src/a.ts")
+    expect(store.fileContents.get(ROOT + "/src/a.ts")).toEqual({ content: "v2" })
+  })
+
+  it("去抖窗口内多次事件合并为一次重拉", async () => {
+    fileTab(ROOT + "/a.ts")
+    const readFileContent = vi.fn(async () => "v2")
+    clientRef().readFileContent = readFileContent
+
+    watcherEvent(ROOT, ROOT + "/a.ts", "change")
+    await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS - 1)
+    watcherEvent(ROOT, ROOT + "/a.ts", "change")
+    await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS)
+    expect(readFileContent).toHaveBeenCalledTimes(1)
+  })
+
+  it("在途期间落地的后续修改不丢：singleflight + dirty 再武装", async () => {
+    fileTab(ROOT + "/a.ts")
+    let resolveFirst!: (v: string) => void
+    const first = new Promise<string>((r) => {
+      resolveFirst = r
+    })
+    const readFileContent = vi.fn().mockReturnValueOnce(first).mockResolvedValue("v3")
+    clientRef().readFileContent = readFileContent
+
+    watcherEvent(ROOT, ROOT + "/a.ts", "change")
+    await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS) // 首次 fetch 在途
+    expect(readFileContent).toHaveBeenCalledTimes(1)
+    watcherEvent(ROOT, ROOT + "/a.ts", "change") // 在途 → 只置 dirty 不并发
+    resolveFirst("v2")
+    await vi.advanceTimersByTimeAsync(0) // 首次落地 + dirty 再武装
+    expect(store.fileContents.get(ROOT + "/a.ts")).toEqual({ content: "v2" })
+    await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS) // 补排的重拉
+    expect(readFileContent).toHaveBeenCalledTimes(2)
+    expect(store.fileContents.get(ROOT + "/a.ts")).toEqual({ content: "v3" })
+  })
+
+  it("无 Tab 的文件不重拉（缓存不可见，重开必重拉）", async () => {
+    const readFileContent = vi.fn(async () => "v2")
+    clientRef().readFileContent = readFileContent
+    watcherEvent(ROOT, ROOT + "/ghost.ts", "change")
+    await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS)
+    expect(readFileContent).not.toHaveBeenCalled()
+  })
+
+  it("unlink 走同一重拉路径：读取失败落 error 条目（FileView 错误态）", async () => {
+    fileTab(ROOT + "/gone.ts")
+    clientRef().readFileContent = vi.fn(async () => {
+      throw new ApiError(404, "not-found", "file not found")
+    })
+    watcherEvent(ROOT, ROOT + "/gone.ts", "unlink")
+    await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS)
+    expect(store.fileContents.get(ROOT + "/gone.ts")?.error).toBeTruthy()
+  })
+
+  it("worktree 物理位于 .git/ 之下不误杀：相对化判定只滤信封目录内的 .git", async () => {
+    store.projectStates.default.currentWorkspaceId = WT1 // 作用域 = WT1
+    fileTab(WT1 + "/a.ts", WT1)
+    const readFileContent = vi.fn(async () => "v2")
+    clientRef().readFileContent = readFileContent
+
+    // .git 内事件（相对作用域以 .git/ 开头）仍被滤
+    watcherEvent(WT1, WT1 + "/.git/index", "change")
+    // worktree 内正常文件（绝对路径含 /.git/ 但相对化后不在 .git 内）放行
+    watcherEvent(WT1, WT1 + "/a.ts", "change")
+    await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS)
+    expect(readFileContent).toHaveBeenCalledTimes(1)
+    expect(readFileContent).toHaveBeenCalledWith(WT1, WT1 + "/a.ts")
+  })
+
+  it("file 不在信封目录内（git 元数据帧）丢弃", async () => {
+    store.fileTreeNodes.set(".", [])
+    const listFiles = vi.fn(async () => [])
+    clientRef().listFiles = listFiles
+    watcherEvent(WT1, ROOT + "/.git/worktrees/wt1/index.lock", "add")
+    await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS)
+    expect(listFiles).not.toHaveBeenCalled()
+  })
+
+  it("add/unlink 重列已加载父目录；未加载父目录不触发", async () => {
+    store.fileTreeNodes.set(".", [])
+    store.fileTreeNodes.set("src/", [])
+    const listFiles = vi.fn(async () => [])
+    clientRef().listFiles = listFiles
+
+    watcherEvent(ROOT, ROOT + "/src/new.ts", "add")
+    watcherEvent(ROOT, ROOT + "/deep/new.ts", "add") // deep/ 未加载
+    watcherEvent(ROOT, ROOT + "/top.ts", "unlink") // 父 = 根（"."）
+    await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS)
+    expect(listFiles).toHaveBeenCalledTimes(2)
+    expect(listFiles).toHaveBeenCalledWith(ROOT, "src/", undefined)
+    expect(listFiles).toHaveBeenCalledWith(ROOT, ".", undefined)
+  })
+
+  it("change 已加载目录节点重列自身；文件 change 不触发树刷新", async () => {
+    store.fileTreeNodes.set(".", [])
+    store.fileTreeNodes.set("src/", [])
+    const listFiles = vi.fn(async () => [])
+    clientRef().listFiles = listFiles
+
+    watcherEvent(ROOT, ROOT + "/src", "change")
+    watcherEvent(ROOT, ROOT + "/src/a.ts", "change")
+    await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS)
+    expect(listFiles).toHaveBeenCalledTimes(1)
+    expect(listFiles).toHaveBeenCalledWith(ROOT, "src/", undefined)
+  })
+
+  it("树重置（切作用域）作废挂起的树刷新：定时器不打进新作用域", async () => {
+    store.fileTreeNodes.set(".", [])
+    store.fileTreeNodes.set("src/", [])
+    const listFiles = vi.fn(async () => [])
+    clientRef().listFiles = listFiles
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+
+    watcherEvent(ROOT, ROOT + "/src/new.ts", "add")
+    await store.setCurrentWorkspace(WT1) // resetFileTree 清树 + 挂起树刷新
+    await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS)
+    expect(listFiles).not.toHaveBeenCalled()
+    expect(store.fileTreeNodes.size).toBe(0)
+  })
+
+  it("事件信封目录 ≠ 当前作用域：树不刷新（内容重拉不受影响，见上）", async () => {
+    store.fileTreeNodes.set(".", [])
+    const listFiles = vi.fn(async () => [])
+    clientRef().listFiles = listFiles
+
+    watcherEvent(WT1, WT1 + "/x.ts", "add") // 当前作用域 = ROOT
+    await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS)
+    expect(listFiles).not.toHaveBeenCalled()
   })
 })

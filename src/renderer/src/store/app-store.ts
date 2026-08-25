@@ -86,6 +86,9 @@ export type DiffTabType = "round" | "uncommitted" | "branch"
 
 export const DIFF_TAB_TYPES: readonly DiffTabType[] = ["round", "uncommitted", "branch"]
 
+/** 文件监听失效去抖窗口（design-file-watcher §3.1/§3.2） */
+export const FILE_WATCH_DEBOUNCE_MS = 300
+
 /** diff Tab key：每作用域单 Tab（2026-08-25 修订，原按 type 拆三 Tab） */
 export function diffTabKey(directory: string): string {
   return `diff\0${directory}`
@@ -398,6 +401,7 @@ export class AppStore {
       clearTimeout(this.catalogRefreshTimer)
       this.catalogRefreshTimer = null
     }
+    this.clearFileWatchTimers()
     this.snapshottedDirs.clear()
     // agent/模型目录：切 profile 全量重建（与命令缓存同模式）
     this.modelCatalogs.clear()
@@ -718,6 +722,13 @@ export class AppStore {
       case "session.next.model.switched": {
         const { sessionID, model } = ev.properties as { sessionID: string; model: ModelRef }
         if (sessionID && model?.id && model?.providerID) this.patchSessionModel(sessionID, model)
+        break
+      }
+      case "file.watcher.updated": {
+        const { file, event } = ev.properties
+        if (typeof file === "string" && typeof event === "string") {
+          this.onFileWatcherEvent(directory, file, event)
+        }
         break
       }
       default:
@@ -1465,6 +1476,10 @@ export class AppStore {
     this.fileTreeExpanded.clear()
     this.fileTreeNodes.clear()
     this.fileContents.clear()
+    // 挂起的树刷新随树重置作废：否则定时器在切换后落地会打进新作用域
+    // （loadFileNodes 的闸门只挡在途期间切走，不挡落地前切走，design-file-watcher §3.2）
+    for (const timer of this.treeRefreshTimers.values()) clearTimeout(timer)
+    this.treeRefreshTimers.clear()
   }
 
   /**
@@ -2596,6 +2611,120 @@ export class AppStore {
     this.fileTreeExpanded.set(path, next)
     if (next) void this.loadFileNodes(path)
     this.emit()
+  }
+
+  // ============ 文件监听失效（design-file-watcher） ============
+
+  private fileReloadTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private fileReloadInflight = new Set<string>()
+  private fileReloadDirty = new Set<string>()
+  private treeRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+  /**
+   * file.watcher.updated 统一入口（官方 app invalidateFromWatcher 同语义）：
+   * 内容失效 = 已打开文件 Tab 重拉；树失效 = 已加载目录重列。
+   */
+  private onFileWatcherEvent(directory: string, file: string, kind: string) {
+    if (!file.startsWith("/")) return
+    if (kind !== "add" && kind !== "change" && kind !== "unlink") return
+    // 相对化：file 必须位于事件信封目录之内。之外的帧实测只有 git 元数据（服务端把
+    // git 目录监听挂到 worktree location，index/refs 帧 file 在主仓 .git 内）——丢弃
+    let rel: string
+    if (file === directory) rel = ""
+    else if (file.startsWith(directory + "/")) rel = file.slice(directory.length + 1)
+    else return
+    // .git 内（相对化判定，官方 app 同规则）：不得按绝对路径组件过滤——worktree
+    // 可能物理位于项目 .git/ 之下（旧约定），绝对路径判定会误杀其全部事件
+    if (rel === ".git" || rel.startsWith(".git/")) return
+
+    // 内容失效：有已打开文件 Tab 才重拉（无 Tab 缓存不可见，重开必重拉）
+    if (this.tabs.some((t) => t.kind === "file" && t.key === `file:${file}`)) {
+      this.scheduleFileReload(file)
+    }
+    // 树失效：仅当前作用域（树只承载当前作用域；归属只认信封目录，不用路径前缀——
+    // worktree 物理上可能在项目根内，scope=项目根时不得误刷）
+    if (directory !== this.scopeQuery.directory) return
+    if (kind === "change") {
+      // 目录自身（已加载目录节点）重列；文件变化不改树形，不触发父目录重列
+      const dirKey = rel === "" ? "." : rel + "/"
+      if (this.fileTreeNodes.has(dirKey)) this.scheduleTreeRefresh(dirKey)
+      return
+    }
+    // add/unlink：父目录已加载才重列（惰性树语义不变）
+    const slash = rel.lastIndexOf("/")
+    const parentKey = slash === -1 ? "." : rel.slice(0, slash) + "/"
+    if (this.fileTreeNodes.has(parentKey)) this.scheduleTreeRefresh(parentKey)
+  }
+
+  /** 每路径去抖：burst（agent 连续写、git checkout）合并为一次重拉 */
+  private scheduleFileReload(file: string) {
+    const timer = this.fileReloadTimers.get(file)
+    if (timer != null) clearTimeout(timer)
+    this.fileReloadTimers.set(
+      file,
+      setTimeout(() => {
+        this.fileReloadTimers.delete(file)
+        void this.doFileReload(file)
+      }, FILE_WATCH_DEBOUNCE_MS),
+    )
+  }
+
+  /**
+   * 监听重拉文件内容：singleflight + dirty 再武装——在途期间新事件只置 dirty，
+   * 在途完成后补排一次，保证 fetch 期间落地的后续修改不丢。
+   * 落地守卫同其余 async 路径：client 身份 + Tab 仍存在。
+   * unlink 走同一路径：/file/content 报错 → 缓存落 error 条目 → FileView 错误态。
+   */
+  private async doFileReload(file: string) {
+    if (this.fileReloadInflight.has(file)) {
+      this.fileReloadDirty.add(file)
+      return
+    }
+    const client = this.client
+    const tab = this.tabs.find((t) => t.kind === "file" && t.key === `file:${file}`)
+    if (!client || !tab || !tab.directory) return
+    this.fileReloadInflight.add(file)
+    try {
+      // directory = Tab 打开时作用域（非当前 scopeQuery）：Tab 跨作用域混排，
+      // 事件到达时当前作用域可能已不是该 Tab 的
+      const content = await client.readFileContent(tab.directory, file)
+      if (this.client !== client || !this.tabs.some((t) => t.key === `file:${file}`)) return
+      this.fileContents.set(file, { content })
+      this.emit()
+    } catch (e) {
+      if (this.client !== client || !this.tabs.some((t) => t.key === `file:${file}`)) return
+      this.fileContents.set(file, {
+        content: "",
+        error: e instanceof Error ? e.message : String(e),
+      })
+      this.emit()
+    } finally {
+      this.fileReloadInflight.delete(file)
+      if (this.fileReloadDirty.delete(file)) this.scheduleFileReload(file)
+    }
+  }
+
+  /** 每目录键去抖：整目录波动（git checkout）合并为一次重列 */
+  private scheduleTreeRefresh(dirKey: string) {
+    const timer = this.treeRefreshTimers.get(dirKey)
+    if (timer != null) clearTimeout(timer)
+    this.treeRefreshTimers.set(
+      dirKey,
+      setTimeout(() => {
+        this.treeRefreshTimers.delete(dirKey)
+        void this.loadFileNodes(dirKey)
+      }, FILE_WATCH_DEBOUNCE_MS),
+    )
+  }
+
+  /** teardown 清理：连接拆除后不得再有监听重拉/树刷新落地 */
+  private clearFileWatchTimers() {
+    for (const timer of this.fileReloadTimers.values()) clearTimeout(timer)
+    this.fileReloadTimers.clear()
+    for (const timer of this.treeRefreshTimers.values()) clearTimeout(timer)
+    this.treeRefreshTimers.clear()
+    this.fileReloadInflight.clear()
+    this.fileReloadDirty.clear()
   }
 
   // ============ 设置 ============
