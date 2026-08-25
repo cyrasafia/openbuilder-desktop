@@ -76,6 +76,7 @@ import type {
   Project,
   Session,
   SessionStatusValue,
+  TextPart,
   Workspace,
 } from "@shared/api-types"
 
@@ -390,6 +391,8 @@ export class AppStore {
     this.statusSources.clear()
     this.pendingPermissions.clear()
     this.pendingQuestions.clear()
+    this.revertDrafts.clear()
+    this.revertDraftConsumed.clear()
     this.tabs = []
     this.activeTabKey = null
     this.diffData.clear()
@@ -1470,6 +1473,8 @@ export class AppStore {
     this.pendingPartsMap.delete(sessionID)
     this.optimisticBySession.delete(sessionID)
     this.sessionPages.delete(sessionID)
+    this.revertDrafts.delete(sessionID)
+    this.revertDraftConsumed.delete(sessionID)
   }
 
   private resetFileTree() {
@@ -1955,6 +1960,118 @@ export class AppStore {
     const session = this.findSession(sessionID)
     if (!session) return
     await this.client.abortSession(sessionID, session.directory).catch(() => {})
+  }
+
+  // ============ 回滚（design-message-revert） ============
+
+  /**
+   * 回滚草稿回填（官方 app revert → prompt.set(draft(messageID)) 语义）：
+   * 回滚成功后把回滚点 user 消息的文本交给 ChatView 置入输入框（可编辑重发）。
+   * effect 依赖版本号；take 即清，不重复消费。
+   */
+  private revertDrafts = new Map<string, string>()
+  /**
+   * 种子已被 ChatView 消费的会话（输入框正承载回填文本）。撤销回滚清输入框
+   * 以此为据——跨客户端回滚（本端从未回填）或无文本回滚不得误清用户自输内容
+   */
+  private revertDraftConsumed = new Set<string>()
+  revertDraftVersion = 0
+
+  takeRevertDraft(sessionID: string): string | null {
+    const v = this.revertDrafts.get(sessionID)
+    if (v == null) return null
+    this.revertDrafts.delete(sessionID)
+    // 空种子是「清输入框」指令，不记消费（防二次撤销误判）
+    if (v) this.revertDraftConsumed.add(sessionID)
+    return v
+  }
+
+  /**
+   * 回滚到指定消息（暂存）：立即还原工作区文件，消息删除延迟到下一条 prompt。
+   * busy/retry 时先 abort 再回滚（官方 halt→stage）——UI 侧负责先 confirm。
+   */
+  async revertToMessage(
+    sessionID: string,
+    messageID: string,
+  ): Promise<{ ok: boolean; error?: string }> {
+    if (!this.client) return { ok: false, error: "not connected" }
+    const session = this.findSession(sessionID)
+    if (!session) return { ok: false, error: "session not found" }
+    // abort 端点等待 run 完全停止后才响应（源码核对：run-state.cancel await
+    // Fiber.interrupt + 置 Idle），随后 revert 不会撞 409 窗口；若仍 409，是
+    // abort 与他端新 prompt 的竞争，文案「会话仍在进行中」如实成立
+    if (this.isSessionActive(sessionID)) await this.abortSession(sessionID)
+    try {
+      const updated = await this.client.revertMessage(sessionID, session.directory, messageID)
+      if (updated) this.mergeSessionUpdate(updated)
+      if (!updated?.revert) {
+        // server 未写回滚点（消息已不存在，如他端先行删除/提交——源码：
+        // revert.ts `if (!rev) return session`）。不回填、显式失败呈现
+        const msg = "回滚未生效：消息不存在或已被删除"
+        this.connectionError = msg
+        this.emit()
+        return { ok: false, error: msg }
+      }
+      const seed = this.userMessageText(sessionID, updated.revert.messageID)
+      if (seed) {
+        this.revertDrafts.set(sessionID, seed)
+        this.revertDraftVersion++
+      }
+      this.emit()
+      return { ok: true }
+    } catch (e) {
+      const msg =
+        e instanceof ApiError && e.status === 409
+          ? "会话仍在进行中，请稍后再回滚"
+          : e instanceof Error
+            ? e.message
+            : String(e)
+      this.connectionError = msg
+      this.emit()
+      return { ok: false, error: msg }
+    }
+  }
+
+  /** 撤销回滚暂存：恢复文件、清 session.revert */
+  async unrevertSession(sessionID: string): Promise<{ ok: boolean; error?: string }> {
+    if (!this.client) return { ok: false, error: "not connected" }
+    const session = this.findSession(sessionID)
+    if (!session) return { ok: false, error: "session not found" }
+    try {
+      const updated = await this.client.unrevertSession(sessionID, session.directory)
+      if (updated) this.mergeSessionUpdate(updated)
+      // 撤销即清输入框：空种子 = 清空草稿（官方 restore→promptSession.reset 语义）。
+      // 仅当输入框正承载本地回填文本（种子已消费）时清空——跨客户端回滚/无文本
+      // 回滚不得误清用户自输内容
+      this.revertDrafts.delete(sessionID)
+      if (this.revertDraftConsumed.has(sessionID)) {
+        this.revertDraftConsumed.delete(sessionID)
+        this.revertDrafts.set(sessionID, "")
+        this.revertDraftVersion++
+      }
+      this.emit()
+      return { ok: true }
+    } catch (e) {
+      const msg =
+        e instanceof ApiError && e.status === 409
+          ? "会话仍在进行中，请稍后再操作"
+          : e instanceof Error
+            ? e.message
+            : String(e)
+      this.connectionError = msg
+      this.emit()
+      return { ok: false, error: msg }
+    }
+  }
+
+  /** 回滚点 user 消息的文本（text parts 拼接）；无文本（附件/命令回显）返回 null */
+  private userMessageText(sessionID: string, messageID: string): string | null {
+    const msg = this.messagesBySession.get(sessionID)?.get(messageID)
+    if (!msg || msg.info.role !== "user") return null
+    const texts = (msg.parts.filter((p) => p.type === "text") as TextPart[])
+      .map((p) => p.text)
+      .filter((t) => t.trim().length > 0)
+    return texts.length > 0 ? texts.join("\n") : null
   }
 
   // ============ 斜杠命令 ============

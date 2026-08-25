@@ -39,6 +39,11 @@ const zh = {
   // 高用户消息折叠（design-user-message-collapse）
   bubbleExpand: "点击展开",
   bubbleCollapse: "点击收起",
+  // 回滚到指定消息（design-message-revert）
+  revertToHere: "回滚到此消息",
+  unrevert: "撤销回滚",
+  revertBarHint: "已回滚：回滚点起 {count} 条消息将在发送后删除",
+  confirmRevertBusy: "会话进行中，回滚将先停止会话。继续？",
   // 上滚翻页（design-message-history-pagination）
   loadingEarlier: "加载更早消息",
   loadEarlierFailed: "加载失败，点击重试",
@@ -185,6 +190,10 @@ const en: typeof zh = {
   retry: "Retry",
   bubbleExpand: "Click to expand",
   bubbleCollapse: "Click to collapse",
+  revertToHere: "Revert to here",
+  unrevert: "Undo revert",
+  revertBarHint: "Reverted: {count} messages from this point will be removed on next send",
+  confirmRevertBusy: "Session is running — reverting stops it first. Continue?",
   loadingEarlier: "Loading earlier messages",
   loadEarlierFailed: "Failed to load, click to retry",
   generating: "Generating…",

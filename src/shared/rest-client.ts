@@ -265,6 +265,25 @@ export class RestClient {
   }
 
   /**
+   * 回滚暂存（design-message-revert §2）：立即还原工作区文件并写 `session.revert`；
+   * 消息删除延迟到下一条 prompt（server cleanup）。busy/retry 时 409（ApiError 透传）。
+   */
+  revertMessage(sessionID: string, directory: string, messageID: string): Promise<Session> {
+    return this.request<Session>(
+      `/session/${encodeURIComponent(sessionID)}/revert${RestClient.dirQuery(directory)}`,
+      { method: "POST", body: JSON.stringify({ messageID }) },
+    )
+  }
+
+  /** 撤销回滚暂存：恢复文件、清 `session.revert`（design-message-revert §2） */
+  unrevertSession(sessionID: string, directory: string): Promise<Session> {
+    return this.request<Session>(
+      `/session/${encodeURIComponent(sessionID)}/unrevert${RestClient.dirQuery(directory)}`,
+      { method: "POST" },
+    )
+  }
+
+  /**
    * 斜杠命令注册表。单源 v1 instance 路由 `GET /command?directory=`——
    * 与 POST /session/:id/command 执行用同一注册表（builtin init/review +
    * config/插件 + MCP prompts + 全量 skill 含 ~/.claude、~/.agents 外部扫描）。

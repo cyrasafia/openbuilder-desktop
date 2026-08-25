@@ -9,7 +9,7 @@ import { AppStore, diffTabKey, FILE_WATCH_DEBOUNCE_MS } from "./app-store"
 import { ApiError } from "@shared/rest-client"
 import { SseSubscriber } from "@shared/sse-subscriber"
 import type { ModelCatalog } from "@shared/model-catalog"
-import type { MessageWithParts, ModelRef, Project, Session } from "@shared/api-types"
+import type { MessageWithParts, ModelRef, Part, Project, Session } from "@shared/api-types"
 
 const ROOT = "/repo"
 const WT1 = "/repo/.git/opencode-worktrees/wt1"
@@ -1286,5 +1286,168 @@ describe("文件监听（design-file-watcher）", () => {
     watcherEvent(WT1, WT1 + "/x.ts", "add") // 当前作用域 = ROOT
     await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS)
     expect(listFiles).not.toHaveBeenCalled()
+  })
+})
+
+// 回滚到指定消息（design-message-revert §3.3）：暂存合并 + 草稿回填 + 撤销；
+// busy 先 abort 再回滚（官方 halt→stage）；409 经 connectionError 呈现
+describe("回滚到指定消息（design-message-revert）", () => {
+  function seedSession(): Session {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    return s1
+  }
+
+  /** 注入已加载的 user 消息（text part），供草稿回填取值 */
+  function seedUserMessage(text: string) {
+    const parts: Part[] = [
+      { id: "prt_1", sessionID: "s1", messageID: "msg_u1", type: "text", text } as Part,
+    ]
+    store.messagesBySession.set(
+      "s1",
+      new Map([
+        [
+          "msg_u1",
+          {
+            info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 1 } },
+            parts,
+          },
+        ],
+      ]),
+    )
+  }
+
+  it("revertToMessage：合并返回 Session 的 revert 字段 + 回填草稿", async () => {
+    seedSession()
+    seedUserMessage("帮我写个函数")
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    client.revertMessage = async () => ({
+      ...session("s1", ROOT, { created: 1, updated: 2 }),
+      revert: { messageID: "msg_u1" },
+    })
+
+    const res = await store.revertToMessage("s1", "msg_u1")
+    expect(res.ok).toBe(true)
+    expect(store.findSession("s1")?.revert?.messageID).toBe("msg_u1")
+    // 草稿回填：回滚点 user 消息文本；take 即清，二次取空
+    expect(store.takeRevertDraft("s1")).toBe("帮我写个函数")
+    expect(store.takeRevertDraft("s1")).toBeNull()
+  })
+
+  it("revertToMessage 无 text part（纯命令回显）：不回填草稿", async () => {
+    seedSession()
+    store.messagesBySession.set(
+      "s1",
+      new Map([
+        [
+          "msg_u1",
+          {
+            info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 1 } },
+            parts: [
+              { id: "prt_1", sessionID: "s1", messageID: "msg_u1", type: "subtask", command: "init" } as Part,
+            ],
+          },
+        ],
+      ]),
+    )
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    client.revertMessage = async () => ({
+      ...session("s1", ROOT, { created: 1, updated: 2 }),
+      revert: { messageID: "msg_u1" },
+    })
+
+    const res = await store.revertToMessage("s1", "msg_u1")
+    expect(res.ok).toBe(true)
+    expect(store.takeRevertDraft("s1")).toBeNull()
+  })
+
+  it("busy 中 revertToMessage：先 abort 再 revert（官方 halt→stage）", async () => {
+    seedSession()
+    const calls: string[] = []
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    client.abortSession = async () => {
+      calls.push("abort")
+    }
+    client.revertMessage = async () => {
+      calls.push("revert")
+      return { ...session("s1", ROOT, { created: 1, updated: 2 }), revert: { messageID: "msg_u1" } }
+    }
+    // 经真实事件路径置 busy
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, {
+      type: "session.status",
+      properties: { sessionID: "s1", status: { type: "busy" } },
+    })
+
+    const res = await store.revertToMessage("s1", "msg_u1")
+    expect(res.ok).toBe(true)
+    expect(calls).toEqual(["abort", "revert"])
+  })
+
+  it("revertToMessage 409：ok:false 且 connectionError 记录", async () => {
+    seedSession()
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    client.revertMessage = async () => {
+      throw new ApiError(409, "unknown", "HTTP 409")
+    }
+    const res = await store.revertToMessage("s1", "msg_u1")
+    expect(res.ok).toBe(false)
+    expect(store.connectionError).toBeTruthy()
+  })
+
+  it("unrevertSession：合并返回 Session（revert 清空）+ 已回填会话空种子清空输入框", async () => {
+    const s1 = seedSession()
+    store.sessionsByProject.set("proj1", sessionsOf({ ...s1, revert: { messageID: "msg_u1" } }))
+    // 回填种子已被 ChatView 消费（输入框正承载回填文本）
+    ;(store as unknown as { revertDrafts: Map<string, string> }).revertDrafts.set("s1", "回滚回填的草稿")
+    expect(store.takeRevertDraft("s1")).toBe("回滚回填的草稿")
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    client.unrevertSession = async () => ({
+      ...session("s1", ROOT, { created: 1, updated: 3 }),
+      revert: null,
+    })
+
+    const res = await store.unrevertSession("s1")
+    expect(res.ok).toBe(true)
+    expect(store.findSession("s1")?.revert).toBeNull()
+    // 空种子 = 清输入框（官方 restore→promptSession.reset 语义）
+    expect(store.takeRevertDraft("s1")).toBe("")
+  })
+
+  it("unrevertSession 跨客户端暂存（本端未回填）：不清空用户自输内容", async () => {
+    const s1 = seedSession()
+    store.sessionsByProject.set("proj1", sessionsOf({ ...s1, revert: { messageID: "msg_u1" } }))
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    client.unrevertSession = async () => ({
+      ...session("s1", ROOT, { created: 1, updated: 3 }),
+      revert: null,
+    })
+
+    const res = await store.unrevertSession("s1")
+    expect(res.ok).toBe(true)
+    expect(store.takeRevertDraft("s1")).toBeNull()
+  })
+
+  it("unrevertSession 无暂存回滚：不置种子（不误清用户输入）", async () => {
+    seedSession()
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    client.unrevertSession = async () => session("s1", ROOT, { created: 1, updated: 3 })
+
+    const res = await store.unrevertSession("s1")
+    expect(res.ok).toBe(true)
+    expect(store.takeRevertDraft("s1")).toBeNull()
+  })
+
+  it("revertToMessage server 未暂存（消息已不存在）：ok:false 且不回填", async () => {
+    seedSession()
+    seedUserMessage("帮我写个函数")
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    // server 侧消息不存在 → revert.ts no-op，返回无 revert 字段的原会话
+    client.revertMessage = async () => session("s1", ROOT, { created: 1, updated: 1 })
+
+    const res = await store.revertToMessage("s1", "msg_u1")
+    expect(res.ok).toBe(false)
+    expect(store.connectionError).toBeTruthy()
+    expect(store.findSession("s1")?.revert).toBeUndefined()
+    expect(store.takeRevertDraft("s1")).toBeNull()
   })
 })

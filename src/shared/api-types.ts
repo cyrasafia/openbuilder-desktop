@@ -40,6 +40,17 @@ export interface ModelRef {
   variant?: string
 }
 
+/**
+ * 回滚暂存态（`POST /session/:id/revert` 后挂在 Session 上，design-message-revert §3.2）。
+ * messageID = 回滚点（含起删除）；提交发生在下一条 prompt（server cleanup）。
+ */
+export interface SessionRevert {
+  messageID: string
+  partID?: string
+  snapshot?: string
+  diff?: string
+}
+
 export interface Session {
   id: string
   slug?: string
@@ -50,6 +61,10 @@ export interface Session {
   agent?: string
   model?: ModelRef
   time: SessionTime
+  /** 回滚暂存（staging）；unrevert/提交后为 null/缺省 */
+  revert?: SessionRevert | null
+  /** 会话改动汇总（staging 时 = 被回滚区间的改动；契约 Session.summary） */
+  summary?: { additions: number; deletions: number; files: number }
   [k: string]: unknown
 }
 

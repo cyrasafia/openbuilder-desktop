@@ -79,6 +79,20 @@ export function sortEntries(entries: ChatEntry[]): ChatEntry[] {
 }
 
 /**
+ * 回滚暂存期隐藏回滚点起消息（design-message-revert §3.4）。
+ * 边界与 server cleanup 一致：`id >= revertMessageID` 隐藏（回滚点本身含在内，
+ * 提交时同删）；消息 id 升序可字典序比较（同 ../opencode revert.ts 比较语义）。
+ * 乐观消息恒显（未达 server，不构成回滚对象）。纯呈现层：不改动数据。
+ */
+export function filterRevertedEntries(
+  entries: ChatEntry[],
+  revertMessageID: string | null,
+): ChatEntry[] {
+  if (!revertMessageID) return entries
+  return entries.filter((e) => e.kind === "optimistic" || e.data.info.id < revertMessageID)
+}
+
+/**
  * REST 快照与本地 SSE 状态合并（不清空重置——openbuilder design-message-accumulation：
  * clear()+addAll() 会在 async gap 擦掉新到的 SSE 事件）。
  * - info 取 REST 权威

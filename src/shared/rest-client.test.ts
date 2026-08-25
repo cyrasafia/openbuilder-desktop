@@ -89,3 +89,55 @@ describe("超时策略（design-slash-command SC-4）", () => {
     expect(seen?.signal).toBeInstanceOf(AbortSignal)
   })
 })
+
+// 回滚到指定消息（design-message-revert §3.1）：POST /session/:id/revert|unrevert，
+// directory 走 query；body 仅 messageID；409 busy 经 ApiError 透传
+describe("revert / unrevert（design-message-revert）", () => {
+  const SESSION = JSON.stringify({
+    id: "ses_1",
+    projectID: "proj1",
+    directory: "/repo",
+    time: { created: 0, updated: 1 },
+    revert: { messageID: "msg_1" },
+  })
+
+  it("revertMessage：POST revert，directory 走 query、body 带 messageID、返回 Session", async () => {
+    let url = ""
+    let seen: RequestInit | undefined
+    const client = mkClient((u, init) => {
+      url = u
+      seen = init
+      return new Response(SESSION)
+    })
+    const s = await client.revertMessage("ses_1", "/repo", "msg_1")
+    expect(url).toBe("http://server/session/ses_1/revert?directory=%2Frepo")
+    expect(seen?.method).toBe("POST")
+    expect(seen?.body).toBe(JSON.stringify({ messageID: "msg_1" }))
+    expect(s.revert?.messageID).toBe("msg_1")
+  })
+
+  it("unrevertSession：POST unrevert，无 body、返回 Session", async () => {
+    let url = ""
+    let seen: RequestInit | undefined
+    const client = mkClient((u, init) => {
+      url = u
+      seen = init
+      return new Response(SESSION)
+    })
+    const s = await client.unrevertSession("ses_1", "/repo")
+    expect(url).toBe("http://server/session/ses_1/unrevert?directory=%2Frepo")
+    expect(seen?.method).toBe("POST")
+    expect(seen?.body).toBeUndefined()
+    expect(s.id).toBe("ses_1")
+  })
+
+  it("409 busy：ApiError 透传状态码", async () => {
+    const client = mkClient(() =>
+      new Response(JSON.stringify({ _tag: "SessionBusyError" }), { status: 409 }),
+    )
+    await expect(client.revertMessage("ses_1", "/repo", "msg_1")).rejects.toMatchObject({
+      status: 409,
+    })
+    await expect(client.unrevertSession("ses_1", "/repo")).rejects.toBeInstanceOf(ApiError)
+  })
+})

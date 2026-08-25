@@ -665,6 +665,8 @@
 .msg.user {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
 }
 
 .msg.user .bubble {
@@ -720,6 +722,50 @@
   margin-top: 2px;
   color: var(--color-user-outline);
   pointer-events: none;
+}
+
+/* ---------- 回滚到指定消息（design-message-revert §3.4） ---------- */
+/* 用户消息悬停动作行：flex 顺序先于气泡 → 紧贴气泡左侧、纵向居中（.msg.user
+   align-items:center）。常驻占位 + 显隐走 opacity/visibility——hover 显隐零布局位移 */
+.msg-actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 120ms, visibility 120ms;
+}
+.msg.user:hover .msg-actions,
+.msg.user:focus-within .msg-actions {
+  opacity: 1;
+  visibility: visible;
+}
+/* .msg-action 无底色：缺省透明，hover 背景走通用 .icon-btn:hover */
+
+/* 回滚暂存条：composer 顶部一行（撤销入口） */
+.revert-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius-chip);
+  background: color-mix(in srgb, var(--tertiary-container) 35%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--tertiary) 40%, transparent);
+  font-size: var(--text-sm);
+  color: var(--on-surface);
+}
+.revert-bar-icon {
+  color: var(--tertiary);
+  flex-shrink: 0;
+}
+.revert-bar-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.revert-bar-undo {
+  flex-shrink: 0;
 }
 
 .msg.assistant {

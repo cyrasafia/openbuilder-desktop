@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import {
+  filterRevertedEntries,
   mergeParts,
   mergeSnapshotIntoMessages,
   sortEntries,
@@ -183,5 +184,38 @@ describe("mergeSnapshotIntoMessages", () => {
     const m = merged.get("msg_1")!
     expect((m.info as AssistantMessage).time.completed).toBe(999)
     expect(m.parts.map((p) => p.id).sort()).toEqual(["prt_1", "prt_2"])
+  })
+})
+
+describe("filterRevertedEntries（回滚暂存隐藏边界，design-message-revert §3.4）", () => {
+  const optimistic: ChatEntry = {
+    kind: "optimistic",
+    data: { optimistic: true, localId: "opt_1", text: "hi", createdAt: 500 },
+  }
+  const entries: ChatEntry[] = [
+    { kind: "message", data: entry(userMsg("msg_1", 100)) },
+    { kind: "message", data: entry(assistantMsg("msg_2", 200, 300)) },
+    { kind: "message", data: entry(userMsg("msg_3", 400)) },
+    optimistic,
+  ]
+  const ids = (list: ChatEntry[]) =>
+    list.map((e) => (e.kind === "optimistic" ? "opt" : e.data.info.id))
+
+  it("无回滚点：原样返回", () => {
+    expect(filterRevertedEntries(entries, null)).toBe(entries)
+  })
+
+  it("边界含回滚点本身：id >= 回滚点隐藏（与 server cleanup 删除集一致）", () => {
+    expect(ids(filterRevertedEntries(entries, "msg_2"))).toEqual(["msg_1", "opt"])
+    expect(ids(filterRevertedEntries(entries, "msg_1"))).toEqual(["opt"])
+  })
+
+  it("回滚点在尾后：全部保留", () => {
+    expect(ids(filterRevertedEntries(entries, "msg_9"))).toEqual(["msg_1", "msg_2", "msg_3", "opt"])
+  })
+
+  it("乐观消息恒显（未达 server，不构成回滚对象）", () => {
+    expect(ids(filterRevertedEntries([optimistic], "msg_1"))).toEqual(["opt"])
+    expect(ids(filterRevertedEntries([optimistic], null))).toEqual(["opt"])
   })
 })

@@ -7,11 +7,11 @@ import {
   type ReactNode,
   type WheelEvent,
 } from "react"
-import { ChevronDown, ChevronRight, ChevronUp, CircleHelp, LoaderCircle, ShieldAlert } from "lucide-react"
+import { ChevronDown, ChevronRight, ChevronUp, CircleHelp, LoaderCircle, RotateCcw, ShieldAlert } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import { format, relativeTime } from "../i18n"
 import type { Catalog } from "../i18n"
-import type { ChatEntry } from "@shared/message-merge"
+import { filterRevertedEntries, type ChatEntry } from "@shared/message-merge"
 import type {
   CommandInfo,
   Part,
@@ -237,6 +237,12 @@ function ChatView({ sessionID }: { sessionID: string }) {
   const entries = store.chatEntries(sessionID)
   const status = store.statusOf(sessionID)
   const busy = status.type !== "idle"
+  // 回滚暂存态（design-message-revert）：回滚点起消息从消息流隐藏（对齐官方
+  // timeline visibleUserMessages 过滤），撤销回滚恢复显示；发送即提交删除。
+  // 乐观消息恒显（未达 server，不构成回滚对象）
+  const revertMessageID = store.findSession(sessionID)?.revert?.messageID ?? null
+  const visibleEntries = filterRevertedEntries(entries, revertMessageID)
+  const revertedCount = entries.length - visibleEntries.length
   const scrollRef = useRef<HTMLDivElement>(null)
   const pinnedToBottom = useRef(true)
   const lastEntryCount = useRef(0)
@@ -257,6 +263,25 @@ function ChatView({ sessionID }: { sessionID: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionID])
 
+  // 回滚草稿回填（design-message-revert §3.3）：回滚点 user 消息文本置入输入框，可编辑重发
+  useEffect(() => {
+    const seed = store.takeRevertDraft(sessionID)
+    if (seed != null) setDraft(seed)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store.revertDraftVersion, sessionID])
+
+  // 跨客户端回滚覆盖窗口（design-message-revert §3.4）：他端暂存的回滚点可能早于
+  // 本端已加载窗口（全部已加载消息被隐藏、计数偏小）——持续拉更早页直到窗口覆盖
+  // 回滚点或历史穷尽（loadEarlierMessages 自带 loading/exhausted/error 守卫）
+  useEffect(() => {
+    if (!revertMessageID) return
+    const covered = entries.some(
+      (e) => e.kind === "message" && e.data.info.id < revertMessageID,
+    )
+    if (!covered) void store.loadEarlierMessages(sessionID)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revertMessageID, entries, sessionID])
+
   const scrollToBottom = (behavior: ScrollBehavior = "auto") => {
     const el = scrollRef.current
     if (el) el.scrollTo({ top: el.scrollHeight, behavior })
@@ -269,7 +294,12 @@ function ChatView({ sessionID }: { sessionID: string }) {
    */
   const maybeLoadEarlier = () => {
     const el = scrollRef.current
-    if (el) anchorRef.current = { height: el.scrollHeight, top: el.scrollTop, headId: headIdOf(entries) }
+    if (el)
+      anchorRef.current = {
+        height: el.scrollHeight,
+        top: el.scrollTop,
+        headId: headIdOf(visibleEntries),
+      }
     void store.loadEarlierMessages(sessionID)
   }
 
@@ -298,15 +328,16 @@ function ChatView({ sessionID }: { sessionID: string }) {
   }
 
   // useLayoutEffect：DOM 变更后、绘制前同步置底，首帧即到底、无滚动动画
+  // 依赖 visibleEntries（非 entries）：回滚暂存隐藏尾部消息也要触发贴底重定位
   useLayoutEffect(() => {
     const el = scrollRef.current
     if (!el) return
     const anchor = anchorRef.current
     if (anchor && !pinnedToBottom.current) {
-      const head = headIdOf(entries)
+      const head = headIdOf(visibleEntries)
       if (head !== anchor.headId) {
         anchorRef.current = null
-        if (entries.length > lastEntryCount.current) {
+        if (visibleEntries.length > lastEntryCount.current) {
           // 头部真实增长（分页/种子窗口落地——两个来源，见设计 §4.3）：
           // prepend 增量按 scrollHeight 差补回，视口内容不动；随后**重新武装**
           // anchor——种子路径同调用内窗口+before 两次落地，第二次 prepend 也要补偿
@@ -321,18 +352,19 @@ function ChatView({ sessionID }: { sessionID: string }) {
       // 0→N（含首次加载与切回 Tab 重拉快照）用 auto 瞬时定位——溢出态初始 scrollTop=0
       // 在顶部，auto 在绘制前同步跳底，用户看不到顶部帧；smooth 则是可见的整屏滚动
       // 动画（§7.8 症状回归）。lastEntryCount>0 排除 0→N，之后新条目（N→N+1）才
-      // smooth 跟随，同条目流式更新（N→N）即时贴底。
-      const grew = lastEntryCount.current > 0 && entries.length > lastEntryCount.current
+      // smooth 跟随，同条目流式更新（N→N）即时贴底。回滚隐藏尾部 = 条数减少，
+      // 走 auto 即时贴底（无动画）
+      const grew = lastEntryCount.current > 0 && visibleEntries.length > lastEntryCount.current
       scrollToBottom(grew ? "smooth" : "auto")
     }
-    lastEntryCount.current = entries.length
+    lastEntryCount.current = visibleEntries.length
     // 链式加载：内容不足以溢出视口（用户无从滚动）且还能加载更早历史 → 再拉一页
     // （失败停链——error 守卫在 canLoadEarlier 内，design §4.3）
     if (el.scrollHeight <= el.clientHeight && store.canLoadEarlier(sessionID)) {
       maybeLoadEarlier()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entries])
+  }, [visibleEntries])
 
   const send = async () => {
     const text = draft.trim()
@@ -410,8 +442,11 @@ function ChatView({ sessionID }: { sessionID: string }) {
       <div className="message-list scroll" ref={scrollRef} tabIndex={-1} onScroll={onScroll} onWheel={onWheel}>
         <div className="message-list-inner">
           <HistoryRow sessionID={sessionID} onRetry={maybeLoadEarlier} />
-          {entries.map((entry) => (
-            <MessageBlock key={entry.kind === "optimistic" ? entry.data.localId : entry.data.info.id} entry={entry} />
+          {visibleEntries.map((entry) => (
+            <MessageBlock
+              key={entry.kind === "optimistic" ? entry.data.localId : entry.data.info.id}
+              entry={entry}
+            />
           ))}
           {/* 常驻固定高槽位（INV-1）：显隐只动槽内内容，消息流总高度不变（design-typing-indicator §3） */}
           <TypingSlot status={status} />
@@ -419,6 +454,8 @@ function ChatView({ sessionID }: { sessionID: string }) {
       </div>
       <ChatFooter sessionID={sessionID} />
       <div className="composer">
+        {/* 回滚暂存条（design-message-revert §3.4）：composer 内常驻一行，撤销入口 */}
+        {revertMessageID && <RevertBar sessionID={sessionID} count={revertedCount} busy={busy} />}
         {/* 覆盖层：锚在 composer 上沿悬浮于消息流（不占布局、不顶起消息） */}
         {cmdMode && (
           <CommandHints
@@ -492,6 +529,34 @@ function ChatView({ sessionID }: { sessionID: string }) {
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+/**
+ * 回滚暂存条（design-message-revert §3.4）：session.revert 存在时出现于
+ * composer 顶部；「撤销回滚」= unrevert（恢复文件、清暂存）。发送下一条
+ * 消息即提交回滚（server 删消息、清暂存），条随之消失。
+ */
+function RevertBar({ sessionID, count, busy }: { sessionID: string; count: number; busy: boolean }) {
+  const store = useStore()
+  const { t } = useI18n()
+  const [undoing, setUndoing] = useState(false)
+
+  const undo = async () => {
+    if (undoing) return
+    setUndoing(true)
+    await store.unrevertSession(sessionID)
+    setUndoing(false)
+  }
+
+  return (
+    <div className="revert-bar" role="status">
+      <RotateCcw className="revert-bar-icon" size={14} aria-hidden />
+      <span className="revert-bar-text">{format(t.revertBarHint, { count })}</span>
+      <button className="btn-tonal revert-bar-undo" disabled={busy || undoing} onClick={() => void undo()}>
+        {t.unrevert}
+      </button>
     </div>
   )
 }
@@ -910,6 +975,7 @@ export function UserBubble({ children }: { children: ReactNode }) {
 function MessageBlock({ entry }: { entry: ChatEntry }) {
   const { t } = useI18n()
   const store = useStore()
+  const [reverting, setReverting] = useState(false)
 
   if (entry.kind === "optimistic") {
     return (
@@ -935,8 +1001,31 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
   const errored = info.role === "assistant" && info.error
 
   if (info.role === "user") {
+    // 回滚到此消息（design-message-revert §3.4）：busy 时确认后先停止再回滚
+    const revertHere = async () => {
+      if (reverting) return
+      if (store.isSessionActive(info.sessionID) && !confirm(t.confirmRevertBusy)) return
+      setReverting(true)
+      await store.revertToMessage(info.sessionID, info.id)
+      setReverting(false)
+    }
     return (
       <div className="msg user">
+        {/* 动作行先于气泡（flex 顺序）：紧贴气泡左侧、纵向居中；常驻占位 hover 显形。
+            无 text part（纯附件/命令回显）不显示——草稿回填无文本可取（设计 §3.4） */}
+        {texts.length > 0 && (
+          <div className="msg-actions">
+            <button
+              className="icon-btn msg-action"
+              title={t.revertToHere}
+              aria-label={t.revertToHere}
+              disabled={reverting}
+              onClick={() => void revertHere()}
+            >
+              {reverting ? <LoaderCircle size={14} aria-hidden /> : <RotateCcw size={14} aria-hidden />}
+            </button>
+          </div>
+        )}
         <UserBubble>
           {texts.map((p) => (
             <Markdown key={p.id}>{p.text}</Markdown>
