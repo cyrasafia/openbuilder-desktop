@@ -18,6 +18,7 @@ import { Markdown } from "./markdown"
 import { ModelSwitcherBar } from "./model-switcher"
 import { CodeView } from "./code-view"
 import { buildHtmlPreviewDocument } from "./html-preview"
+import { collectHeadings, MdToc, type TocHeading } from "./md-toc"
 import { DiffView } from "./diff-view"
 import { parseDiffTabKey } from "../store/app-store"
 
@@ -996,6 +997,9 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
   const isHtml = isHtmlPath(absolutePath)
   const previewable = isMarkdown || isHtml
   const [mode, setMode] = useState<"preview" | "source">("preview")
+  // TOC 大纲（design-markdown-preview §2.4）：预览体 DOM 扫描 h1–h6
+  const mdRef = useRef<HTMLDivElement | null>(null)
+  const [tocHeadings, setTocHeadings] = useState<TocHeading[]>([])
   // CSP 注入是 O(n) 扫描 + 拼接：只在内容变化时重算（SSE emit 重渲染不重复付出）
   const htmlDoc = useMemo(
     () => (isHtml && cached ? buildHtmlPreviewDocument(cached.content) : ""),
@@ -1008,6 +1012,37 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
     void store.loadFileContent(absolutePath)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [absolutePath])
+
+  // 标题扫描：预览体落地后收集；若渲染尚未完成（streamdown 内部延迟），
+  // 观察 DOM 变更补扫一次。源码/加载/错误态无预览体 → 清空（TOC 不渲染）
+  useEffect(() => {
+    const el = mdRef.current
+    if (!el) {
+      setTocHeadings([])
+      return
+    }
+    const first = collectHeadings(el)
+    if (first.length > 0) {
+      setTocHeadings(first)
+      return
+    }
+    let scheduled = false
+    const mo = new MutationObserver(() => {
+      if (scheduled) return
+      scheduled = true
+      queueMicrotask(() => {
+        scheduled = false
+        const found = collectHeadings(el)
+        if (found.length > 0) {
+          setTocHeadings(found)
+          mo.disconnect()
+        }
+      })
+    })
+    mo.observe(el, { childList: true, subtree: true })
+    return () => mo.disconnect()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, cached?.content, cached?.error])
 
   if (!previewable) {
     if (!cached) return <div className="file-view">{t.loading}</div>
@@ -1022,6 +1057,32 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
 
   // 预览文件：工具条常驻（loading/error 也渲染）——避免内容落地/重试成功时
   // 工具条弹入造成 ~32px 布局跳动
+  const view = (
+    <div className={"file-view" + (isHtml ? " html-view" : " code-view")}>
+      {!cached && <div className="file-state">{t.loading}</div>}
+      {cached?.error && <div className="file-state file-error">{cached.error}</div>}
+      {cached && !cached.error && mode === "preview" && isMarkdown && (
+        <div className="file-md" ref={mdRef}>
+          <Markdown>{cached.content}</Markdown>
+        </div>
+      )}
+      {cached && !cached.error && mode === "preview" && isHtml && (
+        <iframe
+          className="html-preview"
+          title={absolutePath}
+          // 全沙箱：禁脚本 / opaque origin（触不到父页面与 preload 桥）/ 禁顶层
+          // 导航与弹窗；CSP 注入屏蔽外链资源（design-html-preview §2）
+          sandbox=""
+          referrerPolicy="no-referrer"
+          srcDoc={htmlDoc}
+        />
+      )}
+      {cached && !cached.error && mode === "source" && (
+        <CodeView key={locale} path={absolutePath} content={cached.content} locale={locale} />
+      )}
+    </div>
+  )
+
   return (
     <div className="file-view-wrap">
       <div className="file-toolbar">
@@ -1044,29 +1105,16 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
           </button>
         </div>
       </div>
-      <div className={"file-view" + (isHtml ? " html-view" : " code-view")}>
-        {!cached && <div className="file-state">{t.loading}</div>}
-        {cached?.error && <div className="file-state file-error">{cached.error}</div>}
-        {cached && !cached.error && mode === "preview" && isMarkdown && (
-          <div className="file-md">
-            <Markdown>{cached.content}</Markdown>
-          </div>
-        )}
-        {cached && !cached.error && mode === "preview" && isHtml && (
-          <iframe
-            className="html-preview"
-            title={absolutePath}
-            // 全沙箱：禁脚本 / opaque origin（触不到父页面与 preload 桥）/ 禁顶层
-            // 导航与弹窗；CSP 注入屏蔽外链资源（design-html-preview §2）
-            sandbox=""
-            referrerPolicy="no-referrer"
-            srcDoc={htmlDoc}
-          />
-        )}
-        {cached && !cached.error && mode === "source" && (
-          <CodeView key={locale} path={absolutePath} content={cached.content} locale={locale} />
-        )}
-      </div>
+      {isMarkdown ? (
+        // markdown 预览：左侧 TOC 大纲列 + 内容滚动列（design-markdown-preview §2.4）；
+        // MdToc 无标题/非预览态时自身返回 null，布局回落为单列
+        <div className="file-md-layout">
+          <MdToc headings={tocHeadings} />
+          {view}
+        </div>
+      ) : (
+        view
+      )}
     </div>
   )
 }

@@ -66,6 +66,11 @@ const zh = {
   previewMode: "预览",
   sourceMode: "源码",
   viewModeLabel: "查看方式",
+  // markdown 预览 TOC 大纲（design-markdown-preview §2.4）
+  tocTitle: "目录",
+  tocCollapse: "收起目录",
+  tocExpand: "展开目录",
+  tocSectionToggle: "折叠/展开章节",
   // 设置
   settings: "设置",
   connectionTitle: "服务器连接",
@@ -197,6 +202,10 @@ const en: typeof zh = {
   previewMode: "Preview",
   sourceMode: "Source",
   viewModeLabel: "View mode",
+  tocTitle: "Contents",
+  tocCollapse: "Hide outline",
+  tocExpand: "Show outline",
+  tocSectionToggle: "Toggle section",
   settings: "Settings",
   connectionTitle: "Server",
   profileName: "Name",

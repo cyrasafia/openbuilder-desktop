@@ -1641,6 +1641,123 @@
   max-height: none;
 }
 
+/* ---------- markdown 预览 TOC 大纲（design-markdown-preview §2.4） ----------
+ * TOC 整列占据内容左侧（列内自滚、始终可见）——「吸顶」由全高列满足，
+ * 不用 sticky + 视口高度魔法值；内容列独立滚动，限宽居中不变。
+ * 无标题时 MdToc 不渲染，布局回落单列 */
+.file-md-layout {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.file-md-layout > .file-view {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 锚定（scrollIntoView）时标题顶部留白 */
+.file-md :is(h1, h2, h3, h4, h5, h6) {
+  scroll-margin-top: 8px;
+}
+
+.md-toc {
+  flex: none;
+  width: 240px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface-container-low);
+  border-right: 1px solid var(--outline-variant);
+}
+
+/* 整栏收起：窄轨 + 展开按钮 */
+.md-toc.collapsed {
+  width: 40px;
+  align-items: center;
+  padding-top: 6px;
+}
+
+.md-toc-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 8px 4px 14px;
+}
+
+.md-toc-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--on-surface-variant);
+}
+
+.md-toc-tree {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 8px 12px;
+}
+
+.md-toc-tree ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.md-toc-item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-left: calc(var(--toc-indent, 0) * 12px);
+}
+
+.md-toc-fold {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 4px;
+  color: var(--outline);
+  cursor: pointer;
+}
+
+.md-toc-fold:hover {
+  background: var(--surface-container-high);
+  color: var(--on-surface);
+}
+
+/* 叶子节点的占位（与折叠钮等宽，对齐文本） */
+.md-toc-fold-empty {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.md-toc-link {
+  flex: 1;
+  min-width: 0;
+  display: block;
+  text-align: left;
+  font: inherit;
+  font-size: var(--text-sm);
+  line-height: 1.4;
+  color: var(--on-surface-variant);
+  padding: 3px 6px;
+  border-radius: var(--radius-chip);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.md-toc-link:hover {
+  background: var(--surface-container-high);
+  color: var(--on-surface);
+}
+
 /* ---------- 右栏 ---------- */
 .file-panel {
   grid-area: filepanel;

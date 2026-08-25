@@ -1,7 +1,7 @@
 /**
  * FileView 分发与 markdown 二态测试（design-markdown-preview）：
  * 扩展名分发（.md/.markdown/.MD → 预览；.mdx/点文件/无扩展名/代码 → 源码）
- * + 预览/源码切换 + 加载/错误态工具条常驻。
+ * + 预览/源码切换 + 加载/错误态工具条常驻 + TOC 大纲（§2.4）。
  * jsdom 无 IntersectionObserver（streamdown 依赖），测试前补 stub。
  */
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
@@ -9,6 +9,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { FileView } from "./workspace"
 
 const loadFileContent = vi.fn(async () => {})
+const scrollIntoView = vi.fn()
 
 vi.mock("../app", () => ({
   useI18n: () => ({
@@ -19,6 +20,10 @@ vi.mock("../app", () => ({
       viewModeLabel: "查看方式",
       copy: "复制",
       copied: "已复制",
+      tocTitle: "目录",
+      tocCollapse: "收起目录",
+      tocExpand: "展开目录",
+      tocSectionToggle: "折叠/展开章节",
     },
     locale: "zh" as const,
   }),
@@ -52,6 +57,8 @@ beforeAll(() => {
     disconnect(): void {}
   }
   globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver
+  // TOC 点击锚定走 scrollIntoView（jsdom 未实现）
+  Element.prototype.scrollIntoView = scrollIntoView
 })
 
 afterAll(() => {
@@ -62,6 +69,7 @@ beforeEach(() => {
   // 本仓库 vitest 未开 globals，RTL auto-cleanup 不生效——手动卸载
   cleanup()
   loadFileContent.mockClear()
+  scrollIntoView.mockClear()
   fileContentsStub = new Map()
 })
 
@@ -69,8 +77,9 @@ describe("FileView markdown 预览", () => {
   it(".md 默认渲染预览 + 工具条二态（分组按钮）；切换源码为代码视图", async () => {
     fileContentsStub.set("/repo/README.md", { content: "# 标题\n\n正文 `code`" })
     render(<FileView absolutePath="/repo/README.md" />)
-    // 默认预览：markdown 解析为 h1
-    expect((await screen.findByText("标题")).tagName).toBe("H1")
+    // 默认预览：markdown 解析为 h1（TOC 条目同文案，按标签筛）
+    const matches = await screen.findAllByText("标题")
+    expect(matches.some((el) => el.tagName === "H1")).toBe(true)
     const preview = screen.getByRole("button", { name: "预览" })
     expect(preview.getAttribute("aria-pressed")).toBe("true")
 
@@ -83,12 +92,12 @@ describe("FileView markdown 预览", () => {
   it(".markdown 扩展名与大小写不敏感（.MD）均走预览", async () => {
     fileContentsStub.set("/repo/notes.markdown", { content: "# A" })
     const { unmount } = render(<FileView absolutePath="/repo/notes.markdown" />)
-    expect((await screen.findByText("A")).tagName).toBe("H1")
+    expect((await screen.findAllByText("A")).some((el) => el.tagName === "H1")).toBe(true)
     unmount()
 
     fileContentsStub.set("/repo/BIG.MD", { content: "# B" })
     render(<FileView absolutePath="/repo/BIG.MD" />)
-    expect((await screen.findByText("B")).tagName).toBe("H1")
+    expect((await screen.findAllByText("B")).some((el) => el.tagName === "H1")).toBe(true)
   })
 
   it(".mdx / 点文件 .md / 无扩展名：均不识别（纯文本代码视图、无工具条）", () => {
@@ -116,7 +125,7 @@ describe("FileView markdown 预览", () => {
   it("markdown 源码态：代码视图渲染原文", async () => {
     fileContentsStub.set("/repo/doc.md", { content: "# 标题\n\n正文" })
     render(<FileView absolutePath="/repo/doc.md" />)
-    expect((await screen.findByText("标题")).tagName).toBe("H1")
+    await screen.findAllByText("标题")
     fireEvent.click(screen.getByRole("button", { name: "源码" }))
     expect(document.querySelector(".cm-content")?.textContent).toContain("# 标题")
   })
@@ -165,5 +174,64 @@ describe("FileView markdown 预览", () => {
     render(<FileView absolutePath="/repo/loading.md" />)
     expect(screen.getByText("加载中…")).not.toBeNull()
     expect(document.querySelector(".ms-segmented")).not.toBeNull()
+  })
+})
+
+describe("FileView markdown TOC（design-markdown-preview §2.4）", () => {
+  it("有标题内容渲染左侧 TOC；点击条目锚定到内容区对应标题", async () => {
+    fileContentsStub.set("/repo/doc.md", { content: "# 甲章\n\n正文\n\n## 乙节\n\n内容" })
+    render(<FileView absolutePath="/repo/doc.md" />)
+    const toc = await screen.findByRole("navigation")
+    expect(toc.className).toBe("md-toc-tree")
+
+    // 条目为按钮（内容区标题是 h1/h2，role 不冲突）
+    const entry = screen.getByRole("button", { name: "乙节" })
+    fireEvent.click(entry)
+    expect(scrollIntoView).toHaveBeenCalledTimes(1)
+    expect(scrollIntoView.mock.instances[0]).toBe(document.querySelector(".file-md h2"))
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" })
+  })
+
+  it("章节折叠：有子标题的条目可收起其子条目", async () => {
+    fileContentsStub.set("/repo/doc.md", { content: "# 甲章\n\n## 乙节\n\n正文" })
+    render(<FileView absolutePath="/repo/doc.md" />)
+    const fold = (await screen.findByRole("navigation")).querySelector(
+      ".md-toc-fold:not(.md-toc-fold-empty)",
+    ) as HTMLButtonElement
+    expect(screen.getByRole("button", { name: "乙节" })).not.toBeNull()
+    fireEvent.click(fold)
+    expect(screen.queryByRole("button", { name: "乙节" })).toBeNull()
+    fireEvent.click(fold)
+    expect(screen.getByRole("button", { name: "乙节" })).not.toBeNull()
+  })
+
+  it("整栏收起为窄轨、展开恢复", async () => {
+    fileContentsStub.set("/repo/doc.md", { content: "# 甲章" })
+    render(<FileView absolutePath="/repo/doc.md" />)
+    await screen.findByRole("navigation")
+    fireEvent.click(screen.getByRole("button", { name: "收起目录" }))
+    expect(document.querySelector(".md-toc.collapsed")).not.toBeNull()
+    expect(screen.queryByRole("navigation")).toBeNull()
+
+    fireEvent.click(screen.getByRole("button", { name: "展开目录" }))
+    expect(document.querySelector(".md-toc.collapsed")).toBeNull()
+    expect(screen.getByRole("navigation")).not.toBeNull()
+  })
+
+  it("无标题内容不渲染 TOC（布局回落单列）", async () => {
+    fileContentsStub.set("/repo/plain.md", { content: "只有段落，没有标题。" })
+    render(<FileView absolutePath="/repo/plain.md" />)
+    await screen.findByText("只有段落，没有标题。")
+    expect(document.querySelector(".md-toc")).toBeNull()
+  })
+
+  it("源码态不渲染 TOC；切回预览恢复", async () => {
+    fileContentsStub.set("/repo/doc.md", { content: "# 甲章" })
+    render(<FileView absolutePath="/repo/doc.md" />)
+    await screen.findByRole("navigation")
+    fireEvent.click(screen.getByRole("button", { name: "源码" }))
+    expect(document.querySelector(".md-toc")).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "预览" }))
+    expect(await screen.findByRole("navigation")).not.toBeNull()
   })
 })
