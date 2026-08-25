@@ -1776,6 +1776,28 @@
   overflow: hidden;
 }
 
+/* 右键菜单（design-file-panel-context-menu）：popover 基底 + 菜单项（同 .ms-row 交互 idiom） */
+.context-menu {
+  position: fixed;
+  min-width: 172px;
+  padding: 4px;
+  z-index: 210;
+}
+.context-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  text-align: left;
+  border-radius: var(--radius-chip);
+  color: var(--on-surface);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+.context-menu-item:hover:not(:disabled),
+.context-menu-item:focus-visible {
+  background: var(--surface-container-highest);
+}
+
 /* ---------- 服务器连接状态（左栏底部） ---------- */
 .status-cluster {
   display: flex;

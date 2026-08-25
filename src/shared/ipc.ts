@@ -66,6 +66,11 @@ export interface DesktopApi {
   onManagedEvent(cb: (payload: string) => void): () => void
   openPathPicker(): Promise<string | null>
   getAppVersion(): Promise<string>
+  /** 系统默认方式打开文件/目录（shell.openPath）；resolve ""=成功，否则错误信息 */
+  shellOpenPath(path: string): Promise<string>
+  /** 系统「打开方式」（design-file-panel-context-menu §2.4）：win32 = OpenAs_RunDLL 对话框，
+   *  darwin = 系统应用选择器；linux 无系统对话框，渲染层不提供入口。同返回错误信息约定 */
+  shellOpenWith(path: string): Promise<string>
   /** Linux 自定义头部窗口控制（title-bar.tsx；仅 frameless 窗口有意义） */
   winMinimize(): void
   winToggleMaximize(): void

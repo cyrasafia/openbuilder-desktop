@@ -1,4 +1,5 @@
-import { ipcMain, dialog, app, type BrowserWindow } from "electron"
+import { ipcMain, dialog, app, shell, type BrowserWindow } from "electron"
+import { execFile, spawn } from "node:child_process"
 import { readFile, writeFile, mkdir } from "node:fs/promises"
 import { join, dirname } from "node:path"
 import type { StoreShape } from "../shared/ipc"
@@ -65,6 +66,55 @@ export function registerIpc() {
   })
 
   ipcMain.handle("app:getVersion", () => app.getVersion())
+
+  // 文件栏右键菜单动作（design-file-panel-context-menu）：路径来自本客户端信任域
+  // （server 文件列表/作用域目录），错误信息回传渲染层（""=成功）
+  ipcMain.handle("shell:openPath", (_e, path: string) => {
+    if (typeof path !== "string" || path.length === 0) return "invalid path"
+    return shell.openPath(path)
+  })
+
+  ipcMain.handle("shell:openWith", (_e, path: string): string | Promise<string> => {
+    if (typeof path !== "string" || path.length === 0) return "invalid path"
+    if (process.platform === "win32") {
+      // Windows 原生「打开方式」对话框。ENOENT 等经异步 error 事件投递，
+      // 无监听会升级为未捕获异常崩溃主进程——吞掉（动作 fire-and-forget）
+      try {
+        spawn("rundll32.exe", ["shell32.dll,OpenAs_RunDLL", path], {
+          detached: true,
+          stdio: "ignore",
+        })
+          .on("error", () => {})
+          .unref()
+        return ""
+      } catch {
+        return "spawn failed"
+      }
+    }
+    if (process.platform === "darwin") {
+      // macOS 无系统对话框：系统应用选择器取 bundle id 后 open -b；取消选择 = 静默无操作
+      return new Promise((resolve) => {
+        execFile(
+          "osascript",
+          ["-e", "set chosenApp to choose application", "-e", "return id of chosenApp"],
+          (err, stdout) => {
+            const bundleId = stdout?.trim() ?? ""
+            if (err || !bundleId) return resolve("")
+            try {
+              spawn("open", ["-b", bundleId, path], { detached: true, stdio: "ignore" })
+                .on("error", () => {})
+                .unref()
+              resolve("")
+            } catch {
+              resolve("spawn failed")
+            }
+          },
+        )
+      })
+    }
+    // linux：渲染层不提供入口，防御分支
+    return "unsupported platform"
+  })
 
   // Linux 自定义头部窗口控制（renderer title-bar.tsx）
   ipcMain.on("win:minimize", () => mainWindow?.minimize())

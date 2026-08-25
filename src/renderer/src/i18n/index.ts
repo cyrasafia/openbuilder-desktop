@@ -62,6 +62,10 @@ const zh = {
   loading: "加载中…",
   empty: "空",
   loadFailed: "加载失败",
+  // 文件栏右键菜单（design-file-panel-context-menu）
+  fileOpen: "打开",
+  fileOpenWith: "打开方式…",
+  fileCopyPath: "复制路径",
   // 文件视图 markdown 预览（design-markdown-preview）
   previewMode: "预览",
   sourceMode: "源码",
@@ -199,6 +203,9 @@ const en: typeof zh = {
   loading: "Loading…",
   empty: "Empty",
   loadFailed: "Failed to load",
+  fileOpen: "Open",
+  fileOpenWith: "Open with…",
+  fileCopyPath: "Copy path",
   previewMode: "Preview",
   sourceMode: "Source",
   viewModeLabel: "View mode",

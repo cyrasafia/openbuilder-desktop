@@ -16,6 +16,8 @@ const api = {
   },
   openPathPicker: () => ipcRenderer.invoke("dialog:openPath"),
   getAppVersion: () => ipcRenderer.invoke("app:getVersion"),
+  shellOpenPath: (path: string) => ipcRenderer.invoke("shell:openPath", path) as Promise<string>,
+  shellOpenWith: (path: string) => ipcRenderer.invoke("shell:openWith", path) as Promise<string>,
   winMinimize: () => ipcRenderer.send("win:minimize"),
   winToggleMaximize: () => ipcRenderer.send("win:toggleMaximize"),
   winClose: () => ipcRenderer.send("win:close"),

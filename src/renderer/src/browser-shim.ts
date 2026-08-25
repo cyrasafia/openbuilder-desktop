@@ -30,6 +30,12 @@ function createBrowserDesktopApi(): DesktopApi {
     async getAppVersion() {
       return "0.1.0-browser"
     },
+    async shellOpenPath() {
+      return "系统打开仅 Electron 环境可用"
+    },
+    async shellOpenWith() {
+      return "系统打开仅 Electron 环境可用"
+    },
     winMinimize() {},
     winToggleMaximize() {},
     winClose() {},
