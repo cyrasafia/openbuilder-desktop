@@ -1,5 +1,13 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type WheelEvent } from "react"
-import { ChevronDown, ChevronRight, CircleHelp, LoaderCircle, ShieldAlert } from "lucide-react"
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type WheelEvent,
+} from "react"
+import { ChevronDown, ChevronRight, ChevronUp, CircleHelp, LoaderCircle, ShieldAlert } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import { format, relativeTime } from "../i18n"
 import type { Catalog } from "../i18n"
@@ -832,6 +840,73 @@ function HistoryRow({ sessionID, onRetry }: { sessionID: string; onRetry: () => 
   }
   return null
 }
+/**
+ * 高用户消息折叠（design-user-message-collapse；参考 openbuilder 同名设计）：
+ * 自然高度超过约 20 行正文 → 默认收起，点击气泡任意处展开/收起。
+ * 内容层（.bubble-content）永不加高度约束、恒自然高度，外层气泡 max-height 裁切——
+ * 测高口径与收起态无关，无判定振荡（移动端用双 map 分账解决，此处双层 DOM 结构性消解）。
+ */
+const COLLAPSE_LINES = 20
+const COLLAPSE_MIN_GAIN = 24
+
+export function UserBubble({ children }: { children: ReactNode }) {
+  const { t } = useI18n()
+  const contentRef = useRef<HTMLDivElement>(null)
+  const [collapsible, setCollapsible] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+
+  useLayoutEffect(() => {
+    const el = contentRef.current
+    if (!el) return
+    const measure = () => {
+      // 行高以正文 markdown 计算样式为准（14px × 1.6），jsdom/缺样式回落同值
+      const md = el.querySelector(".markdown-body")
+      const cs = getComputedStyle(md ?? el)
+      const fs = parseFloat(cs.fontSize)
+      const lh = parseFloat(cs.lineHeight)
+      const lineHeight = Number.isFinite(lh) ? lh : Number.isFinite(fs) ? fs * 1.6 : 22.4
+      setCollapsible(el.offsetHeight > COLLAPSE_LINES * lineHeight + COLLAPSE_MIN_GAIN)
+    }
+    measure()
+    // 窗口宽度变化 → 文本重排 → 高度变化，重判定（跨门槛双向都走）
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  const collapsed = collapsible && !expanded
+  return (
+    <div
+      className={"bubble" + (collapsible ? " user-collapse" : "") + (collapsed ? " collapsed" : "")}
+      title={collapsible ? (collapsed ? t.bubbleExpand : t.bubbleCollapse) : undefined}
+      onClick={(e) => {
+        if (!collapsible) return
+        // 链接（系统浏览器打开）/按钮（代码块复制）点击与文本选择不触发切换
+        // （选区限定气泡内——别处的残留选区不拦截本气泡点击）
+        const target = e.target as HTMLElement
+        if (target.closest("a,button")) return
+        const sel = window.getSelection()
+        if (sel && !sel.isCollapsed && contentRef.current?.contains(sel.anchorNode)) return
+        setExpanded(!expanded)
+      }}
+    >
+      <div className="bubble-content" ref={contentRef}>
+        {children}
+      </div>
+      {collapsible &&
+        (collapsed ? (
+          <div className="bubble-collapse-hint" aria-hidden>
+            <ChevronDown size={16} />
+          </div>
+        ) : (
+          <div className="bubble-expand-hint" aria-hidden>
+            <ChevronUp size={14} />
+          </div>
+        ))}
+    </div>
+  )
+}
+
 function MessageBlock({ entry }: { entry: ChatEntry }) {
   const { t } = useI18n()
   const store = useStore()
@@ -862,7 +937,7 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
   if (info.role === "user") {
     return (
       <div className="msg user">
-        <div className="bubble">
+        <UserBubble>
           {texts.map((p) => (
             <Markdown key={p.id}>{p.text}</Markdown>
           ))}
@@ -876,7 +951,7 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
               </div>
             )
           })}
-        </div>
+        </UserBubble>
       </div>
     )
   }

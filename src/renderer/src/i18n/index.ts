@@ -36,6 +36,9 @@ const zh = {
   copy: "复制",
   copied: "已复制",
   retry: "重试",
+  // 高用户消息折叠（design-user-message-collapse）
+  bubbleExpand: "点击展开",
+  bubbleCollapse: "点击收起",
   // 上滚翻页（design-message-history-pagination）
   loadingEarlier: "加载更早消息",
   loadEarlierFailed: "加载失败，点击重试",
@@ -180,6 +183,8 @@ const en: typeof zh = {
   copy: "Copy",
   copied: "Copied",
   retry: "Retry",
+  bubbleExpand: "Click to expand",
+  bubbleCollapse: "Click to collapse",
   loadingEarlier: "Loading earlier messages",
   loadEarlierFailed: "Failed to load, click to retry",
   generating: "Generating…",

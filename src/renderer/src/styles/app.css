@@ -684,6 +684,44 @@
   margin-top: 4px;
 }
 
+/* ---------- 高用户消息折叠（design-user-message-collapse） ----------
+ * 自然高度超约 20 行正文默认收起：外层气泡 max-height 裁切，内容层
+ * .bubble-content 恒自然高度（测高口径不随收起态变化，判定无振荡）。
+ * 20 = 折叠门槛行数（与 workspace.tsx COLLAPSE_LINES 同源）；+20px = 气泡
+ * 上下 padding（10px×2），裁切口径是 border-box */
+.msg.user .bubble.user-collapse {
+  cursor: pointer;
+}
+.msg.user .bubble.user-collapse.collapsed {
+  max-height: calc(20 * 1.6 * var(--text-chat) + 20px);
+  overflow: hidden;
+  position: relative;
+}
+/* 收起态底部渐变 + 向下箭头：纯视觉（点击由气泡整面承担），渐变收在气泡底色 */
+.bubble-collapse-hint {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 56px;
+  padding-bottom: 6px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: linear-gradient(to bottom, transparent, var(--color-user-bubble));
+  color: var(--color-user-outline);
+  pointer-events: none;
+}
+/* 展开态收起提示：正文之下独占一行，不遮挡末行内容 */
+.bubble-expand-hint {
+  display: flex;
+  justify-content: center;
+  height: 16px;
+  margin-top: 2px;
+  color: var(--color-user-outline);
+  pointer-events: none;
+}
+
 .msg.assistant {
   display: flex;
   flex-direction: column;
