@@ -213,23 +213,25 @@ function ProjectTree() {
                   <span className="project-path">{e.directory}</span>
                 </span>
                 <SessionIndicator sessions={store.sessionsInDirectory(e.project.id, e.directory)} />
-                {/* 工作区新增仅普通项目（global 非 git，无 worktree） */}
-                {isCurrentProject && !e.isGlobal && (
+                {/* 工作区新增仅普通项目（global 非 git，无 worktree）；hover 全行显示，
+                    非当前项目点击不切当前项目、仅在其下创建 worktree（createWorkspace 接 projectId） */}
+                {!e.isGlobal && (
                   <button
                     className="icon-btn row-action"
                     title={t.newWorkspace}
                     onClick={(ev) => {
                       ev.stopPropagation()
                       // 不弹窗：name 省略，由 server 生成随机 slug
-                      void store.createWorkspace()
+                      void store.createWorkspace(e.project.id)
                     }}
                   >
                     <FolderPlus size={16} aria-hidden />
                   </button>
                 )}
-                {/* 关闭按钮：普通项目行跟随"当前项目"（worktree 态也可关，与 + 按钮
-                    一致）；global 行仅该目录 entry 激活时显示 */}
-                {(e.isGlobal ? isActive : isCurrentProject) && entries.length > 1 && (
+                {/* 关闭按钮：任意已打开项目/global 目录均可关闭（closeEntry 按 key 工作，
+                    纯客户端状态，无副作用）；单项目时无意义隐藏。2026-08-25 修订：
+                    原 global 仅激活态、普通项目仅当前项目可关，hover 不一致 */}
+                {entries.length > 1 && (
                   <button
                     className="icon-btn row-action"
                     title={t.closeProject}
@@ -257,18 +259,18 @@ function ProjectTree() {
                     {w.name}
                   </span>
                   <SessionIndicator sessions={store.sessionsInDirectory(e.project.id, w.directory)} />
-                  {isCurrentProject && (
-                    <button
-                      className="icon-btn row-action"
-                      title={t.deleteWorkspace}
-                      onClick={(ev) => {
-                        ev.stopPropagation()
-                        if (confirm(t.confirmDeleteWorkspace)) void store.removeWorkspace(w.directory)
-                      }}
-                    >
-                      <Trash2 size={16} aria-hidden />
-                    </button>
-                  )}
+                  {/* hover 全行显示；非当前项目点击不切当前项目、仅删除该 worktree
+                     并清理其项目会话/Tab/记忆（removeWorkspace 接 projectId） */}
+                  <button
+                    className="icon-btn row-action"
+                    title={t.deleteWorkspace}
+                    onClick={(ev) => {
+                      ev.stopPropagation()
+                      if (confirm(t.confirmDeleteWorkspace)) void store.removeWorkspace(w.directory, e.project.id)
+                    }}
+                  >
+                    <Trash2 size={16} aria-hidden />
+                  </button>
                 </div>
               ))}
             </div>

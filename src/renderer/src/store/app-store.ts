@@ -1506,24 +1506,29 @@ export class AppStore {
     })
   }
 
-  /** name 省略：由 server 生成随机 slug（两端一致的默认行为） */
-  async createWorkspace(): Promise<{ ok: boolean; error?: string }> {
-    if (!this.client || !this.currentProject) return { ok: false, error: "no project" }
+  /** name 省略：由 server 生成随机 slug（两端一致的默认行为）。
+   *  projectId 省略 = 当前项目。指定非当前项目时在其下创建 worktree，但不切换
+   *  当前项目作用域（setCurrentWorkspace 是当前项目作用域操作；非当前项目仅刷新展示，
+   *  新 worktree 随 SSE 事件到达，用户切过去时即见）。 */
+  async createWorkspace(projectId: string = this.currentProject?.id ?? ""): Promise<{ ok: boolean; error?: string }> {
+    const project = this.projects.find((p) => p.id === projectId)
+    if (!this.client || !project) return { ok: false, error: "no project" }
     // global 非 git 项目：无 worktree 概念（左栏也不渲染该入口，此处兜底）
-    if (this.currentProject.id === GLOBAL_PROJECT_ID) {
+    if (project.id === GLOBAL_PROJECT_ID) {
       return { ok: false, error: "global project has no worktree" }
     }
+    const isCurrent = project.id === this.currentProject?.id
     try {
-      const result = await this.client.createWorktree(this.currentProject.worktree)
-      // worktree API 返回轻量对象，重拉列表拿完整 Workspace 记录
-      await this.refreshWorkspacesForProject(this.currentProject)
-      // 默认切换到新 worktree；setCurrentWorkspace 内含会话快照/文件树重置/开作用域 Tab。
-      // 须校验重拉后 sandboxes 已含新目录（重拉失败/列表滞后时 currentWorkspace getter 会拒认，
-      // 先行切换会把幻影 currentWorkspaceId 持久化、下次启动才延迟生效）——此时仅刷新展示
-      // （SSE 单全局流常驻，新 worktree 事件天然到达，无需重订）
-      if (this.currentProject?.sandboxes?.includes(result.directory)) {
+      const result = await this.client.createWorktree(project.worktree)
+      // worktree API 返回轻量对象，重拉列表拿完整 Workspace 记录（刷新全局 projects）
+      await this.refreshWorkspacesForProject(project)
+      if (isCurrent && this.currentProject?.sandboxes?.includes(result.directory)) {
+        // 默认切换到新 worktree；setCurrentWorkspace 内含会话快照/文件树重置/开作用域 Tab。
+        // 须校验重拉后 sandboxes 已含新目录（重拉失败/列表滞后时 currentWorkspace getter 会拒认，
+        // 先行切换会把幻影 currentWorkspaceId 持久化、下次启动才延迟生效）
         await this.setCurrentWorkspace(result.directory)
       } else {
+        // 非当前项目：不切当前作用域，仅刷新展示（SSE 单全局流常驻，新 worktree 事件天然到达）
         this.emit()
       }
       return { ok: true }
@@ -1532,14 +1537,21 @@ export class AppStore {
     }
   }
 
-  async removeWorkspace(directory: string): Promise<{ ok: boolean; error?: string }> {
-    if (!this.client || !this.currentProject) return { ok: false, error: "no project" }
+  /** projectId 省略 = 当前项目。指定非当前项目时删除其下 worktree 并清理该项目的
+   *  会话/Tab/记忆/状态，但不扰动当前作用域（文件树/作用域 Tab 恢复仅对当前项目生效）。 */
+  async removeWorkspace(
+    directory: string,
+    projectId: string = this.currentProject?.id ?? "",
+  ): Promise<{ ok: boolean; error?: string }> {
+    const project = this.projects.find((p) => p.id === projectId)
+    if (!this.client || !project) return { ok: false, error: "no project" }
+    const isCurrent = project.id === this.currentProject?.id
     try {
-      await this.client.removeWorktree(this.currentProject.worktree, directory)
-      // worktree 列表数据源是 Project.sandboxes，重拉项目列表同步
-      await this.refreshWorkspacesForProject(this.currentProject)
+      await this.client.removeWorktree(project.worktree, directory)
+      // worktree 列表数据源是 Project.sandboxes，重拉项目列表同步（刷新全局 projects）
+      await this.refreshWorkspacesForProject(project)
       // 卸载已删目录的会话与状态（目录已出 sandboxes，此后无快照/订阅通道覆盖它）
-      const map = this.sessionsByProject.get(this.currentProject.id)
+      const map = this.sessionsByProject.get(project.id)
       if (map) {
         for (const [id, s] of map) {
           if (s.directory === directory) map.delete(id)
@@ -1549,31 +1561,47 @@ export class AppStore {
       this.snapshottedDirs.delete(directory)
       // 显式关闭该目录全部 live Tab：订阅即将拆除，chat 的 session.deleted 事件
       // 兜底存在窗口期（design-tab-memory §5）；file/diff 无事件兜底，随目录卸载
-      // （全 kind 作用域化，2026-08-25 §18）
+      // （全 kind 作用域化，2026-08-25 §18）。双行目录（git worktree 与 global 会话
+      // 同路径）下按 projectId 过滤——与 closeGlobalDirectory 对称：global 会话 Tab
+      // 归 global entry 管，删 git worktree 不得误关
       for (const tab of [...this.tabs]) {
-        if (tab.directory === directory) {
+        if (
+          (tab.kind === "file" || tab.kind === "diff") &&
+          tab.directory === directory &&
+          tab.projectId === project.id
+        ) {
           this.closeTab(tab.key)
-          if (tab.kind === "chat") this.cleanupSessionState(tab.key.slice(5))
+          continue
+        }
+        if (tab.kind === "chat" && tab.directory === directory && tab.projectId === project.id) {
+          this.closeTab(tab.key)
+          this.cleanupSessionState(tab.key.slice(5))
         }
       }
-      // 删除该目录记忆（目录已死；须在关 Tab 之后——closeTab 同步会重建条目）
+      // 删除该目录记忆（目录已死；须在关 Tab 之后——closeTab 同步会重建条目）。
+      // 仅删该项目侧记忆：双行目录的记忆经 findProjectOwningDirectory 归属，
+      // global 侧记忆（projectId === global）不随 worktree 删除——与 closeGlobalDirectory 对称
       const key = this.profileKey()
-      if (this.tabMemory[key]) {
+      if (this.tabMemory[key]?.[directory]?.projectId === project.id) {
         delete this.tabMemory[key][directory]
         void window.desktop.storeSet("tabs.memory", this.tabMemory).catch(() => {})
       }
       this.dropPendingForDirectories([directory])
       const ps = this.projectStateFor()
-      if (ps.currentWorkspaceId === directory) {
+      // 仅当前项目删除当前 worktree 时需复位 currentWorkspaceId 并恢复根作用域；
+      // 非当前项目的 worktree 不影响当前作用域（currentWorkspaceId 必不等于该目录）
+      if (isCurrent && ps.currentWorkspaceId === directory) {
         ps.currentWorkspaceId = null
         await this.persistProjectState()
       }
-      await this.refreshSessionsForProject(this.currentProject)
-      this.resetFileTree()
-      // 删除的是当前 worktree → 作用域已切回项目根：与其他切换路径一致，
-      // 恢复根作用域的 Tab 与激活（否则有根 Tab 却落到会话列表视图）
-      if (!ps.currentWorkspaceId) {
-        this.restoreScopeTabs(this.currentProject.worktree, true)
+      await this.refreshSessionsForProject(project)
+      if (isCurrent) {
+        this.resetFileTree()
+        // 删除的是当前 worktree → 作用域已切回项目根：与其他切换路径一致，
+        // 恢复根作用域的 Tab 与激活（否则有根 Tab 却落到会话列表视图）
+        if (!ps.currentWorkspaceId) {
+          this.restoreScopeTabs(project.worktree, true)
+        }
       }
       this.emit()
       return { ok: true }
