@@ -6,6 +6,7 @@ import type {
   AgentInfo,
   CommandInfo,
   ConfigProviders,
+  FileDiff,
   FileNode,
   HealthInfo,
   MessageWithParts,
@@ -332,6 +333,39 @@ export class RestClient {
       }
       return r.content
     })
+  }
+
+  /**
+   * VCS diff（design-diff-view §1）：mode=git 工作区未提交 / mode=branch 当前分支
+   * vs 默认分支。非 git 目录 server 报错（调用方错误态呈现）。
+   */
+  listVcsDiff(
+    directory: string,
+    mode: "git" | "branch",
+    opts: { workspace?: string; context?: number } = {},
+  ): Promise<FileDiff[]> {
+    return this.request<FileDiff[]>(
+      `/vcs/diff${RestClient.dirQuery(directory, {
+        mode,
+        workspace: opts.workspace,
+        context: opts.context,
+      })}`,
+      { timeoutMs: 30000 },
+    )
+  }
+
+  /** 会话一轮的改动（messageID 必须是 user 消息；缺省/非 user 返回空数组） */
+  listSessionDiff(
+    sessionID: string,
+    directory: string,
+    messageID: string,
+  ): Promise<FileDiff[]> {
+    return this.request<FileDiff[]>(
+      `/session/${encodeURIComponent(sessionID)}/diff${RestClient.dirQuery(directory, {
+        messageID,
+      })}`,
+      { timeoutMs: 30000 },
+    )
   }
 
   // ---- 待处理人机交互（授权/问题）。契约：opencode_openapi.json

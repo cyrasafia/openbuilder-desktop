@@ -9,8 +9,8 @@
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language"
 import { tags as t } from "@lezer/highlight"
 
-/** class 化语法层：tag → cm-* 类，颜色见 app.css */
-const classHighlighter = HighlightStyle.define([
+/** class 化语法层：tag → cm-* 类，颜色见 app.css（diff 行高亮复用同一实例） */
+export const classHighlighter = HighlightStyle.define([
   { tag: [t.comment, t.docComment, t.meta, t.documentMeta], class: "cm-comment" },
   {
     tag: [t.keyword, t.controlKeyword, t.moduleKeyword, t.definitionKeyword, t.modifier],

@@ -107,7 +107,7 @@ export function deriveMemory(
  */
 export function resolveRestoreActive(
   mem: ScopeTabMemory,
-  activeTabKind: "file" | "chat" | null,
+  activeTabKind: string | null,
 ): string | null | undefined {
   if (activeTabKind === "file") return undefined
   if (mem.active != null && mem.tabs.includes(mem.active)) return mem.active

@@ -115,6 +115,14 @@ const zh = {
   openBrowser: "网页",
   comingSoon: "即将支持",
   restoreHint: "点击恢复",
+  // diff 详情页（design-diff-view）
+  diffRound: "上一轮改动",
+  diffUncommitted: "未提交改动",
+  diffBranch: "分支改动",
+  diffRoundNoSession: "当前作用域暂无会话",
+  diffEmpty: "无改动",
+  diffHunkSegment: "第 {n} 段",
+  diffNoTextDiff: "无文本差异或二进制文件",
   confirmCloseStreamingTab:
     "会话正在运行，关闭将停止并归档该会话。继续？",
   confirmSwitchProject:
@@ -232,6 +240,13 @@ const en: typeof zh = {
   openBrowser: "Browser",
   comingSoon: "Coming soon",
   restoreHint: "Click to restore",
+  diffRound: "Last round",
+  diffUncommitted: "Uncommitted",
+  diffBranch: "Branch changes",
+  diffRoundNoSession: "No session in this scope yet",
+  diffEmpty: "No changes",
+  diffHunkSegment: "Hunk {n}",
+  diffNoTextDiff: "No text changes / binary file",
   confirmCloseStreamingTab: "Session is running. Closing stops and archives it. Continue?",
   confirmSwitchProject: "Switching projects closes and archives all open sessions. Continue?",
   confirmDeleteWorkspace: "Delete worktree?",

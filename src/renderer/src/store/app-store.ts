@@ -65,6 +65,7 @@ import type {
   AgentInfo,
   CommandInfo,
   ConfigProviders,
+  FileDiff,
   FileNode,
   Message,
   MessageWithParts,
@@ -78,15 +79,29 @@ import type {
   Workspace,
 } from "@shared/api-types"
 
-export type TabKind = "chat" | "file"
+export type TabKind = "chat" | "file" | "diff"
+
+/** diff Tab 的来源类型（design-diff-view §2） */
+export type DiffTabType = "round" | "uncommitted" | "branch"
+
+export function diffTabKey(type: DiffTabType, directory: string): string {
+  return `diff\0${type}\0${directory}`
+}
+
+export function parseDiffTabKey(key: string): { type: DiffTabType; directory: string } | null {
+  if (!key.startsWith("diff\0")) return null
+  const [, type, directory] = key.split("\0")
+  if (type !== "round" && type !== "uncommitted" && type !== "branch") return null
+  return { type, directory }
+}
 
 export interface TabEntity {
   kind: TabKind
-  /** chat: sessionID; file: absolute path */
+  /** chat: sessionID; file: absolute path; diff: `diff\0{type}\0{directory}` */
   key: string
   projectId: string
   title: string
-  /** chat: 会话目录（事件路由需要） */
+  /** chat/diff: 会话/作用域目录（事件路由、Tab 条过滤） */
   directory?: string
 }
 
@@ -182,6 +197,8 @@ export class AppStore {
   fileTreeExpanded = new Map<string, boolean>()
   fileTreeNodes = new Map<string, FileNode[]>()
   fileContents = new Map<string, { content: string; error?: string }>()
+  /** diff Tab 数据（design-diff-view §3）：key = diffTabKey(type, directory) */
+  diffData = new Map<string, { files: FileDiff[]; error?: string; loading?: boolean }>()
 
   // ---- 内部 ----
   private client: RestClient | null = null
@@ -360,6 +377,7 @@ export class AppStore {
     this.pendingQuestions.clear()
     this.tabs = []
     this.activeTabKey = null
+    this.diffData.clear()
     this.commandCache = initialCommandCache()
     // 在途 fetch 无法中断；迟到的结果由 refreshCommands 的 client 身份守卫丢弃
     this.commandsInFlight.clear()
@@ -1058,10 +1076,14 @@ export class AppStore {
       }
     }
     this.purgeStatusForDirectories([directory])
-    // 该目录 global 会话的 chat Tab 随之关闭（仅关 Tab，不归档——归档只发生在
-    // 显式关闭 Tab）。双行目录（git 项目 + global 会话共存）下按 projectId
-    // 过滤：git 项目的 Tab 归 closeProject 管，不随 global entry 关闭
+    // 该目录 global 会话的 chat Tab 与 diff Tab 随之关闭（仅关 Tab，不归档——
+    // 归档只发生在显式关闭 Tab）。双行目录（git 项目 + global 会话共存）下按
+    // projectId 过滤：git 项目的 Tab 归 closeProject 管，不随 global entry 关闭
     for (const tab of [...this.tabs]) {
+      if (tab.kind === "diff" && tab.directory === directory) {
+        this.closeTab(tab.key)
+        continue
+      }
       if (
         tab.kind === "chat" &&
         tab.directory === directory &&
@@ -1160,8 +1182,14 @@ export class AppStore {
       // 留着只会假亮；重开项目时 backfill 会按 server 权威重建
       this.dropPendingForDirectories(dirs)
     }
-    // 该项目的 chat Tab 随之关闭（仅关 Tab，不归档——归档只发生在显式关闭 Tab）
+    // 该项目的 chat/diff Tab 随之关闭（仅关 Tab，不归档——归档只发生在显式关闭 Tab）
     for (const tab of [...this.tabs]) {
+      if (tab.kind === "diff") {
+        if (tab.directory && project && (project.worktree === tab.directory || (project.sandboxes ?? []).includes(tab.directory))) {
+          this.closeTab(tab.key)
+        }
+        continue
+      }
       if (tab.kind !== "chat") continue
       if (tab.projectId === projectId) {
         this.closeTab(tab.key)
@@ -1487,11 +1515,11 @@ export class AppStore {
       this.purgeStatusForDirectories([directory])
       this.snapshottedDirs.delete(directory)
       // 显式关闭该目录 live chat Tab：订阅即将拆除，session.deleted 事件
-      // 兜底存在窗口期（design-tab-memory §5）
+      // 兜底存在窗口期（design-tab-memory §5）；diff Tab 同随目录卸载
       for (const tab of [...this.tabs]) {
-        if (tab.kind === "chat" && tab.directory === directory) {
+        if (tab.directory === directory && (tab.kind === "diff" || tab.kind === "chat")) {
           this.closeTab(tab.key)
-          this.cleanupSessionState(tab.key.slice(5))
+          if (tab.kind === "chat") this.cleanupSessionState(tab.key.slice(5))
         }
       }
       // 删除该目录记忆（目录已死；须在关 Tab 之后——closeTab 同步会重建条目）
@@ -2303,6 +2331,74 @@ export class AppStore {
     this.emit()
   }
 
+  /** 打开（或复用）当前作用域的 diff Tab 并触发加载（design-diff-view §3） */
+  openDiffTab(type: DiffTabType) {
+    const directory = this.scopeDirectory()
+    const project = this.currentProject
+    if (!directory || !project) return
+    const key = diffTabKey(type, directory)
+    const existing = this.tabs.find((t) => t.key === key)
+    if (!existing) {
+      this.tabs.push({
+        kind: "diff",
+        key,
+        projectId: project.id,
+        title: type,
+        directory,
+      })
+    }
+    this.activeTabKey = key
+    void this.loadDiffTab(type, directory)
+    this.emit()
+  }
+
+  /**
+   * 加载 diff 数据（激活即重拉，同 FileView 语义）：
+   * - round：作用域最近会话的最后一条 user 消息（无会话/无 user 消息 = 空态）；
+   * - uncommitted/branch：GET /vcs/diff 对应 mode（非 git 目录 server 报错 → 错误态）。
+   */
+  async loadDiffTab(type: DiffTabType, directory: string) {
+    const client = this.client
+    if (!client) return
+    const key = diffTabKey(type, directory)
+    const prev = this.diffData.get(key)
+    this.diffData.set(key, { files: prev?.files ?? [], loading: true })
+    this.emit()
+    let files: FileDiff[] | null = null
+    let error: string | undefined
+    try {
+      if (type === "round") {
+        // 作用域最近会话（updated 降序；sessionsInDirectory 已过滤归档/subagent）
+        const session = this.sessionsInDirectory(
+          this.currentProject?.id ?? "",
+          directory,
+        )[0]
+        if (session) {
+          const page = await client
+            .listMessagesPage(session.id, session.directory ?? directory, { limit: 100 })
+            .catch(() => null)
+          const lastUser = [...(page?.entries ?? [])]
+            .reverse()
+            .find((m) => m.info.role === "user")
+          files =
+            lastUser != null
+              ? await client.listSessionDiff(session.id, session.directory ?? directory, lastUser.info.id)
+              : []
+        } else {
+          files = []
+        }
+      } else {
+        files = await client.listVcsDiff(directory, type === "uncommitted" ? "git" : "branch")
+      }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e)
+    }
+    // 守卫：在途期间 Tab 可能已关闭/连接已拆（与项目其余 async 路径一致）
+    if (this.client !== client || !this.tabs.some((t) => t.key === key)) return
+    this.diffData.set(key, { files: files ?? [], error })
+    this.emit()
+  }
+
   async loadFileContent(absolutePath: string) {
     const { directory, workspace } = this.scopeQuery
     try {
@@ -2341,6 +2437,8 @@ export class AppStore {
     if (idx < 0) return
     const closed = this.tabs[idx]
     this.tabs.splice(idx, 1)
+    // diff Tab 关闭即卸载数据（无归档语义；重开走 loadDiffTab）
+    if (closed.kind === "diff") this.diffData.delete(key)
     if (this.activeTabKey === key) {
       // 回退激活：优先同作用域的相邻 Tab（Tab 条按作用域过滤显示，不能激活到隐藏 Tab）
       const scopeDir = closed.kind === "file" ? null : closed.directory

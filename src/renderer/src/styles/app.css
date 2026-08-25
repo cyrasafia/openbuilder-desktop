@@ -1537,44 +1537,61 @@
   background: color-mix(in srgb, var(--primary) 45%, transparent);
 }
 
-/* 语法 token 颜色（class 化 HighlightStyle，令牌见 tokens.css --syntax-*） */
-.code-view-host .cm-comment {
+/* 语法 token 颜色（class 化 HighlightStyle，令牌见 tokens.css --syntax-*）。
+ * 选择器同时覆盖 .code-view-host（代码视图）与 .diff-text（diff 行内容）——
+ * 两者复用同一张 tag→class 表（cm-theme classHighlighter） */
+.code-view-host .cm-comment,
+.diff-text .cm-comment {
   color: var(--syntax-comment);
 }
-.code-view-host .cm-keyword {
+.code-view-host .cm-keyword,
+.diff-text .cm-keyword {
   color: var(--syntax-keyword);
 }
-.code-view-host .cm-string {
+.code-view-host .cm-string,
+.diff-text .cm-string {
   color: var(--syntax-string);
 }
-.code-view-host .cm-string-2 {
+.code-view-host .cm-string-2,
+.diff-text .cm-string-2 {
   color: var(--syntax-string-2);
 }
-.code-view-host .cm-number {
+.code-view-host .cm-number,
+.diff-text .cm-number {
   color: var(--syntax-number);
 }
-.code-view-host .cm-function {
+.code-view-host .cm-function,
+.diff-text .cm-function {
   color: var(--syntax-function);
 }
 .code-view-host .cm-variable,
 .code-view-host .cm-def,
 .code-view-host .cm-property,
-.code-view-host .cm-attribute {
+.code-view-host .cm-attribute,
+.diff-text .cm-variable,
+.diff-text .cm-def,
+.diff-text .cm-property,
+.diff-text .cm-attribute {
   color: var(--syntax-variable);
 }
-.code-view-host .cm-type {
+.code-view-host .cm-type,
+.diff-text .cm-type {
   color: var(--syntax-type);
 }
-.code-view-host .cm-tag {
+.code-view-host .cm-tag,
+.diff-text .cm-tag {
   color: var(--syntax-tag);
 }
-.code-view-host .cm-link {
+.code-view-host .cm-link,
+.diff-text .cm-link {
   color: var(--syntax-link);
 }
-.code-view-host .cm-operator {
+.code-view-host .cm-operator,
+.diff-text .cm-operator {
   color: var(--syntax-operator);
 }
-.code-view-host .cm-punctuation {
+.code-view-host .cm-punctuation,
+.diff-text .cm-punctuation {
   color: var(--syntax-punctuation);
 }
 
@@ -2231,4 +2248,206 @@
   align-items: center;
   justify-content: center;
   color: var(--outline);
+}
+
+/* ---------- diff 详情页（design-diff-view §4.3） ---------- */
+.diff-view {
+  flex: 1;
+  overflow: auto;
+  padding: 12px 16px 24px;
+}
+
+/* 顶部 loading/错误占位复用 .history-row / .file-state */
+.diff-view .history-row {
+  padding: 8px 0;
+}
+.diff-view .btn-tonal {
+  margin: 12px 0 0;
+}
+
+.diff-empty {
+  color: var(--on-surface-variant);
+  padding: 32px 0;
+  text-align: center;
+}
+
+.diff-file {
+  margin-bottom: 12px;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-card);
+  background: var(--surface-container-low);
+  overflow: hidden;
+}
+
+.diff-file-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px;
+  background: var(--surface-container);
+  border: none;
+  border-bottom: 1px solid var(--outline-variant);
+  font: inherit;
+  color: var(--on-surface);
+  cursor: pointer;
+  text-align: left;
+}
+
+.diff-file-header:hover {
+  background: var(--surface-container-high);
+}
+
+.diff-chevron {
+  flex-shrink: 0;
+  color: var(--on-surface-variant);
+}
+
+.diff-status-badge {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--surface-container-lowest);
+}
+.diff-status-badge.added {
+  background: var(--diff-add-fg);
+}
+.diff-status-badge.deleted {
+  background: var(--diff-del-fg);
+}
+.diff-status-badge.modified {
+  background: var(--tertiary);
+}
+
+.diff-file-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-file-stat {
+  flex-shrink: 0;
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+.diff-add-num {
+  color: var(--diff-add-fg);
+  font-weight: 600;
+}
+.diff-del-num {
+  color: var(--diff-del-fg);
+  font-weight: 600;
+}
+
+.diff-hunk {
+  border-top: 1px solid var(--outline-variant);
+  /* 大 diff 性能：屏外 hunk 整体跳过渲染（零 JS 虚拟化） */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 240px;
+}
+.diff-hunk:first-of-type {
+  border-top: none;
+}
+
+.diff-hunk-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 12px;
+  background: var(--surface-container-high);
+  font-size: var(--text-xs);
+  color: var(--on-surface-variant);
+}
+.diff-hunk-header > .mono {
+  font-size: var(--text-xs);
+  color: var(--outline);
+}
+.diff-hunk-header .diff-file-stat {
+  margin-left: auto;
+}
+
+.diff-hunk-body {
+  overflow-x: auto;
+  /* hunk 内所有行共享同一横滚轴、行列对齐（移动端同决策） */
+}
+
+/* 行：grid 双 gutter + marker + 内容；永不换行（diff 对齐敏感） */
+.diff-row {
+  display: grid;
+  grid-template-columns: 3.5em 3.5em 1.2em 1fr;
+  min-width: max-content;
+  font-size: var(--text-mono);
+  line-height: 1.55;
+  white-space: pre;
+}
+.diff-row.add {
+  background: var(--diff-add-bg);
+}
+.diff-row.del {
+  background: var(--diff-del-bg);
+}
+.diff-no {
+  text-align: right;
+  padding-right: 8px;
+  color: var(--outline);
+  user-select: none;
+}
+.diff-row.add .diff-no.new {
+  color: var(--diff-add-fg);
+}
+.diff-row.del .diff-no.old {
+  color: var(--diff-del-fg);
+}
+.diff-marker {
+  color: var(--on-surface-variant);
+  user-select: none;
+}
+.diff-row.add .diff-marker {
+  color: var(--diff-add-fg);
+}
+.diff-row.del .diff-marker {
+  color: var(--diff-del-fg);
+}
+.diff-text {
+  padding-right: 12px;
+  /* token 颜色继承 .cm-*（与代码视图同表） */
+}
+
+.diff-binary {
+  padding: 16px 12px;
+  text-align: center;
+  color: var(--on-surface-variant);
+}
+
+/* GuidePage diff 入口（design-diff-view §4.4） */
+.guide-diff-entries {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0 4px;
+  flex-wrap: wrap;
+}
+.guide-diff-entry {
+  border: 1px solid var(--outline-variant);
+  background: var(--surface-container-low);
+  color: var(--on-surface);
+  border-radius: var(--radius-chip);
+  padding: 6px 12px;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: background 150ms ease;
+}
+.guide-diff-entry:hover:not(:disabled) {
+  background: var(--surface-container-high);
+}
+.guide-diff-entry:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }

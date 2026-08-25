@@ -18,21 +18,39 @@ import { Markdown } from "./markdown"
 import { ModelSwitcherBar } from "./model-switcher"
 import { CodeView } from "./code-view"
 import { buildHtmlPreviewDocument } from "./html-preview"
+import { DiffView } from "./diff-view"
+import { parseDiffTabKey, type DiffTabType } from "../store/app-store"
+
+/** diff Tab 标题（i18n；store.title 存的是类型标签） */
+function diffTitleOf(t: Catalog, type: DiffTabType): string {
+  switch (type) {
+    case "round":
+      return t.diffRound
+    case "uncommitted":
+      return t.diffUncommitted
+    case "branch":
+      return t.diffBranch
+  }
+}
 
 export function Workspace() {
   const store = useStore()
   const { t } = useI18n()
-  // Tab 条只显示当前作用域的 Tab（chat: directory 匹配；file: 跟随显示）
+  // Tab 条只显示当前作用域的 Tab（chat/diff: directory 匹配；file: 跟随显示）
   const scopeDir = store.scopeQuery.directory
   const tabs = store.tabs.filter(
-    (tab) => tab.kind === "file" || (tab.kind === "chat" && tab.directory === scopeDir),
+    (tab) =>
+      tab.kind === "file" ||
+      ((tab.kind === "chat" || tab.kind === "diff") && tab.directory === scopeDir),
   )
   const active = store.activeTab
 
   return (
     <main className="workspace">
       <div className="tabbar">
-        {tabs.map((tab) => (
+        {tabs.map((tab) => {
+          const diffInfo = tab.kind === "diff" ? parseDiffTabKey(tab.key) : null
+          return (
           <div
             key={tab.key}
             className={"tab" + (tab.key === store.activeTabKey ? " active" : "")}
@@ -49,7 +67,9 @@ export function Workspace() {
               />
 
             )}
-            <span className="tab-label">{tab.title || t.untitled}</span>
+            <span className="tab-label">
+              {diffInfo ? diffTitleOf(t, diffInfo.type) : tab.title || t.untitled}
+            </span>
             <button
               className="icon-btn tab-close"
               title={t.closeTab}
@@ -67,7 +87,8 @@ export function Workspace() {
               ×
             </button>
           </div>
-        ))}
+          )
+        })}
         <button
           className="icon-btn tabbar-new"
           title={t.newTab}
@@ -82,8 +103,17 @@ export function Workspace() {
         {!active && <GuidePage />}
         {/* key 隔离：防止 chat→chat 切换时复用 fiber 导致草稿/pinned ref 跨会话残留 */}
         {active?.kind === "chat" && <ChatView key={active.key} sessionID={active.key.slice(5)} />}
-        {/* key 隔离：file Tab 切换时防 mode（预览/源码）等局部 state 跨文件残留（同 ChatView） */}
-        {active?.kind === "file" && <FileView key={active.key} absolutePath={active.key.slice(5)} />}
+        {active?.kind === "file" && (
+          /* key 隔离：file Tab 切换时防 mode（预览/源码）等局部 state 跨文件残留（同 ChatView） */
+          <FileView key={active.key} absolutePath={active.key.slice(5)} />
+        )}
+        {active?.kind === "diff" &&
+          (() => {
+            const diff = parseDiffTabKey(active.key)
+            return diff ? (
+              <DiffView key={active.key} tabKey={active.key} type={diff.type} directory={diff.directory} />
+            ) : null
+          })()}
       </div>
 
       {store.settingsOpen && <SettingsDialog />}
@@ -136,6 +166,32 @@ function GuidePage() {
       <div className="guide-main">
         <div className="hero">{scopeName}</div>
         <div className="guide-hint">{t.guideHint}</div>
+        {/* diff 入口（design-diff-view §4.4）：当前作用域三种改动来源 */}
+        <div className="guide-diff-entries">
+          <button
+            type="button"
+            className="guide-diff-entry"
+            disabled={!store.visibleSessions.length}
+            title={store.visibleSessions.length ? t.diffRound : t.diffRoundNoSession}
+            onClick={() => store.openDiffTab("round")}
+          >
+            {t.diffRound}
+          </button>
+          <button
+            type="button"
+            className="guide-diff-entry"
+            onClick={() => store.openDiffTab("uncommitted")}
+          >
+            {t.diffUncommitted}
+          </button>
+          <button
+            type="button"
+            className="guide-diff-entry"
+            onClick={() => store.openDiffTab("branch")}
+          >
+            {t.diffBranch}
+          </button>
+        </div>
         <div className="guide-composer">
           <textarea
             value={draft}

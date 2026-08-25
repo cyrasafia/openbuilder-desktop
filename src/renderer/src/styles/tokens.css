@@ -110,6 +110,12 @@
   --syntax-operator: var(--on-surface);
   --syntax-punctuation: #8b949e;
 
+  /* diff 增删底色（GitHub dark tint） */
+  --diff-add-bg: rgba(63, 185, 80, 0.12);
+  --diff-del-bg: rgba(248, 81, 73, 0.12);
+  --diff-add-fg: #3fb950;
+  --diff-del-fg: #f85149;
+
   color-scheme: dark;
 }
 
@@ -171,6 +177,12 @@
   --syntax-link: #0969da;
   --syntax-operator: var(--on-surface);
   --syntax-punctuation: #57606a;
+
+  /* diff 增删底色（GitHub light tint） */
+  --diff-add-bg: rgba(63, 185, 80, 0.14);
+  --diff-del-bg: rgba(248, 81, 73, 0.14);
+  --diff-add-fg: #1f883d;
+  --diff-del-fg: #cf222e;
 
   color-scheme: light;
 }

@@ -200,6 +200,15 @@ export interface WorktreeResult {
   directory: string
 }
 
+/** GET /vcs/diff 与 GET /session/{id}/diff 的文件级 diff（契约同 SnapshotFileDiff） */
+export interface FileDiff {
+  file: string
+  patch: string
+  additions: number
+  deletions: number
+  status: "added" | "deleted" | "modified"
+}
+
 export interface HealthInfo {
   healthy: boolean
   version: string
