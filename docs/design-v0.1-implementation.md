@@ -302,6 +302,22 @@ E2E（live server 1.18.20，CDP）：旧态 `"global"` 迁移为根 entry ✓；
 
 rebase main（单全局流 + 先切换后加载 + 项目行头像重构）适配：`openGlobalDirectory` 改先切换后加载（同步段登记 + 渲染，快照后台）；`setCurrentWorkspace` 幻影校验加 global 分支（global 目录不在 sandboxes）；`refreshGlobalSessions` 标记 `snapshottedDirs`（restoreScopeTabs 闸门）；sidebar 按 main 的头像 + 两行视觉渲染 entry 行。
 
+## 7.14 吸附带滞回——小上滚被吃回修复（2026-08-26）
+
+现象：贴底跟随中轻微上滚（触控板轻扫、滚轮微滚，总位移 <40px）立即被吸回底部，"稍微上移一点看被遮挡的内容"不可用。
+
+根因：解除与吸附不对称——wheel 先按 `deltaY<0` 解除（§7.9），同一手势随后的 scroll 事件总位移 <40px 落在吸附带内，又立刻置回 pinned。40px 吸附带宽继承自 §7.9 修复前的旧阈值，语义是"距底不远 = 想跟随"，但任何小于带宽的上滚位移必然先落入带内被吃掉。
+
+方案：吸附加**滞回**（方向 + 收紧阈值）——onScroll 仅在 `scrollTop` 增加（向下接近底部）且距底 <8px 时置 `pinned = true`：
+
+- **方向判定**：上滚手势期间每个 scroll 事件方向都是"向上"（scrollTop 减少），永不吸附，手势被完整保留，不论总位移多小。仅收紧阈值不够：触控板 scroll 事件高频小增量（每帧几 px），手势首批事件距底仍 <8px 会立刻吃回——纯阈值滞回对连续输入失效。
+- **8px 回底阈值**：解除后悬停距底 8~40px 不再视作"在底部"，流式不跟随；回底路径 = 向下滚动（方向向下 + 距底 <8 即吸附；滚轮一档过量被钳制在底，末事件 gap=0 必吸附）。
+- 解除路径不变（wheel `deltaY<0`，§7.9 两类误触排除保留）；程序滚动不误触：跟随置底/发送 smooth 方向恒向下、gap≈0（吸附为无害幂等），分页锚定补差虽方向向下但 gap 远 >8。
+
+改动：`workspace.tsx`（onScroll 吸附条件 + `prevScrollTop` ref + 注释）。typecheck 双侧 + vitest 全绿。
+
+**修订（同日实测）**：键盘上滚永不解除——§7.9 的前提"列表不可聚焦，无键盘滚动"不成立：`tabIndex=-1` 只是不入 Tab 序列，**点击仍会聚焦容器**（Chromium 行为），聚焦后 ArrowUp 等即可滚动且只产生 scroll 事件（无 wheel），pinned 不清 → 任何 entries 变化（流式/typing 槽显隐）被 useLayoutEffect 走 pinned 分支拉回底部，表现为"不管上滚多远都吸回"。修复：解除路径加键盘——`.message-list` onKeyDown 对上滚键（ArrowUp/PageUp/Home/Shift+Space）清 pinned，守卫与 wheel 对称性说明：溢出守卫相同（内容未溢出不解除）；修饰键守卫**严于** wheel（ctrl/meta/alt 均排除，wheel 只查 ctrlKey——既有行为未动）。另加 `e.target === e.currentTarget` 守卫（review 补充）：焦点在可滚后代（代码块 pre、chip 按钮）时按键滚动的是内层元素、外层无 scroll 事件，若仍清 pinned 跟随会静默停摆（§7.9 溢出守卫防的同型问题）。滞回的方向判定恰好把键盘 scroll 事件（方向向上）正确地排除在吸附外，只需补解除侧，两路径对称闭合。
+
 ## 8. 已知限制（v0.1 接受）
 
 - 消息历史仅拉最新 100 条窗口，更早消息无上翻加载（spec 范围外，v0.2 分段加载；方向见 §7.8——正序 DOM + scroll-anchor，不反转渲染顺序）
