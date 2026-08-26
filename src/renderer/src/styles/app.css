@@ -598,6 +598,8 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
+  /* @ 引用浮层（command-hints-slot）的定位锚点——缺此声明浮层锚到视口外（H1） */
+  position: relative;
 }
 
 .guide-composer textarea {
@@ -1598,6 +1600,75 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ---------- 文件引用（design-file-reference） ---------- */
+/* composer 引用 chip 条：textarea 上一行，横向滚动不撑高 composer */
+.ref-chips {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 2px 0;
+  flex-shrink: 0;
+  scrollbar-width: thin;
+}
+
+.ref-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: var(--radius-chip);
+  background: var(--surface-container-high);
+  border: 1px solid var(--outline-variant);
+  color: var(--on-surface-variant);
+  font-size: var(--text-mono);
+  max-width: 260px;
+  flex-shrink: 0;
+}
+
+.ref-chip.clickable {
+  cursor: pointer;
+}
+
+.ref-chip.clickable:hover,
+.ref-chip.clickable:focus-visible {
+  background: var(--surface-container-highest);
+  color: var(--on-surface);
+}
+
+.ref-chip-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ref-chip-x {
+  border: none;
+  background: none;
+  color: var(--on-surface-variant);
+  padding: 0 2px;
+  font-size: var(--text-md);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ref-chip-x:hover {
+  color: var(--on-surface);
+}
+
+/* 拖拽悬停高亮：composer/guide-composer 接收文件引用 drop 时 */
+.composer.drop-active,
+.guide-composer.drop-active {
+  outline: 2px dashed var(--primary);
+  outline-offset: -4px;
+}
+
+/* @ 引用浮层条目：command-row 基底 + 文件图标对齐 */
+.file-ref-picker .command-row {
+  align-items: center;
+  gap: 8px;
+  color: var(--on-surface);
 }
 
 .command-empty {

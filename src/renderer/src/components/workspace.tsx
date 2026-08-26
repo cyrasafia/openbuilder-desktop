@@ -33,6 +33,8 @@ import { collectHeadings, MdToc, type TocHeading } from "./md-toc"
 import { DiffView } from "./diff-view"
 import { parseDiffTabKey } from "../store/app-store"
 import { closeTabInteractive } from "./tab-actions"
+import { FileRefChips, useFileRefInput, type RefChipItem } from "./file-ref"
+import { isFileRefPart } from "@shared/api-types"
 
 export function Workspace() {
   const store = useStore()
@@ -256,10 +258,23 @@ function GuidePage() {
   const archived = store.archivedSessions
   // global 拆分：作用域名 = 目录末段（根目录显示 "global"）——store 统一派生
   const scopeName = store.scopeDisplayName
+  // 文件引用输入接线（design-file-reference §3）：引用按作用域目录键存（与草稿同构）
+  const guideTaRef = useRef<HTMLTextAreaElement>(null)
+  const refInput = useFileRefInput({
+    refKey: directory,
+    directory,
+    onRemoveAtToken: (start, end) => {
+      setDraft((d) => d.slice(0, start) + d.slice(end))
+      requestAnimationFrame(() => guideTaRef.current?.setSelectionRange(start, start))
+    },
+  })
+  const guideRefs = store.fileRefsFor(directory)
 
   const send = async () => {
     const text = draft.trim()
-    if (!text || sending) return
+    // 空守卫：文本与引用全空才拒绝（纯引用发送合法，design-file-reference §4）
+    const refs = store.fileRefsFor(directory)
+    if ((!text && refs.length === 0) || sending) return
     setSending(true)
     if (!pendingSession.current) {
       // openTab:false——首条消息发送成功才开 Tab 激活（引导页退出）
@@ -270,14 +285,17 @@ function GuidePage() {
       }
       pendingSession.current = session
     }
-    const res = await store.sendPrompt(pendingSession.current.id, text)
+    // 引用随首条消息发送；发送成功 store 侧清（引导页卸载丢待定 effect，同草稿）
+    const res = await store.sendPrompt(pendingSession.current.id, text, refs)
     setSending(false)
     if (res.ok) {
       // store 侧显式清：发送成功开 Tab → 引导页同 commit 卸载，React 丢弃卸载
       // 组件的待定 effect，同步 effect 的 setGuideDraft("") 不会执行（不清则
-      // 旧草稿残留，关 Tab 回引导页会复活已发送文本）
+      // 旧草稿残留，关 Tab 回引导页会复活已发送文本）；引用同因（sendPrompt
+      // 只清 session 键，directory 键在此显式清）
       setDraft("")
       store.setGuideDraft(directory, "")
+      store.clearFileRefs(directory)
       store.openChatTab(pendingSession.current)
       pendingSession.current = null
     }
@@ -302,16 +320,29 @@ function GuidePage() {
             {t.openBrowser}
           </button>
         </div>
-        <div className="guide-composer">
+        <div className={"guide-composer" + (refInput.dropActive ? " drop-active" : "")} {...refInput.dragProps}>
+          {refInput.chips}
           <textarea
+            ref={guideTaRef}
             value={draft}
             placeholder={t.guidePlaceholder}
             rows={1}
             autoFocus
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => {
+              setDraft(e.target.value)
+              refInput.onTextChange(e.target.value, e.target.selectionStart)
+            }}
+            onKeyUp={(e) => {
+              if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
+              if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
+                refInput.onTextChange(e.currentTarget.value, e.currentTarget.selectionStart)
+              }
+            }}
             onKeyDown={(e) => {
               // IME 组合中（如 fcitx5 上屏）不触发发送
               if (e.nativeEvent.isComposing) return
+              // @ 浮层键盘交互优先（消费则终止）
+              if (refInput.onKeyDown(e)) return
               if (e.key === "Enter") {
                 // 修饰键组合（Ctrl/Shift/Alt/Meta）= 换行；裸 Enter = 发送（与聊天输入区一致）
                 if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return
@@ -320,6 +351,7 @@ function GuidePage() {
               }
             }}
           />
+          {refInput.picker}
           <div className="composer-actions">
             {/* pendingSession 时切会话绑定；会话记录从 store 重读（乐观补丁是新对象，
                 ref 持有的是创建时快照——AM-FIX-2：UI 不依赖父组件传参快照）。
@@ -336,7 +368,11 @@ function GuidePage() {
               }
               disabled={sending}
             />
-            <button className="btn-primary" disabled={!draft.trim() || sending} onClick={() => void send()}>
+            <button
+              className="btn-primary"
+              disabled={(!draft.trim() && guideRefs.length === 0) || sending}
+              onClick={() => void send()}
+            >
               {t.send}
             </button>
           </div>
@@ -415,6 +451,19 @@ function ChatView({ sessionID }: { sessionID: string }) {
     if (seed != null) setDraft(seed)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store.revertDraftVersion, sessionID])
+
+  // 文件引用输入接线（design-file-reference §3）：chip 条 + @ 浮层 + drop 接收；
+  // 引用按 sessionID 键存（与草稿同构）。选中引用后移除 @词 区间并把光标
+  // 回退到该位置（受控赋值会把光标甩到末尾）
+  const composerTaRef = useRef<HTMLTextAreaElement>(null)
+  const refInput = useFileRefInput({
+    refKey: sessionID,
+    directory: store.findSession(sessionID)?.directory ?? null,
+    onRemoveAtToken: (start, end) => {
+      setDraft((d) => d.slice(0, start) + d.slice(end))
+      requestAnimationFrame(() => composerTaRef.current?.setSelectionRange(start, start))
+    },
+  })
 
   // 滚动位置落 store（design-tab-state-memory §2.3）：卸载即切走——贴底删条目
   //（切回贴底是正确默认），否则存最后捕获值。cleanup 必随卸载执行，捕获在
@@ -572,19 +621,21 @@ function ChatView({ sessionID }: { sessionID: string }) {
 
   const send = async () => {
     const text = draft.trim()
+    // 引用（design-file-reference §4）：空守卫 = 文本与引用全空才拒绝（纯引用合法）
+    const refs = store.fileRefsFor(sessionID)
+    if (!text && refs.length === 0) return
     // busy 不拦（design-supplement-send）：进行中发送 = 补充消息，server 在
     // 当前 run 内吸收（不打断、不排队），乐观气泡按时间序排活跃流式下方
-    if (!text) return
     // store 侧显式清（不依赖同步 effect，与引导页发送成功路径同构；失败回填
-    // 经 setDraft(text) 再落 store）
+    // 经 setDraft(text) 再落 store；引用失败保留在 store 供重发）
     setDraft("")
     store.setChatDraft(sessionID, "")
     setCmdDismissed(false)
     pinnedToBottom.current = true
     scrollToBottom("smooth")
     const res = text.startsWith("/")
-      ? await sendSlash(text)
-      : await store.sendPrompt(sessionID, text)
+      ? await sendSlash(text, refs)
+      : await store.sendPrompt(sessionID, text, refs)
     // 失败回填草稿：文本不丢（乐观消息已在 store 侧撤回）
     if (!res.ok) setDraft(text)
   }
@@ -595,18 +646,22 @@ function ChatView({ sessionID }: { sessionID: string }) {
    * 走 prompt（服务端不会展开模板）。
    * 命令名与参数以任意空白分隔（空格/换行/Tab——Shift+Enter 多行参数可达）。
    */
-  const sendSlash = async (text: string): Promise<{ ok: boolean; error?: string }> => {
-    const directory = store.findSession(sessionID)?.directory ?? null
-    await store.refreshCommands(directory)
+  const sendSlash = async (
+    text: string,
+    refs: ReturnType<typeof store.fileRefsFor>,
+  ): Promise<{ ok: boolean; error?: string }> => {
+    const slashDir = store.findSession(sessionID)?.directory ?? null
+    await store.refreshCommands(slashDir)
     const rest = text.slice(1)
     const sep = rest.search(/\s/)
     const token = (sep === -1 ? rest : rest.slice(0, sep)).toLowerCase()
-    const matched = (directory ? store.commandsFor(directory) : []).find(
+    const matched = (slashDir ? store.commandsFor(slashDir) : []).find(
       (c) => c.name.toLowerCase() === token,
     )
-    if (!matched) return store.sendPrompt(sessionID, text)
+    // 未注册命令按字面文本走 prompt（引用 parts 同样携带）；命中走 command（parts 契约同）
+    if (!matched) return store.sendPrompt(sessionID, text, refs)
     const args = sep === -1 ? "" : rest.slice(sep + 1).trim()
-    return store.sendCommand(sessionID, matched.name, args)
+    return store.sendCommand(sessionID, matched.name, args, refs)
   }
 
   // ---- 斜杠命令菜单（参考 openbuilder conversation_screen _CommandHints）----
@@ -667,7 +722,7 @@ function ChatView({ sessionID }: { sessionID: string }) {
         </div>
       </div>
       <ChatFooter sessionID={sessionID} />
-      <div className="composer">
+      <div className={"composer" + (refInput.dropActive ? " drop-active" : "")} {...refInput.dragProps}>
         {/* 回滚暂存条（design-message-revert §3.4）：composer 内常驻一行，撤销入口 */}
         {revertMessageID && <RevertBar sessionID={sessionID} count={revertedCount} busy={busy} />}
         {/* 覆盖层：锚在 composer 上沿悬浮于消息流（不占布局、不顶起消息） */}
@@ -679,7 +734,12 @@ function ChatView({ sessionID }: { sessionID: string }) {
             onPick={pickCommand}
           />
         )}
+        {/* @ 引用浮层（design-file-reference §3.1）：同 CommandHints 锚定 */}
+        {refInput.picker}
+        {/* 引用 chip 条（design-file-reference §5） */}
+        {refInput.chips}
         <textarea
+          ref={composerTaRef}
           value={draft}
           placeholder={t.inputPlaceholder}
           rows={1}
@@ -687,10 +747,22 @@ function ChatView({ sessionID }: { sessionID: string }) {
             setDraft(e.target.value)
             setCmdDismissed(false)
             setSelIndex(0)
+            // @ 引用检测（光标处 @词 → 触发搜索浮层）
+            refInput.onTextChange(e.target.value, e.target.selectionStart)
+          }}
+          onKeyUp={(e) => {
+            // Esc 关闭后光标移回 @词 内重开浮层（无修饰键的移动类按键；
+            // Esc 自身不重开——onKeyDown 已消费）
+            if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
+            if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
+              refInput.onTextChange(e.currentTarget.value, e.currentTarget.selectionStart)
+            }
           }}
           onKeyDown={(e) => {
             // IME 组合中（如 fcitx5 上屏）不触发发送与菜单选中
             if (e.nativeEvent.isComposing) return
+            // @ 浮层键盘交互优先（↑/↓/Enter/Tab/Esc；消费则终止）
+            if (refInput.onKeyDown(e)) return
             // 命令菜单打开且有匹配：↑/↓ 移动、Enter/Tab 选中补全、Esc 关闭。
             // 修饰键组合（Ctrl/Meta/Alt）是全局快捷键域（Ctrl+Tab 切 Tab、
             // Ctrl+Alt+↑/↓ 遍历作用域），不在此拦截（design-keyboard-shortcuts）
@@ -733,14 +805,18 @@ function ChatView({ sessionID }: { sessionID: string }) {
           />
           {/* busy 时停止常驻可达（移动端 showStop 输入即隐藏——桌面空间足够，
               保留停止入口：补充输入中途仍可直接终止 run，无需清空草稿）；
-              发送按钮在 busy 时仅于有草稿时出现（空输入无发送语义） */}
+              发送按钮在 busy 时仅于有草稿或引用时出现（纯引用可发送） */}
           {busy && (
             <button className="btn-danger" onClick={() => void store.abortSession(sessionID)}>
               {t.abort}
             </button>
           )}
-          {(!busy || draft.trim()) && (
-            <button className="btn-primary" disabled={!draft.trim()} onClick={() => void send()}>
+          {(!busy || draft.trim() || store.fileRefsFor(sessionID).length > 0) && (
+            <button
+              className="btn-primary"
+              disabled={!draft.trim() && store.fileRefsFor(sessionID).length === 0}
+              onClick={() => void send()}
+            >
               {t.send}
             </button>
           )}
@@ -1200,7 +1276,21 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
     return (
       <div className="msg user">
         <div className="bubble">
-          <Markdown>{entry.data.text}</Markdown>
+          {/* 引用 chip（design-file-reference §5）：乐观消息携带 refs，SSE 真实
+              user 消息到达后经 file part 渲染同款（乐观→真实替换不闪烁） */}
+          {entry.data.text && <Markdown>{entry.data.text}</Markdown>}
+          {entry.data.refs && entry.data.refs.length > 0 && (
+            <FileRefChips
+              items={entry.data.refs.map((r) => ({
+                key: r.absolute,
+                path: r.path,
+                absolute: r.absolute,
+                isDir: r.isDir,
+                title: r.absolute,
+              }))}
+              onOpen={(item) => store.openFileTab(item.absolute!)}
+            />
+          )}
           <div className="bubble-pending">{t.sending}</div>
         </div>
       </div>
@@ -1218,6 +1308,23 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
   const reasonings = store.showThinking ? parts.filter((p) => p.type === "reasoning") : []
   const tools = parts.filter((p) => p.type === "tool") as ToolPart[]
   const errored = info.role === "assistant" && info.error
+  // 引用回灌 file part（design-file-reference §5）：user 消息内 source.type=file
+  const fileRefParts = info.role === "user" ? parts.filter(isFileRefPart) : []
+  // chip 跳转绝对路径 = 会话目录 + source.path（禁用 part.url——二进制回灌变 data:，4R-B）
+  const sessionDir = store.findSession(info.sessionID)?.directory
+  const refChipItems: RefChipItem[] = fileRefParts.map((p) => {
+    const rel = p.source?.path ?? p.filename ?? ""
+    const abs = sessionDir && rel && !rel.startsWith("/")
+      ? `${sessionDir.replace(/\/+$/, "")}/${rel.replace(/^\.?\//, "")}`
+      : null
+    return {
+      key: p.id,
+      path: rel,
+      absolute: abs ?? undefined,
+      isDir: rel.endsWith("/"),
+      title: abs ?? rel,
+    }
+  })
 
   if (info.role === "user") {
     // 回滚到此消息（design-message-revert §3.4）：busy 时确认后先停止再回滚
@@ -1249,6 +1356,12 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
           {texts.map((p) => (
             <Markdown key={p.id}>{p.text}</Markdown>
           ))}
+          {refChipItems.length > 0 && (
+            <FileRefChips
+              items={refChipItems}
+              onOpen={(item) => store.openFileTab(item.absolute!)}
+            />
+          )}
           {subtasks.map((p) => {
             // 标签行 + 正文合并为单一 Markdown（openbuilder 二次评审结论：
             // 单独画标签观感像 chip，与正文样式不一致）

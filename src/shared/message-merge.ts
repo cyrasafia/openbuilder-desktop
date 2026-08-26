@@ -4,13 +4,15 @@
  * 始终排最后，完成后才按 created 排序；乐观消息 created 用 maxCreated+1 只是
  * 第一道防线，排序层保底才是可靠防线。
  */
-import type { Message, MessageWithParts, Part } from "./api-types"
+import type { FileRef, Message, MessageWithParts, Part } from "./api-types"
 
 export interface OptimisticMessage {
   optimistic: true
   localId: string
   text: string
   createdAt: number
+  /** 引用 chip（design-file-reference §4）：纯文本可能为空（纯引用发送） */
+  refs?: FileRef[]
 }
 
 export type ChatEntry =

@@ -1,0 +1,303 @@
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent as ReactDragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from "react"
+import { FileText, Folder } from "lucide-react"
+import { useI18n, useStore } from "../app"
+import type { FileRef } from "@shared/api-types"
+
+/** 文件树拖拽引用的自定义 MIME（design-file-reference §3.3，与 Tab 拖拽同约定） */
+export const FILEREF_MIME = "application/x-openbuilder-fileref"
+
+/**
+ * 光标所在 `@词` 提取（design-file-reference §3.1）：从光标向前找最近空白后的
+ * token，以半角 `@` 开头 → 返回 query 与文本区间（选中时删除该区间）。
+ * 仅认光标前缀（光标落在 token 中间时取前半）；`\@` 转义不触发。
+ */
+export function atMentionQuery(
+  text: string,
+  caret: number,
+): { query: string; start: number; end: number } | null {
+  let i = caret - 1
+  while (i >= 0 && !/\s/.test(text[i]!)) i--
+  const start = i + 1
+  if (start >= caret) return null
+  const token = text.slice(start, caret)
+  if (!token.startsWith("@")) return null
+  if (start > 0 && text[start - 1] === "\\") return null
+  return { query: token.slice(1), start, end: caret }
+}
+
+/** 拖拽负载解析（§3.3）：非自定义 MIME / 坏 JSON / 字段缺失 → null */
+export function fileRefFromDataTransfer(dt: DataTransfer): FileRef | null {
+  const raw = dt.getData(FILEREF_MIME)
+  if (!raw) return null
+  try {
+    const v = JSON.parse(raw) as Partial<FileRef>
+    if (typeof v.path !== "string" || typeof v.absolute !== "string") return null
+    return {
+      path: v.path,
+      absolute: v.absolute,
+      filename:
+        typeof v.filename === "string" && v.filename
+          ? v.filename
+          : v.absolute.replace(/\/+$/, "").split("/").pop() ?? v.absolute,
+      isDir: !!v.isDir,
+    }
+  } catch {
+    return null
+  }
+}
+
+/** 引用 chip 条目（composer 与消息气泡共用形态） */
+export interface RefChipItem {
+  key: string
+  path: string
+  absolute?: string
+  isDir: boolean
+  title?: string
+}
+
+/**
+ * 引用 chip 条（design-file-reference §5）：composer 顶部一行，横向滚动。
+ * onRemove 提供 = 可删（composer 态）；onOpen 提供 = 可点（消息态，仅文件）。
+ */
+export function FileRefChips({
+  items,
+  onRemove,
+  onOpen,
+}: {
+  items: RefChipItem[]
+  onRemove?: (key: string) => void
+  onOpen?: (item: RefChipItem) => void
+}) {
+  const { t } = useI18n()
+  if (items.length === 0) return null
+  return (
+    <div className="ref-chips">
+      {items.map((r) => {
+        const clickable = !!onOpen && !r.isDir && !!r.absolute
+        return (
+          <span
+            key={r.key}
+            className={"ref-chip" + (r.isDir ? " dir" : "") + (clickable ? " clickable" : "")}
+            title={r.title ?? r.path}
+            onClick={clickable ? () => onOpen!(r) : undefined}
+          >
+            {r.isDir ? <Folder size={12} aria-hidden /> : <FileText size={12} aria-hidden />}
+            <span className="ref-chip-path mono">{r.path}</span>
+            {onRemove && (
+              <button
+                className="ref-chip-x"
+                aria-label={t.fileRefRemove}
+                title={t.fileRefRemove}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onRemove(r.key)
+                }}
+              >
+                ×
+              </button>
+            )}
+          </span>
+        )
+      })}
+    </div>
+  )
+}
+
+/** @ 浮层条目（find/file 相对路径 → FileRef；rel 以 / 开头直接作绝对，DR-1） */
+export function fileRefFromSearch(rel: string, directory: string): FileRef {
+  const absolute = rel.startsWith("/") ? rel : `${directory.replace(/\/+$/, "")}/${rel}`
+  const filename = absolute.split("/").pop() ?? absolute
+  return { path: rel, absolute, filename, isDir: false }
+}
+
+/**
+ * `@` 引用输入接线（design-file-reference §3.1/§3.3）：检测 + 防抖搜索 + 键盘
+ * 选择 + drop 接收。chips/picker 为即插 ReactNode；onRemoveAtToken 由调用方
+ * 落地文本删除（选中引用时移除 `@词` 区间）。
+ */
+export function useFileRefInput(opts: {
+  refKey: string
+  directory: string | null
+  onRemoveAtToken: (start: number, end: number) => void
+}): {
+  chips: ReactNode
+  picker: ReactNode
+  onTextChange: (text: string, caret: number) => void
+  onKeyDown: (e: ReactKeyboardEvent<HTMLTextAreaElement>) => boolean
+  dragProps: {
+    onDragOver: (e: ReactDragEvent<HTMLElement>) => void
+    onDrop: (e: ReactDragEvent<HTMLElement>) => void
+    onDragLeave: (e: ReactDragEvent<HTMLElement>) => void
+  }
+  dropActive: boolean
+} {
+  const store = useStore()
+  const { t } = useI18n()
+  const [state, setState] = useState<{
+    query: string
+    start: number
+    end: number
+    results: string[]
+    loading: boolean
+    sel: number
+  } | null>(null)
+  const seqRef = useRef(0)
+  const timerRef = useRef<number | null>(null)
+  const { refKey, directory, onRemoveAtToken } = opts
+  const onRemoveAtTokenRef = useRef(onRemoveAtToken)
+  onRemoveAtTokenRef.current = onRemoveAtToken
+
+  const close = useCallback(() => {
+    if (timerRef.current != null) window.clearTimeout(timerRef.current)
+    timerRef.current = null
+    seqRef.current++
+    setState(null)
+  }, [])
+
+  // 卸载清定时器
+  useEffect(() => {
+    return () => {
+      if (timerRef.current != null) window.clearTimeout(timerRef.current)
+    }
+  }, [])
+
+  const onTextChange = useCallback(
+    (text: string, caret: number) => {
+      const hit = directory ? atMentionQuery(text, caret) : null
+      if (!hit) {
+        close()
+        return
+      }
+      setState((prev) =>
+        prev && prev.start === hit.start && prev.query === hit.query
+          ? prev
+          : { query: hit.query, start: hit.start, end: hit.end, results: [], loading: true, sel: 0 },
+      )
+      // 防抖 250ms + 请求序号（晚到响应丢弃，design §3.1）；失败（null）落空态
+      if (timerRef.current != null) window.clearTimeout(timerRef.current)
+      const seq = ++seqRef.current
+      timerRef.current = window.setTimeout(() => {
+        void store.searchFiles(hit.query, directory!).then((rel) => {
+          if (seqRef.current !== seq) return
+          setState((prev) =>
+            prev && prev.start === hit.start && prev.query === hit.query
+              ? { ...prev, results: rel ?? [], loading: false }
+              : prev,
+          )
+        })
+      }, 250)
+    },
+    [close, directory, store],
+  )
+
+  const pick = useCallback(
+    (rel: string) => {
+      if (!state || !directory) return
+      const ref = fileRefFromSearch(rel, directory)
+      store.addFileRef(refKey, ref)
+      onRemoveAtTokenRef.current(state.start, state.end)
+      close()
+    },
+    [close, directory, refKey, state, store],
+  )
+
+  const onKeyDown = useCallback(
+    (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+      if (!state || e.nativeEvent.isComposing) return false
+      // 浮层打开期间 Enter/Tab/Esc 属于浮层（空态/加载中也消费 Enter——防把
+      // 含 @词 的草稿误发出，想发送先 Esc 关浮层）
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault()
+        const hit = state.results[state.sel] ?? state.results[0]
+        if (hit) pick(hit)
+        return true
+      }
+      if (e.key === "Escape") {
+        e.preventDefault()
+        close()
+        return true
+      }
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        if (state.results.length === 0) return false
+        e.preventDefault()
+        const len = state.results.length
+        setState((prev) =>
+          prev ? { ...prev, sel: e.key === "ArrowDown" ? (prev.sel + 1) % len : (prev.sel - 1 + len) % len } : prev,
+        )
+        return true
+      }
+      return false
+    },
+    [close, pick, state],
+  )
+
+  const [dropActive, setDropActive] = useState(false)
+  const dragProps = useMemo(
+    () => ({
+      onDragOver: (e: ReactDragEvent<HTMLElement>) => {
+        if (!e.dataTransfer.types.includes(FILEREF_MIME)) return
+        e.preventDefault()
+        e.dataTransfer.dropEffect = "copy"
+        setDropActive(true)
+      },
+      onDrop: (e: ReactDragEvent<HTMLElement>) => {
+        if (!e.dataTransfer.types.includes(FILEREF_MIME)) return
+        e.preventDefault()
+        const ref = fileRefFromDataTransfer(e.dataTransfer)
+        if (ref) store.addFileRef(refKey, ref)
+        setDropActive(false)
+      },
+      onDragLeave: (e: ReactDragEvent<HTMLElement>) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropActive(false)
+      },
+    }),
+    [refKey, store],
+  )
+
+  const refs = store.fileRefsFor(refKey)
+  const chips = (
+    <FileRefChips
+      items={refs.map((r) => ({
+        key: r.absolute,
+        path: r.path,
+        absolute: r.absolute,
+        isDir: r.isDir,
+        title: r.absolute,
+      }))}
+      onRemove={(key) => store.removeFileRef(refKey, key)}
+    />
+  )
+  const picker = state ? (
+    <div className="command-hints-slot">
+      <div className="command-hints file-ref-picker scroll" tabIndex={-1}>
+        {state.results.map((rel, i) => (
+          <button
+            key={rel}
+            className={"command-row" + (i === state.sel ? " selected" : "")}
+            onMouseDown={(e) => {
+              e.preventDefault()
+              pick(rel)
+            }}
+          >
+            <FileText size={12} aria-hidden />
+            <span className="command-name mono">{rel}</span>
+          </button>
+        ))}
+        {state.results.length === 0 && (
+          <div className="command-empty">{state.loading ? t.commandListLoading : t.fileRefNoMatch}</div>
+        )}
+      </div>
+    </div>
+  ) : null
+
+  return { chips, picker, onTextChange, onKeyDown, dragProps, dropActive }
+}

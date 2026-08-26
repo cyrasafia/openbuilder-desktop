@@ -68,6 +68,8 @@ import type {
   FileContentData,
   FileDiff,
   FileNode,
+  FilePartInput,
+  FileRef,
   Message,
   MessageWithParts,
   ModelInfo,
@@ -134,6 +136,25 @@ export function parseDiffTabKey(key: string): { directory: string } | null {
 /** diff 数据缓存 key（type+directory 独立缓存，segment 切换互不丢数据） */
 export function diffDataKey(type: DiffTabType, directory: string): string {
   return `diff\0${type}\0${directory}`
+}
+
+/**
+ * 引用 → 发送 file part（design-file-reference §1/§2 契约）：url 必须 absolute
+ * `file://`（相对被 server 静默丢弃）；mime 占位 text/plain（server 按 url 读真实
+ * 内容，二进制回灌按真实类型重写）；source.text 留空（无需在正文插 @path）。
+ */
+export function fileRefToFilePart(ref: FileRef): FilePartInput {
+  return {
+    type: "file",
+    mime: "text/plain",
+    url: `file://${ref.absolute}`,
+    filename: ref.filename,
+    source: {
+      type: "file",
+      path: ref.path,
+      text: { value: "", start: 0, end: 0 },
+    },
+  }
 }
 
 export interface TabEntity {
@@ -282,6 +303,13 @@ export class AppStore {
   private chatDrafts = new Map<string, string>()
   /** 引导页草稿：按作用域目录（引导页随作用域 key 隔离，见 Workspace 渲染处） */
   private guideDrafts = new Map<string, string>()
+  /**
+   * 输入引用（design-file-reference §2）：key 与草稿同构——sessionID（chat
+   * composer）/ 作用域目录（引导页 composer）。纯内存（同草稿 D1）；写入 emit
+   * （低频增删，chip 条需重渲染）。清理挂点同草稿 §3：关 chat Tab / 目录卸载 /
+   * teardown 全清 / 发送成功；失败保留供重发（移动端 6R-A 模式）
+   */
+  private fileRefs = new Map<string, FileRef[]>()
   /**
    * 作用域最后激活（design-tab-state-memory §2.1）：directory → 最后激活 Tab key；
    * null = 引导页。纯内存（重启无记录，冷启动激活仍走 design-tab-memory §7 记忆
@@ -488,6 +516,8 @@ export class AppStore {
     this.sessionPages.clear()
     this.pendingPartsMap.clear()
     this.optimisticBySession.clear()
+    // 引用全清（design-file-reference §2，与草稿同寿命）
+    this.fileRefs.clear()
     this.sessionStatus.clear()
     this.statusSources.clear()
     this.retryHold.clear()
@@ -1271,6 +1301,7 @@ export class AppStore {
     this.purgeStatusForDirectories([directory])
     // 目录卸载随清引导页草稿（目录失去订阅/展示，草稿同灭，design-compose-draft §3）
     this.guideDrafts.delete(directory)
+    this.fileRefs.delete(directory)
     // 该目录的 file/diff Tab 与 global 会话的 chat Tab 随之关闭（仅关 Tab，不归档——
     // 归档只发生在显式关闭 Tab；file Tab 作用域化后随目录卸载，2026-08-25 §18）。
     // 双行目录（git 项目 + global 会话共存）下按
@@ -1384,6 +1415,7 @@ export class AppStore {
       for (const d of dirs) {
         this.snapshottedDirs.delete(d)
         this.guideDrafts.delete(d)
+        this.fileRefs.delete(d)
       }
       // 该项目的 pending（授权/问题）一并卸载：目录失去订阅，replied 事件收不到，
       // 留着只会假亮；重开项目时 backfill 会按 server 权威重建
@@ -1667,6 +1699,8 @@ export class AppStore {
     this.revertDraftConsumed.delete(sessionID)
     // 草稿随会话运行时卸载（关 Tab/删会话/关项目/删工作区都经此，防无界增长）
     this.chatDrafts.delete(sessionID)
+    // 引用同随会话卸载（design-file-reference §2 清理挂点）
+    this.fileRefs.delete(sessionID)
     // 消息流滚动位置同随会话卸载（design-tab-state-memory §3）
     this.chatScrollTops.delete(sessionID)
   }
@@ -1775,6 +1809,7 @@ export class AppStore {
       this.snapshottedDirs.delete(directory)
       // 目录已死，引导页草稿同灭（design-compose-draft §3）
       this.guideDrafts.delete(directory)
+      this.fileRefs.delete(directory)
       // 显式关闭该目录全部 live Tab：订阅即将拆除，chat 的 session.deleted 事件
       // 兜底存在窗口期（design-tab-memory §5）；file/diff 无事件兜底，随目录卸载
       // （全 kind 作用域化，2026-08-25 §18）。双行目录（git worktree 与 global 会话
@@ -2115,16 +2150,24 @@ export class AppStore {
     return null
   }
 
-  async sendPrompt(sessionID: string, text: string): Promise<{ ok: boolean; error?: string }> {
+  async sendPrompt(
+    sessionID: string,
+    text: string,
+    refs?: FileRef[],
+  ): Promise<{ ok: boolean; error?: string }> {
     if (!this.client) return { ok: false, error: "not connected" }
     const session = this.findSession(sessionID)
     if (!session) return { ok: false, error: "session not found" }
+    // 空守卫（design-file-reference §4，移动端 3R-A）：文本与引用全空才拒绝——
+    // 纯引用发送合法
+    if (!text && (!refs || refs.length === 0)) return { ok: false, error: "empty" }
     // 乐观消息（design-optimistic-messages：POST 不可信为已送达，真实 user 事件到达即清）
     const optimistic: OptimisticMessage = {
       optimistic: true,
       localId: `opt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       text,
       createdAt: Date.now(),
+      ...(refs?.length ? { refs } : {}),
     }
     this.optimisticBySession.set(sessionID, [
       ...(this.optimisticBySession.get(sessionID) ?? []),
@@ -2132,7 +2175,12 @@ export class AppStore {
     ])
     this.emit()
     try {
-      await this.client.promptAsync(sessionID, session.directory, [{ type: "text", text }])
+      const parts: Array<{ type: "text"; text: string } | FilePartInput> = []
+      if (text) parts.push({ type: "text", text })
+      for (const ref of refs ?? []) parts.push(fileRefToFilePart(ref))
+      await this.client.promptAsync(sessionID, session.directory, parts)
+      // 发送成功引用即清（失败保留供重发，design-file-reference §2）
+      this.clearFileRefs(sessionID)
       // 乐观 busy（design-typing-indicator §4 来源 3）：不等 session.status 事件，
       // 消除首字节延迟——dots 于预留槽内立即出现。仅 idle 时写：busy 幂等可不写，
       // retry 态写入会把退避提示（attempt/message）覆写成 dots——server 每个
@@ -2312,12 +2360,26 @@ export class AppStore {
   }
 
   /**
+   * 文件名搜索（design-file-reference §3.1，@ 浮层数据源）：失败返回 null
+   * （浮层显示空态/加载态，不打扰输入）；结果为相对 directory 的路径。
+   */
+  async searchFiles(query: string, directory: string): Promise<string[] | null> {
+    if (!this.client) return null
+    try {
+      return await this.client.findFiles(query, directory)
+    } catch {
+      return null
+    }
+  }
+
+  /**
    * 拉取命令注册表（空响应防护见 command-cache.ts）。
    * - 同目录 in-flight 共享同一 Promise：发送前的强制重拉会**等待**在途
    *   请求完成再匹配，而非立即读旧缓存（保证"最新注册表"语义）；
    * - 在途结果跨越 teardown（断开/切 profile）时按 client 身份守卫丢弃，
    *   防旧 server 的命令写入新连接的缓存。
    */
+
   async refreshCommands(directory: string | null): Promise<void> {
     const client = this.client
     if (!client || !directory) return
@@ -2347,6 +2409,7 @@ export class AppStore {
     sessionID: string,
     command: string,
     arguments_: string,
+    refs?: FileRef[],
   ): Promise<{ ok: boolean; error?: string }> {
     if (!this.client) return { ok: false, error: "not connected" }
     const session = this.findSession(sessionID)
@@ -2357,6 +2420,7 @@ export class AppStore {
       localId: `opt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       text,
       createdAt: Date.now(),
+      ...(refs?.length ? { refs } : {}),
     }
     this.optimisticBySession.set(sessionID, [
       ...(this.optimisticBySession.get(sessionID) ?? []),
@@ -2364,7 +2428,15 @@ export class AppStore {
     ])
     this.emit()
     try {
-      await this.client.sendCommand(sessionID, session.directory, command, arguments_)
+      // 斜杠命令同样携带引用 parts（openapi command body 契约，移动端 6R-C）
+      await this.client.sendCommand(
+        sessionID,
+        session.directory,
+        command,
+        arguments_,
+        refs?.map(fileRefToFilePart),
+      )
+      this.clearFileRefs(sessionID)
       return { ok: true }
     } catch (e) {
       this.optimisticBySession.set(
@@ -2925,6 +2997,8 @@ export class AppStore {
     // chat 草稿随 Tab 关闭终结（关 Tab = 归档决断，重开不复活旧草稿；死会话收敛
     // 路径只经 closeTab 不经 cleanupSessionState，须在此清，design-compose-draft §3）
     if (closed.kind === "chat") this.chatDrafts.delete(closed.key.slice(5))
+    // 引用随 Tab 关闭终结（同草稿"关闭 = 决断"；死会话收敛只经 closeTab 须在此清）
+    if (closed.kind === "chat") this.fileRefs.delete(closed.key.slice(5))
     // 视图状态随 Tab 关闭终结（同草稿"关闭 = 决断"语义，design-tab-state-memory §3）：
     // chat 滚动位置、文件模式/滚动。死会话收敛只经 closeTab，须在此清
     if (closed.kind === "chat") this.chatScrollTops.delete(closed.key.slice(5))
@@ -3142,6 +3216,34 @@ export class AppStore {
   setGuideDraft(directory: string, text: string) {
     if (text) this.guideDrafts.set(directory, text)
     else this.guideDrafts.delete(directory)
+  }
+
+  // ============ 输入引用（design-file-reference §2） ============
+
+  /** 引用读（无条目 = 空数组）：composer 挂载初始化 + chip 条渲染 */
+  fileRefsFor(key: string): FileRef[] {
+    return this.fileRefs.get(key) ?? []
+  }
+
+  /** 引用写：按 absolute 去重（同文件重复引用无意义）；emit 驱动 chip 条 */
+  addFileRef(key: string, ref: FileRef) {
+    const list = this.fileRefs.get(key) ?? []
+    if (list.some((r) => r.absolute === ref.absolute)) return
+    this.fileRefs.set(key, [...list, ref])
+    this.emit()
+  }
+
+  removeFileRef(key: string, absolute: string) {
+    const list = this.fileRefs.get(key)
+    if (!list) return
+    const next = list.filter((r) => r.absolute !== absolute)
+    if (next.length === 0) this.fileRefs.delete(key)
+    else this.fileRefs.set(key, next)
+    this.emit()
+  }
+
+  clearFileRefs(key: string) {
+    if (this.fileRefs.delete(key)) this.emit()
   }
 
   // ============ Tab 状态记忆（design-tab-state-memory） ============

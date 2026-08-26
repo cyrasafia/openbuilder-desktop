@@ -546,7 +546,8 @@ describe("斜杠命令发送（design-slash-command SC-4：同步端点无限等
     run.resolve()
     const res = await p
     expect(res.ok).toBe(true)
-    expect(sent).toEqual(["s1", ROOT, "review", "--help"])
+    // 第 5 参 = 引用 file parts（无引用时 undefined，design-file-reference §4）
+    expect(sent).toEqual(["s1", ROOT, "review", "--help", undefined])
 
     dispatch({
       type: "message.updated",
@@ -2420,5 +2421,132 @@ describe("moveTab 落位分区（design-tab-drag-rename §1 修订）", () => {
     expect(store.tabs.map((t) => t.key)).toEqual(["file:/1", "file:/2"])
     // 早退的可观测差异：零 emit（顺序断言在无早退实现下同样通过，无判别力）
     expect(notified).toBe(0)
+  })
+})
+
+describe("文件引用（design-file-reference）", () => {
+  const ref = (path: string, abs: string, isDir = false) => ({
+    path,
+    absolute: abs,
+    filename: abs.split("/").pop() ?? abs,
+    isDir,
+  })
+
+  it("增删去重：同 absolute 不重复；remove 清空后删条目", () => {
+    store.addFileRef("s1", ref("a.ts", "/repo/a.ts"))
+    store.addFileRef("s1", ref("a.ts", "/repo/a.ts"))
+    store.addFileRef("s1", ref("src/", "/repo/src", true))
+    expect(store.fileRefsFor("s1").length).toBe(2)
+    store.removeFileRef("s1", "/repo/a.ts")
+    expect(store.fileRefsFor("s1").length).toBe(1)
+    store.removeFileRef("s1", "/repo/src")
+    expect(store.fileRefsFor("s1").length).toBe(0)
+  })
+
+  it("sendPrompt parts 构造：文本 + 引用 file part（absolute file:// + source）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    let sentParts: unknown[] = []
+    ;(store as unknown as { client: unknown }).client = {
+      listSessions: async () => [],
+      listSessionStatus: async () => ({}),
+      listProjects: async () => [project()],
+      listPendingPermissions: async () => [],
+      listPendingQuestions: async () => [],
+      promptAsync: async (_id: string, _dir: string, parts: unknown[]) => {
+        sentParts = parts
+      },
+    }
+    store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
+    store.addFileRef("s1", ref("src/a.ts", `${ROOT}/src/a.ts`))
+    store.addFileRef("s1", ref("docs/", `${ROOT}/docs`, true))
+    const res = await store.sendPrompt("s1", "看下这些", store.fileRefsFor("s1"))
+    expect(res.ok).toBe(true)
+    expect(sentParts).toEqual([
+      { type: "text", text: "看下这些" },
+      {
+        type: "file",
+        mime: "text/plain",
+        url: `file://${ROOT}/src/a.ts`,
+        filename: "a.ts",
+        source: { type: "file", path: "src/a.ts", text: { value: "", start: 0, end: 0 } },
+      },
+      {
+        type: "file",
+        mime: "text/plain",
+        url: `file://${ROOT}/docs`,
+        filename: "docs",
+        source: { type: "file", path: "docs/", text: { value: "", start: 0, end: 0 } },
+      },
+    ])
+    // 发送成功引用即清（乐观消息仍带 refs 快照）
+    expect(store.fileRefsFor("s1").length).toBe(0)
+    expect(store.optimisticBySession.get("s1")![0]!.refs?.length).toBe(2)
+  })
+
+  it("纯引用发送合法；全空拒绝", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    let sentParts: unknown[] = []
+    ;(store as unknown as { client: unknown }).client = {
+      promptAsync: async (_id: string, _dir: string, parts: unknown[]) => {
+        sentParts = parts
+      },
+    }
+    store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
+    store.addFileRef("s1", ref("a.ts", `${ROOT}/a.ts`))
+    const res = await store.sendPrompt("s1", "", store.fileRefsFor("s1"))
+    expect(res.ok).toBe(true)
+    expect(sentParts.length).toBe(1)
+    expect((sentParts[0] as { type: string }).type).toBe("file")
+    const empty = await store.sendPrompt("s1", "", [])
+    expect(empty.ok).toBe(false)
+  })
+
+  it("发送失败：引用保留供重发（乐观撤回）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    ;(store as unknown as { client: unknown }).client = {
+      promptAsync: async () => {
+        throw new Error("net down")
+      },
+    }
+    store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
+    store.addFileRef("s1", ref("a.ts", `${ROOT}/a.ts`))
+    const res = await store.sendPrompt("s1", "x", store.fileRefsFor("s1"))
+    expect(res.ok).toBe(false)
+    expect(store.fileRefsFor("s1").length).toBe(1)
+    expect(store.optimisticBySession.get("s1")?.length ?? 0).toBe(0)
+  })
+
+  it("sendCommand 携带引用 parts；成功清引用", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    let cmdBody: { parts?: unknown[] } = {}
+    ;(store as unknown as { client: unknown }).client = {
+      sendCommand: async (
+        _id: string,
+        _dir: string,
+        _cmd: string,
+        _args: string,
+        parts?: unknown[],
+      ) => {
+        cmdBody = { parts }
+      },
+    }
+    store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
+    store.addFileRef("s1", ref("a.ts", `${ROOT}/a.ts`))
+    const refs = store.fileRefsFor("s1")
+    const res = await store.sendCommand("s1", "init", "", refs)
+    expect(res.ok).toBe(true)
+    expect(cmdBody.parts?.length).toBe(1)
+    expect(store.fileRefsFor("s1").length).toBe(0)
+  })
+
+  it("清理挂点：关 chat Tab / 会话卸载清引用；非 chat 关闭不动他键", () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
+    store.addFileRef("s1", ref("a.ts", `${ROOT}/a.ts`))
+    store.addFileRef(ROOT, ref("b.ts", `${ROOT}/b.ts`))
+    store.closeTab("chat:s1")
+    expect(store.fileRefsFor("s1").length).toBe(0)
+    expect(store.fileRefsFor(ROOT).length).toBe(1)
   })
 })

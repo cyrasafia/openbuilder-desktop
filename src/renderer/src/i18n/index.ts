@@ -74,6 +74,10 @@ const zh = {
   fileOpen: "打开",
   fileOpenWith: "打开方式…",
   fileCopyPath: "复制路径",
+  // 文件引用（design-file-reference）
+  fileRefToSession: "引用到会话",
+  fileRefNoMatch: "无匹配文件",
+  fileRefRemove: "移除引用",
   // 文件视图 markdown 预览（design-markdown-preview）
   previewMode: "预览",
   sourceMode: "源码",
@@ -230,6 +234,9 @@ const en: typeof zh = {
   fileOpen: "Open",
   fileOpenWith: "Open with…",
   fileCopyPath: "Copy path",
+  fileRefToSession: "Reference in chat",
+  fileRefNoMatch: "No matching files",
+  fileRefRemove: "Remove reference",
   previewMode: "Preview",
   sourceMode: "Source",
   viewModeLabel: "View mode",

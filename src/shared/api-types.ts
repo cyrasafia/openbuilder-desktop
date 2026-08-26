@@ -115,6 +115,7 @@ export type PartType =
   | "repl-frontend"
   | "subtask"
   | "retry"
+  | "file"
 
 export interface PartBase {
   id: string
@@ -208,6 +209,51 @@ export interface CommandInfo {
 }
 
 export type Part = TextPart | ToolPart | StepStartPart | SubtaskPart | RetryPart | (PartBase & Record<string, unknown>)
+
+/**
+ * 发送侧 file part（prompt_async / command 的 parts 成员，design-file-reference §1）：
+ * 引用模式 = url 为 absolute `file://` + `source`（FileSource），零字节、server 注入内容。
+ */
+export interface FilePartInput {
+  type: "file"
+  mime: string
+  url: string
+  filename?: string
+  source?: {
+    type: "file"
+    path: string
+    text: { value: string; start: number; end: number }
+  }
+}
+
+/** 引用值对象（design-file-reference §2，客户端域模型；乐观消息与 composer 共用） */
+export interface FileRef {
+  /** 相对 worktree（展示 + source.path；目录尾随 /） */
+  path: string
+  /** 绝对路径（拼 file:// url 用） */
+  absolute: string
+  filename: string
+  isDir: boolean
+}
+
+/** 回灌 file part（user 消息 parts 内，openapi FilePart 的消费子集）。
+ *  source?.type==="file" 即引用回灌（乐观/接收侧渲染分流依据）；二进制回灌
+ *  时 url 会被 server 重写为 data:（移动端 3R-B 实测）——跳转不得用 url。 */
+export type FileDisplayPart = PartBase & {
+  type: "file"
+  url?: string
+  mime?: string
+  filename?: string
+  source?: { type: string; path?: string } & Record<string, unknown>
+  // 开放给 Part 联合的 Record<string, unknown> 成员（server 回灌字段超集）
+  [k: string]: unknown
+}
+
+export function isFileRefPart(part: Part): part is FileDisplayPart {
+  if (part.type !== "file") return false
+  const source = (part as FileDisplayPart).source
+  return !!source && typeof source === "object" && (source as { type?: unknown }).type === "file"
+}
 
 export interface MessageWithParts {
   info: Message

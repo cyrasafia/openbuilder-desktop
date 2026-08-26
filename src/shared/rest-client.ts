@@ -19,6 +19,7 @@ import type {
   WorktreeResult,
 } from "./api-types"
 import type { Part } from "./api-types"
+import type { FilePartInput } from "./api-types"
 
 export interface RestClientOptions {
   baseUrl: string
@@ -250,16 +251,27 @@ export class RestClient {
     return { entries, nextCursor: res.headers.get("x-next-cursor") }
   }
 
-  /** 异步发消息：立即返回，回复走 SSE 事件流（长回复不受 HTTP 超时影响） */
+  /** 异步发消息：立即返回，回复走 SSE 事件流（长回复不受 HTTP 超时影响）。
+   *  parts 支持文本与引用 file part（FilePartInput，design-file-reference §4） */
   promptAsync(
     sessionID: string,
     directory: string,
-    parts: Array<{ type: "text"; text: string }>,
+    parts: Array<{ type: "text"; text: string } | FilePartInput>,
   ): Promise<void> {
     return this.request<void>(
       `/session/${encodeURIComponent(sessionID)}/prompt_async${RestClient.dirQuery(directory)}`,
       { method: "POST", body: JSON.stringify({ parts }), timeoutMs: 15000 },
     )
+  }
+
+  /**
+   * 文件名搜索（design-file-reference §3.1，@ 浮层数据源）：`GET /find/file`，
+   * 返回**相对 directory 的路径字符串数组**（absolute 客户端拼）。type=file 固定
+   * 过滤（@ 场景仅文件——返回字符串无目录标记，目录引用走右键/拖拽）。
+   */
+  findFiles(query: string, directory: string, limit = 20): Promise<string[]> {
+    const qs = new URLSearchParams({ query, directory, type: "file", limit: String(limit) })
+    return this.request<string[]>(`/find/file?${qs.toString()}`)
   }
 
   abortSession(sessionID: string, directory: string): Promise<void> {
@@ -315,10 +327,25 @@ export class RestClient {
    * 若沿用 15s 默认超时，命令跑超 15s 即误判失败→撤乐观+草稿回填（回显 bug）。
    * 未注册命令走此端点会 400——发送前应先在注册表里匹配。
    */
-  sendCommand(sessionID: string, directory: string, command: string, arguments_: string): Promise<void> {
+  sendCommand(
+    sessionID: string,
+    directory: string,
+    command: string,
+    arguments_: string,
+    fileParts?: FilePartInput[],
+  ): Promise<void> {
     return this.request<void>(
       `/session/${encodeURIComponent(sessionID)}/command${RestClient.dirQuery(directory)}`,
-      { method: "POST", body: JSON.stringify({ command, arguments: arguments_ }), timeoutMs: 0 },
+      {
+        method: "POST",
+        // parts 可选携带（引用 file part，openapi command body 契约；无引用不传字段）
+        body: JSON.stringify({
+          command,
+          arguments: arguments_,
+          ...(fileParts?.length ? { parts: fileParts } : {}),
+        }),
+        timeoutMs: 0,
+      },
     )
   }
 
