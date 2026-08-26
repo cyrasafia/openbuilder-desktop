@@ -42,6 +42,27 @@ export function Workspace() {
   const scopeDir = store.scopeQuery.directory
   const tabs = store.tabs.filter((tab) => tab.directory === scopeDir)
   const active = store.activeTab
+  // 拖拽重排序（design-tab-drag-rename §1）：dragKey = 拖拽中 Tab；overKey =
+  // 悬停目标 + 命中半区（左半 = 插入目标前、右半 = 插入目标后），指示线随半区
+  // 亮在目标左/右缘
+  const [dragKey, setDragKey] = useState<string | null>(null)
+  const [overKey, setOverKey] = useState<{ key: string; before: boolean } | null>(null)
+  // 行内重命名（design-tab-drag-rename §2）：仅 chat Tab，双击进入
+  const [renaming, setRenaming] = useState<{ key: string; value: string } | null>(null)
+
+  const endDrag = () => {
+    setDragKey(null)
+    setOverKey(null)
+  }
+
+  const commitRename = (tab: { kind: string; key: string; title: string }) => {
+    if (!renaming || renaming.key !== tab.key) return
+    const value = renaming.value.trim()
+    setRenaming(null)
+    if (tab.kind === "chat" && value && value !== tab.title) {
+      void store.renameSession(tab.key.slice(5), value)
+    }
+  }
 
   return (
     <main className="workspace">
@@ -64,16 +85,105 @@ export function Workspace() {
                   : dot === "failed"
                     ? "session-failed"
                     : "session-idle"
+          const isRenamingThis = renaming?.key === tab.key
+          const isOverThis = dragKey && overKey?.key === tab.key && dragKey !== tab.key
           return (
           <div
             key={tab.key}
-            className={"tab" + (tab.key === store.activeTabKey ? " active" : "")}
+            className={
+              "tab" +
+              (tab.key === store.activeTabKey ? " active" : "") +
+              (isOverThis ? (overKey!.before ? " drag-over" : " drag-over-after") : "")
+            }
+            draggable={!isRenamingThis}
             onClick={() => store.setActiveTab(tab.key)}
+            onDoubleClick={() => {
+              // 重命名仅 chat Tab（= 会话重命名）。切到另一 Tab 编辑时先提交旧的，
+              // 未提交内容不静默丢弃；同一 Tab 再双击不重置已输入值
+              if (tab.kind === "chat") {
+                if (renaming && renaming.key !== tab.key) {
+                  const prev = store.tabs.find((x) => x.key === renaming.key)
+                  if (prev) commitRename(prev)
+                }
+                if (renaming?.key !== tab.key) {
+                  setRenaming({ key: tab.key, value: tab.title })
+                }
+              }
+            }}
+            onDragStart={(e) => {
+              setDragKey(tab.key)
+              // 自定义 MIME：避免内部 key 以 text/plain 拖入可编辑区被默认插入
+              e.dataTransfer.setData("application/x-openbuilder-tab", tab.key)
+              e.dataTransfer.effectAllowed = "move"
+            }}
+            onDragOver={(e) => {
+              if (!dragKey || dragKey === tab.key) return
+              e.preventDefault()
+              e.dataTransfer.dropEffect = "move"
+              // 命中半区：左半插入目标前、右半插入目标后（末位可达）。
+              // dragover 以 mousemove 频率触发：同值保留旧引用，React bail out
+              // 避免整树按事件频率 reconcile
+              const rect = e.currentTarget.getBoundingClientRect()
+              const before = e.clientX < rect.left + rect.width / 2
+              setOverKey((prev) =>
+                prev?.key === tab.key && prev.before === before ? prev : { key: tab.key, before },
+              )
+            }}
+            onDragLeave={(e) => {
+              // 真正离开该 Tab（非进出子元素）才清指示，防闪烁
+              if (
+                dragKey &&
+                overKey?.key === tab.key &&
+                !e.currentTarget.contains(e.relatedTarget as Node | null)
+              ) {
+                setOverKey(null)
+              }
+            }}
+            onDrop={(e) => {
+              e.preventDefault()
+              if (dragKey && dragKey !== tab.key) {
+                const rect = e.currentTarget.getBoundingClientRect()
+                const before = e.clientX < rect.left + rect.width / 2
+                store.moveTab(dragKey, tab.key, before ? "before" : "after")
+              }
+              endDrag()
+            }}
+            onDragEnd={endDrag}
           >
             {dot && <span className={"status-dot " + dotClass} />}
-            <span className="tab-label">
-              {tab.kind === "diff" ? t.diffTitle : tab.title || t.untitled}
-            </span>
+            {isRenamingThis ? (
+              // 行内重命名输入框：Enter/失焦提交、Esc 取消；隔离点击与拖拽。
+              // 键盘事件不 blanket stopPropagation——全局快捷键（Ctrl+W/Tab 等）
+              // 在重命名中仍可用（同 ChatView 输入区约定）
+              <input
+                className="tab-label-input"
+                value={renaming!.value}
+                autoFocus
+                aria-label={t.renameTab}
+                title={t.renameTab}
+                onFocus={(e) => e.currentTarget.select()}
+                onChange={(e) => setRenaming({ key: tab.key, value: e.target.value })}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+                onDoubleClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  // IME 组合中（fcitx5 上屏/取消候选）不触发提交/取消
+                  if (e.nativeEvent.isComposing) return
+                  if (e.key === "Enter") {
+                    e.preventDefault()
+                    commitRename(tab)
+                  } else if (e.key === "Escape") {
+                    e.preventDefault()
+                    setRenaming(null)
+                  }
+                }}
+                onBlur={() => commitRename(tab)}
+              />
+            ) : (
+              <span className="tab-label">
+                {tab.kind === "diff" ? t.diffTitle : tab.title || t.untitled}
+              </span>
+            )}
             <button
               className="icon-btn tab-close"
               title={t.closeTab}

@@ -505,6 +505,39 @@
   background: var(--surface-container-highest);
 }
 
+/* 拖拽重排序（design-tab-drag-rename §1）：悬停目标缘 2px 指示线——
+   左半区命中亮左缘（插入目标前）、右半区亮右缘（插入目标后） */
+.tab.drag-over::before,
+.tab.drag-over-after::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--primary);
+}
+
+.tab.drag-over::before {
+  left: 0;
+}
+
+.tab.drag-over-after::before {
+  right: 0;
+}
+
+/* 行内重命名输入框（design-tab-drag-rename §2）：占位原标签位，填满 Tab 宽 */
+.tab-label-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: var(--on-surface);
+  background: var(--surface-container-high);
+  border: 1px solid var(--primary);
+  border-radius: 4px;
+  padding: 1px 4px;
+  outline: none;
+}
+
 .icon-btn.tabbar-new {
   width: 32px;
   flex-shrink: 0;

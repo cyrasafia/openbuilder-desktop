@@ -21,6 +21,7 @@ const zh = {
   // Tab
   closeTab: "关闭",
   newTab: "新建 Tab",
+  renameTab: "重命名会话",
   untitled: "（未命名）",
   // 聊天
   inputPlaceholder: "输入消息…（Enter 发送，Shift+Enter 换行）",
@@ -184,6 +185,7 @@ const en: typeof zh = {
   confirm: "OK",
   closeTab: "Close",
   newTab: "New tab",
+  renameTab: "Rename session",
   untitled: "(untitled)",
   inputPlaceholder: "Message… (Enter to send, Shift+Enter for newline)",
   send: "Send",

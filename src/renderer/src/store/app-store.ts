@@ -2104,8 +2104,8 @@ export class AppStore {
     }
   }
 
-  // 重命名/删除会话的 store 方法随 v0.1 会话卡片菜单一并移除（UI 无入口），
-  // v0.2 chat 视图头部菜单落地时恢复（REST 层 updateSession/deleteSession 仍在）
+  // 会话重命名入口 = chat Tab 双击行内编辑（design-tab-drag-rename §2，v0.3），
+  // store 方法 renameSession 见下方；会话删除 UI 仍无入口（v0.1 已知取舍）
 
   findSession(sessionID: string): Session | null {
     for (const map of this.sessionsByProject.values()) {
@@ -2151,6 +2151,27 @@ export class AppStore {
       )
       this.emit()
       return { ok: false, error: this.connectionError }
+    }
+  }
+
+  // 会话重命名（design-tab-drag-rename §2，v0.3 恢复入口：chat Tab 双击行内编辑；
+  // 删除入口仍无）。他端重命名经 session.updated 事件同步 Tab 标题（既有路径）。
+  async renameSession(sessionID: string, title: string): Promise<boolean> {
+    if (!this.client) return false
+    const session = this.findSession(sessionID)
+    if (!session) return false
+    try {
+      const updated = await this.client.updateSession(sessionID, session.directory, { title })
+      this.mergeSessionUpdate(updated)
+      // Tab 标题即时同步（SSE 回环亦可到达，此处消除本地等待）
+      const tab = this.tabs.find((t) => t.key === `chat:${sessionID}`)
+      if (tab) tab.title = updated.title || updated.slug || ""
+      this.emit()
+      return true
+    } catch (e) {
+      this.connectionError = e instanceof Error ? e.message : String(e)
+      this.emit()
+      return false
     }
   }
 
@@ -2930,6 +2951,27 @@ export class AppStore {
     // 任意 kind 最后激活记录（design-tab-state-memory §2.1 挂点；全 kind——
     // 记忆 active 的 chat-only 仅约束冷启动，运行期切回恢复任意 kind）
     if (tab?.directory) this.recordScopeActive(tab.directory, key)
+    this.emit()
+  }
+
+  /**
+   * Tab 条内拖拽重排序（design-tab-drag-rename §1）：作用于全局 tabs 数组
+   * （作用域视图是投影）——取出拖拽项后按落位（目标前/后）插入。chat Tab
+   * 顺序经记忆派生落盘（design-tab-memory §3.2 预留的顺序语义兑现）。
+   * 位置无变化时早退（不发 emit，指示线残留由 UI 侧清理）。
+   */
+  moveTab(dragKey: string, targetKey: string, position: "before" | "after" = "before") {
+    if (dragKey === targetKey) return
+    const from = this.tabs.findIndex((t) => t.key === dragKey)
+    const targetIdx = this.tabs.findIndex((t) => t.key === targetKey)
+    if (from < 0 || targetIdx < 0) return
+    const insertAt = position === "before" ? targetIdx : targetIdx + 1
+    // 移除拖拽项后落点换算：落点在其后则前移一位；结果不变即 no-op
+    const finalAt = insertAt > from ? insertAt - 1 : insertAt
+    if (finalAt === from) return
+    const [moved] = this.tabs.splice(from, 1)
+    this.tabs.splice(finalAt, 0, moved!)
+    if (moved!.kind === "chat" && moved!.directory) this.syncScopeMemory(moved!.directory)
     this.emit()
   }
 
