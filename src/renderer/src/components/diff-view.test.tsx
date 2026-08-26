@@ -9,6 +9,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { DiffView } from "./diff-view"
 import type { DiffTabType } from "../store/app-store"
 import type { Session, FileDiff } from "@shared/api-types"
+import { ResizeObserverStub } from "./resize-observer-stub"
 
 const loadDiffTab = vi.fn()
 const switchDiffType = vi.fn()
@@ -45,11 +46,6 @@ vi.mock("../app", () => ({
 let dataStub: Map<string, { files: FileDiff[]; error?: string; loading?: boolean }>
 
 beforeAll(() => {
-  class ResizeObserverStub implements ResizeObserver {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
   globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver
 })
 

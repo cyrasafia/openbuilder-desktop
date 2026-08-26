@@ -1,12 +1,14 @@
 /**
  * markdown 预览 TOC 大纲（design-markdown-preview §2.4）。
  * 标题来源是预览体渲染后的 DOM 扫描（h1–h6）——不侵入消息流共享的 streamdown
- * 渲染管道；点击条目 scrollIntoView 锚定，章节树支持按节点收起/展开。
- * TOC 整列占据内容左侧（列内自滚、始终可见）——「吸顶」语义由全高列满足，
- * 不用 sticky + 视口高度魔法值。
+ * 渲染管道；点击条目 scrollIntoView 锚定，章节树支持按节点收起/展开
+ * （折叠态由 FileView 持有，跨悬浮窗显隐保留）。
+ * 悬浮窗呈现：滚动层之外绝对定位，悬挂于内容区左侧（常驻可见）；
+ * 高度不超过可见区（限高，超出列内自滚）。整窗显隐由 FileView 控制
+ * （宽度默认态 + 工具条按钮），本组件不持有显隐态。
  */
-import { useEffect, useMemo, useState, type CSSProperties } from "react"
-import { ChevronDown, ChevronRight, ListTree, PanelLeftClose } from "lucide-react"
+import { useMemo, type CSSProperties } from "react"
+import { ChevronDown, ChevronRight } from "lucide-react"
 import { useI18n } from "../app"
 
 export interface TocHeading {
@@ -100,17 +102,20 @@ function TocLevel({ nodes, depth, folded, sectionToggleLabel, onFold, onJump }: 
   )
 }
 
-/** TOC 侧栏。无标题时不渲染（内容区保持原限宽居中布局） */
-export function MdToc({ headings }: { headings: TocHeading[] }) {
+/** TOC 悬浮窗。无标题时不渲染（内容区保持原限宽居中布局）。
+ * 章节折叠态（folded/onFold）由父级 FileView 持有——悬浮窗收起时本组件卸载，
+ * 折叠态跨显隐保留，仅内容更换时重置（§2.4）。 */
+export function MdToc({
+  headings,
+  folded,
+  onFold,
+}: {
+  headings: TocHeading[]
+  folded: ReadonlySet<HTMLElement>
+  onFold: (el: HTMLElement) => void
+}) {
   const { t } = useI18n()
-  const [collapsed, setCollapsed] = useState(false)
-  const [folded, setFolded] = useState<ReadonlySet<HTMLElement>>(new Set())
   const tree = useMemo(() => buildTocTree(headings), [headings])
-
-  // 内容更换后旧元素引用失效，章节折叠态重置（整栏收起态保留）
-  useEffect(() => {
-    setFolded(new Set())
-  }, [headings])
 
   if (headings.length === 0) return null
 
@@ -118,50 +123,15 @@ export function MdToc({ headings }: { headings: TocHeading[] }) {
     h.el.scrollIntoView({ behavior: "smooth", block: "start" })
   }
 
-  if (collapsed) {
-    return (
-      <aside className="md-toc collapsed">
-        <button
-          type="button"
-          className="icon-btn"
-          title={t.tocExpand}
-          aria-label={t.tocExpand}
-          onClick={() => setCollapsed(false)}
-        >
-          <ListTree size={16} aria-hidden />
-        </button>
-      </aside>
-    )
-  }
-
   return (
     <aside className="md-toc" aria-label={t.tocTitle}>
-      <div className="md-toc-header">
-        <span className="md-toc-title">{t.tocTitle}</span>
-        <button
-          type="button"
-          className="icon-btn"
-          title={t.tocCollapse}
-          aria-label={t.tocCollapse}
-          onClick={() => setCollapsed(true)}
-        >
-          <PanelLeftClose size={14} aria-hidden />
-        </button>
-      </div>
       <nav className="md-toc-tree">
         <TocLevel
           nodes={tree}
           depth={0}
           folded={folded}
           sectionToggleLabel={t.tocSectionToggle}
-          onFold={(el) =>
-            setFolded((prev) => {
-              const next = new Set(prev)
-              if (next.has(el)) next.delete(el)
-              else next.add(el)
-              return next
-            })
-          }
+          onFold={onFold}
           onJump={jump}
         />
       </nav>

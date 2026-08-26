@@ -1518,12 +1518,17 @@
 }
 
 /* ---------- 文件视图 ---------- */
-/* 列 flex 容器：markdown mode 的工具条 + 滚动层（design-markdown-preview §2.2） */
+/* 列 flex 容器：工具条 + 滚动层（design-markdown-preview §2.2）；
+ * position:relative 承载 TOC 悬浮窗绝对定位（滚动层之外，天然常驻可见）；
+ * --file-md-min/max = 内容区动态宽度，同聊天区 [600, 800] idiom */
 .file-view-wrap {
+  --file-md-min: 600px;
+  --file-md-max: 800px;
   flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  position: relative;
 }
 
 .file-view {
@@ -1707,21 +1712,32 @@
 }
 
 /* 工具条：右对齐分段开关（预览/源码），markdown 文件常驻渲染；
- * 分段控件复用 .ms-segmented/.ms-seg（单一来源，不另起一套） */
+ * 分段控件复用 .ms-segmented/.ms-seg（单一来源，不另起一套）；
+ * 上下等距——开关相对工具条纵向居中，不与下方内容贴连（2026-08-25，原 0 底距底对齐） */
 .file-toolbar {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
-  padding: 6px 16px 0;
+  /* 显式高度 = --file-toolbar-h（TOC 悬浮窗定位/限高 calc 的契约，勿改回 padding 撑高） */
+  height: var(--file-toolbar-h);
+  padding: 0 16px;
+}
+
+/* TOC 收起/展开钮：左对齐（margin-right:auto 推左），分段开关保持右对齐 */
+.file-toolbar-toc {
+  margin-right: auto;
 }
 
 .file-error {
   color: var(--error);
 }
 
-/* markdown 预览体：限宽居中（与聊天区 --chat-max 同一阅读度量级）。
- * 覆写消息流 .md 的代码块高度上限——文档预览长代码块不套内滚（渲染阅读优先） */
+/* markdown 预览体：动态宽度 [600, 800] 自适应、相对全窗居中
+ * （与聊天区 --chat-min/--chat-max 同一阅读度量级与 idiom）；
+ * 下限 600 为硬约束（2026-08-25 修订：原 min(100%, …) 兜底使窄屏跌破下限）——
+ * 可见区窄于下限时内容区保持 600，滚动层横向滚动 */
 .file-md {
-  max-width: 820px;
+  width: clamp(var(--file-md-min), 100%, var(--file-md-max));
   margin: 0 auto;
   padding: 4px 24px 24px;
 }
@@ -1747,19 +1763,12 @@
 }
 
 /* ---------- markdown 预览 TOC 大纲（design-markdown-preview §2.4） ----------
- * TOC 整列占据内容左侧（列内自滚、始终可见）——「吸顶」由全高列满足，
- * 不用 sticky + 视口高度魔法值；内容列独立滚动，限宽居中不变。
- * 无标题时 MdToc 不渲染，布局回落单列 */
-.file-md-layout {
-  flex: 1;
-  display: flex;
-  min-height: 0;
-}
-
-.file-md-layout > .file-view {
-  flex: 1;
-  min-width: 0;
-}
+ * 内容区（.file-md）相对全窗居中；TOC 悬浮窗挂在内容区左侧——
+ * 绝对定位于 .file-view-wrap（滚动层之外 → 天然常驻可见，无需 sticky），
+ * left = max(左缘兜底, 内容区左缘 − 窗宽 − 间距)：侧缘够宽时悬于内容区左侧
+ * 留白内，不够宽时自动收进可见区（悬浮覆盖内容区左缘）。
+ * 高度不超可见区（100% − 工具条 − 上下 12px 留白），超出列内自滚。
+ * 窄屏默认隐藏（可见宽 < 内容下限 + 窗宽）由 JS 控制（§2.4）。 */
 
 /* 锚定（scrollIntoView）时标题顶部留白 */
 .file-md :is(h1, h2, h3, h4, h5, h6) {
@@ -1767,41 +1776,32 @@
 }
 
 .md-toc {
-  flex: none;
-  width: 240px;
+  position: absolute;
+  top: calc(var(--file-toolbar-h) + 12px);
+  left: max(
+    12px,
+    calc(
+      (100% - min(100%, clamp(var(--file-md-min), 100%, var(--file-md-max)))) / 2 -
+        var(--toc-w) - var(--toc-gap)
+    )
+  );
+  width: var(--toc-w);
+  max-height: calc(100% - var(--file-toolbar-h) - 24px);
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: var(--surface-container-low);
-  border-right: 1px solid var(--outline-variant);
-}
-
-/* 整栏收起：窄轨 + 展开按钮 */
-.md-toc.collapsed {
-  width: 40px;
-  align-items: center;
-  padding-top: 6px;
-}
-
-.md-toc-header {
-  flex: none;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 8px 4px 14px;
-}
-
-.md-toc-title {
-  font-size: var(--text-sm);
-  font-weight: 600;
-  color: var(--on-surface-variant);
+  background: var(--surface-container-high);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-card);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
 }
 
 .md-toc-tree {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 0 8px 12px;
+  padding: 8px;
 }
 
 .md-toc-tree ul {

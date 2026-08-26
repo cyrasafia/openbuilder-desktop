@@ -7,7 +7,7 @@ import {
   type ReactNode,
   type WheelEvent,
 } from "react"
-import { ChevronDown, ChevronRight, ChevronUp, CircleHelp, LoaderCircle, RotateCcw, ShieldAlert } from "lucide-react"
+import { ChevronDown, ChevronRight, ChevronUp, CircleHelp, ListTree, LoaderCircle, RotateCcw, ShieldAlert } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import { format, relativeTime } from "../i18n"
 import type { Catalog } from "../i18n"
@@ -1143,11 +1143,32 @@ function isHtmlPath(path: string): boolean {
   return ext === "html" || ext === "htm"
 }
 
+/* TOC 悬浮窗布局常量——与 app.css .md-toc 定位公式同源，改 CSS 须同步此处 */
+const TOC_W = 240 // --toc-w
+const TOC_GAP = 16 // --toc-gap
+const TOC_MIN_LEFT = 12 // CSS left: max(12px, …) 左缘兜底
+const FILE_MD_MIN = 600 // --file-md-min（内容区下限为硬约束）
+const FILE_MD_MAX = 800 // --file-md-max
+
+/** 按 CSS 定位公式推演悬浮窗是否遮挡内容区（右缘越过内容区左缘）。
+ * 内容区居中，宽 = clamp(600, 可见宽, 800)，左缘 = (可见宽 − 内容宽)/2
+ * （内容宽超可见宽时左缘为负，内容横向溢出，判定仍成立）；
+ * 窗左缘 = max(12, 内容左缘 − 窗宽 − 间距)。
+ * 遮挡时 TOC 默认收起（工具条按钮可显式展开）（design-markdown-preview §2.4）。 */
+function tocOccludesContent(paneW: number): boolean {
+  if (paneW <= 0) return false // 未测得宽度：默认显示（测量落地后按实际判定）
+  const contentW = Math.max(FILE_MD_MIN, Math.min(paneW, FILE_MD_MAX))
+  const contentLeft = (paneW - contentW) / 2
+  const tocLeft = Math.max(TOC_MIN_LEFT, contentLeft - TOC_W - TOC_GAP)
+  return tocLeft + TOC_W > contentLeft
+}
+
 /**
  * 文件 Tab 视图。预览文件（design-markdown-preview / design-html-preview）：
- * `.md`/`.markdown` 渲染 markdown；`.html`/`.htm` 渲染 sandboxed iframe——
- * 默认预览态 + 工具条二态切换；模式为组件局部 state，Tab 重开/切文件重置
- * （key 隔离）。其余文件代码视图（行号+语法高亮，design-code-view）。
+ * `.md`/`.markdown` 渲染 markdown（内容区动态宽度 [600, 800] 居中，TOC 悬浮窗
+ * 挂内容区左侧）；`.html`/`.htm` 渲染 sandboxed iframe——默认预览态 + 工具条
+ * 二态切换；模式为组件局部 state，Tab 重开/切文件重置（key 隔离）。
+ * 其余文件代码视图（行号+语法高亮，design-code-view）。
  */
 export function FileView({ absolutePath }: { absolutePath: string }) {
   const store = useStore()
@@ -1160,6 +1181,25 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
   // TOC 大纲（design-markdown-preview §2.4）：预览体 DOM 扫描 h1–h6
   const mdRef = useRef<HTMLDivElement | null>(null)
   const [tocHeadings, setTocHeadings] = useState<TocHeading[]>([])
+  // TOC 显隐 = 宽度默认态（宽显窄隐）+ 用户显式选择覆盖（工具条按钮）
+  const wrapRef = useRef<HTMLDivElement | null>(null)
+  const [paneWidth, setPaneWidth] = useState(0)
+  // null = 未手动操作，随宽度默认；布尔 = 用户显式选择（不再随宽度回摆）
+  const [tocUserMode, setTocUserMode] = useState<boolean | null>(null)
+  // 章节折叠态由 FileView 持有：悬浮窗收起时 MdToc 卸载，折叠态跨显隐保留，
+  // 仅内容更换（标题集合变化）时重置（§2.4）
+  const [tocFolded, setTocFolded] = useState<ReadonlySet<HTMLElement>>(new Set())
+  useEffect(() => {
+    setTocFolded(new Set())
+  }, [tocHeadings])
+  useLayoutEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    setPaneWidth(el.clientWidth) // 同步首测（RO 回调是异步的，否则窄屏先闪显一帧）
+    const ro = new ResizeObserver(() => setPaneWidth(el.clientWidth))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
   // CSP 注入是 O(n) 扫描 + 拼接：只在内容变化时重算（SSE emit 重渲染不重复付出）
   const htmlDoc = useMemo(
     () => (isHtml && cached ? buildHtmlPreviewDocument(cached.content) : ""),
@@ -1215,6 +1255,12 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
     )
   }
 
+  // TOC 可用 = markdown 且已扫出标题（加载/错误/源码态标题被清空，天然为 false）；
+  // 悬浮窗可能遮挡内容区 → 默认收起（工具条按钮可显式展开，悬浮覆盖内容区）
+  const hasToc = isMarkdown && tocHeadings.length > 0
+  const tocOccluded = tocOccludesContent(paneWidth)
+  const tocVisible = hasToc && (tocUserMode ?? !tocOccluded)
+
   // 预览文件：工具条常驻（loading/error 也渲染）——避免内容落地/重试成功时
   // 工具条弹入造成 ~32px 布局跳动
   const view = (
@@ -1222,6 +1268,8 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
       {!cached && <div className="file-state">{t.loading}</div>}
       {cached?.error && <div className="file-state file-error">{cached.error}</div>}
       {cached && !cached.error && mode === "preview" && isMarkdown && (
+        // 内容区动态宽度 [600, 800] 相对全窗居中（§2.4）；滚动层全宽 →
+        // 滚动条贴窗口右缘；TOC 悬浮窗在滚动层之外（.file-view-wrap 绝对定位）
         <div className="file-md" ref={mdRef}>
           <Markdown>{cached.content}</Markdown>
         </div>
@@ -1244,8 +1292,20 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
   )
 
   return (
-    <div className="file-view-wrap">
+    <div className="file-view-wrap" ref={wrapRef}>
       <div className="file-toolbar">
+        {hasToc && (
+          <button
+            type="button"
+            className="icon-btn file-toolbar-toc"
+            title={tocVisible ? t.tocCollapse : t.tocExpand}
+            aria-label={tocVisible ? t.tocCollapse : t.tocExpand}
+            aria-pressed={tocVisible}
+            onClick={() => setTocUserMode(!tocVisible)}
+          >
+            <ListTree size={16} aria-hidden />
+          </button>
+        )}
         <div className="ms-segmented" role="group" aria-label={t.viewModeLabel}>
           <button
             type="button"
@@ -1265,15 +1325,21 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
           </button>
         </div>
       </div>
-      {isMarkdown ? (
-        // markdown 预览：左侧 TOC 大纲列 + 内容滚动列（design-markdown-preview §2.4）；
-        // MdToc 无标题/非预览态时自身返回 null，布局回落为单列
-        <div className="file-md-layout">
-          <MdToc headings={tocHeadings} />
-          {view}
-        </div>
-      ) : (
-        view
+      {view}
+      {/* TOC 悬浮窗：滚动层之外绝对定位（常驻可见），遮挡内容区时默认收起（§2.4） */}
+      {tocVisible && (
+        <MdToc
+          headings={tocHeadings}
+          folded={tocFolded}
+          onFold={(el) =>
+            setTocFolded((prev) => {
+              const next = new Set(prev)
+              if (next.has(el)) next.delete(el)
+              else next.add(el)
+              return next
+            })
+          }
+        />
       )}
     </div>
   )

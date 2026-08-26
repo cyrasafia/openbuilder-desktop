@@ -26,6 +26,10 @@
   --tabbar-h: 36px;
   --titlebar-h: 36px;
   --control-h: 28px;
+  /* 文件工具条高 = 控件高 + 上下各 6px；TOC 悬浮窗定位/限高 calc 的单一来源 */
+  --file-toolbar-h: calc(var(--control-h) + 12px);
+  --toc-w: 240px;
+  --toc-gap: 16px;
   --icon-inline: 16px;
   --icon-toolbar: 20px;
 

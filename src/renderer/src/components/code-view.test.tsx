@@ -9,13 +9,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { CodeView } from "./code-view"
 import { languageForPath } from "./cm-lang"
 import { EditorView } from "@codemirror/view"
+import { ResizeObserverStub } from "./resize-observer-stub"
 
 beforeAll(() => {
-  class ResizeObserverStub implements ResizeObserver {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
   globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver
 })
 

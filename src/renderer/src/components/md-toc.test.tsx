@@ -1,8 +1,10 @@
 /**
  * markdown 预览 TOC 大纲测试（design-markdown-preview §2.4）：
  * 章节树构建（嵌套/跳级/平级）+ DOM 扫描 + 组件行为
- * （按章节收起/展开、整栏收起/展开、点击锚定）。
+ * （按章节收起/展开、点击锚定）。整窗收起/展开由 FileView 工具条控制，
+ * 相应测试在 file-view.test.tsx。
  */
+import { useState } from "react"
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 import { buildTocTree, collectHeadings, MdToc, type TocHeading } from "./md-toc"
@@ -84,13 +86,33 @@ describe("collectHeadings", () => {
 describe("MdToc 组件", () => {
   const sample = () => [heading(1, "章节一"), heading(2, "小节 A"), heading(2, "小节 B"), heading(1, "章节二")]
 
+  /** 章节折叠态由父级（FileView）持有，测试以带 state 的包装模拟父级；
+   * 折叠态跨显隐保留与内容更换重置在 file-view.test.tsx 覆盖 */
+  function TocHarness({ headings }: { headings: TocHeading[] }) {
+    const [folded, setFolded] = useState<ReadonlySet<HTMLElement>>(new Set())
+    return (
+      <MdToc
+        headings={headings}
+        folded={folded}
+        onFold={(el) =>
+          setFolded((prev) => {
+            const next = new Set(prev)
+            if (next.has(el)) next.delete(el)
+            else next.add(el)
+            return next
+          })
+        }
+      />
+    )
+  }
+
   it("无标题不渲染", () => {
-    const { container } = render(<MdToc headings={[]} />)
+    const { container } = render(<TocHarness headings={[]} />)
     expect(container.innerHTML).toBe("")
   })
 
   it("渲染全部条目；有子节点的带折叠钮，叶子无", () => {
-    render(<MdToc headings={sample()} />)
+    render(<TocHarness headings={sample()} />)
     expect(screen.getByText("章节一")).not.toBeNull()
     expect(screen.getByText("小节 B")).not.toBeNull()
     const folds = document.querySelectorAll(".md-toc-fold:not(.md-toc-fold-empty)")
@@ -99,7 +121,7 @@ describe("MdToc 组件", () => {
   })
 
   it("按章节收起/展开：子条目隐藏/恢复，aria-expanded 同步", () => {
-    render(<MdToc headings={sample()} />)
+    render(<TocHarness headings={sample()} />)
     const fold = document.querySelectorAll(".md-toc-fold:not(.md-toc-fold-empty)")[0]
     expect(fold.getAttribute("aria-expanded")).toBe("true")
     expect(screen.getByText("小节 A")).not.toBeNull()
@@ -115,33 +137,12 @@ describe("MdToc 组件", () => {
     expect(screen.getByText("小节 A")).not.toBeNull()
   })
 
-  it("整栏收起为窄轨，展开恢复", () => {
-    render(<MdToc headings={sample()} />)
-    fireEvent.click(screen.getByRole("button", { name: "收起目录" }))
-    expect(document.querySelector(".md-toc.collapsed")).not.toBeNull()
-    expect(screen.queryByText("章节一")).toBeNull()
-
-    fireEvent.click(screen.getByRole("button", { name: "展开目录" }))
-    expect(document.querySelector(".md-toc.collapsed")).toBeNull()
-    expect(screen.getByText("章节一")).not.toBeNull()
-  })
-
   it("点击条目对目标元素 scrollIntoView（smooth/start）", () => {
     const headings = sample()
-    render(<MdToc headings={headings} />)
+    render(<TocHarness headings={headings} />)
     fireEvent.click(screen.getByText("小节 B"))
     expect(scrollIntoView).toHaveBeenCalledTimes(1)
     expect(scrollIntoView.mock.instances[0]).toBe(headings[2].el)
     expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" })
-  })
-
-  it("headings 更换后章节折叠态重置", () => {
-    const { rerender } = render(<MdToc headings={sample()} />)
-    fireEvent.click(document.querySelectorAll(".md-toc-fold:not(.md-toc-fold-empty)")[0])
-    expect(screen.queryByText("小节 A")).toBeNull()
-
-    rerender(<MdToc headings={[heading(1, "新章节"), heading(2, "新小节")]} />)
-    expect(screen.getByText("新小节")).not.toBeNull()
-    expect(screen.queryByText("章节一")).toBeNull()
   })
 })
