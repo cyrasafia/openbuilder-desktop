@@ -163,3 +163,49 @@ describe("listVcsDiff context（参考 openbuilder 086e32d）", () => {
     expect(called).toBe("http://server/vcs/diff?directory=%2Frepo&mode=branch&context=10")
   })
 })
+
+describe("readFileContent（design-image-preview §2.1）", () => {
+  it("文本文件：返回 type:text 完整对象（不只 content 字符串）", async () => {
+    const client = mkClient(() =>
+      new Response(JSON.stringify({ type: "text", content: "const x = 1" })),
+    )
+    await expect(client.readFileContent("/repo", "/repo/a.ts")).resolves.toEqual({
+      type: "text",
+      content: "const x = 1",
+    })
+  })
+
+  it("二进制图片：保留 type/encoding/mimeType（预览分发依据）", async () => {
+    const client = mkClient(() =>
+      new Response(
+        JSON.stringify({
+          type: "binary",
+          content: "QUJD",
+          encoding: "base64",
+          mimeType: "image/png",
+        }),
+      ),
+    )
+    await expect(client.readFileContent("/repo", "/repo/a.png")).resolves.toEqual({
+      type: "binary",
+      content: "QUJD",
+      encoding: "base64",
+      mimeType: "image/png",
+    })
+  })
+
+  it("SVG（type:text 无 mimeType）：不臆造 mimeType", async () => {
+    const client = mkClient(() =>
+      new Response(JSON.stringify({ type: "text", content: "<svg></svg>" })),
+    )
+    await expect(client.readFileContent("/repo", "/repo/a.svg")).resolves.toEqual({
+      type: "text",
+      content: "<svg></svg>",
+    })
+  })
+
+  it("content 非字符串：抛响应格式异常", async () => {
+    const client = mkClient(() => new Response(JSON.stringify({ type: "text" })))
+    await expect(client.readFileContent("/repo", "/repo/a")).rejects.toBeInstanceOf(ApiError)
+  })
+})

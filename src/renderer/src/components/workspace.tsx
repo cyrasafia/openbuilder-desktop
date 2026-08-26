@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -1164,11 +1165,322 @@ function tocOccludesContent(paneW: number): boolean {
 }
 
 /**
- * 文件 Tab 视图。预览文件（design-markdown-preview / design-html-preview）：
+ * 图片文件判定（design-image-preview §2.2）：与 isMarkdownPath 同解析规则。
+ * 移动端格式集 jpeg/png/gif/webp/svg；avif/bmp/ico 为 Chromium 原生解码的桌面增补。
+ */
+const IMAGE_MIME_BY_EXT: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  avif: "image/avif",
+  bmp: "image/bmp",
+  ico: "image/x-icon",
+}
+
+function isImagePath(path: string): boolean {
+  const base = path.split("/").pop() ?? ""
+  const dot = base.lastIndexOf(".")
+  if (dot <= 0) return false
+  const ext = base.slice(dot + 1).toLowerCase()
+  return ext === "svg" || ext in IMAGE_MIME_BY_EXT
+}
+
+/**
+ * 图片 data URL 构建（design-image-preview §2.3）：渲染依据是服务端返回的
+ * type/mimeType（扩展名只决定分支入口）——位图须 binary + image/*（mimeType
+ * 缺省按扩展名兜底）；svg 为 text 源码（服务端对 svg 不返 mimeType）。
+ * 不满足返回 null → 回落文本/二进制占位分支。
+ */
+function imageSrcFor(
+  path: string,
+  cached: { content: string; binary?: boolean; mimeType?: string },
+): string | null {
+  const base = path.split("/").pop() ?? ""
+  const ext = base.slice(base.lastIndexOf(".") + 1).toLowerCase()
+  if (ext === "svg") {
+    // <img> 中的 SVG 不执行脚本（规范行为），无需 html 预览那套沙箱
+    if (cached.binary) return null
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(cached.content)}`
+  }
+  if (!cached.binary) return null
+  const mime =
+    cached.mimeType && cached.mimeType.startsWith("image/")
+      ? cached.mimeType
+      : IMAGE_MIME_BY_EXT[ext]
+  if (!mime) return null
+  return `data:${mime};base64,${cached.content}`
+}
+
+/**
+ * 滚轮缩放步进与边界（design-image-preview §2.4）。scale 相对原始尺寸（1 = 1:1），
+ * 指数步进使滚轮手感对称（放大 1.22× 后再缩小 1/1.22× 回到原位）。
+ */
+export const IMAGE_MIN_SCALE = 0.05
+export const IMAGE_MAX_SCALE = 16
+
+/** deltaMode===1（Firefox 行模式）折算为像素量级 */
+export function normalizeWheelDeltaY(deltaY: number, deltaMode: number): number {
+  return deltaMode === 1 ? deltaY * 16 : deltaY
+}
+
+export function wheelScaleFactor(deltaY: number): number {
+  return Math.exp(-deltaY * 0.002)
+}
+
+export function clampImageScale(scale: number): number {
+  return Math.min(IMAGE_MAX_SCALE, Math.max(IMAGE_MIN_SCALE, scale))
+}
+
+/**
+ * 图片预览体（design-image-preview §2.3/§2.4）：适应窗口（默认）↔ 滚轮连续缩放
+ *（光标锚定）↔ 按住拖动平移 ↔ 点击快捷切换 适应/1:1。解码失败（img error 事件）
+ * 落错误文案，内容重拉（src 变化）重置全部状态。不用 key 重置：src 是兆字节级
+ * data URL，不宜作 React key。
+ */
+function ImagePreview({ src, title, zoomLabel, failedText }: {
+  src: string
+  title: string
+  zoomLabel: string
+  failedText: string
+}) {
+  // scale: null = 适应窗口（CSS max 约束）；数值 = 相对原始尺寸的缩放系数
+  const [scale, setScale] = useState<number | null>(null)
+  const [nat, setNat] = useState<{ w: number; h: number } | null>(null)
+  const [failed, setFailed] = useState(false)
+  const [dragging, setDragging] = useState(false)
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const imgRef = useRef<HTMLImageElement | null>(null)
+  const scaleRef = useRef<number | null>(null)
+  scaleRef.current = scale
+  // 光标锚点：新尺寸落地后（[scale] layout effect）按实测位置换算滚动；
+  // 点击切换则落地后滚动居中（新内容尺寸布局后才可算）
+  const pendingAnchor = useRef<{
+    fx: number
+    fy: number
+    clientX: number
+    clientY: number
+  } | null>(null)
+  const pendingCenter = useRef(false)
+  // 拖动判定：位移超阈值才算拖动，其后的 click 抑制（不误触缩放切换）
+  const didDrag = useRef(false)
+  const dragStart = useRef<{ x: number; y: number; left: number; top: number } | null>(null)
+
+  useEffect(() => {
+    setFailed(false)
+    setScale(null)
+    setNat(null)
+    setDragging(false)
+    didDrag.current = false
+    dragStart.current = null
+    pendingAnchor.current = null
+    pendingCenter.current = false
+  }, [src])
+
+  // 滚轮监听须原生注册且 passive: false——React 根监听器对 wheel 是 passive，
+  // preventDefault 无效，容器会跟着滚。
+  // 挂在回调 ref 而非 useEffect：注册/清理与节点生命周期绑定（节点挂载即注册、
+  // 卸载即清理），不依赖 effect 的调度时序与依赖数组。初次打开要经过
+  // 加载态→预览体 的分支切换（容器节点由不同渲染路径先后产出），此前
+  // useEffect([failed]) 一次性读取 ref 挂载，与节点实际生命周期脱钩——
+  // 一旦监听不在当前可见节点上，滚轮就落回默认滚动而非缩放。
+  const handleWheel = useCallback((ev: Event) => {
+    // 本文件从 react 导入了 WheelEvent 类型（合成事件），原生类型须走 globalThis
+    const e = ev as globalThis.WheelEvent
+    const c = containerRef.current
+    const img = imgRef.current
+    if (!c || !img) return
+    e.preventDefault()
+    const natW = img.naturalWidth
+    if (!natW) return
+    const dy = normalizeWheelDeltaY(e.deltaY, e.deltaMode)
+    const imgRect = img.getBoundingClientRect()
+    // 适应窗口态起点 = 当前渲染宽 / 原始宽（直接量渲染结果，不重算容器几何）
+    const cur = scaleRef.current ?? (imgRect.width / natW || 1)
+    const next = clampImageScale(cur * wheelScaleFactor(dy))
+    if (next === cur) return
+    // 写穿 ref：wheel 是连续事件（React 19 非离散事件不逐事件刷新渲染），
+    // 同一批渲染内到达的多个事件都从 scaleRef 取当前值，不回写则 N 刻塌缩为 1 步
+    scaleRef.current = next
+    // 锚点 = 光标在图内的分数位置 + 光标视口坐标，新布局落地后按实测换算
+    // （不能按 ratio 匀缩内容坐标：按钮 16px 恒定 padding 不参与缩放，
+    // 匀缩假设每刻漂移 16(ratio-1) 且复利累积；居中偏移同样被测量吸收）
+    pendingAnchor.current = {
+      fx: imgRect.width ? (e.clientX - imgRect.left) / imgRect.width : 0,
+      fy: imgRect.height ? (e.clientY - imgRect.top) / imgRect.height : 0,
+      clientX: e.clientX,
+      clientY: e.clientY,
+    }
+    // 滚轮意图覆盖残留的点击居中意图（竞态下后者可能未被消费而滞留）
+    pendingCenter.current = false
+    setScale(next)
+  }, [])
+  const attachContainer = useCallback(
+    (node: HTMLDivElement | null) => {
+      containerRef.current = node
+      if (!node) return
+      node.addEventListener("wheel", handleWheel, { passive: false })
+      return () => node.removeEventListener("wheel", handleWheel)
+    },
+    [handleWheel],
+  )
+
+  // nat 竞态兜底：img 的 load 事件可能绕过 React onLoad（启动后首个图片 Tab
+  // 实测复现：complete=true、naturalWidth 已就位而 nat 永远不落 → 缩放渲染门槛
+  // 永不满足，滚轮 preventDefault 生效却无视觉变化；重开 Tab 时序变化才自愈）。
+  // 不依赖 onLoad：任何一次渲染发现 img 已 complete 即补登记
+  useLayoutEffect(() => {
+    if (nat) return
+    const img = imgRef.current
+    // 与 onLoad 路径同口径：宽高都须就位（防退化 0 尺寸落地）
+    if (img && img.complete && img.naturalWidth && img.naturalHeight) {
+      setNat({ w: img.naturalWidth, h: img.naturalHeight })
+    }
+  })
+
+  // 新尺寸落地后应用滚动：滚轮锚定优先，其次点击切换居中。
+  // useLayoutEffect（绘制前）：避免每个滚轮刻先以旧滚动位置绘制一帧再跳变。
+  // deps 带 nat 且以 nat 为消费门槛：竞态下首个滚轮刻 scale 先落、nat 未落，
+  // 该帧还是适应窗口布局（无滚动余地）——此时不消费锚点，等 nat 落地重跑再对
+  // 真实放大布局换算，否则首刻锚定失效（光标下的点跑到左上角）
+  useLayoutEffect(() => {
+    const c = containerRef.current
+    const img = imgRef.current
+    if (!c) return
+    const p = pendingAnchor.current
+    if (p && img) {
+      if (!nat) return
+      pendingAnchor.current = null
+      // 新布局实测：光标下的图像点保持不动（padding/居中偏移被测量吸收）
+      const imgRect = img.getBoundingClientRect()
+      const cRect = c.getBoundingClientRect()
+      c.scrollLeft =
+        imgRect.left - cRect.left + c.scrollLeft + p.fx * imgRect.width - (p.clientX - cRect.left)
+      c.scrollTop =
+        imgRect.top - cRect.top + c.scrollTop + p.fy * imgRect.height - (p.clientY - cRect.top)
+      return
+    }
+    if (pendingCenter.current) {
+      if (!nat) return
+      pendingCenter.current = false
+      c.scrollLeft = Math.max(0, (c.scrollWidth - c.clientWidth) / 2)
+      c.scrollTop = Math.max(0, (c.scrollHeight - c.clientHeight) / 2)
+    }
+  }, [scale, nat])
+
+  if (failed)
+    return (
+      <div className="file-view image-view">
+        <div className="file-state file-error">{failedText}</div>
+      </div>
+    )
+
+  const zoomed = scale !== null
+  // 显式尺寸（及解除 fit max 约束的 zoomed class）以 nat 落地为前提：Chromium
+  // 头部嗅探使 naturalWidth 先于 load 事件可用，滚轮可能先设 scale——此时若已挂
+  // zoomed class（max:none）而无显式尺寸，会以 1:1 原始尺寸闪一窗口期
+  const sized = zoomed && nat !== null
+  // 显式 width/height（不用 transform——其不参与布局，滚动容器拿不到放大后的
+  // 滚动范围）；覆写 max 约束，否则适应窗口态的 100% 上限会压住放大尺寸
+  const imgStyle = sized
+    ? {
+        width: `${nat!.w * scale}px`,
+        height: `${nat!.h * scale}px`,
+        maxWidth: "none",
+        maxHeight: "none",
+      }
+    : undefined
+
+  return (
+    <div
+      className="file-view image-view"
+      ref={attachContainer}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return
+        const c = containerRef.current
+        if (!c) return
+        didDrag.current = false
+        dragStart.current = { x: e.clientX, y: e.clientY, left: c.scrollLeft, top: c.scrollTop }
+        try {
+          c.setPointerCapture(e.pointerId)
+        } catch {
+          /* jsdom 等环境未实现指针捕获：move 仍走容器监听，功能不退化 */
+        }
+      }}
+      onPointerMove={(e) => {
+        const s = dragStart.current
+        const c = containerRef.current
+        if (!s || !c) return
+        const dx = e.clientX - s.x
+        const dy = e.clientY - s.y
+        if (!didDrag.current && Math.hypot(dx, dy) > 3) {
+          didDrag.current = true
+          setDragging(true)
+        }
+        if (didDrag.current) {
+          c.scrollLeft = s.left - dx
+          c.scrollTop = s.top - dy
+        }
+      }}
+      onPointerUp={(e) => {
+        dragStart.current = null
+        setDragging(false)
+        const c = containerRef.current
+        if (c?.hasPointerCapture?.(e.pointerId)) c.releasePointerCapture(e.pointerId)
+      }}
+      onPointerCancel={() => {
+        dragStart.current = null
+        setDragging(false)
+      }}
+      // 切换监听必须在容器上：setPointerCapture 把 pointerup 派生的 click 重定向
+      // 到捕获元素（容器），button 自身的 onClick 在真实 Chromium 永不触发
+      // （jsdom 不实现指针捕获、合成 click 直达目标，测试绕过了该行为）。
+      // button 的键盘 click 冒泡到容器，两条路径在此统一
+      onClick={() => {
+        if (didDrag.current) {
+          didDrag.current = false
+          return
+        }
+        // 点击意图覆盖残留的滚轮锚点（竞态下后者可能未被消费而滞留）
+        pendingAnchor.current = null
+        pendingCenter.current = true
+        setScale(zoomed ? null : 1)
+      }}
+    >
+      <button
+        type="button"
+        className={"image-zoom" + (sized ? " zoomed" : "") + (dragging ? " dragging" : "")}
+        aria-pressed={zoomed}
+        aria-label={zoomLabel}
+      >
+        <img
+          ref={imgRef}
+          src={src}
+          alt={title}
+          draggable={false}
+          style={imgStyle}
+          onLoad={(e) => {
+            const el = e.currentTarget
+            if (el.naturalWidth && el.naturalHeight) {
+              setNat({ w: el.naturalWidth, h: el.naturalHeight })
+            }
+          }}
+          onError={() => setFailed(true)}
+        />
+      </button>
+    </div>
+  )
+}
+
+/**
+ * 文件 Tab 视图。图片（design-image-preview）：img data URL 渲染 + 点击缩放，
+ * 无工具条。预览文件（design-markdown-preview / design-html-preview）：
  * `.md`/`.markdown` 渲染 markdown（内容区动态宽度 [600, 800] 居中，TOC 悬浮窗
- * 挂内容区左侧）；`.html`/`.htm` 渲染 sandboxed iframe——默认预览态 + 工具条
- * 二态切换；模式为组件局部 state，Tab 重开/切文件重置（key 隔离）。
- * 其余文件代码视图（行号+语法高亮，design-code-view）。
+ * 挂内容区左侧）；`.html`/`.htm` 渲染 sandboxed iframe——
+ * 默认预览态 + 工具条二态切换；模式为组件局部 state，Tab 重开/切文件重置
+ * （key 隔离）。其余文件代码视图（行号+语法高亮，design-code-view）；
+ * 非图二进制占位提示（不把 base64 当文本）。
  */
 export function FileView({ absolutePath }: { absolutePath: string }) {
   const store = useStore()
@@ -1176,6 +1488,7 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
   const cached = store.fileContents.get(absolutePath)
   const isMarkdown = isMarkdownPath(absolutePath)
   const isHtml = isHtmlPath(absolutePath)
+  const isImage = isImagePath(absolutePath)
   const previewable = isMarkdown || isHtml
   const [mode, setMode] = useState<"preview" | "source">("preview")
   // TOC 大纲（design-markdown-preview §2.4）：预览体 DOM 扫描 h1–h6
@@ -1204,6 +1517,13 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
   const htmlDoc = useMemo(
     () => (isHtml && cached ? buildHtmlPreviewDocument(cached.content) : ""),
     [isHtml, cached?.content],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  )
+  // 图片 data URL 是兆字节级拼接，同此决策：agent 流式期间 emit 频繁，
+  // 不可每次渲染重建（store 订阅在 App 层，FileView 非 memo）
+  const imageSrc = useMemo(
+    () => (isImage && cached && !cached.error ? imageSrcFor(absolutePath, cached) : null),
+    [isImage, absolutePath, cached?.content, cached?.binary, cached?.mimeType],
     // eslint-disable-next-line react-hooks/exhaustive-deps
   )
 
@@ -1244,9 +1564,38 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, cached?.content, cached?.error])
 
+  // 图片分支（design-image-preview §2.2）：扩展名决定入口，渲染按服务端
+  // type/mimeType 兜底——不满足（如 .png 实为文本）继续走下方文本/二进制分支
+  if (isImage) {
+    if (!cached)
+      return (
+        <div className="file-view image-view">
+          <div className="file-state">{t.loading}</div>
+        </div>
+      )
+    if (cached.error) return <div className="file-view error">{cached.error}</div>
+    // ImagePreview 自持滚动容器（滚轮锚定/拖动平移都要操作其 scroll 位置）
+    if (imageSrc)
+      return (
+        <ImagePreview
+          src={imageSrc}
+          title={absolutePath.split("/").pop() ?? absolutePath}
+          zoomLabel={t.imageZoomToggle}
+          failedText={t.imageDecodeFailed}
+        />
+      )
+  }
+
   if (!previewable) {
     if (!cached) return <div className="file-view">{t.loading}</div>
     if (cached.error) return <div className="file-view error">{cached.error}</div>
+    // 非图二进制：占位提示，不把 base64 当文本灌进代码视图（design-image-preview §2.5）
+    if (cached.binary)
+      return (
+        <div className="file-view">
+          <div className="file-state file-binary">{t.binaryUnsupported}</div>
+        </div>
+      )
     return (
       <div className="file-view code-view">
         {/* key 并入 locale：搜索面板短语随语言设置即时重建（CM phrases 是创建期 facet） */}
@@ -1254,6 +1603,15 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
       </div>
     )
   }
+
+  // md/html 被嗅探为二进制（内容含 NUL 等）：预览/源码两态都是同一占位，
+  // 工具条无意义，直接占位返回
+  if (cached && !cached.error && cached.binary)
+    return (
+      <div className="file-view">
+        <div className="file-state file-binary">{t.binaryUnsupported}</div>
+      </div>
+    )
 
   // TOC 可用 = markdown 且已扫出标题（加载/错误/源码态标题被清空，天然为 false）；
   // 悬浮窗可能遮挡内容区 → 默认收起（工具条按钮可显式展开，悬浮覆盖内容区）

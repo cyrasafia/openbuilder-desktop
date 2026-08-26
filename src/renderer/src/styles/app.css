@@ -1756,6 +1756,59 @@
   background: var(--surface-container-lowest);
 }
 
+/* ---------- 图片预览（design-image-preview §2.3/§2.4） ----------
+ * 点击二态：适应窗口（按钮满容器、img 受限居中）↔ 原始尺寸（按钮收为内容尺寸，
+ * 大图容器滚动）。margin:auto 使原始尺寸下小图居中、大图左上锚定可滚达。 */
+.file-view.image-view {
+  display: flex;
+  padding: 0;
+}
+
+.image-zoom {
+  width: 100%;
+  height: 100%;
+  margin: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  padding: 16px;
+  cursor: zoom-in;
+}
+
+.image-zoom img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.image-zoom.zoomed {
+  width: auto;
+  height: auto;
+  /* 放大态主交互是拖动平移（滚轮/点击切换仍在），grab 优先于 zoom-out */
+  cursor: grab;
+}
+
+.image-zoom.zoomed img {
+  max-width: none;
+  max-height: none;
+}
+
+.image-zoom.dragging {
+  cursor: grabbing;
+}
+
+.image-zoom:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+/* 非图片二进制占位：中性提示（文件存在但不可预览），不用错误红 */
+.file-state.file-binary {
+  color: var(--on-surface-variant);
+}
+
 /* 文件预览覆写消息流 .md-pre 的代码块高度上限——文档预览长代码块不套内滚
  * （渲染阅读优先）。须用 vendor 同等前缀覆盖上方 .md-pre 的 max-height */
 :root[data-theme] .file-md .markdown-body.md .md-pre {

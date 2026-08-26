@@ -1,12 +1,21 @@
 /**
  * FileView 分发与 markdown 二态测试（design-markdown-preview）：
  * 扩展名分发（.md/.markdown/.MD → 预览；.mdx/点文件/无扩展名/代码 → 源码）
- * + 预览/源码切换 + 加载/错误态工具条常驻 + TOC 大纲（§2.4）。
+ * + 预览/源码切换 + 加载/错误态工具条常驻 + TOC 大纲（§2.4）
+ * + 图片预览（design-image-preview）：扩展名分发、data URL 构建、缩放切换、
+ * 解码失败兜底、非图二进制占位。
  * jsdom 无 IntersectionObserver（streamdown 依赖），测试前补 stub。
  */
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
-import { FileView } from "./workspace"
+import {
+  clampImageScale,
+  FileView,
+  IMAGE_MAX_SCALE,
+  IMAGE_MIN_SCALE,
+  normalizeWheelDeltaY,
+  wheelScaleFactor,
+} from "./workspace"
 import { ResizeObserverStub } from "./resize-observer-stub"
 
 const loadFileContent = vi.fn(async () => {})
@@ -25,6 +34,9 @@ vi.mock("../app", () => ({
       tocCollapse: "收起目录",
       tocExpand: "展开目录",
       tocSectionToggle: "折叠/展开章节",
+      binaryUnsupported: "二进制文件，暂不支持预览",
+      imageZoomToggle: "切换缩放",
+      imageDecodeFailed: "图片解码失败",
     },
     locale: "zh" as const,
   }),
@@ -35,7 +47,10 @@ vi.mock("../app", () => ({
 }))
 
 /** 测试内动态替换的内容表（vi.mock 提升导致闭包需经变量间接） */
-let fileContentsStub: Map<string, { content: string; error?: string }>
+let fileContentsStub: Map<
+  string,
+  { content: string; binary?: boolean; mimeType?: string; error?: string }
+>
 
 beforeAll(() => {
   class IntersectionObserverStub implements IntersectionObserver {
@@ -280,5 +295,239 @@ describe("FileView markdown TOC（design-markdown-preview §2.4）", () => {
     expect(screen.queryByRole("button", { name: "收起目录" })).toBeNull()
     fireEvent.click(screen.getByRole("button", { name: "预览" }))
     expect(await screen.findByRole("navigation")).not.toBeNull()
+  })
+})
+
+describe("FileView 图片预览（design-image-preview）", () => {
+  it(".png 二进制 → img data URL（mimeType 来自服务端）；点击切换缩放二态", () => {
+    fileContentsStub.set("/repo/a.png", { content: "QUJD", binary: true, mimeType: "image/png" })
+    render(<FileView absolutePath="/repo/a.png" />)
+    const btn = document.querySelector("button.image-zoom") as HTMLButtonElement
+    expect(btn).not.toBeNull()
+    expect(btn.getAttribute("aria-pressed")).toBe("false")
+    const img = btn.querySelector("img") as HTMLImageElement
+    expect(img.getAttribute("src")).toBe("data:image/png;base64,QUJD")
+    expect(img.getAttribute("alt")).toBe("a.png")
+    expect(document.querySelector(".ms-segmented")).toBeNull()
+    // zoomed class 以 nat 落地为前提（防 load 前 1:1 闪现）——先注入原始尺寸
+    mockNaturalSize(img, 800, 600)
+    fireEvent.click(btn)
+    expect(document.querySelector(".image-zoom.zoomed")).not.toBeNull()
+    fireEvent.click(btn)
+    expect(document.querySelector(".image-zoom.zoomed")).toBeNull()
+  })
+
+  it(".svg 文本源码 → encodeURIComponent data URL（不执行脚本）", () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>'
+    fileContentsStub.set("/repo/logo.svg", { content: svg })
+    render(<FileView absolutePath="/repo/logo.svg" />)
+    const img = document.querySelector(".image-zoom img") as HTMLImageElement
+    expect(img.getAttribute("src")).toBe(
+      "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg),
+    )
+  })
+
+  it(".jpg 缺省 mimeType：按扩展名兜底；扩展名大小写不敏感", () => {
+    fileContentsStub.set("/repo/p.JPG", { content: "xx", binary: true })
+    render(<FileView absolutePath="/repo/p.JPG" />)
+    const img = document.querySelector(".image-zoom img") as HTMLImageElement
+    expect(img.getAttribute("src")).toBe("data:image/jpeg;base64,xx")
+  })
+
+  it("解码失败（img error 事件）→ 错误文案，不静默 broken icon", () => {
+    fileContentsStub.set("/repo/bad.png", { content: "xx", binary: true, mimeType: "image/png" })
+    render(<FileView absolutePath="/repo/bad.png" />)
+    const img = document.querySelector(".image-zoom img") as HTMLImageElement
+    fireEvent.error(img)
+    expect(document.querySelector(".file-state.file-error")?.textContent).toBe("图片解码失败")
+    expect(document.querySelector(".image-zoom")).toBeNull()
+  })
+
+  it("解码失败后内容重拉（src 变化）：失败态重置，重新渲染图片", () => {
+    fileContentsStub.set("/repo/bad.png", { content: "xx", binary: true, mimeType: "image/png" })
+    const { rerender } = render(<FileView absolutePath="/repo/bad.png" />)
+    fireEvent.error(document.querySelector(".image-zoom img") as HTMLImageElement)
+    expect(document.querySelector(".image-zoom")).toBeNull()
+    fileContentsStub.set("/repo/bad.png", { content: "yy", binary: true, mimeType: "image/png" })
+    rerender(<FileView absolutePath="/repo/bad.png" />)
+    const img = document.querySelector(".image-zoom img") as HTMLImageElement
+    expect(img).not.toBeNull()
+    expect(img.getAttribute("src")).toBe("data:image/png;base64,yy")
+  })
+
+  it("图片扩展名但内容为文本（名不符实）：回落代码视图，不硬渲染", () => {
+    fileContentsStub.set("/repo/fake.png", { content: "not really an image" })
+    render(<FileView absolutePath="/repo/fake.png" />)
+    expect(document.querySelector(".image-zoom")).toBeNull()
+    expect(document.querySelector(".cm-content")?.textContent).toContain("not really an image")
+  })
+
+  it("非图片二进制（.zip）：占位提示，无 base64 文本、无代码视图", () => {
+    fileContentsStub.set("/repo/a.zip", {
+      content: "UEsDBAo=",
+      binary: true,
+      mimeType: "application/zip",
+    })
+    render(<FileView absolutePath="/repo/a.zip" />)
+    expect(document.querySelector(".file-state.file-binary")?.textContent).toBe(
+      "二进制文件，暂不支持预览",
+    )
+    expect(document.querySelector(".cm-content")).toBeNull()
+    expect(document.querySelector(".image-zoom")).toBeNull()
+  })
+
+  it("加载态（无缓存）：显示加载文案，不渲染图片", () => {
+    render(<FileView absolutePath="/repo/x.png" />)
+    expect(screen.getByText("加载中…")).not.toBeNull()
+    expect(document.querySelector(".image-zoom")).toBeNull()
+  })
+
+  it("错误态：显示错误文案", () => {
+    fileContentsStub.set("/repo/err.png", { content: "", error: "HTTP 500" })
+    render(<FileView absolutePath="/repo/err.png" />)
+    expect(document.querySelector(".file-view.error")?.textContent).toContain("HTTP 500")
+    expect(document.querySelector(".image-zoom")).toBeNull()
+  })
+
+  /** jsdom 无布局/不解码图片：以 defineProperty 注入原始尺寸 + 触发 load 事件 */
+  function mockNaturalSize(img: HTMLImageElement, w: number, h: number) {
+    Object.defineProperty(img, "naturalWidth", { value: w, configurable: true })
+    Object.defineProperty(img, "naturalHeight", { value: h, configurable: true })
+    fireEvent.load(img)
+  }
+
+  it("滚轮连续缩放：适应窗口态起步，渲染显式尺寸（原始宽 × scale）", () => {
+    fileContentsStub.set("/repo/a.png", { content: "QUJD", binary: true, mimeType: "image/png" })
+    render(<FileView absolutePath="/repo/a.png" />)
+    const img = document.querySelector(".image-zoom img") as HTMLImageElement
+    mockNaturalSize(img, 800, 600)
+    const container = document.querySelector(".file-view.image-view") as HTMLDivElement
+
+    // 适应窗口态起点：渲染宽 0（jsdom 无布局）→ 兜底 scale 1；单刻步进 e^0.2
+    fireEvent.wheel(container, { deltaY: -100 })
+    const btn = document.querySelector(".image-zoom") as HTMLButtonElement
+    expect(btn.className).toContain("zoomed")
+    expect(img.style.width).toBe(`${800 * Math.exp(0.2)}px`)
+    expect(img.style.height).toBe(`${600 * Math.exp(0.2)}px`)
+    expect(img.style.maxWidth).toBe("none")
+
+    // 连续放大触顶 16×
+    for (let i = 0; i < 40; i++) fireEvent.wheel(container, { deltaY: -100 })
+    expect(img.style.width).toBe(`${800 * IMAGE_MAX_SCALE}px`)
+
+    // 连续缩小触底 0.05×
+    for (let i = 0; i < 80; i++) fireEvent.wheel(container, { deltaY: 100 })
+    expect(img.style.width).toBe(`${800 * IMAGE_MIN_SCALE}px`)
+  })
+
+  it("load 事件绕过 React onLoad 的竞态：img 已 complete 而 nat 未落，滚轮仍缩放", () => {
+    // 启动后首个图片 Tab 实测故障：load 先于/绕过 React onLoad 落地，nat 永不落 →
+    // 缩放渲染门槛（sized）永不满足，滚轮 preventDefault 生效却无视觉变化。
+    // 兜底 = 每次渲染检查 img.complete 补登记 nat（不依赖 onLoad 事件）
+    fileContentsStub.set("/repo/a.png", { content: "QUJD", binary: true, mimeType: "image/png" })
+    render(<FileView absolutePath="/repo/a.png" />)
+    const img = document.querySelector(".image-zoom img") as HTMLImageElement
+    // 只注入已解码事实，不触发 load 事件（模拟 React 错过 load）
+    Object.defineProperty(img, "naturalWidth", { value: 800, configurable: true })
+    Object.defineProperty(img, "naturalHeight", { value: 600, configurable: true })
+    Object.defineProperty(img, "complete", { value: true, configurable: true })
+    const container = document.querySelector(".file-view.image-view") as HTMLDivElement
+    fireEvent.wheel(container, { deltaY: -100 })
+    const btn = document.querySelector(".image-zoom") as HTMLButtonElement
+    expect(btn.className).toContain("zoomed")
+    expect(img.style.width).toBe(`${800 * Math.exp(0.2)}px`)
+  })
+
+  it("初次打开（加载态 → 内容落地分支切换）：预览体挂载后滚轮即可缩放", () => {
+    // 首开无缓存先渲染加载态，内容落地后才挂 ImagePreview——
+    // 滚轮监听须随容器节点挂载（回调 ref），不落在加载态节点上
+    const { rerender } = render(<FileView absolutePath="/repo/a.png" />)
+    expect(document.querySelector(".image-zoom")).toBeNull()
+    fileContentsStub.set("/repo/a.png", { content: "QUJD", binary: true, mimeType: "image/png" })
+    rerender(<FileView absolutePath="/repo/a.png" />)
+    const img = document.querySelector(".image-zoom img") as HTMLImageElement
+    mockNaturalSize(img, 800, 600)
+    const container = document.querySelector(".file-view.image-view") as HTMLDivElement
+    fireEvent.wheel(container, { deltaY: -100 })
+    expect((document.querySelector(".image-zoom") as HTMLButtonElement).className).toContain(
+      "zoomed",
+    )
+    expect(img.style.width).toBe(`${800 * Math.exp(0.2)}px`)
+  })
+
+  it("点击落在容器上（真实浏览器指针捕获重定向）也触发切换", () => {
+    // setPointerCapture 把 pointerup 派生的 click 重定向到捕获元素（容器），
+    // button 自身收不到——切换监听在容器上，键盘 click 经冒泡同路
+    fileContentsStub.set("/repo/a.png", { content: "QUJD", binary: true, mimeType: "image/png" })
+    render(<FileView absolutePath="/repo/a.png" />)
+    mockNaturalSize(document.querySelector(".image-zoom img") as HTMLImageElement, 800, 600)
+    const container = document.querySelector(".file-view.image-view") as HTMLDivElement
+    fireEvent.click(container)
+    expect((document.querySelector(".image-zoom") as HTMLButtonElement).className).toContain(
+      "zoomed",
+    )
+    fireEvent.click(container)
+    expect((document.querySelector(".image-zoom") as HTMLButtonElement).className).not.toContain(
+      "zoomed",
+    )
+  })
+
+  it("滚轮缩放后点击回落适应窗口（显式尺寸移除）", () => {
+    fileContentsStub.set("/repo/a.png", { content: "QUJD", binary: true, mimeType: "image/png" })
+    render(<FileView absolutePath="/repo/a.png" />)
+    const img = document.querySelector(".image-zoom img") as HTMLImageElement
+    mockNaturalSize(img, 800, 600)
+    const container = document.querySelector(".file-view.image-view") as HTMLDivElement
+    fireEvent.wheel(container, { deltaY: -100 })
+    const btn = document.querySelector(".image-zoom") as HTMLButtonElement
+    expect(btn.className).toContain("zoomed")
+    fireEvent.click(btn)
+    expect(btn.className).not.toContain("zoomed")
+    expect(img.style.width).toBe("")
+  })
+
+  it("拖动平移：位移超阈值进入拖动态；拖动后的点击不触发缩放切换", () => {
+    fileContentsStub.set("/repo/a.png", { content: "QUJD", binary: true, mimeType: "image/png" })
+    render(<FileView absolutePath="/repo/a.png" />)
+    const img = document.querySelector(".image-zoom img") as HTMLImageElement
+    mockNaturalSize(img, 800, 600)
+    const btn = document.querySelector(".image-zoom") as HTMLButtonElement
+    fireEvent.click(btn) // 1:1 放大态
+    expect(btn.getAttribute("aria-pressed")).toBe("true")
+
+    const container = document.querySelector(".file-view.image-view") as HTMLDivElement
+    fireEvent.pointerDown(container, { button: 0, pointerId: 1, clientX: 100, clientY: 100 })
+    // 阈值内移动不算拖动
+    fireEvent.pointerMove(container, { pointerId: 1, clientX: 101, clientY: 101 })
+    expect(btn.className).not.toContain("dragging")
+    fireEvent.pointerMove(container, { pointerId: 1, clientX: 60, clientY: 70 })
+    expect(btn.className).toContain("dragging")
+    fireEvent.pointerUp(container, { pointerId: 1 })
+    expect(btn.className).not.toContain("dragging")
+
+    // 拖动余波的第一次点击被抑制，其后正常切换
+    fireEvent.click(btn)
+    expect(btn.getAttribute("aria-pressed")).toBe("true")
+    fireEvent.click(btn)
+    expect(btn.getAttribute("aria-pressed")).toBe("false")
+  })
+})
+
+describe("图片缩放纯函数（design-image-preview §2.4）", () => {
+  it("deltaMode 行模式折算像素量级", () => {
+    expect(normalizeWheelDeltaY(3, 1)).toBe(48)
+    expect(normalizeWheelDeltaY(100, 0)).toBe(100)
+  })
+
+  it("步进指数对称：放大后等量缩小回原位", () => {
+    const up = wheelScaleFactor(-100)
+    expect(up).toBeCloseTo(Math.exp(0.2))
+    expect(up * wheelScaleFactor(100)).toBeCloseTo(1)
+  })
+
+  it("缩放区间钳制 [0.05, 16]", () => {
+    expect(clampImageScale(1)).toBe(1)
+    expect(clampImageScale(0.001)).toBe(IMAGE_MIN_SCALE)
+    expect(clampImageScale(1000)).toBe(IMAGE_MAX_SCALE)
   })
 })

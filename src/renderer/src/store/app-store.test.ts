@@ -1128,6 +1128,11 @@ describe("文件监听（design-file-watcher）", () => {
     dispatch(dir, { type: "file.watcher.updated", properties: { file, event } })
   }
 
+  /** readFileContent mock 返回值：FileContentData 文本条目 */
+  function fc(content: string) {
+    return { type: "text" as const, content }
+  }
+
   /** file Tab 夹具：直接入列（避免 openFileTab 的首拉副作用），缓存置 v1 */
   function fileTab(path: string, directory = ROOT) {
     store.tabs.push({
@@ -1149,7 +1154,7 @@ describe("文件监听（design-file-watcher）", () => {
 
   it("change 已打开文件 Tab：去抖后按 Tab 作用域重拉刷新内容", async () => {
     fileTab(ROOT + "/src/a.ts")
-    const readFileContent = vi.fn(async () => "v2")
+    const readFileContent = vi.fn(async () => fc("v2"))
     clientRef().readFileContent = readFileContent
 
     watcherEvent(ROOT, ROOT + "/src/a.ts", "change")
@@ -1159,9 +1164,26 @@ describe("文件监听（design-file-watcher）", () => {
     expect(store.fileContents.get(ROOT + "/src/a.ts")).toEqual({ content: "v2" })
   })
 
+  it("二进制图片重拉：缓存条目保留 binary/mimeType（图片预览分发依据）", async () => {
+    fileTab(ROOT + "/a.png")
+    clientRef().readFileContent = vi.fn(async () => ({
+      type: "binary" as const,
+      content: "QUJD",
+      encoding: "base64" as const,
+      mimeType: "image/png",
+    }))
+    watcherEvent(ROOT, ROOT + "/a.png", "change")
+    await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS)
+    expect(store.fileContents.get(ROOT + "/a.png")).toEqual({
+      content: "QUJD",
+      binary: true,
+      mimeType: "image/png",
+    })
+  })
+
   it("去抖窗口内多次事件合并为一次重拉", async () => {
     fileTab(ROOT + "/a.ts")
-    const readFileContent = vi.fn(async () => "v2")
+    const readFileContent = vi.fn(async () => fc("v2"))
     clientRef().readFileContent = readFileContent
 
     watcherEvent(ROOT, ROOT + "/a.ts", "change")
@@ -1173,18 +1195,18 @@ describe("文件监听（design-file-watcher）", () => {
 
   it("在途期间落地的后续修改不丢：singleflight + dirty 再武装", async () => {
     fileTab(ROOT + "/a.ts")
-    let resolveFirst!: (v: string) => void
-    const first = new Promise<string>((r) => {
+    let resolveFirst!: (v: ReturnType<typeof fc>) => void
+    const first = new Promise<ReturnType<typeof fc>>((r) => {
       resolveFirst = r
     })
-    const readFileContent = vi.fn().mockReturnValueOnce(first).mockResolvedValue("v3")
+    const readFileContent = vi.fn().mockReturnValueOnce(first).mockResolvedValue(fc("v3"))
     clientRef().readFileContent = readFileContent
 
     watcherEvent(ROOT, ROOT + "/a.ts", "change")
     await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS) // 首次 fetch 在途
     expect(readFileContent).toHaveBeenCalledTimes(1)
     watcherEvent(ROOT, ROOT + "/a.ts", "change") // 在途 → 只置 dirty 不并发
-    resolveFirst("v2")
+    resolveFirst(fc("v2"))
     await vi.advanceTimersByTimeAsync(0) // 首次落地 + dirty 再武装
     expect(store.fileContents.get(ROOT + "/a.ts")).toEqual({ content: "v2" })
     await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS) // 补排的重拉
@@ -1193,7 +1215,7 @@ describe("文件监听（design-file-watcher）", () => {
   })
 
   it("无 Tab 的文件不重拉（缓存不可见，重开必重拉）", async () => {
-    const readFileContent = vi.fn(async () => "v2")
+    const readFileContent = vi.fn(async () => fc("v2"))
     clientRef().readFileContent = readFileContent
     watcherEvent(ROOT, ROOT + "/ghost.ts", "change")
     await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS)
@@ -1213,7 +1235,7 @@ describe("文件监听（design-file-watcher）", () => {
   it("worktree 物理位于 .git/ 之下不误杀：相对化判定只滤信封目录内的 .git", async () => {
     store.projectStates.default.currentWorkspaceId = WT1 // 作用域 = WT1
     fileTab(WT1 + "/a.ts", WT1)
-    const readFileContent = vi.fn(async () => "v2")
+    const readFileContent = vi.fn(async () => fc("v2"))
     clientRef().readFileContent = readFileContent
 
     // .git 内事件（相对作用域以 .git/ 开头）仍被滤

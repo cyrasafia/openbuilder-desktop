@@ -198,6 +198,14 @@ export interface FileNode {
   ignored: boolean
 }
 
+/** GET /file/content 响应（FileContent schema；binary 时 content 为 base64） */
+export interface FileContentData {
+  type: "text" | "binary"
+  content: string
+  encoding?: "base64"
+  mimeType?: string
+}
+
 export interface Workspace {
   id: string
   type: string

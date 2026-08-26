@@ -65,6 +65,7 @@ import type {
   AgentInfo,
   CommandInfo,
   ConfigProviders,
+  FileContentData,
   FileDiff,
   FileNode,
   Message,
@@ -89,6 +90,19 @@ export const DIFF_TAB_TYPES: readonly DiffTabType[] = ["round", "uncommitted", "
 
 /** 文件监听失效去抖窗口（design-file-watcher §3.1/§3.2） */
 export const FILE_WATCH_DEBOUNCE_MS = 300
+
+/** FileContentData → fileContents 缓存条目（design-image-preview §2.1） */
+function fileContentEntry(fc: FileContentData): {
+  content: string
+  binary?: boolean
+  mimeType?: string
+} {
+  return {
+    content: fc.content,
+    ...(fc.type === "binary" ? { binary: true } : {}),
+    ...(fc.mimeType ? { mimeType: fc.mimeType } : {}),
+  }
+}
 
 /** diff Tab key：每作用域单 Tab（2026-08-25 修订，原按 type 拆三 Tab） */
 export function diffTabKey(directory: string): string {
@@ -210,7 +224,11 @@ export class AppStore {
   settingsOpen = false
   fileTreeExpanded = new Map<string, boolean>()
   fileTreeNodes = new Map<string, FileNode[]>()
-  fileContents = new Map<string, { content: string; error?: string }>()
+  /** binary/mimeType：图片预览分发依据（design-image-preview §2.1）；二进制非图占位用 */
+  fileContents = new Map<
+    string,
+    { content: string; binary?: boolean; mimeType?: string; error?: string }
+  >()
   /** diff 数据（design-diff-view §3）：key = diffDataKey(type, directory) */
   diffData = new Map<string, { files: FileDiff[]; error?: string; loading?: boolean }>()
   /** diff Tab 选中来源（design-diff-view §2）：key = diffTabKey(directory)；缺省 = uncommitted */
@@ -2628,8 +2646,8 @@ export class AppStore {
   async loadFileContent(absolutePath: string) {
     const { directory, workspace } = this.scopeQuery
     try {
-      const content = await this.client!.readFileContent(directory, absolutePath, workspace)
-      this.fileContents.set(absolutePath, { content })
+      const fc = await this.client!.readFileContent(directory, absolutePath, workspace)
+      this.fileContents.set(absolutePath, fileContentEntry(fc))
     } catch (e) {
       this.fileContents.set(absolutePath, {
         content: "",
@@ -2804,9 +2822,9 @@ export class AppStore {
     try {
       // directory = Tab 打开时作用域（非当前 scopeQuery）：Tab 跨作用域混排，
       // 事件到达时当前作用域可能已不是该 Tab 的
-      const content = await client.readFileContent(tab.directory, file)
+      const fc = await client.readFileContent(tab.directory, file)
       if (this.client !== client || !this.tabs.some((t) => t.key === `file:${file}`)) return
-      this.fileContents.set(file, { content })
+      this.fileContents.set(file, fileContentEntry(fc))
       this.emit()
     } catch (e) {
       if (this.client !== client || !this.tabs.some((t) => t.key === `file:${file}`)) return

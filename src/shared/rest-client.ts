@@ -6,6 +6,7 @@ import type {
   AgentInfo,
   CommandInfo,
   ConfigProviders,
+  FileContentData,
   FileDiff,
   FileNode,
   HealthInfo,
@@ -350,20 +351,30 @@ export class RestClient {
     return this.request<FileNode[]>(`/file?${q.toString()}`)
   }
 
-  readFileContent(directory: string, path: string, workspace?: string): Promise<string> {
+  readFileContent(
+    directory: string,
+    path: string,
+    workspace?: string,
+  ): Promise<FileContentData> {
     const q = new URLSearchParams()
     q.set("path", path)
     q.set("directory", directory)
     if (workspace) q.set("workspace", workspace)
-    // 实测（server 1.18.x）返回 {type:"text", content:string} 包装对象
-    return this.request<{ type: string; content: string } | null>(
-      `/file/content?${q.toString()}`,
-      { timeoutMs: 30000 },
-    ).then((r) => {
+    // 实测（server 1.18.x）：文本 {type:"text", content}；
+    // 二进制（图片等）{type:"binary", content:base64, encoding:"base64", mimeType}
+    // （design-image-preview §2.1；type/mimeType 是图片预览分发依据，不可只取 content）
+    return this.request<FileContentData | null>(`/file/content?${q.toString()}`, {
+      timeoutMs: 30000,
+    }).then((r) => {
       if (!r || typeof r.content !== "string") {
         throw new ApiError(0, "unknown", "文件内容响应格式异常")
       }
-      return r.content
+      return {
+        type: r.type === "binary" ? "binary" : "text",
+        content: r.content,
+        ...(r.type === "binary" && r.encoding ? { encoding: r.encoding } : {}),
+        ...(typeof r.mimeType === "string" && r.mimeType ? { mimeType: r.mimeType } : {}),
+      }
     })
   }
 
