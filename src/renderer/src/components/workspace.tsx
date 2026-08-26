@@ -94,8 +94,10 @@ export function Workspace() {
       </div>
 
       <div className="workspace-body">
-        {/* 无激活 Tab = 新 Tab 引导页（新建项目/工作区、Tab 栏 +、作用域无 Tab） */}
-        {!active && <GuidePage />}
+        {/* 无激活 Tab = 新 Tab 引导页（新建项目/工作区、Tab 栏 +、作用域无 Tab）。
+            key 按作用域目录隔离：草稿按作用域存取（design-compose-draft §2），
+            切作用域重挂载，避免旧作用域草稿/pendingSession 残留串用 */}
+        {!active && <GuidePage key={scopeDir} />}
         {/* key 隔离：防止 chat→chat 切换时复用 fiber 导致草稿/pinned ref 跨会话残留 */}
         {active?.kind === "chat" && <ChatView key={active.key} sessionID={active.key.slice(5)} />}
         {active?.kind === "file" && (
@@ -123,8 +125,17 @@ export function Workspace() {
 function GuidePage() {
   const store = useStore()
   const { t, locale } = useI18n()
-  const [draft, setDraft] = useState("")
+  // 草稿按作用域目录暂存（design-compose-draft）：挂载初始化从 store 读回；
+  // 每次变化同步 store（写入不 emit，高频键入不触发整树重渲染）。发送成功在
+  // handler 内显式清 store（同 commit 卸载丢待定 effect，见 send 注释）；
+  // 发送失败草稿保留（本地 + store 一致）
+  const directory = store.scopeQuery.directory
+  const [draft, setDraft] = useState(() => store.guideDraftFor(directory))
   const [sending, setSending] = useState(false)
+  useEffect(() => {
+    store.setGuideDraft(directory, draft)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, directory])
   // 已创建待发送的会话：发送失败保留草稿，重试复用（不重复建会话、不产生空 Tab）
   const pendingSession = useRef<Session | null>(null)
   const archived = store.archivedSessions
@@ -147,7 +158,11 @@ function GuidePage() {
     const res = await store.sendPrompt(pendingSession.current.id, text)
     setSending(false)
     if (res.ok) {
+      // store 侧显式清：发送成功开 Tab → 引导页同 commit 卸载，React 丢弃卸载
+      // 组件的待定 effect，同步 effect 的 setGuideDraft("") 不会执行（不清则
+      // 旧草稿残留，关 Tab 回引导页会复活已发送文本）
       setDraft("")
+      store.setGuideDraft(directory, "")
       store.openChatTab(pendingSession.current)
       pendingSession.current = null
     }
@@ -193,8 +208,9 @@ function GuidePage() {
           <div className="composer-actions">
             {/* pendingSession 时切会话绑定；会话记录从 store 重读（乐观补丁是新对象，
                 ref 持有的是创建时快照——AM-FIX-2：UI 不依赖父组件传参快照）。
-                目录用该会话自身的（AM-IMPL3-3：引导页 fiber 跨作用域切换仍存活，
-                用 scope 目录会加载与会话 provider 集不符的列表） */}
+                目录用该会话自身的：引导页已按作用域 key 隔离（design-compose-draft §2），
+                挂载期内作用域不变、二者恒等，保留会话目录作防御（原 AM-IMPL3-3
+                跨作用域存活场景随 key 隔离消失） */}
             <ModelSwitcherBar
               directory={pendingSession.current?.directory ?? store.scopeQuery.directory}
               mode={pendingSession.current ? "session" : "defaults"}
@@ -235,7 +251,13 @@ function GuidePage() {
 function ChatView({ sessionID }: { sessionID: string }) {
   const store = useStore()
   const { t } = useI18n()
-  const [draft, setDraft] = useState("")
+  // 草稿按会话暂存（design-compose-draft）：挂载初始化从 store 读回，恢复切走前
+  // 未发送内容；每次变化同步 store（写入不 emit，高频键入不触发整树重渲染）
+  const [draft, setDraft] = useState(() => store.chatDraftFor(sessionID))
+  useEffect(() => {
+    store.setChatDraft(sessionID, draft)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, sessionID])
   const entries = store.chatEntries(sessionID)
   const status = store.statusOf(sessionID)
   const busy = status.type !== "idle"
@@ -246,8 +268,14 @@ function ChatView({ sessionID }: { sessionID: string }) {
   const visibleEntries = filterRevertedEntries(entries, revertMessageID)
   const revertedCount = entries.length - visibleEntries.length
   const scrollRef = useRef<HTMLDivElement>(null)
-  const pinnedToBottom = useRef(true)
+  // 滚动位置记忆（design-tab-state-memory §2.3）：有条目 = 切走时处于上滚阅读态，
+  // 初始不贴底、待恢复；无条目 = 贴底默认。捕获经 onScroll 更新
+  // scrollCapture，卸载 cleanup 落 store（贴底则删条目）
+  const savedScroll = store.chatScrollFor(sessionID)
+  const pinnedToBottom = useRef(savedScroll == null)
   const prevScrollTop = useRef(0)
+  const scrollCapture = useRef(savedScroll)
+  const scrollRestore = useRef(savedScroll)
   const lastEntryCount = useRef(0)
   // 上滚分页视口锚定（design-message-history-pagination §4.3）：触发时记录
   // scrollHeight/scrollTop + 头部基准（最旧消息 id）；layout effect 只在**头部
@@ -272,6 +300,19 @@ function ChatView({ sessionID }: { sessionID: string }) {
     if (seed != null) setDraft(seed)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store.revertDraftVersion, sessionID])
+
+  // 滚动位置落 store（design-tab-state-memory §2.3）：卸载即切走——贴底删条目
+  //（切回贴底是正确默认），否则存最后捕获值。cleanup 必随卸载执行，捕获在
+  // ref（不依赖 cleanup 闭包新鲜度）。闸门：Tab 仍在 = 切走保存；Tab 已关
+  //（关闭/删除/收敛——条目已随 closeTab 清除）则不写，防复活已清条目
+  useEffect(() => {
+    return () => {
+      if (!store.tabs.some((t) => t.key === `chat:${sessionID}`)) return
+      if (pinnedToBottom.current) store.setChatScroll(sessionID, null)
+      else if (scrollCapture.current) store.setChatScroll(sessionID, scrollCapture.current)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionID])
 
   // 跨客户端回滚覆盖窗口（design-message-revert §3.4）：他端暂存的回滚点可能早于
   // 本端已加载窗口（全部已加载消息被隐藏、计数偏小）——持续拉更早页直到窗口覆盖
@@ -325,6 +366,8 @@ function ChatView({ sessionID }: { sessionID: string }) {
     // 触顶翻页：pinned 期间不触发（发送后 smooth 回底动画起点可能距顶很近，
     // 会误触一次分页 + 锚定补差与回底动画互相拉扯）
     if (!pinnedToBottom.current && el.scrollTop <= 64) maybeLoadEarlier()
+    // 滚动位置捕获：廉数值读取；卸载时按贴底与否决定删条目/落 store（§2.3）
+    scrollCapture.current = { top: el.scrollTop, headId: headIdOf(visibleEntries) }
   }
 
   // 解除跟随只认用户主动上滚（wheel deltaY<0 + 键盘上滚键）。滚动条已隐藏（app.css），
@@ -364,6 +407,20 @@ function ChatView({ sessionID }: { sessionID: string }) {
   useLayoutEffect(() => {
     const el = scrollRef.current
     if (!el) return
+    // 滚动位置恢复（design-tab-state-memory §2.3）：entries 落地且头部未变 →
+    // 定位切走时的 scrollTop（底部增长不影响绝对偏移）；头部变化（远端窗口漂移）
+    // → 放弃恢复回落贴底，不错位。恢复后 pinned=false，prepend 走既有锚定补差
+    const pending = scrollRestore.current
+    if (pending) {
+      if (visibleEntries.length > 0) {
+        scrollRestore.current = null
+        if (headIdOf(visibleEntries) === pending.headId) {
+          el.scrollTop = Math.min(pending.top, el.scrollHeight - el.clientHeight)
+        } else {
+          pinnedToBottom.current = true
+        }
+      }
+    }
     const anchor = anchorRef.current
     if (anchor && !pinnedToBottom.current) {
       const head = headIdOf(visibleEntries)
@@ -403,7 +460,10 @@ function ChatView({ sessionID }: { sessionID: string }) {
     // busy 不拦（design-supplement-send）：进行中发送 = 补充消息，server 在
     // 当前 run 内吸收（不打断、不排队），乐观气泡按时间序排活跃流式下方
     if (!text) return
+    // store 侧显式清（不依赖同步 effect，与引导页发送成功路径同构；失败回填
+    // 经 setDraft(text) 再落 store）
     setDraft("")
+    store.setChatDraft(sessionID, "")
     setCmdDismissed(false)
     pinnedToBottom.current = true
     scrollToBottom("smooth")
@@ -1515,9 +1575,10 @@ function ImagePreview({ src, title, zoomLabel, failedText }: {
  * 文件 Tab 视图。图片（design-image-preview）：img data URL 渲染 + 点击缩放，
  * 无工具条。预览文件（design-markdown-preview / design-html-preview）：
  * `.md`/`.markdown` 渲染 markdown（内容区动态宽度 [600, 800] 居中，TOC 悬浮窗
- * 挂内容区左侧）；`.html`/`.htm` 渲染 sandboxed iframe——
- * 默认预览态 + 工具条二态切换；模式为组件局部 state，Tab 重开/切文件重置
- * （key 隔离）。其余文件代码视图（行号+语法高亮，design-code-view）；
+ * 挂内容区左侧）；`.html`/`.htm` 渲染 sandboxed iframe——默认预览态 + 工具条
+ * 二态切换；模式/滚动/TOC 状态挂载时从 store 按路径恢复（切走保存、切回恢复，
+ * design-tab-state-memory §2.2/§2.4），仅换文件（key 隔离重挂载无条目）回默认。
+ * 其余文件代码视图（行号+语法高亮，design-code-view）；
  * 非图二进制占位提示（不把 base64 当文本）。
  */
 export function FileView({ absolutePath }: { absolutePath: string }) {
@@ -1528,20 +1589,43 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
   const isHtml = isHtmlPath(absolutePath)
   const isImage = isImagePath(absolutePath)
   const previewable = isMarkdown || isHtml
-  const [mode, setMode] = useState<"preview" | "source">("preview")
+  // 文件视图状态记忆（design-tab-state-memory §2.2）：挂载从 store 恢复模式 +
+  // 滚动偏移（一次性待恢复）；捕获 = 容器/CM 滚动上报 + 模式切换归零
+  const savedView = store.fileViewStateFor(absolutePath)
+  const [mode, setMode] = useState<"preview" | "source">(savedView?.mode ?? "preview")
+  const fileScrollRef = useRef<HTMLDivElement>(null)
+  const pendingScroll = useRef(savedView && savedView.top > 0 ? savedView.top : null)
   // TOC 大纲（design-markdown-preview §2.4）：预览体 DOM 扫描 h1–h6
   const mdRef = useRef<HTMLDivElement | null>(null)
   const [tocHeadings, setTocHeadings] = useState<TocHeading[]>([])
   // TOC 显隐 = 宽度默认态（宽显窄隐）+ 用户显式选择覆盖（工具条按钮）
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const [paneWidth, setPaneWidth] = useState(0)
-  // null = 未手动操作，随宽度默认；布尔 = 用户显式选择（不再随宽度回摆）
-  const [tocUserMode, setTocUserMode] = useState<boolean | null>(null)
+  // null = 未手动操作，随宽度默认；布尔 = 用户显式选择（不再随宽度回摆）。
+  // 显式选择按文件记忆（design-tab-state-memory §2.4），挂载恢复
+  const savedToc = store.tocStateFor(absolutePath)
+  const [tocUserMode, setTocUserMode] = useState<boolean | null>(savedToc?.visible ?? null)
   // 章节折叠态由 FileView 持有：悬浮窗收起时 MdToc 卸载，折叠态跨显隐保留，
-  // 仅内容更换（标题集合变化）时重置（§2.4）
+  // 仅内容更换（标题集合变化）时重置（§2.4）；另按文件记忆，切走再回恢复
   const [tocFolded, setTocFolded] = useState<ReadonlySet<HTMLElement>>(new Set())
+  // 标题集首次落地恢复折叠记忆（文本标识匹配仍存活章节），其后标题集更换重置。
+  // ref 记已初始化的标题数组：StrictMode 双跑/重复触发不得把恢复结果再重置
+  const tocFoldInitFor = useRef<TocHeading[] | null>(null)
   useEffect(() => {
-    setTocFolded(new Set())
+    if (tocFoldInitFor.current === tocHeadings) return
+    if (tocHeadings.length === 0) {
+      setTocFolded(new Set())
+      return // 不消耗恢复机会：等真实标题落地（扫描可能晚于首帧）
+    }
+    const first = tocFoldInitFor.current === null
+    tocFoldInitFor.current = tocHeadings
+    if (first && savedToc && savedToc.folded.length > 0) {
+      const texts = new Set(savedToc.folded)
+      setTocFolded(new Set(tocHeadings.filter((h) => texts.has(h.text)).map((h) => h.el)))
+    } else {
+      setTocFolded(new Set())
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tocHeadings])
   useLayoutEffect(() => {
     const el = wrapRef.current
@@ -1624,6 +1708,20 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
       )
   }
 
+  // 滚动偏移一次性恢复（§2.2）：预览 = 内容落地后设滚动层；源码 = 经
+  // CodeView initialScrollTop prop 在同 commit 消费（rAF 布局落定后应用）。
+  // 内容未落地（loading/error）→ 等待，不清待恢复标记
+  useLayoutEffect(() => {
+    if (pendingScroll.current == null) return
+    if (!cached || cached.error) return
+    if (mode === "preview") {
+      const el = fileScrollRef.current
+      if (el) el.scrollTop = pendingScroll.current
+    }
+    pendingScroll.current = null
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, cached?.content, cached?.error])
+
   if (!previewable) {
     if (!cached) return <div className="file-view">{t.loading}</div>
     if (cached.error) return <div className="file-view error">{cached.error}</div>
@@ -1637,7 +1735,14 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
     return (
       <div className="file-view code-view">
         {/* key 并入 locale：搜索面板短语随语言设置即时重建（CM phrases 是创建期 facet） */}
-        <CodeView key={locale} path={absolutePath} content={cached.content} locale={locale} />
+        <CodeView
+          key={locale}
+          path={absolutePath}
+          content={cached.content}
+          locale={locale}
+          initialScrollTop={pendingScroll.current ?? undefined}
+          onScrollTop={(top) => store.setFileViewState(absolutePath, { mode: "source", top })}
+        />
       </div>
     )
   }
@@ -1660,7 +1765,13 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
   // 预览文件：工具条常驻（loading/error 也渲染）——避免内容落地/重试成功时
   // 工具条弹入造成 ~32px 布局跳动
   const view = (
-    <div className={"file-view" + (isHtml ? " html-view" : " code-view")}>
+    // onScroll 捕获仅预览态有效：源码态 CM 内滚（经 CodeView onScrollTop 上报），
+    // html 沙箱 iframe 容器 overflow:hidden 不滚——捕获写入不 emit（§2.2）
+    <div
+      className={"file-view" + (isHtml ? " html-view" : " code-view")}
+      ref={fileScrollRef}
+      onScroll={(e) => store.setFileViewState(absolutePath, { mode, top: e.currentTarget.scrollTop })}
+    >
       {!cached && <div className="file-state">{t.loading}</div>}
       {cached?.error && <div className="file-state file-error">{cached.error}</div>}
       {cached && !cached.error && mode === "preview" && isMarkdown && (
@@ -1682,7 +1793,14 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
         />
       )}
       {cached && !cached.error && mode === "source" && (
-        <CodeView key={locale} path={absolutePath} content={cached.content} locale={locale} />
+        <CodeView
+          key={locale}
+          path={absolutePath}
+          content={cached.content}
+          locale={locale}
+          initialScrollTop={pendingScroll.current ?? undefined}
+          onScrollTop={(top) => store.setFileViewState(absolutePath, { mode: "source", top })}
+        />
       )}
     </div>
   )
@@ -1697,7 +1815,12 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
             title={tocVisible ? t.tocCollapse : t.tocExpand}
             aria-label={tocVisible ? t.tocCollapse : t.tocExpand}
             aria-pressed={tocVisible}
-            onClick={() => setTocUserMode(!tocVisible)}
+            onClick={() => {
+              const next = !tocVisible
+              setTocUserMode(next)
+              // 显式选择落 store（切走再回恢复，§2.4）
+              store.setTocVisible(absolutePath, next)
+            }}
           >
             <ListTree size={16} aria-hidden />
           </button>
@@ -1707,7 +1830,13 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
             type="button"
             aria-pressed={mode === "preview"}
             className={"ms-seg" + (mode === "preview" ? " active" : "")}
-            onClick={() => setMode("preview")}
+            onClick={() => {
+              setMode("preview")
+              // 模式切换归零偏移：非激活模式偏移不保留（两模式坐标系不可换算，§2.2）。
+              // 待恢复偏移同弃——内容未落地时切换，残留值会在落地后错灌入新模式
+              pendingScroll.current = null
+              store.setFileViewState(absolutePath, { mode: "preview", top: 0 })
+            }}
           >
             {t.previewMode}
           </button>
@@ -1715,7 +1844,12 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
             type="button"
             aria-pressed={mode === "source"}
             className={"ms-seg" + (mode === "source" ? " active" : "")}
-            onClick={() => setMode("source")}
+            onClick={() => {
+              setMode("source")
+              // 同预览钮：待恢复偏移同弃（防内容未落地时切换、落地后错灌旧偏移）
+              pendingScroll.current = null
+              store.setFileViewState(absolutePath, { mode: "source", top: 0 })
+            }}
           >
             {t.sourceMode}
           </button>
@@ -1727,14 +1861,17 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
         <MdToc
           headings={tocHeadings}
           folded={tocFolded}
-          onFold={(el) =>
-            setTocFolded((prev) => {
-              const next = new Set(prev)
-              if (next.has(el)) next.delete(el)
-              else next.add(el)
-              return next
-            })
-          }
+          onFold={(el) => {
+            const next = new Set(tocFolded)
+            if (next.has(el)) next.delete(el)
+            else next.add(el)
+            setTocFolded(next)
+            // 折叠态落 store（文本标识，切走再回恢复，§2.4）
+            store.setTocFolded(
+              absolutePath,
+              tocHeadings.filter((h) => next.has(h.el)).map((h) => h.text),
+            )
+          }}
         />
       )}
     </div>

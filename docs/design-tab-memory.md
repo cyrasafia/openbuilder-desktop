@@ -39,6 +39,7 @@ interface ScopeTabMemory {
 
 - 只记 **chat Tab**。file Tab 虽作用域化（2026-08-25 修订，见 §18；原为跨作用域全局显示）但仍不参与记忆——只读视图重开成本为零，冷启动不恢复，激活经 §7 回退
 - 顺序 = Tab 条顺序。v0.1 无拖拽排序，顺序即打开顺序；记忆结构预留顺序语义，拖拽（v0.2+）落地后天然兼容
+- **运行期任意 kind 的最后选中态另经 `scopeActiveKeys` 内存记录**（2026-08-26，见 §7 规则 1.5 与 [design-tab-state-memory.md](./design-tab-state-memory.md) §2.1）——本记忆结构的 `active` 仍 chat-only，仅约束冷启动恢复
 
 ### 3.3 关键不变量
 
@@ -107,12 +108,13 @@ restoreScopeTabs(dir):
 切入作用域后：
 
 1. 当前激活**属于目标作用域（任意 kind，按 `activeTab.directory` 判定）→ 保持**（覆盖两阶段恢复异步窗口内用户已在新作用域打开的 file/diff 或点选的 chat——不得被记忆解析顶替；2026-08-25 修订，原规则 1 为"激活是 file Tab → 保持"，file Tab 全局化后废除，见 §18）
+1.5. **作用域最后激活记录命中（2026-08-26 增补，见 [design-tab-state-memory.md](./design-tab-state-memory.md) §2.1）**：`scopeActiveKeys[dir]` 为纯内存记录（用户意图激活变更，任意 kind，含引导页 `null` 哨兵）——`null` → 落引导页；记录 Tab 仍存活且属本作用域 → 激活之；失效/无记录（冷启动恒无）→ 落规则 2
 2. 否则 `mem.active ∈ valid` → 激活之（回到切走时的位置）
 3. 否则 valid 末位 Tab（最右）
 4. 否则 null → 中栏会话列表视图
 
 - 首次打开的 active = 该作用域最近活跃会话（updated 最大），与"激活最新动态"直觉一致；顺序仍按 created 排
-- 运行期激活 file Tab 不改写记忆 active：切走后激活随新作用域清算；切回时激活回退到记忆 active（规则 2），file Tab 恢复可见但不占据激活（2026-08-25 修订）
+- ~~运行期激活 file Tab 不改写记忆 active：切走后激活随新作用域清算；切回时激活回退到记忆 active（规则 2），file Tab 恢复可见但不占据激活（2026-08-25 修订）~~（2026-08-26 修订：切回经规则 1.5 恢复任意 kind 最后选中态，file/diff Tab 重新占据激活；记忆 `active` 仍 chat-only、只约束冷启动——重启无运行期记录自然落规则 2，见 design-tab-state-memory §2.1）
 - 保持分支的 chat 激活仍回写记忆 `active`：死会话收敛的 `closeTab` 可能已经同步钩子派生了新 active，恢复收尾的 `setMemory` 不得用陈旧解析结果覆写（实现约束，2026-08-25）
 
 ## 8. 启动恢复

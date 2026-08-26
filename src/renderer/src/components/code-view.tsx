@@ -47,10 +47,16 @@ export function CodeView({
   path,
   content,
   locale,
+  initialScrollTop,
+  onScrollTop,
 }: {
   path: string
   content: string
   locale?: Locale
+  /** 挂载后恢复的滚动偏移（design-tab-state-memory §2.2；超界由浏览器 clamp） */
+  initialScrollTop?: number
+  /** 滚动偏移上报（上层落 store，供切走再回恢复；高频，上层写入不得触发重渲染） */
+  onScrollTop?: (top: number) => void
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
@@ -63,7 +69,20 @@ export function CodeView({
       parent: host,
     })
     viewRef.current = view
+    // CM 内滚（.cm-scroller）：布局落定（rAF）后一次性恢复偏移——创建当帧
+    // scrollHeight 未建立，直接设会被 clamp 到 0；另挂滚动监听上报
+    let raf = 0
+    if (initialScrollTop) {
+      raf = requestAnimationFrame(() => {
+        if (viewRef.current === view) view.scrollDOM.scrollTop = initialScrollTop
+      })
+    }
+    const scroller = view.scrollDOM
+    const onScroll = () => onScrollTop?.(scroller.scrollTop)
+    scroller.addEventListener("scroll", onScroll, { passive: true })
     return () => {
+      if (raf) cancelAnimationFrame(raf)
+      scroller.removeEventListener("scroll", onScroll)
       view.destroy()
       viewRef.current = null
     }

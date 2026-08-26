@@ -233,6 +233,40 @@ export class AppStore {
   diffData = new Map<string, { files: FileDiff[]; error?: string; loading?: boolean }>()
   /** diff Tab 选中来源（design-diff-view §2）：key = diffTabKey(directory)；缺省 = uncommitted */
   diffSelectedTypes = new Map<string, DiffTabType>()
+  /**
+   * 输入草稿（design-compose-draft，移植移动端同名设计）：切 Tab/作用域时输入框
+   * 卸载，未发送内容暂存于此，重挂载恢复。纯内存（不跨重启持久化）；写入不
+   * emit——高频键入不得触发整树重渲染，草稿仅在视图挂载时读一次，无渲染订阅。
+   * 生命周期与清理点见 design-compose-draft §3
+   */
+  private chatDrafts = new Map<string, string>()
+  /** 引导页草稿：按作用域目录（引导页随作用域 key 隔离，见 Workspace 渲染处） */
+  private guideDrafts = new Map<string, string>()
+  /**
+   * 作用域最后激活（design-tab-state-memory §2.1）：directory → 最后激活 Tab key；
+   * null = 引导页。纯内存（重启无记录，冷启动激活仍走 design-tab-memory §7 记忆
+   * 规则）。记录点 = 用户意图激活变更（点击/开 Tab/引导页）+ closeTab 激活回退
+   *（含死会话收敛连带——回退结果即新的可见选中态）；restoreScopeTabs 激活解析
+   * 本身是消费方不回写。**目录卸载路径（关项目/删工作区/关 global 目录）的清除
+   * 必须放在关 Tab 循环之后**——回退钩子会重建条目，先删会被写回（重开误落引导页）
+   */
+  private scopeActiveKeys = new Map<string, string | null>()
+  /**
+   * 文件视图状态（design-tab-state-memory §2.2）：绝对路径 → {模式, 当前模式滚动偏移}。
+   * 模式与偏移成对（非激活模式偏移不保留）；写入不 emit（滚动高频）
+   */
+  private fileViewStates = new Map<string, { mode: "preview" | "source"; top: number }>()
+  /**
+   * 消息流滚动位置（design-tab-state-memory §2.3）：sessionID → {scrollTop, 头部消息 id}。
+   * 贴底 = 无条目（切回贴底是默认）；写入不 emit（滚动高频）
+   */
+  private chatScrollTops = new Map<string, { top: number; headId: string | null }>()
+  /**
+   * TOC 状态（design-tab-state-memory §2.4）：绝对路径 → {visible 用户显式显隐
+   *（缺省 = 随宽度默认），folded 折叠章节的标题文本}。折叠按文本标识——重挂载
+   * 后标题元素重建，按文本匹配仍存活的章节；章节文本重复则同折叠。低频写入不 emit
+   */
+  private tocStates = new Map<string, { visible?: boolean; folded: string[] }>()
 
   // ---- 内部 ----
   private client: RestClient | null = null
@@ -411,6 +445,12 @@ export class AppStore {
     this.pendingQuestions.clear()
     this.revertDrafts.clear()
     this.revertDraftConsumed.clear()
+    this.chatDrafts.clear()
+    this.guideDrafts.clear()
+    this.scopeActiveKeys.clear()
+    this.fileViewStates.clear()
+    this.chatScrollTops.clear()
+    this.tocStates.clear()
     this.tabs = []
     this.activeTabKey = null
     this.diffData.clear()
@@ -1124,6 +1164,8 @@ export class AppStore {
       }
     }
     this.purgeStatusForDirectories([directory])
+    // 目录卸载随清引导页草稿（目录失去订阅/展示，草稿同灭，design-compose-draft §3）
+    this.guideDrafts.delete(directory)
     // 该目录的 file/diff Tab 与 global 会话的 chat Tab 随之关闭（仅关 Tab，不归档——
     // 归档只发生在显式关闭 Tab；file Tab 作用域化后随目录卸载，2026-08-25 §18）。
     // 双行目录（git 项目 + global 会话共存）下按
@@ -1146,6 +1188,9 @@ export class AppStore {
         this.cleanupSessionState(tab.key.slice(5))
       }
     }
+    // 最后激活记录随目录卸载（须在关 Tab 之后——关激活 Tab 的回退钩子会
+    // recordScopeActive 重建条目，先删会被写回 null 哨兵，重开误落引导页）
+    this.scopeActiveKeys.delete(directory)
     // 该目录 Tab 记忆清除（须在关 Tab 之后——closeTab 的记忆同步会重建条目）。
     // 仅删 global 侧记忆：双行目录的记忆经 findProjectOwningDirectory 归属
     // git 项目（projectId ≠ global），关 global entry 不得误删
@@ -1229,8 +1274,12 @@ export class AppStore {
       const dirs = [project.worktree, ...(project.sandboxes ?? [])]
       this.purgeStatusForDirectories(dirs)
       // 快照落地标记随目录一并卸载：重开项目时不因残留标记把"快照未落地"
-      // 误判为"真实空目录"而写零 Tab 哨兵
-      for (const d of dirs) this.snapshottedDirs.delete(d)
+      // 误判为"真实空目录"而写零 Tab 哨兵；引导页草稿同随目录卸载
+      //（design-compose-draft §3）
+      for (const d of dirs) {
+        this.snapshottedDirs.delete(d)
+        this.guideDrafts.delete(d)
+      }
       // 该项目的 pending（授权/问题）一并卸载：目录失去订阅，replied 事件收不到，
       // 留着只会假亮；重开项目时 backfill 会按 server 权威重建
       this.dropPendingForDirectories(dirs)
@@ -1251,6 +1300,13 @@ export class AppStore {
       } else if (project && tab.directory === project.worktree && tab.projectId !== GLOBAL_PROJECT_ID) {
         this.closeTab(tab.key)
         this.cleanupSessionState(tab.key.slice(5))
+      }
+    }
+    // 各目录最后激活记录随项目卸载（须在关 Tab 之后——关激活 Tab 的回退钩子
+    // 会 recordScopeActive 重建条目，先删会被写回，重开误落引导页/错激活）
+    if (project) {
+      for (const d of [project.worktree, ...(project.sandboxes ?? [])]) {
+        this.scopeActiveKeys.delete(d)
       }
     }
     // 清除该项目全部 Tab 记忆（须在关 Tab 之后——closeTab 的记忆同步会重建条目，
@@ -1464,9 +1520,20 @@ export class AppStore {
           if (next.tabs.includes(sid)) next = { ...next, active: sid }
         }
       } else {
-        const resolved = resolveRestoreActive(next)
-        this.activeTabKey = resolved != null ? `chat:${resolved}` : null
-        next = { ...next, active: resolved }
+        // 规则 1.5（design-tab-state-memory §2.1）：运行期恢复最后选中态（任意
+        // kind，含 file/diff 与引导页 null 哨兵）；记录失效（Tab 已关/死会话收敛）
+        // 落规则 2；冷启动无记录（内存态）同落规则 2。命中不回写 mem.active——
+        // 记忆 chat-only 语义仅约束冷启动恢复
+        const last = this.scopeActiveKeyFor(directory)
+        if (last === null) {
+          this.activeTabKey = null
+        } else if (last != null && this.tabs.some((t) => t.key === last && t.directory === directory)) {
+          this.activeTabKey = last
+        } else {
+          const resolved = resolveRestoreActive(next)
+          this.activeTabKey = resolved != null ? `chat:${resolved}` : null
+          next = { ...next, active: resolved }
+        }
       }
     }
     this.setMemory(directory, next)
@@ -1493,6 +1560,10 @@ export class AppStore {
     this.sessionPages.delete(sessionID)
     this.revertDrafts.delete(sessionID)
     this.revertDraftConsumed.delete(sessionID)
+    // 草稿随会话运行时卸载（关 Tab/删会话/关项目/删工作区都经此，防无界增长）
+    this.chatDrafts.delete(sessionID)
+    // 消息流滚动位置同随会话卸载（design-tab-state-memory §3）
+    this.chatScrollTops.delete(sessionID)
   }
 
   private resetFileTree() {
@@ -1597,6 +1668,8 @@ export class AppStore {
       }
       this.purgeStatusForDirectories([directory])
       this.snapshottedDirs.delete(directory)
+      // 目录已死，引导页草稿同灭（design-compose-draft §3）
+      this.guideDrafts.delete(directory)
       // 显式关闭该目录全部 live Tab：订阅即将拆除，chat 的 session.deleted 事件
       // 兜底存在窗口期（design-tab-memory §5）；file/diff 无事件兜底，随目录卸载
       // （全 kind 作用域化，2026-08-25 §18）。双行目录（git worktree 与 global 会话
@@ -1616,6 +1689,9 @@ export class AppStore {
           this.cleanupSessionState(tab.key.slice(5))
         }
       }
+      // 最后激活记录随目录卸载（须在关 Tab 之后——关激活 Tab 的回退钩子会
+      // recordScopeActive 重建条目，先删会被写回，重开误落引导页/错激活）
+      this.scopeActiveKeys.delete(directory)
       // 删除该目录记忆（目录已死；须在关 Tab 之后——closeTab 同步会重建条目）。
       // 仅删该项目侧记忆：双行目录的记忆经 findProjectOwningDirectory 归属，
       // global 侧记忆（projectId === global）不随 worktree 删除——与 closeGlobalDirectory 对称
@@ -2529,6 +2605,8 @@ export class AppStore {
     this.activeTabKey = key
     // Tab 记忆同步（§5 挂点）：新 Tab 追加尾部 + active 更新
     if (session.directory) this.syncScopeMemory(session.directory)
+    // 任意 kind 最后激活记录（design-tab-state-memory §2.1 挂点：开即激活）
+    this.recordScopeActive(session.directory, key)
     this.emit()
   }
 
@@ -2553,6 +2631,9 @@ export class AppStore {
       existing.projectId = this.currentProject?.id ?? ""
     }
     this.activeTabKey = key
+    // 任意 kind 最后激活记录（design-tab-state-memory §2.1 挂点：开即激活；
+    // 复用已开 Tab 时 directory 已归属当前作用域，与之同步记录）
+    this.recordScopeActive(this.scopeDirectory(), key)
     this.emit()
   }
 
@@ -2577,6 +2658,8 @@ export class AppStore {
     }
     this.activeTabKey = key
     void this.loadDiffTab(this.diffTypeFor(key), directory)
+    // 任意 kind 最后激活记录（design-tab-state-memory §2.1 挂点：开即激活）
+    this.recordScopeActive(directory, key)
     this.emit()
   }
 
@@ -2700,8 +2783,21 @@ export class AppStore {
       for (const ty of DIFF_TAB_TYPES) this.diffData.delete(diffDataKey(ty, closed.directory ?? ""))
       this.diffSelectedTypes.delete(key)
     }
+    // chat 草稿随 Tab 关闭终结（关 Tab = 归档决断，重开不复活旧草稿；死会话收敛
+    // 路径只经 closeTab 不经 cleanupSessionState，须在此清，design-compose-draft §3）
+    if (closed.kind === "chat") this.chatDrafts.delete(closed.key.slice(5))
+    // 视图状态随 Tab 关闭终结（同草稿"关闭 = 决断"语义，design-tab-state-memory §3）：
+    // chat 滚动位置、文件模式/滚动。死会话收敛只经 closeTab，须在此清
+    if (closed.kind === "chat") this.chatScrollTops.delete(closed.key.slice(5))
+    if (closed.kind === "file") {
+      this.fileViewStates.delete(closed.key.slice(5))
+      this.tocStates.delete(closed.key.slice(5))
+    }
     if (this.activeTabKey === key) {
       this.activeTabKey = fallbackKey
+      // 回退结果即新的最后选中态（design-tab-state-memory §2.1 挂点；
+      // 无相邻 = null 哨兵 = 引导页）
+      this.recordScopeActive(closed.directory ?? "", fallbackKey)
     }
     // Tab 记忆同步（§5 挂点）：chat Tab 关闭 → 从所属目录记忆移除（active 按回退结果派生）
     if (closed.kind === "chat" && closed.directory) this.syncScopeMemory(closed.directory)
@@ -2713,17 +2809,98 @@ export class AppStore {
     // Tab 记忆同步（§5 挂点）：激活 chat Tab → 更新所属目录 active；file Tab 不改写
     const tab = this.tabs.find((t) => t.key === key)
     if (tab?.kind === "chat" && tab.directory) this.syncScopeMemory(tab.directory)
+    // 任意 kind 最后激活记录（design-tab-state-memory §2.1 挂点；全 kind——
+    // 记忆 active 的 chat-only 仅约束冷启动，运行期切回恢复任意 kind）
+    if (tab?.directory) this.recordScopeActive(tab.directory, key)
     this.emit()
   }
 
   /** Tab 栏 "+"：清空激活进入新 Tab 引导页（无激活 Tab 的默认视图，design-layout §4） */
   showGuidePage() {
     this.activeTabKey = null
+    // 引导页也是"最后选中态"（null 哨兵，design-tab-state-memory §2.1）：
+    // 切走再切回仍落引导页，而非被记忆 chat 激活顶替
+    this.recordScopeActive(this.scopeDirectory(), null)
     this.emit()
   }
 
   get activeTab(): TabEntity | null {
     return this.tabs.find((t) => t.key === this.activeTabKey) ?? null
+  }
+
+  // ============ 输入草稿（design-compose-draft） ============
+
+  /** chat 草稿读（无条目 = 空串）：ChatView 挂载初始化取回，恢复切走前未发送内容 */
+  chatDraftFor(sessionID: string): string {
+    return this.chatDrafts.get(sessionID) ?? ""
+  }
+
+  /** chat 草稿写：空文本 = 删条目（发送成功即清）。不 emit（见 chatDrafts 注释） */
+  setChatDraft(sessionID: string, text: string) {
+    if (text) this.chatDrafts.set(sessionID, text)
+    else this.chatDrafts.delete(sessionID)
+  }
+
+  /** 引导页草稿读（无条目 = 空串）：GuidePage 挂载初始化取回，按作用域目录 */
+  guideDraftFor(directory: string): string {
+    return this.guideDrafts.get(directory) ?? ""
+  }
+
+  /** 引导页草稿写：空文本 = 删条目。不 emit（见 chatDrafts 注释） */
+  setGuideDraft(directory: string, text: string) {
+    if (text) this.guideDrafts.set(directory, text)
+    else this.guideDrafts.delete(directory)
+  }
+
+  // ============ Tab 状态记忆（design-tab-state-memory） ============
+
+  /** 作用域最后激活读：无记录 = undefined（冷启动/未记录 → 走 §7 记忆规则）；
+   *  null = 引导页 */
+  scopeActiveKeyFor(directory: string): string | null | undefined {
+    return this.scopeActiveKeys.get(directory)
+  }
+
+  /** 记录用户意图的激活变更（挂点见 scopeActiveKeys 注释；恢复路径不得调用） */
+  private recordScopeActive(directory: string, key: string | null) {
+    if (directory) this.scopeActiveKeys.set(directory, key)
+  }
+
+  /** 文件视图状态读（挂载初始化取模式 + 待恢复偏移） */
+  fileViewStateFor(path: string): { mode: "preview" | "source"; top: number } | null {
+    return this.fileViewStates.get(path) ?? null
+  }
+
+  /** 文件视图状态写：模式与当前模式偏移成对。不 emit（滚动高频，见字段注释） */
+  setFileViewState(path: string, state: { mode: "preview" | "source"; top: number }) {
+    this.fileViewStates.set(path, state)
+  }
+
+  /** 消息流滚动位置读（无条目 = 贴底默认） */
+  chatScrollFor(sessionID: string): { top: number; headId: string | null } | null {
+    return this.chatScrollTops.get(sessionID) ?? null
+  }
+
+  /** 消息流滚动位置写：null = 删条目（贴底）。不 emit（滚动高频，见字段注释） */
+  setChatScroll(sessionID: string, value: { top: number; headId: string | null } | null) {
+    if (value) this.chatScrollTops.set(sessionID, value)
+    else this.chatScrollTops.delete(sessionID)
+  }
+
+  /** TOC 状态读（挂载恢复显隐选择 + 章节折叠） */
+  tocStateFor(path: string): { visible?: boolean; folded: string[] } | null {
+    return this.tocStates.get(path) ?? null
+  }
+
+  /** TOC 显隐用户选择写（与既有折叠条目合并；不 emit，见字段注释） */
+  setTocVisible(path: string, visible: boolean) {
+    const cur = this.tocStates.get(path)
+    this.tocStates.set(path, { visible, folded: cur?.folded ?? [] })
+  }
+
+  /** TOC 章节折叠写（折叠标题文本列表；与既有显隐选择合并） */
+  setTocFolded(path: string, folded: string[]) {
+    const cur = this.tocStates.get(path)
+    this.tocStates.set(path, { visible: cur?.visible, folded })
   }
 
   // ============ 文件树 ============

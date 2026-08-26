@@ -43,6 +43,19 @@ vi.mock("../app", () => ({
   useStore: () => ({
     fileContents: fileContentsStub,
     loadFileContent,
+    fileViewStateFor: (path: string) => fileViewStateStub.get(path) ?? null,
+    setFileViewState: (path: string, state: { mode: "preview" | "source"; top: number }) => {
+      fileViewStateStub.set(path, state)
+    },
+    tocStateFor: (path: string) => tocStateStub.get(path) ?? null,
+    setTocVisible: (path: string, visible: boolean) => {
+      const cur = tocStateStub.get(path)
+      tocStateStub.set(path, { visible, folded: cur?.folded ?? [] })
+    },
+    setTocFolded: (path: string, folded: string[]) => {
+      const cur = tocStateStub.get(path)
+      tocStateStub.set(path, { visible: cur?.visible, folded })
+    },
   }),
 }))
 
@@ -51,6 +64,10 @@ let fileContentsStub: Map<
   string,
   { content: string; binary?: boolean; mimeType?: string; error?: string }
 >
+/** 文件视图状态记忆表（design-tab-state-memory §2.2；测试内可预置恢复态） */
+let fileViewStateStub: Map<string, { mode: "preview" | "source"; top: number }>
+/** TOC 状态记忆表（design-tab-state-memory §2.4；测试内可预置恢复态） */
+let tocStateStub: Map<string, { visible?: boolean; folded: string[] }>
 
 beforeAll(() => {
   class IntersectionObserverStub implements IntersectionObserver {
@@ -83,6 +100,8 @@ beforeEach(() => {
   loadFileContent.mockClear()
   scrollIntoView.mockClear()
   fileContentsStub = new Map()
+  fileViewStateStub = new Map()
+  tocStateStub = new Map()
 })
 
 /** 模拟 .file-view-wrap 宽度变更（jsdom clientWidth 恒 0，需覆写后触发 RO 回调） */
@@ -148,6 +167,48 @@ describe("FileView markdown 预览", () => {
     await screen.findAllByText("标题")
     fireEvent.click(screen.getByRole("button", { name: "源码" }))
     expect(document.querySelector(".cm-content")?.textContent).toContain("# 标题")
+  })
+
+  it("状态记忆（§2.2）：挂载恢复源码模式；模式切换写归零条目；预览滚动上报", async () => {
+    fileContentsStub.set("/repo/doc2.md", { content: "# 标题\n\n正文" })
+    fileViewStateStub.set("/repo/doc2.md", { mode: "source", top: 0 })
+    render(<FileView absolutePath="/repo/doc2.md" />)
+    // 恢复源码模式：CodeMirror 渲染原文（无 markdown h1）
+    expect(document.querySelector(".cm-content")?.textContent).toContain("# 标题")
+    expect(document.querySelector(".file-md h1")).toBeNull()
+
+    // 切预览：写归零条目（非激活模式偏移不保留）
+    fireEvent.click(screen.getByRole("button", { name: "预览" }))
+    expect(fileViewStateStub.get("/repo/doc2.md")).toEqual({ mode: "preview", top: 0 })
+    const matches = await screen.findAllByText("标题")
+    expect(matches.some((el) => el.tagName === "H1")).toBe(true)
+
+    // 预览滚动上报（容器 scrollTop 采集，写入不触发渲染）
+    const layer = document.querySelector(".file-view") as HTMLElement
+    layer.scrollTop = 120
+    fireEvent.scroll(layer)
+    expect(fileViewStateStub.get("/repo/doc2.md")).toEqual({ mode: "preview", top: 120 })
+  })
+
+  it("状态记忆（§2.2）：挂载恢复预览态滚动偏移（内容落地后一次性应用）", () => {
+    fileContentsStub.set("/repo/long.md", { content: "# 标题\n\n正文" })
+    fileViewStateStub.set("/repo/long.md", { mode: "preview", top: 240 })
+    render(<FileView absolutePath="/repo/long.md" />)
+    const layer = document.querySelector(".file-view") as HTMLElement
+    expect(layer.scrollTop).toBe(240)
+  })
+
+  it("状态记忆（§2.2）：加载窗口内切模式弃待恢复偏移（旧偏移不错灌新模式）", async () => {
+    fileViewStateStub.set("/repo/race.md", { mode: "source", top: 240 })
+    const { rerender } = render(<FileView absolutePath="/repo/race.md" />)
+    expect(screen.getByText("加载中…")).not.toBeNull()
+    // 内容未落地即切预览：待恢复偏移应随切换弃掉
+    fireEvent.click(screen.getByRole("button", { name: "预览" }))
+    fileContentsStub.set("/repo/race.md", { content: "# 标题" })
+    rerender(<FileView absolutePath="/repo/race.md" />)
+    await screen.findAllByText("标题")
+    const layer = document.querySelector(".file-view") as HTMLElement
+    expect(layer.scrollTop).toBe(0)
   })
 
   it(".html 默认 sandboxed iframe 预览（CSP 注入）；切源码为高亮代码", () => {
@@ -239,6 +300,31 @@ describe("FileView markdown TOC（design-markdown-preview §2.4）", () => {
     fireEvent.click(screen.getByRole("button", { name: "展开目录" }))
     expect(await screen.findByRole("navigation")).not.toBeNull()
     expect(document.querySelector(".file-view-wrap > .md-toc")).not.toBeNull()
+  })
+
+  it("状态记忆（§2.4）：显隐选择与章节折叠随操作落 store（合并互不覆盖）", async () => {
+    fileContentsStub.set("/repo/toc.md", { content: "# 甲章\n\n## 乙节\n\n正文" })
+    render(<FileView absolutePath="/repo/toc.md" />)
+    await screen.findByRole("navigation")
+
+    fireEvent.click(document.querySelector(".md-toc-fold:not(.md-toc-fold-empty)") as HTMLElement)
+    expect(tocStateStub.get("/repo/toc.md")).toEqual({ folded: ["甲章"] })
+    fireEvent.click(screen.getByRole("button", { name: "收起目录" }))
+    expect(tocStateStub.get("/repo/toc.md")).toEqual({ visible: false, folded: ["甲章"] })
+  })
+
+  it("状态记忆（§2.4）：挂载恢复——默认显示态仍收起、折叠章节保持", async () => {
+    fileContentsStub.set("/repo/toc2.md", { content: "# 甲章\n\n## 乙节\n\n正文" })
+    tocStateStub.set("/repo/toc2.md", { visible: false, folded: ["甲章"] })
+    render(<FileView absolutePath="/repo/toc2.md" />)
+    // visible:false 恢复覆盖默认显示态（悬浮窗不渲染、展开钮在）
+    await screen.findByRole("button", { name: "展开目录" })
+    expect(document.querySelector(".md-toc")).toBeNull()
+
+    fireEvent.click(screen.getByRole("button", { name: "展开目录" }))
+    expect(await screen.findByRole("navigation")).not.toBeNull()
+    // 甲章仍折叠：子条目「乙节」不出现
+    expect(screen.queryByRole("button", { name: "乙节" })).toBeNull()
   })
 
   it("章节折叠态：跨悬浮窗显隐保留（MdToc 卸载不丢），内容更换重置", async () => {

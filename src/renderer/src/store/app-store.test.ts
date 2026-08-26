@@ -253,7 +253,7 @@ describe("先切换后加载：setCurrentWorkspace", () => {
 })
 
 describe("非聊天 Tab 作用域化（design-tab-memory §18）", () => {
-  it("file Tab 激活时切 worktree：激活随新作用域走；file Tab 不关闭（隐藏），切回恢复可见", async () => {
+  it("file Tab 激活时切 worktree：激活随新作用域走；file Tab 不关闭（隐藏），切回恢复可见并恢复激活（规则 1.5）", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     const s2 = session("s2", WT1, { created: 2, updated: 2 })
     store.sessionsByProject.set("proj1", sessionsOf(s1, s2))
@@ -276,10 +276,12 @@ describe("非聊天 Tab 作用域化（design-tab-memory §18）", () => {
     expect(store.activeTabKey).toBe("chat:s2")
     expect(store.tabs.find((t) => t.key === "file:/repo/README.md")?.directory).toBe(ROOT)
 
-    // 切回主工作区：file Tab 恢复可见（切换不关不归档），激活回退记忆 chat Tab
+    // 切回主工作区：file Tab 恢复可见（切换不关不归档）且恢复激活——运行期最后
+    // 选中态任意 kind（规则 1.5，design-tab-state-memory §2.1；2026-08-26 修订，
+    // 原"回退记忆 chat Tab"见 design-tab-memory §7）
     await store.setCurrentWorkspace(null)
     expect(store.tabs.some((t) => t.key === "file:/repo/README.md")).toBe(true)
-    expect(store.activeTabKey).toBe("chat:s1")
+    expect(store.activeTabKey).toBe("file:/repo/README.md")
   })
 
   it("切到无记忆作用域：闸门激活清算覆盖 file Tab（不再跨作用域保留激活）", async () => {
@@ -1471,5 +1473,213 @@ describe("回滚到指定消息（design-message-revert）", () => {
     expect(store.connectionError).toBeTruthy()
     expect(store.findSession("s1")?.revert).toBeUndefined()
     expect(store.takeRevertDraft("s1")).toBeNull()
+  })
+})
+
+describe("输入草稿（design-compose-draft）", () => {
+  it("chat 草稿：写读往返，空文本 = 删条目（发送成功即清语义）", () => {
+    store.setChatDraft("s1", "未发送内容")
+    expect(store.chatDraftFor("s1")).toBe("未发送内容")
+    store.setChatDraft("s1", "")
+    expect(store.chatDraftFor("s1")).toBe("")
+    expect((store as unknown as { chatDrafts: Map<string, string> }).chatDrafts.size).toBe(0)
+  })
+
+  it("引导页草稿：按作用域目录写读往返，互不串用", () => {
+    store.setGuideDraft(ROOT, "主工作区草稿")
+    expect(store.guideDraftFor(ROOT)).toBe("主工作区草稿")
+    expect(store.guideDraftFor(WT1)).toBe("")
+    store.setGuideDraft(ROOT, "")
+    expect(store.guideDraftFor(ROOT)).toBe("")
+  })
+
+  it("关 chat Tab 清该会话草稿（关 = 归档决断，重开不复活旧草稿）", () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    store.openChatTab(s1)
+    store.setChatDraft("s1", "未发送内容")
+    store.closeTab("chat:s1")
+    expect(store.chatDraftFor("s1")).toBe("")
+  })
+
+  it("会话已不存在时 closeChatTab：视为成功关闭且草稿随运行时卸载", async () => {
+    store.setChatDraft("gone", "未发送内容")
+    const ok = await store.closeChatTab("gone", { streaming: false })
+    expect(ok).toBe(true)
+    expect(store.chatDraftFor("gone")).toBe("")
+  })
+
+  it("closeProject 清该项目各目录作用域的引导页草稿", async () => {
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+    store.setGuideDraft(ROOT, "主工作区草稿")
+    store.setGuideDraft(WT1, "工作树草稿")
+    await store.closeProject("proj1")
+    expect(store.guideDraftFor(ROOT)).toBe("")
+    expect(store.guideDraftFor(WT1)).toBe("")
+  })
+
+  it("拆连接清空全部草稿（切 profile 不串，移动端 CD-24/30：丢远轻于串）", async () => {
+    store.setChatDraft("s1", "未发送内容")
+    store.setGuideDraft(ROOT, "引导页草稿")
+    await store.disconnect()
+    expect(store.chatDraftFor("s1")).toBe("")
+    expect(store.guideDraftFor(ROOT)).toBe("")
+  })
+})
+
+describe("Tab 状态记忆（design-tab-state-memory）", () => {
+  /** 两作用域夹具：ROOT=chat:s1、WT1=chat:s2，记忆就绪 */
+  function seedTwoScopes() {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    const s2 = session("s2", WT1, { created: 2, updated: 2 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1, s2))
+    store.tabMemory = {
+      default: {
+        [ROOT]: { projectId: "proj1", tabs: ["s1"], active: "s1" },
+        [WT1]: { projectId: "proj1", tabs: ["s2"], active: "s2" },
+      },
+    }
+    snapshots.set(ROOT, [s1])
+    snapshots.set(WT1, [s2])
+    snapshots.set(WT2, [])
+    return { s1, s2 }
+  }
+
+  it("最后选中 file Tab：切走再切回恢复激活（规则 1.5，任意 kind）", async () => {
+    seedTwoScopes()
+    // 初始作用域即 ROOT（同值早退不开 Tab）：先切走再切回触发恢复
+    await store.setCurrentWorkspace(WT1)
+    await store.setCurrentWorkspace(null)
+    expect(store.activeTabKey).toBe("chat:s1")
+    store.openFileTab(ROOT + "/a.md")
+    expect(store.activeTabKey).toBe(`file:${ROOT}/a.md`)
+
+    await store.setCurrentWorkspace(WT1)
+    expect(store.activeTabKey).toBe("chat:s2")
+
+    await store.setCurrentWorkspace(null)
+    expect(store.activeTabKey).toBe(`file:${ROOT}/a.md`)
+    // chat 顺序不受影响（live tabs 保序）
+    expect(store.tabs.filter((t) => t.directory === ROOT).map((t) => t.key)).toEqual([
+      "chat:s1",
+      `file:${ROOT}/a.md`,
+    ])
+  })
+
+  it("引导页也是最后选中态：停留引导页切走再切回仍落引导页（null 哨兵）", async () => {
+    seedTwoScopes()
+    await store.setCurrentWorkspace(WT1)
+    await store.setCurrentWorkspace(null)
+    expect(store.activeTabKey).toBe("chat:s1")
+    store.showGuidePage()
+    expect(store.activeTabKey).toBeNull()
+
+    await store.setCurrentWorkspace(WT1)
+    expect(store.activeTabKey).toBe("chat:s2")
+
+    await store.setCurrentWorkspace(null)
+    expect(store.activeTabKey).toBeNull()
+  })
+
+  it("最后激活记录失效（Tab 已不在）：回退 §7 记忆 chat 激活", async () => {
+    seedTwoScopes()
+    await store.setCurrentWorkspace(WT1)
+    await store.setCurrentWorkspace(null)
+    // 直接注入失效记录（Tab 已关/死会话收敛后的残留形态）
+    ;(store as unknown as { scopeActiveKeys: Map<string, string | null> }).scopeActiveKeys.set(
+      ROOT,
+      "file:/gone.md",
+    )
+    await store.setCurrentWorkspace(WT1)
+    await store.setCurrentWorkspace(null)
+    expect(store.activeTabKey).toBe("chat:s1")
+  })
+
+  it("文件视图状态：写读往返；关文件 Tab 清条目（重开回默认）", () => {
+    store.setFileViewState(ROOT + "/a.md", { mode: "source", top: 120 })
+    expect(store.fileViewStateFor(ROOT + "/a.md")).toEqual({ mode: "source", top: 120 })
+    store.tabs.push({
+      kind: "file",
+      key: `file:${ROOT}/a.md`,
+      projectId: "proj1",
+      title: "a.md",
+      directory: ROOT,
+    })
+    store.closeTab(`file:${ROOT}/a.md`)
+    expect(store.fileViewStateFor(ROOT + "/a.md")).toBeNull()
+  })
+
+  it("TOC 状态：写读往返（显隐与折叠互相合并不覆盖）；关文件 Tab 清条目", () => {
+    store.setTocFolded(ROOT + "/a.md", ["甲章"])
+    expect(store.tocStateFor(ROOT + "/a.md")).toEqual({ folded: ["甲章"] })
+    store.setTocVisible(ROOT + "/a.md", false)
+    expect(store.tocStateFor(ROOT + "/a.md")).toEqual({ visible: false, folded: ["甲章"] })
+    store.setTocFolded(ROOT + "/a.md", [])
+    expect(store.tocStateFor(ROOT + "/a.md")).toEqual({ visible: false, folded: [] })
+
+    store.tabs.push({
+      kind: "file",
+      key: `file:${ROOT}/a.md`,
+      projectId: "proj1",
+      title: "a.md",
+      directory: ROOT,
+    })
+    store.closeTab(`file:${ROOT}/a.md`)
+    expect(store.tocStateFor(ROOT + "/a.md")).toBeNull()
+  })
+
+  it("消息流滚动位置：写读往返；关 chat Tab 与删会话清条目", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    store.setChatScroll("s1", { top: 320, headId: "msg_head" })
+    expect(store.chatScrollFor("s1")).toEqual({ top: 320, headId: "msg_head" })
+
+    store.openChatTab(s1)
+    store.closeTab("chat:s1")
+    expect(store.chatScrollFor("s1")).toBeNull()
+
+    // 无 Tab 的会话删除（cleanupSessionState 兜底）
+    store.setChatScroll("gone", { top: 10, headId: null })
+    await store.closeChatTab("gone", { streaming: false })
+    expect(store.chatScrollFor("gone")).toBeNull()
+  })
+
+  it("激活态关项目再重开：落规则 2 激活 chat（回退钩子重建的记录已被最终清除，不误落引导页）", async () => {
+    seedTwoScopes()
+    await store.setCurrentWorkspace(WT1)
+    await store.setCurrentWorkspace(null)
+    expect(store.activeTabKey).toBe("chat:s1")
+
+    // 关正在看的项目：关 Tab 回退链最后一个无邻可退会 recordScopeActive(dir, null)，
+    // 清除必须发生在关 Tab 之后才不被写回（回归用例）
+    await store.closeProject("proj1")
+    expect(
+      (store as unknown as { scopeActiveKeys: Map<string, string | null> }).scopeActiveKeys.has(ROOT),
+    ).toBe(false)
+
+    await store.openProject("proj1")
+    expect(store.activeTabKey).toBe("chat:s1")
+  })
+
+  it("closeProject / 拆连接清空视图状态记忆（跨作用域不残留）", async () => {
+    store.setFileViewState(ROOT + "/a.md", { mode: "source", top: 40 })
+    store.setChatScroll("s1", { top: 100, headId: "h" })
+    ;(store as unknown as { scopeActiveKeys: Map<string, string | null> }).scopeActiveKeys.set(
+      ROOT,
+      `file:${ROOT}/a.md`,
+    )
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+    await store.closeProject("proj1")
+    expect((store as unknown as { scopeActiveKeys: Map<string, string | null> }).scopeActiveKeys.has(ROOT)).toBe(false)
+
+    store.setFileViewState(WT1 + "/b.md", { mode: "preview", top: 8 })
+    store.setChatScroll("s2", { top: 50, headId: "h2" })
+    await store.disconnect()
+    expect(store.fileViewStateFor(WT1 + "/b.md")).toBeNull()
+    expect(store.chatScrollFor("s2")).toBeNull()
   })
 })
