@@ -89,11 +89,19 @@ export function App() {
 }
 
 function Shell() {
+  const store = useStore()
+  // 三栏栅格（design-layout-collapse §2.3）：折叠列宽 0；展开列用 store 记忆宽度。
+  // 内联覆盖 app.css 的默认 grid-template-columns（CSS 变量无第二写入点，单一来源）
+  const left = store.layoutLeftCollapsed ? "0px" : `${store.layoutLeftWidth}px`
+  const right = store.layoutRightCollapsed ? "0px" : `${store.layoutRightWidth}px`
   return (
     <div className="app-root">
-      {/* Linux frameless：自绘头部（拖拽区 + 窗口控制）；其他平台/浏览器无系统装饰缺失问题 */}
-      {window.desktop.platform === "linux" && <TitleBar />}
-      <div className="app-shell">
+      {/* 标题栏全平台渲染（面板开关载体）；窗口控制在其内部按平台门控 */}
+      <TitleBar />
+      <div
+        className="app-shell"
+        style={{ gridTemplateColumns: `${left} minmax(0, 1fr) ${right}` }}
+      >
         <Sidebar />
         <Workspace />
         <FilePanel />

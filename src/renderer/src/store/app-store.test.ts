@@ -2039,3 +2039,63 @@ describe("报错消息与重试状态（design-error-message）", () => {
     expect(store.dotStateFor("s1")).toBe("idle")
   })
 })
+
+describe("布局状态（design-layout-collapse）", () => {
+  let saved: Array<{ key: string; value: unknown }>
+  beforeEach(() => {
+    saved = []
+    ;(window as unknown as { desktop: unknown }).desktop = {
+      storeGet: async (key: string) =>
+        key === "layout.state"
+          ? { leftWidth: 300, rightWidth: 400, leftCollapsed: true, rightCollapsed: false }
+          : null,
+      storeSet: async (key: string, value: unknown) => {
+        saved.push({ key, value })
+      },
+    }
+  })
+
+  it("init 读入持久化布局", async () => {
+    const s = new AppStore()
+    await s.init()
+    expect(s.layoutLeftCollapsed).toBe(true)
+    expect(s.layoutRightCollapsed).toBe(false)
+    expect(s.layoutLeftWidth).toBe(300)
+    expect(s.layoutRightWidth).toBe(400)
+  })
+
+  it("越界宽度 clamp 回区间，非法值回退默认宽", async () => {
+    ;(window as unknown as { desktop: unknown }).desktop = {
+      storeGet: async (key: string) =>
+        key === "layout.state"
+          ? { leftWidth: 9999, rightWidth: 10, leftCollapsed: false, rightCollapsed: false }
+          : null,
+      storeSet: async () => {},
+    }
+    const s = new AppStore()
+    await s.init()
+    expect(s.layoutLeftWidth).toBe(360)
+    expect(s.layoutRightWidth).toBe(240)
+    s.setPanelWidth("left", Number.NaN)
+    expect(s.layoutLeftWidth).toBe(260)
+  })
+
+  it("toggle 翻转并落盘 layout.state", () => {
+    store.toggleLeftPanel()
+    expect(store.layoutLeftCollapsed).toBe(true)
+    expect(saved.at(-1)?.value).toMatchObject({ leftCollapsed: true, leftWidth: 260 })
+    store.toggleRightPanel()
+    expect(store.layoutRightCollapsed).toBe(true)
+    expect(saved.at(-1)?.value).toMatchObject({ rightCollapsed: true })
+  })
+
+  it("setPanelWidth 逐帧 clamp 不落盘，persistLayout 显式落盘", () => {
+    store.setPanelWidth("left", 50)
+    expect(store.layoutLeftWidth).toBe(200)
+    store.setPanelWidth("right", 9999)
+    expect(store.layoutRightWidth).toBe(480)
+    expect(saved).toHaveLength(0)
+    store.persistLayout()
+    expect(saved.at(-1)?.value).toMatchObject({ leftWidth: 200, rightWidth: 480 })
+  })
+})

@@ -124,6 +124,11 @@ const zh = {
   winMaximize: "最大化",
   winRestore: "还原",
   winClose: "关闭",
+  // 面板收起/展开（design-layout-collapse，标题栏开关按钮 tooltip）
+  collapseLeftPanel: "收起左栏",
+  expandLeftPanel: "展开左栏",
+  collapseRightPanel: "收起右栏",
+  expandRightPanel: "展开右栏",
   // 空态
   noProject: "先打开一个项目",
   connectFirst: "先配置服务器连接",
@@ -268,6 +273,10 @@ const en: typeof zh = {
   winMaximize: "Maximize",
   winRestore: "Restore",
   winClose: "Close",
+  collapseLeftPanel: "Hide sidebar",
+  expandLeftPanel: "Show sidebar",
+  collapseRightPanel: "Hide file panel",
+  expandRightPanel: "Show file panel",
   noProject: "Open a project first",
   connectFirst: "Configure a server first",
   openSettings: "Open settings",

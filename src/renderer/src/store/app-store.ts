@@ -92,6 +92,19 @@ export const DIFF_TAB_TYPES: readonly DiffTabType[] = ["round", "uncommitted", "
 /** 文件监听失效去抖窗口（design-file-watcher §3.1/§3.2） */
 export const FILE_WATCH_DEBOUNCE_MS = 300
 
+/** 面板宽度约束（design-layout §2 / design-layout-collapse） */
+const PANEL_LIMITS = {
+  left: { min: 200, max: 360, def: 260 },
+  right: { min: 240, max: 480, def: 300 },
+} as const
+
+/** 宽度 clamp（读入持久化值/拖拽输入共用；非法数值回退默认宽） */
+function clampPanelWidth(side: "left" | "right", px: number): number {
+  const l = PANEL_LIMITS[side]
+  if (!Number.isFinite(px)) return l.def
+  return Math.round(Math.min(l.max, Math.max(l.min, px)))
+}
+
 /** FileContentData → fileContents 缓存条目（design-image-preview §2.1） */
 function fileContentEntry(fc: FileContentData): {
   content: string
@@ -172,6 +185,11 @@ export class AppStore {
   localeMode: "auto" | "zh" | "en" = "auto"
   /** 消息流思考（reasoning）显隐——默认隐藏，切换即时生效（数据仍在 store，只是不渲染） */
   showThinking = false
+  // ---- 布局状态（design-layout-collapse）：宽度/折叠态，layout.state 持久化 ----
+  layoutLeftWidth = 260
+  layoutRightWidth = 300
+  layoutLeftCollapsed = false
+  layoutRightCollapsed = false
 
   // ---- 连接运行时 ----
   connectionState: ConnectionState = "disconnected"
@@ -329,6 +347,15 @@ export class AppStore {
     this.localeMode = (await window.desktop.storeGet("locale.mode")) ?? "auto"
     this.defaults = (await window.desktop.storeGet("model.defaults")) ?? {}
     this.showThinking = (await window.desktop.storeGet("chat.showThinking")) ?? false
+    const layout = await window.desktop.storeGet("layout.state")
+    if (layout) {
+      // 读入 clamp：持久化值可能来自旧版本/手改 store.json，越界值收敛回约束区间，
+      // 折叠态布尔归一（缺字段/非布尔值按 false）
+      this.layoutLeftWidth = clampPanelWidth("left", layout.leftWidth)
+      this.layoutRightWidth = clampPanelWidth("right", layout.rightWidth)
+      this.layoutLeftCollapsed = !!layout.leftCollapsed
+      this.layoutRightCollapsed = !!layout.rightCollapsed
+    }
 
     if (this.activeProfileId) {
       await this.connect()
@@ -3148,6 +3175,45 @@ export class AppStore {
     this.showThinking = value
     await window.desktop.storeSet("chat.showThinking", value)
     this.emit()
+  }
+
+  // ============ 布局（design-layout-collapse） ============
+
+  toggleLeftPanel() {
+    this.layoutLeftCollapsed = !this.layoutLeftCollapsed
+    this.emit()
+    this.persistLayout()
+  }
+
+  toggleRightPanel() {
+    this.layoutRightCollapsed = !this.layoutRightCollapsed
+    this.emit()
+    this.persistLayout()
+  }
+
+  /** 拖拽逐帧调宽：clamp 后写内存 + emit，不落盘（写放大防护，pointerup 走 persistLayout） */
+  setPanelWidth(side: "left" | "right", px: number) {
+    const v = clampPanelWidth(side, px)
+    if (side === "left") {
+      if (v === this.layoutLeftWidth) return
+      this.layoutLeftWidth = v
+    } else {
+      if (v === this.layoutRightWidth) return
+      this.layoutRightWidth = v
+    }
+    this.emit()
+  }
+
+  /** 布局整体落盘（toggle 即时 / 拖拽 pointerup 时）；失败静默（重启回退旧值，同 tabs.memory 取舍） */
+  persistLayout() {
+    void window.desktop
+      .storeSet("layout.state", {
+        leftWidth: this.layoutLeftWidth,
+        rightWidth: this.layoutRightWidth,
+        leftCollapsed: this.layoutLeftCollapsed,
+        rightCollapsed: this.layoutRightCollapsed,
+      })
+      .catch(() => {})
   }
 
   // ============ 对账挂载 ============

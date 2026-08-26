@@ -9,6 +9,7 @@ import {
 import { createPortal } from "react-dom"
 import { useI18n, useStore } from "../app"
 import type { FileNode } from "@shared/api-types"
+import { PanelResizeHandle } from "./panel-resize"
 
 interface MenuState {
   absolute: string
@@ -29,6 +30,7 @@ export function FilePanel() {
   const hasLoaded = store.fileTreeNodes.has(".")
   const rootNodes = store.fileTreeNodes.get(".") ?? []
   const [menu, setMenu] = useState<MenuState | null>(null)
+  const collapsed = store.layoutRightCollapsed
 
   // Hooks 必须无条件执行（项目有↔无切换时不允许 Hook 数量变化）
   useEffect(() => {
@@ -38,8 +40,9 @@ export function FilePanel() {
 
   if (!project) {
     return (
-      <aside className="file-panel">
+      <aside className={"file-panel" + (collapsed ? " collapsed" : "")}>
         <div className="sidebar-empty">{t.noProject}</div>
+        {!collapsed && <PanelResizeHandle side="right" />}
       </aside>
     )
   }
@@ -53,7 +56,7 @@ export function FilePanel() {
 
   return (
     <aside
-      className="file-panel"
+      className={"file-panel" + (collapsed ? " collapsed" : "")}
       // 空白处/标题栏：对象 = 当前作用域根目录（主工作区 = 项目根；
       // worktree/global = 其目录，与所见树根一致）
       onContextMenu={(e) =>
@@ -68,6 +71,8 @@ export function FilePanel() {
         <NodeList nodes={rootNodes} depth={0} onContextMenu={openMenu} />
       </div>
       {menu && <FileContextMenu menu={menu} onClose={() => setMenu(null)} />}
+      {/* 内缘调宽手柄（折叠时随面板 display:none 一并消失） */}
+      {!collapsed && <PanelResizeHandle side="right" />}
     </aside>
   )
 }

@@ -4,6 +4,7 @@ import { useI18n, useStore } from "../app"
 import { relativeTime } from "../i18n"
 import { GLOBAL_PROJECT_ID, globalEntryKey } from "@shared/project-entries"
 import type { Project, Session } from "@shared/api-types"
+import { PanelResizeHandle } from "./panel-resize"
 
 /** server icon.color 命名色 → --avatar-* token（与 openbuilder ProjectAvatar.namedColor 同源，mint 与 green 同色） */
 const NAMED_AVATAR_COLORS: Record<string, string> = {
@@ -83,7 +84,8 @@ export function Sidebar() {
   const { t } = useI18n()
 
   return (
-    <aside className="sidebar">
+    // 折叠 = display:none（design-layout-collapse §2.3）：组件仍挂载，文件树状态不因收起丢失
+    <aside className={"sidebar" + (store.layoutLeftCollapsed ? " collapsed" : "")}>
       {store.activeProfile ? (
         <ProjectTree />
       ) : (
@@ -102,6 +104,8 @@ export function Sidebar() {
           ⚙
         </button>
       </div>
+      {/* 内缘调宽手柄（折叠时随面板 display:none 一并消失） */}
+      {!store.layoutLeftCollapsed && <PanelResizeHandle side="left" />}
     </aside>
   )
 }

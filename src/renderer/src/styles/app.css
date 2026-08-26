@@ -1,6 +1,6 @@
 /* 布局与组件样式（规格见根目录 DESIGN.md） */
 
-/* 根容器：标题栏（仅 Linux frameless 渲染）+ 三栏主体 */
+/* 根容器：标题栏（全平台渲染，窗口控制仅 linux）+ 三栏主体 */
 .app-root {
   height: 100vh;
   display: flex;
@@ -62,9 +62,82 @@
   color: var(--on-error);
 }
 
+/* 面板收起/展开开关（design-layout-collapse）：应用级控件，窄于窗口控制钮，
+   与窗口控制组间以分隔线区隔 */
+.title-bar-btn.panel-toggle {
+  width: 34px;
+}
+
+.title-bar-btn.panel-toggle + .title-bar-btn:not(.panel-toggle) {
+  border-left: 1px solid var(--outline-variant);
+}
+
+/* 折叠 = 完全不展示（栅格列宽同步为 0，app.tsx 内联计算） */
+.sidebar.collapsed,
+.file-panel.collapsed {
+  display: none;
+}
+
+/* 面板内缘拖拽调宽手柄（design-layout-collapse §2.4）：命中区全在面板内——
+   面板 overflow:hidden 会裁掉越界部分；hover 在面板边线处亮 1px 分隔线提示可拖 */
+.sidebar,
+.file-panel {
+  position: relative;
+}
+
+.sidebar-resize,
+.filepanel-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  z-index: 6;
+  cursor: col-resize;
+}
+
+.sidebar-resize {
+  right: 0;
+}
+
+.filepanel-resize {
+  left: 0;
+}
+
+.sidebar-resize::after,
+.filepanel-resize::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: transparent;
+}
+
+.sidebar-resize::after {
+  right: 0;
+}
+
+.filepanel-resize::after {
+  left: 0;
+}
+
+.sidebar-resize:hover::after,
+.filepanel-resize:hover::after {
+  background: var(--outline-variant);
+}
+
+/* 拖拽调宽期间：子帧（html 预览 iframe / 后续嵌入视图）不吞 pointer */
+:root.resizing iframe,
+:root.resizing embed,
+:root.resizing object {
+  pointer-events: none;
+}
+
 .app-shell {
   display: grid;
-  grid-template-columns: var(--sidebar-w, 260px) minmax(0, 1fr) var(--filepanel-w, 300px);
+  /* 静态缺省仅作首帧兜底；实际列宽由 app.tsx Shell 按 store 布局状态内联覆盖
+     （折叠列 0px），宽度默认值单点在 app-store PANEL_LIMITS */
+  grid-template-columns: 260px minmax(0, 1fr) 300px;
   grid-template-rows: minmax(0, 1fr);
   grid-template-areas: "sidebar workspace filepanel";
   flex: 1;
