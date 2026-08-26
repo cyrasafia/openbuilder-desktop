@@ -111,11 +111,20 @@ describe("title 派生辅助", () => {
 })
 
 describe("sessionDotState", () => {
-  it("waiting 优先于 running；idle 兜底", () => {
-    expect(sessionDotState(2, true)).toBe("waiting")
-    expect(sessionDotState(1, false)).toBe("waiting")
-    expect(sessionDotState(0, true)).toBe("running")
-    expect(sessionDotState(0, false)).toBe("idle")
+  it("waiting 优先于 error/running/failed；idle 兜底", () => {
+    expect(sessionDotState(2, "retry")).toBe("waiting")
+    expect(sessionDotState(1, "idle", true)).toBe("waiting")
+    expect(sessionDotState(0, "busy", true)).toBe("running")
+    expect(sessionDotState(0, "idle")).toBe("idle")
+  })
+
+  it("retry 退避重试投影为 error（红）——不再与 busy 混同 running", () => {
+    expect(sessionDotState(0, "retry")).toBe("error")
+  })
+
+  it("idle + 报错终局投影为 failed（静态红）；非 idle 终局参数无效", () => {
+    expect(sessionDotState(0, "idle", true)).toBe("failed")
+    expect(sessionDotState(0, "retry", true)).toBe("error")
   })
 })
 

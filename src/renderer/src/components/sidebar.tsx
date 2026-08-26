@@ -285,10 +285,12 @@ function ProjectTree() {
 
 /**
  * 会话状态指示器（项目/工作区行右侧）：该作用域未归档、非 subagent 会话的状态。
- * 状态投影同移动端 design-agent-status-indicator：waiting（待输入，琥珀静态）优先于
- * running（busy/retry = 运行色光晕呼吸，消费 dotStateFor——sessionStatus 单一事实源）。
- * ≤4 个逐会话状态点；>4 个按状态聚合为数字 chip（待输入数琥珀、运行数绿 chip、
- * 空闲数灰 chip，各自为 0 时省略）。靠右浮层覆盖操作按钮，行 hover 时隐藏。
+ * 状态投影同移动端 design-agent-status-indicator + design-error-message §3：
+ * waiting（待输入，琥珀静态）优先于 error（retry 退避重试，红光晕呼吸）优先于
+ * running（busy 运行绿光晕呼吸）——消费 dotStateFor，sessionStatus 单一事实源；
+ * 会话点统一 session-* 变体类（12px 盒几何与其他指示对齐）。
+ * ≤4 个逐会话状态点；>4 个按状态聚合为数字 chip（待输入琥珀、重试红、运行绿、
+ * 空闲灰 chip，各自为 0 时省略）。靠右浮层覆盖操作按钮，行 hover 时隐藏。
  */
 function SessionIndicator({ sessions }: { sessions: Session[] }) {
   const store = useStore()
@@ -296,29 +298,48 @@ function SessionIndicator({ sessions }: { sessions: Session[] }) {
   if (sessions.length === 0) return null
   let busyCount = 0
   let waitingCount = 0
+  let errorCount = 0
+  let failedCount = 0
   const dots = sessions.map((s) => store.dotStateFor(s.id))
   for (const d of dots) {
     if (d === "waiting") waitingCount++
+    else if (d === "error") errorCount++
+    else if (d === "failed") failedCount++
     else if (d === "running") busyCount++
   }
-  const idleCount = sessions.length - busyCount - waitingCount
+  const idleCount = sessions.length - busyCount - waitingCount - errorCount - failedCount
   const title = t.sessionIndicatorTitle
     .replace("{count}", String(sessions.length))
     .replace("{busy}", String(busyCount))
+    .replace("{error}", String(errorCount))
+    .replace("{failed}", String(failedCount))
     .replace("{waiting}", String(waitingCount))
   return (
     <span className="session-indicator" title={title}>
       {sessions.length > 4 ? (
         <>
           {waitingCount > 0 && <span className="session-count waiting">{waitingCount}</span>}
+          {errorCount > 0 && <span className="session-count error">{errorCount}</span>}
           {busyCount > 0 && <span className="session-count running">{busyCount}</span>}
+          {failedCount > 0 && <span className="session-count failed">{failedCount}</span>}
           {idleCount > 0 && <span className="session-count">{idleCount}</span>}
         </>
       ) : (
         sessions.map((s, i) => (
           <span
             key={s.id}
-            className={"status-dot " + (dots[i] === "running" ? "session-running" : dots[i])}
+            className={
+              "status-dot " +
+              (dots[i] === "running"
+                ? "session-running"
+                : dots[i] === "error"
+                  ? "session-error"
+                  : dots[i] === "waiting"
+                    ? "session-waiting"
+                    : dots[i] === "failed"
+                      ? "session-failed"
+                      : "session-idle")
+            }
           />
         ))
       )}

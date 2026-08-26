@@ -10,7 +10,7 @@ const zh = {
   projectsTitle: "项目",
   openProject: "打开项目…",
   closeProject: "关闭项目",
-  sessionIndicatorTitle: "会话 {count}，进行中 {busy}，待输入 {waiting}",
+  sessionIndicatorTitle: "会话 {count}，进行中 {busy}，重试 {error}，失败 {failed}，待输入 {waiting}",
   archivedSessions: "已归档",
   workspacesTitle: "工作区",
   newWorkspace: "新建工作区",
@@ -151,7 +151,6 @@ const zh = {
   confirmSwitchProject:
     "切换项目将关闭并归档当前所有打开的会话。继续？",
   confirmDeleteWorkspace: "删除工作区？",
-  errorTitle: "出错了",
   // agent/模型/思考强度切换（design-agent-model-switch）
   model: "模型",
   thinkingLabel: "思考强度",
@@ -170,7 +169,7 @@ const en: typeof zh = {
   projectsTitle: "Projects",
   openProject: "Open project…",
   closeProject: "Close project",
-  sessionIndicatorTitle: "Sessions: {count}, working: {busy}, waiting: {waiting}",
+  sessionIndicatorTitle: "Sessions: {count}, working: {busy}, retrying: {error}, failed: {failed}, waiting: {waiting}",
   archivedSessions: "Archived",
   workspacesTitle: "Worktrees",
   newWorkspace: "New worktree",
@@ -291,7 +290,6 @@ const en: typeof zh = {
   confirmCloseStreamingTab: "Session is running. Closing stops and archives it. Continue?",
   confirmSwitchProject: "Switching projects closes and archives all open sessions. Continue?",
   confirmDeleteWorkspace: "Delete worktree?",
-  errorTitle: "Something went wrong",
   model: "Model",
   thinkingLabel: "Thinking",
   thinkingDefault: "Default",

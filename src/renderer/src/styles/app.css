@@ -129,7 +129,7 @@
    未选中透明（承面板 container-low 底）、hover container-high（原值与面板底同色，
    左栏内不可见，顺带修复）、选中 container-highest（两档跳变独立承载选中信号）。
    选中底取中性 surface 而非 primary 淡染：行右侧浮层有四色指示器
-   （waiting 琥珀 / running 绿光晕 / idle 灰 / error 红 + 聚合 chip），
+   （waiting 琥珀 / running 绿光晕 / idle 灰 / error 红光晕 + 聚合 chip），
    绿 tint 会与 running 态争色；中性底保证状态点语义与光晕可读，深/浅主题均适用 */
 .tree-row:hover:not(.disabled) {
   background: var(--surface-container-high);
@@ -292,41 +292,10 @@
   visibility: hidden;
 }
 
-/* 空闲/待输入点与运行点同用 12px 盒子（同 app 统一 glyph 盒），实心视觉点经
-   ::after 居中，idle/waiting 统一 6px（同运行光晕中心点，即全应用通用实心点径；
-   2026-08-25 二次修订，原统一 8px 与 running 中心 6px 仍两档，现全量归一到 6px）
-   ——idle 弱化仅靠 0.55 透明度，不靠缩尺寸。
+/* 会话指示器 idle 点走 session-idle 变体（2026-08-26 统一，原作用域特例
+   .session-indicator .status-dot.idle 废弃——Tab 条常显后两处同规则，避免
+   裸 idle 与 session-* 两套几何并存再引入抖动）。
    12px 盒亦让最右点中心线稳定在右缘 12px——worktree 删除钮按此对齐 */
-.session-indicator .status-dot.idle,
-.session-indicator .status-dot.waiting {
-  position: relative;
-  width: 12px;
-  height: 12px;
-  background: transparent;
-}
-
-.session-indicator .status-dot.idle::after,
-.session-indicator .status-dot.waiting::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  border-radius: 50%;
-  transform: translate(-50%, -50%);
-}
-
-.session-indicator .status-dot.idle::after {
-  width: 6px;
-  height: 6px;
-  background: var(--status-pending);
-  opacity: 0.55;
-}
-
-.session-indicator .status-dot.waiting::after {
-  width: 6px;
-  height: 6px;
-  background: var(--status-waiting);
-}
 
 .session-count {
   min-width: 16px;
@@ -350,6 +319,14 @@
 .session-count.waiting {
   background: color-mix(in srgb, var(--status-waiting) 16%, transparent);
   color: var(--status-waiting);
+}
+
+/* >4 会话聚合数字的重试变体：红数字 + 错误色淡染底（design-error-message §3） */
+.session-count.error,
+/* 报错终局变体：同红（与重试共用错误色，悬停 title 区分计数语义） */
+.session-count.failed {
+  background: color-mix(in srgb, var(--status-error) 16%, transparent);
+  color: var(--status-error);
 }
 
 .sidebar-empty {
@@ -1080,12 +1057,19 @@
   background-color: transparent;
 }
 
+/* 错误卡：红字 + 错误色低透明淡染底 + 同色细描边——出错语义靠色彩承载，
+ * 视觉强度弱于实底 error-container（深色下 #93000a 底 + #ffdad6 字过强刺眼；
+ * 2026-08-26 修订，弱化对齐 session-count 等淡染惯例） */
 .error-card {
-  background: var(--error-container);
-  color: var(--on-error-container);
+  background: color-mix(in srgb, var(--status-error) 10%, transparent);
+  color: var(--status-error);
+  border: 1px solid color-mix(in srgb, var(--status-error) 35%, transparent);
   border-radius: var(--radius-card);
   padding: 8px 12px;
   font-size: var(--text-sm);
+  /* 宽度跟随内容（.msg.assistant 是 column flex，子项默认 stretch 撑满）——
+     同 chip「收起态不撑满」惯例；超长文本自然换行，封顶容器宽 */
+  align-self: flex-start;
 }
 
 /* chip（工具调用/思考，骨架沿用移动端概念、规格桌面化）
@@ -1979,8 +1963,9 @@
 }
 
 /* ---------- 状态点 ----------
-   全应用实心点统一 6px（同运行光晕中心点；2026-08-25 修订，原 8px 与
-   running 中心 6px 两档不一）；左栏连接点与 Tab 待输入点直接取此基类 */
+   基础实心点 6px（左栏连接状态点用）；会话状态点（Tab 条/左栏）一律走
+   session-* 变体（12px 盒，见下），不取基类几何——两套并存会在状态切换时
+   因盒尺寸 6↔12 跳变抖动（2026-08-26 教训） */
 .status-dot {
   width: 6px;
   height: 6px;
@@ -1993,18 +1978,52 @@
   background: var(--status-running);
 }
 
-/* 会话进行中：双层圆点 = 稳定中心点 + 外圈光晕呼吸（同 app，参数对齐
-    openbuilder design-agent-status-indicator.md §动效设计：1200ms easeInOut 往复，
-    外圈 scale 0.75→1.15、opacity 0.2→0.55，中心点不缩放；仅此类呼吸，
-    左栏连接状态点保持静态实心） */
+/* 会话状态点变体（session-*，Tab 条与左栏共用）：统一 12px 盒几何，
+   中心 6px 实心点 ::after 居中（同 app 全应用通用实心点径）——各会话状态点
+   与其他指示纵向对齐；颜色经 --session-dot-color 定制。
+   - session-running / session-error：外圈 11px 光晕 ::before 呼吸（重试也是
+     进行中，红色仅示错因——参考 app retrying 动效语义；参数对齐 openbuilder
+     design-agent-status-indicator.md §动效设计：1200ms easeInOut 往复，
+     外圈 scale 0.75→1.15、opacity 0.2→0.55，中心点不缩放）
+   - session-waiting：琥珀静态（待输入非运行，无动效）
+   仅此类呼吸；左栏连接状态点保持静态实心 */
 .status-dot.session-running {
+  --session-dot-color: var(--status-running);
+}
+
+.status-dot.session-error {
+  --session-dot-color: var(--status-error);
+}
+
+.status-dot.session-waiting {
+  --session-dot-color: var(--status-waiting);
+}
+
+/* 报错终局（design-error-message §3.4）：红静态——会话已结束（非进行中），
+   区别于 retry 的红呼吸（重试进行中） */
+.status-dot.session-failed {
+  --session-dot-color: var(--status-error);
+}
+
+/* 空闲（Tab 条常显，design-error-message §3.3 修订）：灰静态、同 12px 盒——
+   弱化仅靠透明度（同左栏 idle 点 0.55），常显不引入布局位移 */
+.status-dot.session-idle {
+  --session-dot-color: var(--status-pending);
+}
+
+.status-dot.session-running,
+.status-dot.session-error,
+.status-dot.session-waiting,
+.status-dot.session-failed,
+.status-dot.session-idle {
   position: relative;
   width: 12px;
   height: 12px;
   background: transparent;
 }
 
-.status-dot.session-running::before {
+.status-dot.session-running::before,
+.status-dot.session-error::before {
   content: "";
   position: absolute;
   left: 50%;
@@ -2012,13 +2031,17 @@
   width: 11px;
   height: 11px;
   border-radius: 50%;
-  background: var(--status-running);
+  background: var(--session-dot-color);
   transform: translate(-50%, -50%) scale(0.75);
   opacity: 0.2;
   animation: halo-breathe 1.2s ease-in-out infinite alternate;
 }
 
-.status-dot.session-running::after {
+.status-dot.session-running::after,
+.status-dot.session-error::after,
+.status-dot.session-waiting::after,
+.status-dot.session-failed::after,
+.status-dot.session-idle::after {
   content: "";
   position: absolute;
   left: 50%;
@@ -2026,8 +2049,13 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--status-running);
+  background: var(--session-dot-color);
   transform: translate(-50%, -50%);
+}
+
+/* idle 点弱化（透明度，不缩尺寸——与左栏 idle 同档 0.55） */
+.status-dot.session-idle::after {
+  opacity: 0.55;
 }
 
 @keyframes halo-breathe {
@@ -2042,16 +2070,17 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .status-dot.session-running::before {
+  .status-dot.session-running::before,
+  .status-dot.session-error::before {
     animation: none;
     transform: translate(-50%, -50%) scale(0.95);
     opacity: 0.375;
   }
 }
 
-/* 待输入（授权/问题）：琥珀静态，不做闪烁动效（design-agent-status-indicator） */
-.status-dot.waiting {
-  background: var(--status-waiting);
+/* 左栏连接状态点（ServerStatus）：静态实心 6px，非会话点不走 session-* 变体 */
+.status-dot.error {
+  background: var(--status-error);
 }
 
 .status-dot.blink {

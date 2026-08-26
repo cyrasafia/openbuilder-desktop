@@ -94,8 +94,16 @@
   --color-user-code: #ec407a;
   --color-user-link: #2196f3;
 
-  --status-running: #4ade80;
-  --status-error: #f85149;
+  /* 绿按感知亮度（REC.709 Y）对齐红（HSL L 对绿色失真——绿通道权重 0.715）：
+     #4ade80 Y=73% → #1dae4e Y=53%，与红 #e5484d Y=41% 的差距从 32 点收窄到
+     12 点——拉平感知尺寸差（高亮绿点+光晕在深色底被读成大光团、与红点小球
+     并排时产生错位感，即「红点偏高」错觉的次因）。再暗会伤深色底可读性，
+     残余 12 点为色相固有的感知亮度差，接受 */
+  --status-running: #1dae4e;
+  /* 冷侧红（radix red9：色相 358°，蓝分量>绿分量）：暖侧红（#f85149/#e9443d
+     绿>蓝）在深色背景上会被读成橙红；明度 59% 与 running/waiting 同档——
+     高明度红并排时会触发「位置偏高」视觉错觉（色差/irradiation 效应） */
+  --status-error: #e5484d;
   --status-pending: #8b949e;
   /* 待输入（授权/问题）：琥珀静态，取值同移动端 AgentStatusIndicator paused 色 */
   --status-waiting: #fbbf24;
@@ -163,8 +171,10 @@
   --color-user-code: #ec407a;
   --color-user-link: #2196f3;
 
-  --status-running: #4ade80;
-  --status-error: #f85149;
+  /* 绿按感知亮度对齐红（见上方暗色注释） */
+  --status-running: #1dae4e;
+  /* 同深色主题：冷侧红消偏橙感（见上方暗色注释） */
+  --status-error: #e5484d;
   --status-pending: #8b949e;
   --status-waiting: #92400e;
 

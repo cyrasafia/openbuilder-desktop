@@ -8,6 +8,7 @@
  * pending 按 directory 隔离在 per-instance 内存 Map，reply 不带 directory
  * 会 404）——在事件/回填到达时捕获，不依赖会话信息已知。
  */
+import type { SessionStatusValue } from "./api-types"
 
 /** 权限请求（per_/sse 会话最多一张，Map 以 sessionID 为 key，与移动端一致） */
 export interface PendingPermission {
@@ -130,15 +131,22 @@ export function permissionCommand(p: PendingPermission): string | null {
 }
 
 /**
- * 会话状态点的确定性投影（design-agent-status-indicator.md）：
+ * 会话状态点的确定性投影（design-agent-status-indicator.md + design-error-message §3）：
  * 有待处理人机交互 = waiting（琥珀、静态、优先级最高，busy 底层事实保留）；
- * 否则流式中 = running；否则 idle。
+ * 否则报错退避重试（status=retry）= error（红光晕呼吸）；流式中 = running；
+ * 否则以报错结束（终局）= failed（红静态）；否则 idle。
  */
-export type SessionDotState = "waiting" | "running" | "idle"
+export type SessionDotState = "waiting" | "error" | "failed" | "running" | "idle"
 
-export function sessionDotState(pendingCount: number, busy: boolean): SessionDotState {
+export function sessionDotState(
+  pendingCount: number,
+  statusType: SessionStatusValue["type"],
+  terminalError = false,
+): SessionDotState {
   if (pendingCount > 0) return "waiting"
-  return busy ? "running" : "idle"
+  if (statusType === "retry") return "error"
+  if (statusType === "busy") return "running"
+  return terminalError ? "failed" : "idle"
 }
 
 /** 权限 map 的内容签名（sessionID+权限 id 对）：捕获同数量换血（他端答掉一张、

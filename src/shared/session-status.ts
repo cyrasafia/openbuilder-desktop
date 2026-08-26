@@ -59,3 +59,16 @@ export function inferIdleFromMessages(messages: Message[]): boolean {
   const last = messages[messages.length - 1]
   return last?.role === "assistant" && isTerminalFinish(last.finish)
 }
+
+/**
+ * 报错终局推断（design-error-message §3.4）：末条消息是携带非中止错误的
+ * assistant ⇒ 会话以报错结束（静态红点）。中止（MessageAbortedError）是用户
+ * 主动停止，不算错误；错误名是 server NamedError 契约（processor halt 路径）。
+ */
+export function inferFailedFromMessages(messages: Message[]): boolean {
+  const last = messages[messages.length - 1]
+  if (last?.role !== "assistant") return false
+  const err = last.error as { name?: string } | null | undefined
+  if (!err) return false
+  return err.name !== "MessageAbortedError"
+}

@@ -14,6 +14,7 @@ import { useI18n, useStore } from "../app"
 import { format, relativeTime } from "../i18n"
 import type { Catalog } from "../i18n"
 import { filterRevertedEntries, type ChatEntry } from "@shared/message-merge"
+import { extractErrorMessage, extractRetryMessage } from "@shared/message-error"
 import type {
   CommandInfo,
   Part,
@@ -45,23 +46,30 @@ export function Workspace() {
     <main className="workspace">
       <div className="tabbar">
         {tabs.map((tab) => {
+          // 会话状态点常显（含 idle，design-error-message §3.3 修订）：
+          // running/error 呼吸光晕、waiting/failed/idle 静态，统一 12px 盒几何
+          // （session-* 变体类）与其他指示纵向对齐；非 chat Tab 无会话语义不显示
+          const dot =
+            tab.kind === "chat" ? store.dotStateFor(tab.key.slice(5)) : null
+          // 全状态（含 idle）映射 session-* 变体——统一 12px 盒几何，状态切换
+          // 零布局位移（裸 "idle" 只吃基础 6px 类，会与 12px 盒间跳变抖动）
+          const dotClass =
+            dot === "running"
+              ? "session-running"
+              : dot === "error"
+                ? "session-error"
+                : dot === "waiting"
+                  ? "session-waiting"
+                  : dot === "failed"
+                    ? "session-failed"
+                    : "session-idle"
           return (
           <div
             key={tab.key}
             className={"tab" + (tab.key === store.activeTabKey ? " active" : "")}
             onClick={() => store.setActiveTab(tab.key)}
           >
-            {tab.kind === "chat" && store.dotStateFor(tab.key.slice(5)) !== "idle" && (
-              <span
-                className={
-                  "status-dot " +
-                  (store.dotStateFor(tab.key.slice(5)) === "running"
-                    ? "session-running"
-                    : store.dotStateFor(tab.key.slice(5)))
-                }
-              />
-
-            )}
+            {dot && <span className={"status-dot " + dotClass} />}
             <span className="tab-label">
               {tab.kind === "diff" ? t.diffTitle : tab.title || t.untitled}
             </span>
@@ -828,9 +836,11 @@ function TypingSlot({ status }: { status: SessionStatusValue }) {
   const { t } = useI18n()
   const busy = status.type === "busy"
   const retry = status.type === "retry"
+  // retry message 清洗（design-error-message §3.1）：provider 原文可内嵌 JSON body，
+  // 展示层提取人读字段（store 数据保持忠实）
   const retryText = retry
     ? status.message
-      ? format(t.retryingMessage, { message: status.message })
+      ? format(t.retryingMessage, { message: extractRetryMessage(status.message) })
       : t.retrying
     : ""
   return (
@@ -1159,7 +1169,9 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
       ))}
       {errored && (
         <div className="error-card">
-          {t.errorTitle}: {String((info.error as { message?: string })?.message ?? info.error)}
+          {/* NamedError 形态解析 + 内嵌 JSON 清洗（design-error-message §3.1）：
+              样式（红卡）已承载出错语义，正文只显示错误信息本身 */}
+          {extractErrorMessage(info.error)}
         </div>
       )}
     </div>

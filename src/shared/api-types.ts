@@ -78,12 +78,23 @@ export interface UserMessage {
   [k: string]: unknown
 }
 
+/**
+ * server NamedError 序列化形态（design-error-message §2 实测契约）：
+ * `{name: "APIError"|"UnknownError"|"MessageAbortedError"|…, data: {message, statusCode?, isRetryable?, …}}`。
+ * 人读文案在 `data.message`（顶层无 message）；解析见 message-error.ts extractErrorMessage。
+ */
+export interface NamedErrorShape {
+  name?: string
+  data?: { message?: string; [k: string]: unknown } | string
+  [k: string]: unknown
+}
+
 export interface AssistantMessage {
   id: string
   sessionID: string
   role: "assistant"
   time: { created: number; completed?: number }
-  error?: { type?: string; message?: string } | null
+  error?: NamedErrorShape | null
   /** 终态：stop（正常）/ error（异常）；tool-calls（中间步骤）与 null（生成中）非终态。
    *  (string & {}) 防联合类型坍缩——保留已知字面量的补全提示，同时容忍未来新值 */
   finish?: "stop" | "error" | "tool-calls" | (string & {}) | null
@@ -103,6 +114,7 @@ export type PartType =
   | "repl"
   | "repl-frontend"
   | "subtask"
+  | "retry"
 
 export interface PartBase {
   id: string
@@ -169,6 +181,19 @@ export interface SubtaskPart extends PartBase {
   text?: string | null
 }
 
+/**
+ * 重试 part（openapi 1.18.x Part 联合成员，design-error-message §2）：
+ * 退避窗口期到达、error 携带 APIError。消费语义（同 openbuilder conversation_store）：
+ * 不入渲染部件列表，error 传播到所属消息 info.error 供错误卡呈现。
+ * 本地 server 1.18.13 实测未持久化（retry 仅走 session.status 事件），防御式消费。
+ */
+export interface RetryPart extends PartBase {
+  type: "retry"
+  attempt: number
+  error: NamedErrorShape
+  time: { created: number }
+}
+
 /** GET /command 条目（v1 instance 路由，含 builtin/config/MCP/skill 四类） */
 export interface CommandInfo {
   name: string
@@ -182,7 +207,7 @@ export interface CommandInfo {
   [k: string]: unknown
 }
 
-export type Part = TextPart | ToolPart | StepStartPart | SubtaskPart | (PartBase & Record<string, unknown>)
+export type Part = TextPart | ToolPart | StepStartPart | SubtaskPart | RetryPart | (PartBase & Record<string, unknown>)
 
 export interface MessageWithParts {
   info: Message

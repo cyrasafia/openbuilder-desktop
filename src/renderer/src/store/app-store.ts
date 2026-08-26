@@ -6,7 +6,7 @@ import { RestClient, ApiError } from "@shared/rest-client"
 import { SseSubscriber, type SseStatus } from "@shared/sse-subscriber"
 import { Reconciler } from "@shared/reconciler"
 import { mergeSessionsSnapshot } from "@shared/session-merge"
-import { inferIdleFromMessages, mergeStatusSnapshot } from "@shared/session-status"
+import { inferFailedFromMessages, inferIdleFromMessages, mergeStatusSnapshot } from "@shared/session-status"
 import { runLimited } from "@shared/run-limited"
 import {
   buildFirstOpenMemory,
@@ -75,6 +75,7 @@ import type {
   OpencodeEvent,
   Part,
   Project,
+  RetryPart,
   Session,
   SessionStatusValue,
   TextPart,
@@ -200,6 +201,13 @@ export class AppStore {
   sessionStatus = new Map<string, SessionStatusValue>()
   /** sessionID → 状态来源目录（REST 按目录覆盖合并的权威边界） */
   private statusSources = new Map<string, string>()
+  /**
+   * retry 保持锁存（design-error-message §3.6）：server 在退避后的每次尝试起点都发
+   * busy（processor 每轮首行 status.set(busy)），失败再回 retry——忠实投影会让状态点
+   * 红绿交替闪。锁存后 busy 被扣住（投影保持 retry/红），直到出现真实流式进展
+   * （内容 part 事件）或终态（idle）才解除。内存态，随 sessionStatus 生命周期。
+   */
+  private retryHold = new Set<string>()
   // 斜杠命令注册表缓存（全局单份 per-server，目录隔离见 command-cache.ts）
   commandCache: CommandCacheState = initialCommandCache()
 
@@ -441,6 +449,7 @@ export class AppStore {
     this.optimisticBySession.clear()
     this.sessionStatus.clear()
     this.statusSources.clear()
+    this.retryHold.clear()
     this.pendingPermissions.clear()
     this.pendingQuestions.clear()
     this.revertDrafts.clear()
@@ -727,6 +736,33 @@ export class AppStore {
       }
       case "message.part.updated": {
         const { sessionID, part } = ev.properties as { sessionID: string; part: Part }
+        // retry part 消费（design-error-message §3.2，同 openbuilder）：error 传播到
+        // 所属消息 info.error（无错误时）供错误卡呈现，part 不入渲染部件列表
+        if (part.type === "retry") {
+          const msg = this.messagesBySession.get(sessionID)?.get(part.messageID)
+          if (msg && msg.info.role === "assistant" && msg.info.error == null) {
+            const err = (part as RetryPart).error
+            if (err) {
+              this.messagesBySession
+                .get(sessionID)!
+                .set(part.messageID, { info: { ...msg.info, error: err }, parts: msg.parts })
+            }
+          }
+          break
+        }
+        // retry 保持解除（design-error-message §3.6）：真实流式进展（模型产出的内容
+        // part）说明重试已成功——恢复 busy 投影（绿）。排除尝试起点的伴随 part
+        // （step-start/snapshot）：它们每轮尝试都发，不构成进展信号，据此解除会让
+        // 锁存失效、红绿交替闪回归。（step-finish/compaction 只可能晚于内容 part
+        // 出现，无需排除）
+        if (
+          this.retryHold.has(sessionID) &&
+          part.type !== "step-start" &&
+          part.type !== "snapshot"
+        ) {
+          this.retryHold.delete(sessionID)
+          this.setSessionStatus(sessionID, { type: "busy" }, directory)
+        }
         this.ensureConversation(sessionID)
         const conv = this.messagesBySession.get(sessionID)
         const msg = conv?.get(part.messageID)
@@ -740,7 +776,8 @@ export class AppStore {
           // 触发 immutable 更新
           conv!.set(part.messageID, { ...msg })
         } else if (conv) {
-          // 消息 info 未到，先缓存 part
+          // 消息 info 未到，先缓存 part（retry part 不缓存——其错误在 info 到达时
+          // 已由权威 message.updated 携带，或随后 retry part 重发，缓存无消费方）
           this.pendingParts(sessionID).set(part.messageID, [
             ...(this.pendingParts(sessionID).get(part.messageID) ?? []),
             part,
@@ -862,7 +899,12 @@ export class AppStore {
     if (status.type === "idle") {
       this.sessionStatus.delete(sessionID)
       this.statusSources.delete(sessionID)
+      this.retryHold.delete(sessionID)
     } else {
+      // retry 保持（design-error-message §3.6）：锁存中的 busy 是退避后新一轮尝试的
+      // 起点事件（往往零点几秒内失败回 retry），扣住不覆写——红点稳定整个重试期
+      if (status.type === "busy" && this.retryHold.has(sessionID)) return
+      if (status.type === "retry") this.retryHold.add(sessionID)
       this.sessionStatus.set(sessionID, status)
       if (directory) this.statusSources.set(sessionID, directory)
     }
@@ -871,12 +913,33 @@ export class AppStore {
   /**
    * REST 状态快照按目录覆盖合并（冷启动/重连对账/项目打开）。
    * 失败目录（null）保留旧值——严禁 clear()+addAll()（SS-1 回归）。
+   * retry 保持（design-error-message §3.6）双向维护：
+   * - 已持有时快照撞上在途尝试报 busy（server 内存态即 busy）→ 改写为本地 retry
+   *   再合并——直接丢弃会触发 merge 的 covered⇒idle 分支误清退避状态；
+   * - 未持有时快照报 retry（重连对账落在退避窗口内）→ **补建锁存**，否则下一轮
+   *   尝试起点的 busy 事件会覆写造成一次绿闪（SSE 路径 retry 事件建锁存，快照
+   *   路径此前缺这一半）；
+   * - 已非 retry（idle/缺席）的会话解除。
    */
   private applyStatusSnapshot(directory: string, fresh: Record<string, SessionStatusValue> | null) {
     if (!fresh) return
-    const merged = mergeStatusSnapshot(this.sessionStatus, this.statusSources, directory, fresh)
+    const filtered: Record<string, SessionStatusValue> = {}
+    for (const [sid, st] of Object.entries(fresh)) {
+      filtered[sid] =
+        st?.type === "busy" && this.retryHold.has(sid)
+          ? (this.sessionStatus.get(sid) ?? st)
+          : st
+    }
+    const merged = mergeStatusSnapshot(this.sessionStatus, this.statusSources, directory, filtered)
     this.sessionStatus = merged.status
     this.statusSources = merged.sources
+    // 锁存生命周期跟随合并结果（对齐最终态，与来源无关）
+    for (const sid of this.retryHold) {
+      if (merged.status.get(sid)?.type !== "retry") this.retryHold.delete(sid)
+    }
+    for (const [sid, st] of merged.status) {
+      if (st.type === "retry") this.retryHold.add(sid)
+    }
   }
 
   /** 卸载目录级状态（关项目/删工作区：该目录来源的状态随会话状态一并卸载） */
@@ -886,6 +949,7 @@ export class AppStore {
       if (set.has(dir)) {
         this.statusSources.delete(sid)
         this.sessionStatus.delete(sid)
+        this.retryHold.delete(sid)
       }
     }
   }
@@ -2263,11 +2327,21 @@ export class AppStore {
   }
 
   /**
-   * 会话状态点投影（design-agent-status-indicator：waiting > running > idle，
-   * waiting 显示时 busy 底层事实保留不覆写）。
+   * 会话状态点投影（design-agent-status-indicator + design-error-message §3/§3.4）：
+   * waiting > error（retry 退避，红呼吸）> running > failed（报错终局，红静态）> idle。
+   * waiting 显示时 busy 底层事实保留不覆写。
+   * 终局是纯派生（无缓存/锁存）：idle 且末条消息为非中止错误的 assistant ⇒ failed——
+   * 新 run 天然自愈（user/新 assistant 消息成为新末条），无事件清除路径的一致性风险；
+   * busy/retry 期间跳过派生（进行中状态优先，也无终局语义）。
    */
   dotStateFor(sessionID: string): SessionDotState {
-    return sessionDotState(this.pendingCountFor(sessionID), this.isSessionActive(sessionID))
+    const status = this.statusOf(sessionID).type
+    let terminalError = false
+    if (status === "idle") {
+      const msgs = [...(this.messagesBySession.get(sessionID)?.values() ?? [])]
+      terminalError = inferFailedFromMessages(msgs.sort(sortMessages).map((m) => m.info))
+    }
+    return sessionDotState(this.pendingCountFor(sessionID), status, terminalError)
   }
 
   /**

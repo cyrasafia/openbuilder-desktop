@@ -1683,3 +1683,359 @@ describe("Tab 状态记忆（design-tab-state-memory）", () => {
     expect(store.chatScrollFor("s2")).toBeNull()
   })
 })
+
+describe("报错消息与重试状态（design-error-message）", () => {
+  /** 直驱 handleEvent（SSE 已 mock off）：事件信封 { type, properties } */
+  function dispatch(ev: { type: string; properties: unknown }) {
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, ev)
+  }
+
+  function seedSession() {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    return s1
+  }
+
+  it("retry part：error 传播到所属消息 info.error，part 不入渲染部件列表", () => {
+    seedSession()
+    dispatch({
+      type: "message.updated",
+      properties: {
+        sessionID: "s1",
+        info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 100 } },
+      },
+    })
+    dispatch({
+      type: "message.part.updated",
+      properties: {
+        sessionID: "s1",
+        part: {
+          id: "prt_r1",
+          sessionID: "s1",
+          messageID: "msg_a1",
+          type: "retry",
+          attempt: 1,
+          error: { name: "APIError", data: { message: "rate limited", statusCode: 429 } },
+          time: { created: 101 },
+        },
+      },
+    })
+
+    const entry = store.chatEntries("s1").find((e) => e.kind === "message")
+    expect(entry && entry.kind === "message" ? entry.data.info.error : null).toEqual({
+      name: "APIError",
+      data: { message: "rate limited", statusCode: 429 },
+    })
+    // part 被消费（隐藏），不进入 parts
+    expect(
+      entry && entry.kind === "message"
+        ? entry.data.parts.map((p) => p.type)
+        : [],
+    ).toEqual([])
+  })
+
+  it("retry part 不覆写既有错误；消息未知（info 未到）静默丢弃不建容器", () => {
+    seedSession()
+    dispatch({
+      type: "message.updated",
+      properties: {
+        sessionID: "s1",
+        info: {
+          id: "msg_a1",
+          sessionID: "s1",
+          role: "assistant",
+          time: { created: 100 },
+          error: { name: "UnknownError", data: { message: "cert" } },
+        },
+      },
+    })
+    dispatch({
+      type: "message.part.updated",
+      properties: {
+        sessionID: "s1",
+        part: {
+          id: "prt_r2",
+          sessionID: "s1",
+          messageID: "msg_a1",
+          type: "retry",
+          attempt: 2,
+          error: { name: "APIError", data: { message: "later" } },
+          time: { created: 101 },
+        },
+      },
+    })
+    dispatch({
+      type: "message.part.updated",
+      properties: {
+        sessionID: "s2",
+        part: {
+          id: "prt_r3",
+          sessionID: "s2",
+          messageID: "msg_x",
+          type: "retry",
+          attempt: 1,
+          error: { name: "APIError", data: { message: "orphan" } },
+          time: { created: 1 },
+        },
+      },
+    })
+
+    const entry = store.chatEntries("s1").find((e) => e.kind === "message")
+    expect(entry && entry.kind === "message" ? entry.data.info.error : null).toEqual({
+      name: "UnknownError",
+      data: { message: "cert" },
+    })
+    expect(store.chatEntries("s2")).toHaveLength(0)
+  })
+
+  it("权威 message.updated 到达（重试成功后继续流式/完成）：传播的临时错误被清除", () => {
+    seedSession()
+    dispatch({
+      type: "message.updated",
+      properties: {
+        sessionID: "s1",
+        info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 100 } },
+      },
+    })
+    dispatch({
+      type: "message.part.updated",
+      properties: {
+        sessionID: "s1",
+        part: {
+          id: "prt_r1",
+          sessionID: "s1",
+          messageID: "msg_a1",
+          type: "retry",
+          attempt: 1,
+          error: { name: "APIError", data: { message: "rate limited" } },
+          time: { created: 101 },
+        },
+      },
+    })
+    // 重试成功 → server 权威 info（无 error）随 message.updated 到达
+    dispatch({
+      type: "message.updated",
+      properties: {
+        sessionID: "s1",
+        info: {
+          id: "msg_a1",
+          sessionID: "s1",
+          role: "assistant",
+          time: { created: 100, completed: 200 },
+          finish: "stop",
+        },
+      },
+    })
+    const entry = store.chatEntries("s1").find((e) => e.kind === "message")
+    expect(entry && entry.kind === "message" ? entry.data.info.error : "sentinel").toBeUndefined()
+  })
+
+  it("状态点投影：retry 退避 = error（红），busy = running，idle 兜底", () => {
+    seedSession()
+    expect(store.dotStateFor("s1")).toBe("idle")
+    dispatch({
+      type: "session.status",
+      properties: { sessionID: "s1", status: { type: "retry", attempt: 1, message: "rate limited" } },
+    })
+    expect(store.dotStateFor("s1")).toBe("error")
+    // retry 仍视为进行中（停止按钮/关 Tab 确认）
+    expect(store.isSessionActive("s1")).toBe(true)
+    // idle 终态解除保持后，busy 正常显示
+    dispatch({ type: "session.idle", properties: { sessionID: "s1" } })
+    dispatch({
+      type: "session.status",
+      properties: { sessionID: "s1", status: { type: "busy" } },
+    })
+    expect(store.dotStateFor("s1")).toBe("running")
+  })
+
+  it("retry 保持锁存（§3.6）：退避后新一轮尝试的 busy 事件被扣住，红点不闪绿", () => {
+    seedSession()
+    dispatch({
+      type: "session.status",
+      properties: { sessionID: "s1", status: { type: "retry", attempt: 1, message: "rate limited" } },
+    })
+    // server 每轮尝试起点发 busy（往往零点几秒内失败回 retry）——锁存扣住
+    dispatch({
+      type: "session.status",
+      properties: { sessionID: "s1", status: { type: "busy" } },
+    })
+    expect(store.statusOf("s1").type).toBe("retry")
+    expect(store.dotStateFor("s1")).toBe("error")
+    // 后续 retry 事件（attempt 递增）正常更新
+    dispatch({
+      type: "session.status",
+      properties: { sessionID: "s1", status: { type: "retry", attempt: 2, message: "rate limited" } },
+    })
+    expect(store.statusOf("s1")).toMatchObject({ type: "retry", attempt: 2 })
+  })
+
+  it("真实流式进展解除保持：内容 part（text/tool）恢复 busy；step-start 尝试起点不解除", () => {
+    seedSession()
+    // 消息容器就绪（part 事件需要 message.info 先到或入 pending——解除逻辑不依赖容器）
+    dispatch({
+      type: "message.updated",
+      properties: {
+        sessionID: "s1",
+        info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 100 } },
+      },
+    })
+    dispatch({
+      type: "session.status",
+      properties: { sessionID: "s1", status: { type: "retry", attempt: 1, message: "rate limited" } },
+    })
+    // step-start：每轮尝试起点都发，不构成进展——保持不解除
+    dispatch({
+      type: "message.part.updated",
+      properties: {
+        sessionID: "s1",
+        part: { id: "prt_ss1", sessionID: "s1", messageID: "msg_a1", type: "step-start" },
+      },
+    })
+    expect(store.dotStateFor("s1")).toBe("error")
+    // text 内容 part：模型真实产出——解除保持，恢复 busy（绿）
+    dispatch({
+      type: "message.part.updated",
+      properties: {
+        sessionID: "s1",
+        part: { id: "prt_t1", sessionID: "s1", messageID: "msg_a1", type: "text", text: "好的" },
+      },
+    })
+    expect(store.statusOf("s1").type).toBe("busy")
+    expect(store.dotStateFor("s1")).toBe("running")
+    // 解除后再来的 busy 正常写（幂等）
+    dispatch({
+      type: "session.status",
+      properties: { sessionID: "s1", status: { type: "busy" } },
+    })
+    expect(store.dotStateFor("s1")).toBe("running")
+  })
+
+  it("REST 状态快照撞上保持：busy 改写为本地 retry（不触发 covered⇒idle 误清）；idle/缺席解除", () => {
+    seedSession()
+    const apply = (fresh: Record<string, { type: string }>) =>
+      (store as unknown as { applyStatusSnapshot: (dir: string, f: Record<string, { type: string }>) => void }).applyStatusSnapshot(
+        ROOT,
+        fresh,
+      )
+    dispatch({
+      type: "session.status",
+      properties: { sessionID: "s1", status: { type: "retry", attempt: 1, message: "rate limited" } },
+    })
+    // 快照在在途尝试窗口抓到 busy——保持 retry
+    apply({ s1: { type: "busy" } })
+    expect(store.statusOf("s1").type).toBe("retry")
+    // 快照报 idle（server 已完成）——解除保持
+    apply({ s1: { type: "idle" } })
+    expect(store.statusOf("s1").type).toBe("idle")
+    expect(store.dotStateFor("s1")).toBe("idle")
+    // 再入 retry 后，快照缺席（covered⇒idle 删除）——同样解除
+    dispatch({
+      type: "session.status",
+      properties: { sessionID: "s1", status: { type: "retry", attempt: 1, message: "rate limited" } },
+    })
+    apply({})
+    expect(store.statusOf("s1").type).toBe("idle")
+  })
+
+  it("快照发现的 retry 补建锁存：重连对账落在退避窗口内，后续 busy 事件不闪绿", () => {
+    seedSession()
+    const apply = (fresh: Record<string, { type: string }>) =>
+      (store as unknown as { applyStatusSnapshot: (dir: string, f: Record<string, { type: string }>) => void }).applyStatusSnapshot(
+        ROOT,
+        fresh,
+      )
+    // 重连对账：快照报 retry（本地此前无任何状态——SSE 断线期间进入退避）
+    apply({ s1: { type: "retry" } })
+    expect(store.statusOf("s1").type).toBe("retry")
+    // server 下一轮尝试起点的 busy——锁存已由快照路径补建，不覆写
+    dispatch({
+      type: "session.status",
+      properties: { sessionID: "s1", status: { type: "busy" } },
+    })
+    expect(store.statusOf("s1").type).toBe("retry")
+    expect(store.dotStateFor("s1")).toBe("error")
+  })
+
+  it("报错终局（§3.4）：末条 assistant 非中止错误 → failed 静态红；中止与新 run 不算", () => {
+    seedSession()
+    dispatch({
+      type: "message.updated",
+      properties: {
+        sessionID: "s1",
+        info: {
+          id: "msg_u1",
+          sessionID: "s1",
+          role: "user",
+          time: { created: 100 },
+        },
+      },
+    })
+    dispatch({
+      type: "message.updated",
+      properties: {
+        sessionID: "s1",
+        info: {
+          id: "msg_a1",
+          sessionID: "s1",
+          role: "assistant",
+          time: { created: 200, completed: 300 },
+          finish: "stop",
+          error: { name: "APIError", data: { message: "quota exhausted" } },
+        },
+      },
+    })
+    expect(store.dotStateFor("s1")).toBe("failed")
+    // 会话非 idle（状态事件驱动）时终局投影不生效（busy/retry 优先）
+    dispatch({
+      type: "session.status",
+      properties: { sessionID: "s1", status: { type: "busy" } },
+    })
+    expect(store.dotStateFor("s1")).toBe("running")
+    dispatch({ type: "session.idle", properties: { sessionID: "s1" } })
+    expect(store.dotStateFor("s1")).toBe("failed")
+  })
+
+  it("报错终局：中止（MessageAbortedError）不投影 failed；新 run 添加新末条消息后自愈", () => {
+    seedSession()
+    dispatch({
+      type: "message.updated",
+      properties: {
+        sessionID: "s1",
+        info: {
+          id: "msg_a1",
+          sessionID: "s1",
+          role: "assistant",
+          time: { created: 100, completed: 200 },
+          error: { name: "MessageAbortedError", data: { message: "Aborted" } },
+        },
+      },
+    })
+    expect(store.dotStateFor("s1")).toBe("idle")
+
+    // 真错误 → failed（静态红）
+    dispatch({
+      type: "message.updated",
+      properties: {
+        sessionID: "s1",
+        info: {
+          id: "msg_a2",
+          sessionID: "s1",
+          role: "assistant",
+          time: { created: 300, completed: 400 },
+          error: { name: "UnknownError", data: { message: "cert" } },
+        },
+      },
+    })
+    expect(store.dotStateFor("s1")).toBe("failed")
+    // 新 run：user 消息成为新末条（真实时序——prompt 先落 user 消息）→ 终局不再成立
+    dispatch({
+      type: "message.updated",
+      properties: {
+        sessionID: "s1",
+        info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 500 } },
+      },
+    })
+    expect(store.dotStateFor("s1")).toBe("idle")
+  })
+})
