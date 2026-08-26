@@ -13,11 +13,13 @@
 
 | 端点 | 语义 | 返回 |
 |---|---|---|
-| `GET /vcs/diff?directory=X&mode=git[&context]` | 工作区未提交改动 | `SnapshotFileDiff[]` |
-| `GET /vcs/diff?directory=X&mode=branch[&context]` | 当前分支 vs 默认分支 | 同上 |
+| `GET /vcs/diff?directory=X&mode=git&context=<n>` | 工作区未提交改动 | `SnapshotFileDiff[]` |
+| `GET /vcs/diff?directory=X&mode=branch&context=<n>` | 当前分支 vs 默认分支 | 同上 |
 | `GET /session/{id}/diff?directory=X&messageID=<user msg>` | **该 user 消息发起的一轮**所做改动（server 侧 `SessionSummary.diff`：读该消息 `summary.diffs`；messageID 缺省或非 user 消息返回 `[]`） | 同上 |
 
 `SnapshotFileDiff = { file, patch, additions, deletions, status: added|deleted|modified }`。
+
+**context 恒显式传值（2026-08-26 修订）**：`/vcs/diff` 的 `context`（hunk 周边保留的未变更上下文行数）**省略时 server 内部默认值大到等价"整文件作 context"**——无论两处改动相距多远都合并成单 hunk、patch 恒为整文件，即"hunk 展示全量文件内容"的根因（移动端先踩过，见 openbuilder 提交 `086e32d` / design-diff-view §DV-CX1：同一症状"展示的总是完整文件内容，而非仅变更部分"，根因不在客户端渲染）。客户端决策：`listVcsDiff` 内缺省 `context = VCS_DIFF_CONTEXT = 3`（对齐 `git diff --unified=3`），调用点不写字面量；`/session/:id/diff` 无 `context` 参数，不受影响。
 
 实测 patch 头两种形态：session diff 为 `Index: f\n====…\n--- f\t\n+++ f\t`（git 无 --git 前缀风格），vcs diff 为 `diff --git a/f b/f\n[new file mode…]\nindex…\n--- /dev/null\n+++ b/f`。hunk 体均为标准 unified。**上一轮的消息定位**：客户端取当前作用域最近会话（updated 降序首个）的最后一条 user 消息 id 作 messageID。
 
@@ -64,6 +66,9 @@
 - **顶部 segment 工具条（2026-08-25 修订）**：`.diff-toolbar` 常驻渲染（同 `.file-toolbar` 决策——loading/error 态也渲染，避免内容落地时工具条弹入的布局跳动）；分段控件复用 `.ms-segmented`/`.ms-seg`（单一来源，不另起一套，同 FileView 预览/源码切换）；`role="group"` + `aria-pressed` 分组按钮（不冒充 tabs，无方向键导航）。三段 = `round|uncommitted|branch`，短标签。
 - 文件块（可折叠，chip 头部模式）：状态图标（added +/deleted −/modified M）+ 文件路径（mono）+ `+N −N` 统计；折叠只渲染头部。
 - hunk 头：`第 N 段 · L{newStart}–{newEnd} · +a −d`。
+- **折叠体系（2026-08-26 增补）**：移动端将 hunk 折叠列为 future scope（openbuilder design-diff-view §5「不做的事」），桌面端按需求补齐——
+  - **hunk 级**：hunk 头即折叠开关（`<button>` + chevron，`aria-expanded`），点击收起/展开本段行；文件块折叠与 hunk 折叠两级独立（文件收起时 hunk 状态保留，重开文件仍按原状态呈现）。
+  - **全局**：工具条右侧「全部折叠 / 全部展开」（`btn-tonal` chip，仅渲染于有文件且非错误态；右对齐，与 segment 同高）。实现为**意图信号** `foldOpen: boolean`（DiffView state → DiffBody → FileDiffBlock `useLayoutEffect` 应用，免首帧闪现）：折叠 = 关闭所有文件块 + 所有 hunk 标记收起；展开 = 全部打开。意图只表达按钮交替方向、不追踪各块本地状态（手动折叠不改变按钮标签）；deps 仅 `foldOpen`——**数据刷新（激活即重拉）不重置手动状态**，但意图切换后新挂载的文件块继承当前意图。
 - 行：双 gutter（oldNo | newNo，等宽两列——桌面宽裕，信息全）+ marker（+/−）+ 内容；added 绿底 tint / removed 红底 tint / context 透明，token 色 = `--syntax-*`（GitHub 风格与代码视图一致）；`diffAddBg/diffDelBg/diffAddFg/diffDelFg` 令牌进 tokens.css 双主题。
 - 永不换行：整页唯一横滚（外层容器），各文件/hunk 宽度统一（移动端同决策——换行破坏对齐）。
 - 大 diff 性能：**hunk 级** `content-visibility: auto` + `contain-intrinsic-size`——文件展开时屏外 hunk 仍可跳过渲染（粒度优于文件块级，零 JS 等价虚拟化）；解析/高亮全在 useMemo。
@@ -83,7 +88,6 @@
 |---|---|
 | split 并排视图 | v0.2 统一 unified 单栏（移动端同决策）；split 待用户诉求 |
 | 行内字符级 diff | 移动端同不做 |
-| hunk 折叠 | 文件级折叠已够；hunk 粒度需求未出现 |
 | commit/stage 等写操作 | 只读详情页；写操作是独立功能 |
 | diff against 任意 ref | server 只支持 git/branch 两 mode（契约冻结，移动端同标注） |
 | Tab 记忆持久化 | 按需打开的瞬时视图 |
@@ -106,6 +110,6 @@
 - GuidePage 单「改动」入口开/复用作用域唯一 diff Tab，与终端/网页预留入口同行平级（后两者禁用、`title`=即将支持）；
 - 页内 segment 切换三来源：默认未提交；切换即拉对应来源、缓存作首帧、重复点击不动作；选中跨 Tab 切换存活、关 Tab 清除；
 - 上一轮无会话 → 「当前作用域暂无会话」；无 user 消息/无改动 → 「无改动」；vcs 空 → 「无改动」；非 git 目录 → 错误态可重试；
-- 文件块折叠/展开、hunk 头、行号、增删底色、语法高亮（ts/md 等已映射语言）、长行横滚；
+- 文件块折叠/展开、hunk 点头击折叠/展开、工具条「全部折叠/全部展开」一键切换（折叠后手动开文件 → hunk 头可见、行仍收起）、行号、增删底色、语法高亮（ts/md 等已映射语言）、长行横滚；
 - 解析器单测（含 `+++i` 内容行、多文件兜底、`\ No newline`）；
 - `npm run test` / `npm run typecheck` 全绿；本机 15120 实测三端点。

@@ -141,3 +141,25 @@ describe("revert / unrevert（design-message-revert）", () => {
     await expect(client.unrevertSession("ses_1", "/repo")).rejects.toBeInstanceOf(ApiError)
   })
 })
+
+describe("listVcsDiff context（参考 openbuilder 086e32d）", () => {
+  it("省略 context：恒显式传 3——绕过 server\"整文件作 context\"默认值", async () => {
+    let called = ""
+    const client = mkClient((url) => {
+      called = url
+      return new Response("[]")
+    })
+    await client.listVcsDiff("/repo", "git")
+    expect(called).toBe("http://server/vcs/diff?directory=%2Frepo&mode=git&context=3")
+  })
+
+  it("显式 context 覆盖默认值", async () => {
+    let called = ""
+    const client = mkClient((url) => {
+      called = url
+      return new Response("[]")
+    })
+    await client.listVcsDiff("/repo", "branch", { context: 10 })
+    expect(called).toBe("http://server/vcs/diff?directory=%2Frepo&mode=branch&context=10")
+  })
+})

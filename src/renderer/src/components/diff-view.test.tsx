@@ -1,6 +1,7 @@
 /**
  * DiffView 渲染测试（design-diff-view §4）：segment 切换、加载/错误/空态、
- * 多 hunk 渲染、二进制空 hunk 兜底、文件块折叠。store 经 vi.mock 提供
+ * 多 hunk 渲染、二进制空 hunk 兜底、文件块折叠、hunk 级折叠、工具条全部折叠/
+ * 展开（含手动开文件的中间态）。store 经 vi.mock 提供
  * diffData + diffTypeFor/switchDiffType/loadDiffTab/visibleSessions。
  * CodeMirror headless 高亮依赖 ResizeObserver（jsdom 缺失），补 stub。
  */
@@ -31,6 +32,8 @@ vi.mock("../app", () => ({
       diffEmpty: "无改动",
       diffHunkSegment: "第 {n} 段",
       diffNoTextDiff: "无文本差异或二进制文件",
+      diffCollapseAll: "全部折叠",
+      diffExpandAll: "全部展开",
     },
     locale: "zh" as const,
   }),
@@ -62,8 +65,12 @@ beforeEach(() => {
   visibleSessions = []
 })
 
-const file = (patch: string, status: "added" | "deleted" | "modified" = "modified") => ({
-  file: "src/a.ts",
+const file = (
+  patch: string,
+  status: "added" | "deleted" | "modified" = "modified",
+  path = "src/a.ts",
+) => ({
+  file: path,
   patch,
   additions: 1,
   deletions: 1,
@@ -162,6 +169,43 @@ describe("DiffView", () => {
     // 再次展开
     fireEvent.click(screen.getByTitle("src/a.ts"))
     expect(document.querySelectorAll(".diff-row").length).toBe(4)
+  })
+
+  it("hunk 折叠：点击 hunk 头收起本段行，再点展开", () => {
+    selType = "round"
+    dataStub.set("diff\0round\0/repo", { files: [file(PATCH)] })
+    render(<DiffView tabKey={TAB_KEY} directory="/repo" />)
+    expect(document.querySelectorAll(".diff-row").length).toBe(4)
+    fireEvent.click(screen.getByText("第 1 段"))
+    // 行收起、hunk 头保留
+    expect(document.querySelectorAll(".diff-row").length).toBe(0)
+    expect(document.querySelectorAll(".diff-hunk-header").length).toBe(1)
+    fireEvent.click(screen.getByText("第 1 段"))
+    expect(document.querySelectorAll(".diff-row").length).toBe(4)
+  })
+
+  it("全部折叠/展开：文件块与 hunk 一并切换；手动打开的文件内 hunk 仍为收起", () => {
+    selType = "round"
+    dataStub.set("diff\0round\0/repo", {
+      files: [file(PATCH), file(PATCH, "added", "src/b.ts")],
+    })
+    render(<DiffView tabKey={TAB_KEY} directory="/repo" />)
+    expect(document.querySelectorAll(".diff-row").length).toBe(8)
+    const foldBtn = screen.getByText("全部折叠")
+    // 全部折叠：文件块收起 → 无 hunk 头、无行
+    fireEvent.click(foldBtn)
+    expect(document.querySelectorAll(".diff-hunk-header").length).toBe(0)
+    expect(document.querySelectorAll(".diff-row").length).toBe(0)
+    expect(screen.queryByText("全部折叠")).toBeNull()
+    expect(screen.getByText("全部展开")).not.toBeNull()
+    // 手动打开文件：文件块展开但 hunk 仍是全局收起意图 → 有头无行
+    fireEvent.click(screen.getByTitle("src/a.ts"))
+    expect(document.querySelectorAll(".diff-hunk-header").length).toBe(1)
+    expect(document.querySelectorAll(".diff-row").length).toBe(0)
+    // 全部展开：行恢复
+    fireEvent.click(screen.getByText("全部展开"))
+    expect(document.querySelectorAll(".diff-row").length).toBe(8)
+    expect(screen.getByText("全部折叠")).not.toBeNull()
   })
 
   it("激活即重拉当前选中来源（useEffect 调用 loadDiffTab）", () => {

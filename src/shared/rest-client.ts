@@ -55,6 +55,10 @@ export function classifyFetchError(e: unknown): ApiError {
   return new ApiError(0, "unknown", "未知错误")
 }
 
+/** /vcs/diff 默认 context 行数（对齐 git diff --unified=3）；server 省略时的
+ *  内部默认值 = 整文件作 context，必须显式传小值绕过（见 listVcsDiff 注释） */
+export const VCS_DIFF_CONTEXT = 3
+
 export class RestClient {
   private base: string
   private authHeader: string | undefined
@@ -366,6 +370,12 @@ export class RestClient {
   /**
    * VCS diff（design-diff-view §1）：mode=git 工作区未提交 / mode=branch 当前分支
    * vs 默认分支。非 git 目录 server 报错（调用方错误态呈现）。
+   *
+   * context 恒显式传值（缺省 VCS_DIFF_CONTEXT=3）：server 端省略时的内部默认值
+   * 大到等价"整文件作 context"——无论两处改动相距多远都合并成单 hunk、patch
+   * 恒为整文件，即移动端踩过的"展示完整文件"根因（参考 openbuilder 提交 086e32d
+   * 与 design-diff-view §DV-CX1）。3 对齐 git diff --unified=3。
+   * /session/:id/diff 无 context 参数，不受影响。
    */
   listVcsDiff(
     directory: string,
@@ -376,7 +386,7 @@ export class RestClient {
       `/vcs/diff${RestClient.dirQuery(directory, {
         mode,
         workspace: opts.workspace,
-        context: opts.context,
+        context: opts.context ?? VCS_DIFF_CONTEXT,
       })}`,
       { timeoutMs: 30000 },
     )
