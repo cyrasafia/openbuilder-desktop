@@ -3,7 +3,7 @@
 # 内嵌 electron 运行时（与开发/联调版本一致，避免系统 electron 版本漂移）
 
 pkgname=openbuilder-desktop
-pkgver=0.1.0
+pkgver=0.3.0
 pkgrel=1
 pkgdesc="Thin desktop client for opencode server (Electron + React), optimized for GNOME/Wayland"
 arch=('x86_64')
