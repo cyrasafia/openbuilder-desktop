@@ -62,9 +62,6 @@ export function FilePanel() {
     >
       <div className="sidebar-heading">
         <span>{t.filesTitle}</span>
-        <span className="tree-meta" title={project.worktree}>
-          {project.name || project.worktree.split("/").pop()}
-        </span>
       </div>
       <div className="tree scroll">
         {!hasLoaded && <div className="tree-empty">{t.loading}</div>}

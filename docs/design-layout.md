@@ -26,7 +26,7 @@
 
 - 三栏：**左 = 项目列表（+当前项目会话列表）**，**中 = 工作区**，**右 = 文件树**
 - 设置弹窗（连接配置等）不占布局，模态呈现
-- **标题栏（2026-08-24 增补）**：Linux 用自定义头部——main 侧 `frame: false`（GNOME/Wayland 下 CSD 本就由应用自绘），renderer 侧 `title-bar.tsx`：整体为拖拽区（`-webkit-app-region: drag`，双击最大化/还原用 Electron 原生行为，不另挂 dblclick），右侧**最小化/最大化还原/关闭**三按钮（IPC `win:*`，关闭按钮 hover 用 error/on-error token）；高度 36px（`--titlebar-h`），配色全走主题 token，跟随 `data-theme` 深/浅切换；按 `desktop.platform === "linux"` 门控渲染，macOS/Windows 及纯浏览器 shim 沿用系统装饰/不渲染
+- **标题栏（2026-08-24 增补）**：Linux 用自定义头部——main 侧 `frame: false`（GNOME/Wayland 下 CSD 本就应用自绘），renderer 侧 `title-bar.tsx`：整体为拖拽区（`-webkit-app-region: drag`，双击最大化/还原用 Electron 原生行为，不另挂 dblclick），右侧**最小化/最大化还原/关闭**三按钮（IPC `win:*`，关闭按钮 hover 用 error/on-error token）；高度 36px（`--titlebar-h`），配色全走主题 token，跟随 `data-theme` 深/浅切换；按 `desktop.platform === "linux"` 门控渲染，macOS/Windows 及纯浏览器 shim 沿用系统装饰/不渲染；2026-08-26 修订：应用标题定为「OpenBuilder」（去掉 desktop、规范大小写，含窗口标题/index.html/i18n appTitle/打包 desktop entry Name），标题栏内**整栏水平居中**展示（绝对定位铺满标题栏、`pointer-events: none` 放行右侧按钮点击，控制钮右贴边）
 
 ## 2. 尺寸与约束
 

@@ -9,7 +9,7 @@ import { TitleBar } from "./title-bar"
 vi.mock("../app", () => ({
   useI18n: () => ({
     t: {
-      appTitle: "openbuilder desktop",
+      appTitle: "OpenBuilder",
       winMinimize: "最小化",
       winMaximize: "最大化",
       winRestore: "还原",
@@ -42,6 +42,7 @@ beforeEach(() => {
 describe("TitleBar", () => {
   it("渲染最小化/最大化/关闭三个控制按钮，点击走 IPC", async () => {
     render(<TitleBar />)
+    expect(screen.getByText("OpenBuilder")).toBeTruthy()
     const min = await screen.findByTitle("最小化")
     min.click()
     expect(window.desktop.winMinimize).toHaveBeenCalled()

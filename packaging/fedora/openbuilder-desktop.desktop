@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=openbuilder desktop
+Name=OpenBuilder
 Comment=Thin desktop client for opencode server
 Exec=openbuilder-desktop %U
 Icon=openbuilder-desktop

@@ -38,7 +38,7 @@ function createMainWindow() {
     minHeight: 480,
     show: false,
     autoHideMenuBar: true,
-    title: "openbuilder desktop",
+    title: "OpenBuilder",
     icon: windowIconPath(),
     // Linux 用自定义头部（renderer title-bar.tsx：拖拽区 + 窗口控制，颜色随主题）；
     // GNOME/Wayland 下 CSD 由应用自绘；其他平台保留系统装饰

@@ -94,7 +94,7 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 | 组件 | 规格 |
 |---|---|
 | 三栏容器 | 面板分隔线 1px `outlineVariant`；栏标题 `ui-sm` + `outline` 色 |
-| 标题栏（Linux） | 高 36，`surfaceContainerLow` 底 + 1px `outlineVariant` 下边、标题 `ui-sm`；整体拖拽区，右侧控制钮 44×36（lucide 14px `onSurfaceVariant`，hover `surfaceContainerHigh`，关闭钮 hover `error` 底 + `onError` 图标）；仅 Linux frameless 渲染，深/浅主题随 token 切换 |
+| 标题栏（Linux） | 高 36，`surfaceContainerLow` 底 + 1px `outlineVariant` 下边、标题「OpenBuilder」`ui-sm` 整栏水平居中（2026-08-26，绝对定位铺满 + `pointer-events:none`）；整体拖拽区，右侧控制钮 44×36（lucide 14px `onSurfaceVariant`，hover `surfaceContainerHigh`，关闭钮 hover `error` 底 + `onError` 图标）；仅 Linux frameless 渲染，深/浅主题随 token 切换 |
 | Tab 条 | 高 36；Tab：图标 16 + 标题 `ui-md`，激活态底部 2px `primary` 指示线 + `surfaceContainerLow` 底；流式中 Tab 标题前置 8px running 状态点 |
 | 项目/工作区树（左栏） | 项目行自适应高（≥30，常态 ~40）：26px 圆角头像（`icon.override` > `icon.url` 图片（data:/https:，失败回退）> 名称首字母；色 = `icon.color` 命名色 > 名称哈希，与 openbuilder ProjectAvatar 跨端同色，调色板 token `--avatar-*`；色框/淡染底仅字母瓷片有，自定义图片态裸图（2026-08-24，同移动端））+ 右侧两行——名称 `ui-md` 600 + 路径 `ui-xs` `outline`（行内截断，title 全量）；worktree 行 26（16px 线性 worktree 图标（lucide `folder-git-2`）+ `ui-md` 名称 + 分支，名称文本与项目名文本左对齐（2026-08-24，行 padding-left 16 = 项目行 6+26 头像+6 间距 − 22 图标占位））；行三态纯背景色（2026-08-24 修订，弃用原左侧 2px `primary` 竖线）：未选中透明（承左栏 `surfaceContainerLow` 底）、hover `surfaceContainerHigh`、选中 `surfaceContainerHighest` 叠 4% `onSurface` 微加深（浅色主题 high/highest 色差过小，背景是唯一选中信号）——选中底取中性 surface 而非 `primary` 淡染，避免与行内四色指示器（琥珀/绿/灰/红状态点及聚合 chip）争色，深/浅主题均适用 |
 | 会话列表 | 行 30；标题 `ui-md` 400，hover `surfaceContainerLow`，激活 `surfaceContainer`；归档区折叠头 `ui-sm` `outline` |

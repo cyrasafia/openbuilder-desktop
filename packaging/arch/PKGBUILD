@@ -43,7 +43,7 @@ package() {
   install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/$pkgname.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=openbuilder desktop
+Name=OpenBuilder
 Comment=Thin desktop client for opencode server
 Exec=$pkgname %U
 Icon=$pkgname

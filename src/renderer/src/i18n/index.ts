@@ -5,7 +5,7 @@
 export type Locale = "zh" | "en"
 
 const zh = {
-  appTitle: "openbuilder desktop",
+  appTitle: "OpenBuilder",
   // 左栏
   projectsTitle: "项目",
   openProject: "打开项目…",
@@ -165,7 +165,7 @@ const zh = {
 }
 
 const en: typeof zh = {
-  appTitle: "openbuilder desktop",
+  appTitle: "OpenBuilder",
   projectsTitle: "Projects",
   openProject: "Open project…",
   closeProject: "Close project",

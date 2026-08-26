@@ -11,12 +11,12 @@
 /* ---------- Linux 自定义头部（颜色随主题 token） ---------- */
 .title-bar {
   -webkit-app-region: drag;
+  position: relative;
   height: var(--titlebar-h);
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding-left: 12px;
+  justify-content: flex-end;
   background: var(--surface-container-low);
   border-bottom: 1px solid var(--outline-variant);
   color: var(--on-surface-variant);
@@ -25,10 +25,15 @@
   flex: none;
 }
 
+/* 标题整栏居中：绝对定位铺满标题栏（不参与 flex），pointer-events 放行点击到右侧控制按钮 */
 .title-bar-title {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .title-bar-controls {
