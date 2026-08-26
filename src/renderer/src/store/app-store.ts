@@ -147,6 +147,15 @@ export interface TabEntity {
   directory?: string
 }
 
+/** 关闭栈条目（design-keyboard-shortcuts §2）：TabEntity 快照，恢复按 kind 分流 */
+export interface ClosedTabEntry {
+  kind: TabKind
+  key: string
+  projectId: string
+  directory: string
+  title: string
+}
+
 export type ConnectionState = "disconnected" | "connecting" | "streaming" | "degraded"
 
 export interface ProjectState {
@@ -247,6 +256,11 @@ export class AppStore {
   // ---- UI 状态 ----
   tabs: TabEntity[] = []
   activeTabKey: string | null = null
+  /**
+   * 关闭栈（design-keyboard-shortcuts §2，Ctrl+Shift+T 恢复）：仅用户主动关闭入栈
+   * （pushClosed 选项），上限 20 弃最旧；纯内存不持久化（重启场景由 Tab 记忆覆盖）
+   */
+  closedTabs: ClosedTabEntry[] = []
   settingsOpen = false
   fileTreeExpanded = new Map<string, boolean>()
   fileTreeNodes = new Map<string, FileNode[]>()
@@ -2848,22 +2862,25 @@ export class AppStore {
     }
     // 会话已不存在（如被其他客户端删除）：视为成功关闭
     if (!this.findSession(sessionID)) {
-      this.closeTab(`chat:${sessionID}`, { archive: false })
+      this.closeTab(`chat:${sessionID}`, { archive: false, pushClosed: true })
       this.cleanupSessionState(sessionID)
       return true
     }
     const ok = await this.archiveSession(sessionID)
     if (ok) {
-      this.closeTab(`chat:${sessionID}`, { archive: false })
+      this.closeTab(`chat:${sessionID}`, { archive: false, pushClosed: true })
       this.cleanupSessionState(sessionID)
     }
     return ok
   }
 
-  closeTab(key: string, _opts: { archive?: boolean } = {}) {
+  closeTab(key: string, _opts: { archive?: boolean; pushClosed?: boolean } = {}) {
     const idx = this.tabs.findIndex((t) => t.key === key)
     if (idx < 0) return
     const closed = this.tabs[idx]
+    // 用户主动关闭 → 记入关闭栈（design-keyboard-shortcuts §2，Ctrl+Shift+T 恢复）。
+    // 卸载路径（关项目/删工作区/死会话收敛/session.deleted）不传 pushClosed
+    if (_opts.pushClosed) this.pushClosedTab(closed)
     // 激活回退须在 splice 之前算（splice 后 findIndex 恒得 -1，会恒落候选取样首位
     // 而非相邻）：同作用域候选取样中闭 Tab 的下标 → 左邻优先、无则右邻、再无则 null。
     // 全 kind 作用域化（2026-08-25 §18）：不能激活到隐藏的跨作用域 Tab
@@ -2927,6 +2944,138 @@ export class AppStore {
 
   get activeTab(): TabEntity | null {
     return this.tabs.find((t) => t.key === this.activeTabKey) ?? null
+  }
+
+  // ============ 快捷键（design-keyboard-shortcuts） ============
+
+  private pushClosedTab(tab: TabEntity) {
+    this.closedTabs.push({
+      kind: tab.kind,
+      key: tab.key,
+      projectId: tab.projectId,
+      directory: tab.directory ?? "",
+      title: tab.title,
+    })
+    if (this.closedTabs.length > 20) this.closedTabs.shift()
+  }
+
+  /**
+   * Ctrl+Shift+T 恢复刚关闭的 Tab：自栈顶逐项尝试，不可恢复（会话已删/所属
+   * 作用域已关）跳过下一项，直到成功或栈空。**全 kind 先过作用域落点判定**
+   * （§2.1）——恢复的 Tab 必须落在其所属作用域（chat 恢复 = openChatTab 自带
+   * 取消归档；file/diff 重开）；terminal/browser 待 M3/M4 接入。
+   */
+  restoreClosedTab() {
+    while (this.closedTabs.length > 0) {
+      const entry = this.closedTabs.pop()!
+      if (entry.kind === "chat") {
+        // 会话存在性是纯查询，先于作用域切换——跳过已删会话时不白切作用域
+        const session = this.findSession(entry.key.slice(5))
+        if (session && this.ensureScopeFor(entry)) {
+          this.openChatTab(session)
+          return
+        }
+        continue
+      }
+      if (!this.ensureScopeFor(entry)) continue
+      if (entry.kind === "file") {
+        this.openFileTab(entry.key.slice(5))
+        return
+      }
+      if (entry.kind === "diff") {
+        this.openDiffTab()
+        return
+      }
+      // terminal/browser：栈结构兼容，恢复逻辑随对应功能落地接入
+    }
+  }
+
+  /**
+   * 恢复项作用域落点判定（design-keyboard-shortcuts §2.1）：directory ≠ 当前
+   * 作用域时**同步段**切过去（开 Tab 在其后立即执行，作用域已就位）。
+   * 返回 false = 所属项目/entry 已关闭，该项不可恢复。
+   */
+  private ensureScopeFor(entry: ClosedTabEntry): boolean {
+    const dir = entry.directory
+    if (!dir || this.scopeDirectory() === dir) return true
+    // 当前项目内（仅普通项目——global 项目 sandboxes 恒空，跨目录恢复走 entry
+    // 分支，否则会被误判不可达）：项目根或 worktree
+    const cur = this.currentProject
+    if (cur && entry.projectId === cur.id && cur.id !== GLOBAL_PROJECT_ID) {
+      if (dir === cur.worktree) void this.setCurrentWorkspace(null)
+      else if ((cur.sandboxes ?? []).includes(dir)) void this.setCurrentWorkspace(dir)
+      else return false
+      return true
+    }
+    // 其他已打开 entry：entry 根/global 目录走 openEntry；普通项目的 worktree
+    // 一步直达 setCurrentProject（= openProject(projectId, dir)，同步段落位——
+    // 先 openEntry 再补 setCurrentWorkspace 会把 Tab 开在项目根作用域）
+    const target = this.openedEntries.find(
+      (e) =>
+        e.project.id === entry.projectId &&
+        (e.directory === dir ||
+          (!e.isGlobal && (e.project.sandboxes ?? []).includes(dir))),
+    )
+    if (!target) return false
+    if (target.isGlobal || dir === target.directory) void this.openEntry(target.key)
+    else void this.setCurrentProject(target.project.id, dir)
+    return true
+  }
+
+  /** Ctrl+Tab / Ctrl+PgDn：作用域内可见 Tab 循环切换（无激活时取首/末） */
+  cycleTab(dir: 1 | -1) {
+    const visible = this.tabs.filter((t) => t.directory === this.scopeDirectory())
+    if (visible.length === 0) return
+    const idx = visible.findIndex((t) => t.key === this.activeTabKey)
+    const next =
+      idx < 0
+        ? dir === 1
+          ? 0
+          : visible.length - 1
+        : (idx + dir + visible.length) % visible.length
+    this.setActiveTab(visible[next]!.key)
+  }
+
+  /**
+   * Ctrl+Alt+↑/↓：左栏项目/工作区行按显示顺序遍历（design-keyboard-shortcuts §3）。
+   * 平铺序列 = openedEntries 行 +（普通项目）其 worktree 行；当前位置 = worktree
+   * 激活命中的工作区行，否则激活 entry 行；±1 循环。激活复用侧栏点击语义。
+   */
+  cycleScopeEntry(dir: 1 | -1) {
+    type NavRow =
+      | { kind: "entry"; key: string }
+      | { kind: "ws"; projectId: string; directory: string }
+    const rows: NavRow[] = []
+    for (const e of this.openedEntries) {
+      rows.push({ kind: "entry", key: e.key })
+      if (!e.isGlobal) {
+        for (const w of this.workspacesOfProject(e.project.id)) {
+          rows.push({ kind: "ws", projectId: e.project.id, directory: w.directory })
+        }
+      }
+    }
+    if (rows.length === 0) return
+    let idx = -1
+    const cur = this.currentProject
+    if (cur && this.currentWorkspace) {
+      idx = rows.findIndex(
+        (r) => r.kind === "ws" && r.projectId === cur.id && r.directory === this.currentWorkspace?.directory,
+      )
+    }
+    if (idx < 0) idx = rows.findIndex((r) => r.kind === "entry" && this.isEntryActive(r.key))
+    // 当前行未命中（瞬态：作用域行刚消失）时按"虚拟边界"取值——dir=1 落首行、
+    // dir=-1 落末行（直接模运算会把 -1 当末行算成倒数第二行）
+    const target =
+      idx < 0
+        ? rows[dir === 1 ? 0 : rows.length - 1]!
+        : rows[(idx + dir + rows.length) % rows.length]!
+    if (target.kind === "entry") {
+      if (!this.isEntryActive(target.key)) void this.openEntry(target.key)
+    } else if (target.projectId === this.currentProject?.id) {
+      void this.setCurrentWorkspace(target.directory)
+    } else {
+      void this.setCurrentProject(target.projectId, target.directory)
+    }
   }
 
   // ============ 输入草稿（design-compose-draft） ============

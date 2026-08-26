@@ -32,6 +32,7 @@ import { buildHtmlPreviewDocument } from "./html-preview"
 import { collectHeadings, MdToc, type TocHeading } from "./md-toc"
 import { DiffView } from "./diff-view"
 import { parseDiffTabKey } from "../store/app-store"
+import { closeTabInteractive } from "./tab-actions"
 
 export function Workspace() {
   const store = useStore()
@@ -78,13 +79,9 @@ export function Workspace() {
               title={t.closeTab}
               onClick={(e) => {
                 e.stopPropagation()
-                if (tab.kind === "chat") {
-                  const streaming = store.isSessionActive(tab.key.slice(5))
-                  if (streaming && !confirm(t.confirmCloseStreamingTab)) return
-                  void store.closeChatTab(tab.key.slice(5), { streaming })
-                } else {
-                  store.closeTab(tab.key)
-                }
+                // 用户主动关闭统一路径（design-keyboard-shortcuts §4）：
+                // chat 流式确认 + 入关闭栈；与 Ctrl+W 同语义
+                closeTabInteractive(store, tab, t)
               }}
             >
               ×
@@ -584,16 +581,19 @@ function ChatView({ sessionID }: { sessionID: string }) {
           onKeyDown={(e) => {
             // IME 组合中（如 fcitx5 上屏）不触发发送与菜单选中
             if (e.nativeEvent.isComposing) return
-            // 命令菜单打开且有匹配：↑/↓ 移动、Enter/Tab 选中补全、Esc 关闭
+            // 命令菜单打开且有匹配：↑/↓ 移动、Enter/Tab 选中补全、Esc 关闭。
+            // 修饰键组合（Ctrl/Meta/Alt）是全局快捷键域（Ctrl+Tab 切 Tab、
+            // Ctrl+Alt+↑/↓ 遍历作用域），不在此拦截（design-keyboard-shortcuts）
             if (cmdMode && matches.length > 0) {
-              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+              const noMod = !e.ctrlKey && !e.metaKey && !e.altKey
+              if (noMod && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
                 e.preventDefault()
                 const len = matches.length
                 setSelIndex(e.key === "ArrowDown" ? (sel + 1) % len : (sel - 1 + len) % len)
                 return
               }
               if (
-                e.key === "Tab" ||
+                (noMod && e.key === "Tab") ||
                 (e.key === "Enter" && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey)
               ) {
                 e.preventDefault()

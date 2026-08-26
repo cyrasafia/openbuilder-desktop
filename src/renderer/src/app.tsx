@@ -12,6 +12,7 @@ import { Sidebar } from "./components/sidebar"
 import { Workspace } from "./components/workspace"
 import { FilePanel } from "./components/file-panel"
 import { TitleBar } from "./components/title-bar"
+import { useShortcuts } from "./components/shortcuts"
 
 const StoreContext = createContext<AppStore | null>(null)
 
@@ -90,6 +91,8 @@ export function App() {
 
 function Shell() {
   const store = useStore()
+  // 全局快捷键（design-keyboard-shortcuts）：注册于 provider 内，store/t 就绪
+  useShortcuts()
   // 三栏栅格（design-layout-collapse §2.3）：折叠列宽 0；展开列用 store 记忆宽度。
   // 内联覆盖 app.css 的默认 grid-template-columns（CSS 变量无第二写入点，单一来源）
   const left = store.layoutLeftCollapsed ? "0px" : `${store.layoutLeftWidth}px`

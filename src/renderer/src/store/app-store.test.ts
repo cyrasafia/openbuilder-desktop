@@ -2099,3 +2099,229 @@ describe("布局状态（design-layout-collapse）", () => {
     expect(saved.at(-1)?.value).toMatchObject({ leftWidth: 200, rightWidth: 480 })
   })
 })
+
+describe("快捷键支撑（design-keyboard-shortcuts）", () => {
+  /** 最小可跑 client：updateSession 返回带 archived 的会话副本 */
+  function withSessionClient(sessions: Session[]) {
+    ;(store as unknown as { client: unknown }).client = {
+      listSessions: async () => [],
+      listSessionStatus: async () => ({}),
+      listProjects: async () => [project()],
+      listPendingPermissions: async () => [],
+      listPendingQuestions: async () => [],
+      updateSession: async (id: string, _dir: string, patch: { title?: string; time?: { archived?: number } }) => {
+        const s = sessions.find((x) => x.id === id)!
+        return { ...s, ...(patch.title != null ? { title: patch.title } : {}), time: { ...s.time, ...(patch.time ?? {}) } }
+      },
+    }
+    store.sessionsByProject = new Map([["proj1", sessionsOf(...sessions)]])
+  }
+
+  it("非 chat 用户关闭入栈；恢复重开 file Tab 并激活", () => {
+    withSessionClient([])
+    store.tabs = [
+      { kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT },
+      { kind: "file", key: `file:${ROOT}/a.md`, projectId: "proj1", title: "a.md", directory: ROOT },
+    ]
+    store.activeTabKey = `file:${ROOT}/a.md`
+    store.closeTab(`file:${ROOT}/a.md`, { pushClosed: true })
+    expect(store.tabs.length).toBe(1)
+    expect(store.closedTabs.length).toBe(1)
+    store.activeTabKey = "chat:s1"
+    store.restoreClosedTab()
+    expect(store.tabs.some((t) => t.key === `file:${ROOT}/a.md`)).toBe(true)
+    expect(store.activeTabKey).toBe(`file:${ROOT}/a.md`)
+    expect(store.closedTabs.length).toBe(0)
+  })
+
+  it("卸载路径（closeProject）不入关闭栈", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    withSessionClient([s1])
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
+    store.activeTabKey = "chat:s1"
+    await store.closeProject("proj1")
+    expect(store.tabs.length).toBe(0)
+    expect(store.closedTabs.length).toBe(0)
+  })
+
+  it("closeChatTab 成功入栈；恢复 = 重开（含取消归档路径）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    withSessionClient([s1])
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
+    store.activeTabKey = "chat:s1"
+    const ok = await store.closeChatTab("s1", { streaming: false })
+    expect(ok).toBe(true)
+    expect(store.tabs.length).toBe(0)
+    expect(store.closedTabs.length).toBe(1)
+    store.restoreClosedTab()
+    expect(store.tabs.some((t) => t.key === "chat:s1")).toBe(true)
+    expect(store.activeTabKey).toBe("chat:s1")
+  })
+
+  it("已删除会话的栈项被跳过，恢复下一个", () => {
+    store.tabs = []
+    // 栈顶（数组尾）在先：chat:gone 弹出后会话不存在 → 跳过 → 恢复更早的 file 项
+    store.closedTabs = [
+      { kind: "file", key: `file:${ROOT}/b.md`, projectId: "proj1", directory: ROOT, title: "b.md" },
+      { kind: "chat", key: "chat:gone", projectId: "proj1", directory: ROOT, title: "gone" },
+    ]
+    store.activeTabKey = null
+    store.restoreClosedTab()
+    expect(store.tabs.some((t) => t.key === `file:${ROOT}/b.md`)).toBe(true)
+    expect(store.closedTabs.length).toBe(0)
+  })
+
+  it("关闭栈上限 20：满则弃最旧", () => {
+    for (let i = 0; i < 25; i++) {
+      store.tabs = [{ kind: "file", key: `file:${ROOT}/f${i}.md`, projectId: "proj1", title: `f${i}`, directory: ROOT }]
+      store.closeTab(`file:${ROOT}/f${i}.md`, { pushClosed: true })
+    }
+    expect(store.closedTabs.length).toBe(20)
+    expect(store.closedTabs[0]!.key).toBe(`file:${ROOT}/f5.md`)
+  })
+
+  it("cycleTab 作用域内循环：末位 +1 回到首位；引导页态取首个", () => {
+    store.tabs = [
+      { kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT },
+      { kind: "file", key: `file:${ROOT}/a.md`, projectId: "proj1", title: "a.md", directory: ROOT },
+      { kind: "chat", key: "chat:other", projectId: "proj1", title: "other", directory: WT1 },
+    ]
+    store.activeTabKey = `file:${ROOT}/a.md`
+    store.cycleTab(1)
+    expect(store.activeTabKey).toBe("chat:s1")
+    store.activeTabKey = null
+    store.cycleTab(-1)
+    expect(store.activeTabKey).toBe(`file:${ROOT}/a.md`)
+  })
+
+  it("cycleScopeEntry：项目行 → 工作区行逐行 → 跨项目 → 循环回首个 entry", async () => {
+    const proj2 = { ...project(), id: "proj2", worktree: "/other", sandboxes: ["/other/wt9"] }
+    store.projects = [project(), proj2]
+    store.projectStates = {
+      default: { opened: ["proj1", "proj2"], currentProjectId: "proj1", currentWorkspaceId: null },
+    }
+    store.sessionsByProject = new Map()
+    // 行序：entry:proj1 → ws:WT1 → ws:WT2 → entry:proj2 → ws:/other/wt9（循环）
+    store.cycleScopeEntry(1)
+    await vi.waitFor(() => expect(store.scopeQuery.directory).toBe(WT1))
+    store.cycleScopeEntry(1)
+    await vi.waitFor(() => expect(store.scopeQuery.directory).toBe(WT2))
+    store.cycleScopeEntry(1)
+    await vi.waitFor(() => expect(store.currentProject?.id).toBe("proj2"))
+    expect(store.scopeQuery.directory).toBe("/other")
+    store.cycleScopeEntry(1)
+    await vi.waitFor(() => expect(store.scopeQuery.directory).toBe("/other/wt9"))
+    // wt9 之后循环回 proj1 entry（主工作区）
+    store.cycleScopeEntry(1)
+    await vi.waitFor(() => {
+      expect(store.currentProject?.id).toBe("proj1")
+      expect(store.scopeQuery.directory).toBe(ROOT)
+    })
+  })
+
+  it("restoreClosedTab 跨作用域：diff 栈项先切回所属作用域再开 Tab", async () => {
+    store.tabs = []
+    store.closedTabs = [
+      { kind: "diff", key: diffTabKey(WT1), projectId: "proj1", directory: WT1, title: "diff" },
+    ]
+    // 当前作用域 = 项目根（≠WT1）
+    store.projectStates = {
+      default: { opened: ["proj1"], currentProjectId: "proj1", currentWorkspaceId: null },
+    }
+    store.restoreClosedTab()
+    await vi.waitFor(() => expect(store.scopeQuery.directory).toBe(WT1))
+    expect(store.tabs.some((t) => t.key === diffTabKey(WT1))).toBe(true)
+  })
+})
+
+describe("关闭栈跨作用域恢复（design-keyboard-shortcuts §2.1 修订）", () => {
+  it("H1：跨项目 worktree 一步直达——diff 栈项恢复落在目标 worktree 而非项目根", () => {
+    const proj2 = { ...project(), id: "proj2", worktree: "/other", sandboxes: ["/other/wt9"] }
+    store.projects = [project(), proj2]
+    store.projectStates = {
+      default: { opened: ["proj1", "proj2"], currentProjectId: "proj1", currentWorkspaceId: null },
+    }
+    store.tabs = []
+    store.closedTabs = [
+      { kind: "diff", key: diffTabKey("/other/wt9"), projectId: "proj2", directory: "/other/wt9", title: "diff" },
+    ]
+    store.restoreClosedTab()
+    // 同步段即落位：作用域 = wt9，diff Tab 的 directory 也是 wt9（不是项目根）
+    expect(store.scopeQuery.directory).toBe("/other/wt9")
+    const tab = store.tabs.find((t) => t.kind === "diff")
+    expect(tab).toBeTruthy()
+    expect(tab!.directory).toBe("/other/wt9")
+    expect(tab!.key).toBe(diffTabKey("/other/wt9"))
+  })
+
+  it("M1：global 跨目录恢复走 entry 分支（不误判不可达）", () => {
+    const gx = session("gx", "/tmp/x", { created: 1, updated: 1 })
+    const gy = session("gy", "/tmp/y", { created: 1, updated: 2 })
+    gx.projectID = "global"
+    gy.projectID = "global"
+    store.projects = [
+      project(),
+      { id: "global", worktree: "/", time: { created: 0, updated: 0 }, sandboxes: [] },
+    ]
+    store.sessionsByProject = new Map([
+      ["proj1", new Map()],
+      ["global", sessionsOf(gx, gy)],
+    ])
+    store.projectStates = {
+      default: {
+        opened: ["proj1", "global\u0000/tmp/x", "global\u0000/tmp/y"],
+        currentProjectId: "global",
+        currentWorkspaceId: "/tmp/y",
+      },
+    }
+    store.tabs = []
+    store.closedTabs = [
+      { kind: "file", key: "file:/tmp/x/a.txt", projectId: "global", directory: "/tmp/x", title: "a.txt" },
+    ]
+    store.restoreClosedTab()
+    expect(store.scopeQuery.directory).toBe("/tmp/x")
+    expect(store.tabs.some((t) => t.key === "file:/tmp/x/a.txt" && t.directory === "/tmp/x")).toBe(true)
+  })
+
+  it("M2：chat 跨作用域恢复先切作用域——激活 Tab 不落在外作用域", async () => {
+    const s1 = session("s1", WT1, { created: 1, updated: 1 })
+    ;(store as unknown as { client: unknown }).client = {
+      listSessions: async () => [],
+      listSessionStatus: async () => ({}),
+      listProjects: async () => [project()],
+      listPendingPermissions: async () => [],
+      listPendingQuestions: async () => [],
+      updateSession: async (id: string, _dir: string, patch: { time?: { archived?: number } }) => ({
+        ...s1,
+        time: { ...s1.time, ...(patch.time ?? {}) },
+      }),
+    }
+    store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
+    store.projectStates = {
+      default: { opened: ["proj1"], currentProjectId: "proj1", currentWorkspaceId: null },
+    }
+    store.tabs = []
+    store.closedTabs = [
+      { kind: "chat", key: "chat:s1", projectId: "proj1", directory: WT1, title: "s1" },
+    ]
+    store.activeTabKey = null
+    store.restoreClosedTab()
+    expect(store.scopeQuery.directory).toBe(WT1)
+    expect(store.tabs.some((t) => t.key === "chat:s1" && t.directory === WT1)).toBe(true)
+    expect(store.activeTabKey).toBe("chat:s1")
+  })
+
+  it("所属项目已关：栈项跳过不入激活", () => {
+    store.projectStates = {
+      default: { opened: ["proj1"], currentProjectId: "proj1", currentWorkspaceId: null },
+    }
+    store.tabs = []
+    store.closedTabs = [
+      { kind: "file", key: "file:/closed-proj/a.md", projectId: "projX", directory: "/closed-proj", title: "a.md" },
+    ]
+    store.restoreClosedTab()
+    expect(store.tabs.length).toBe(0)
+    expect(store.activeTabKey).toBeNull()
+    expect(store.scopeQuery.directory).toBe(ROOT)
+  })
+})
