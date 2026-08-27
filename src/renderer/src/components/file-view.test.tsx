@@ -211,29 +211,26 @@ describe("FileView markdown 预览", () => {
     expect(layer.scrollTop).toBe(0)
   })
 
-  it(".html 默认 sandboxed iframe 预览（CSP 注入）；切源码为高亮代码", () => {
+  it(".html 恒源码态（预览已迁浏览器 Tab，design-browser-tab §1.4）：无 iframe、无预览/源码切换工具条", () => {
     fileContentsStub.set("/repo/page.html", { content: "<html><head><title>t</title></head><body><p>hi</p></body></html>" })
     render(<FileView absolutePath="/repo/page.html" />)
-    const iframe = document.querySelector("iframe.html-preview") as HTMLIFrameElement
-    expect(iframe).not.toBeNull()
-    expect(iframe.getAttribute("sandbox")).toBe("")
-    expect(iframe.getAttribute("referrerpolicy")).toBe("no-referrer")
-    expect(iframe.getAttribute("srcdoc")).toContain("Content-Security-Policy")
-
-    fireEvent.click(screen.getByRole("button", { name: "源码" }))
-    expect(document.querySelector(".cm-content")?.textContent).toContain("<html>")
     expect(document.querySelector("iframe.html-preview")).toBeNull()
+    // 非 previewable：无工具条（.ms-segmented 不渲染），直接代码视图
+    expect(document.querySelector(".ms-segmented")).toBeNull()
+    expect(document.querySelector(".cm-content")?.textContent).toContain("<html>")
   })
 
-  it(".htm 与大小写不敏感（.HTML）均走预览", () => {
+  it(".htm 与大小写不敏感（.HTML）同样恒源码", () => {
     fileContentsStub.set("/repo/old.htm", { content: "<div>x</div>" })
     const { unmount } = render(<FileView absolutePath="/repo/old.htm" />)
-    expect(document.querySelector("iframe.html-preview")).not.toBeNull()
+    expect(document.querySelector(".cm-content")?.textContent).toContain("<div>x</div>")
+    expect(document.querySelector("iframe.html-preview")).toBeNull()
     unmount()
 
     fileContentsStub.set("/repo/BIG.HTML", { content: "<div>y</div>" })
     render(<FileView absolutePath="/repo/BIG.HTML" />)
-    expect(document.querySelector("iframe.html-preview")).not.toBeNull()
+    expect(document.querySelector(".cm-content")?.textContent).toContain("<div>y</div>")
+    expect(document.querySelector("iframe.html-preview")).toBeNull()
   })
 
   it(".xhtml 不识别（走代码视图）", () => {

@@ -1908,19 +1908,6 @@
   padding: 4px 24px 24px;
 }
 
-/* ---------- html 预览（design-html-preview §3.2） ----------
- * iframe 自管滚动与背景；容器不滚不出血 */
-.file-view.html-view {
-  padding: 0;
-  overflow: hidden;
-}
-
-.html-preview {
-  width: 100%;
-  height: 100%;
-  border: none;
-  background: var(--surface-container-lowest);
-}
 
 /* ---------- 图片预览（design-image-preview §2.3/§2.4） ----------
  * 点击二态：适应窗口（按钮满容器、img 受限居中）↔ 原始尺寸（按钮收为内容尺寸，
@@ -3007,4 +2994,46 @@
   color: #f9e2af;
   font-size: var(--text-sm);
   pointer-events: none;
+}
+
+/* ---------- 浏览器 Tab（design-browser-tab §1.3） ---------- */
+.browser-tab {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.browser-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--outline-variant);
+  background: var(--surface-container-low);
+  flex-shrink: 0;
+}
+
+.browser-address {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--outline-variant);
+  border-radius: 13px;
+  background: var(--surface);
+  color: var(--on-surface);
+  font-size: var(--text-mono);
+}
+
+.browser-address:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+/* 内容宿主：渲染在 main 侧原生视图（WebContentsView），DOM 仅占位 */
+.browser-host {
+  flex: 1;
+  min-height: 0;
+  background: var(--surface);
 }

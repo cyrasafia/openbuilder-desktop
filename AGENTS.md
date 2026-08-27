@@ -31,6 +31,13 @@ opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录�
 - 合并其他分支到 main 默认用 squash merge（单提交、保留原提交信息作为正文）
 - 架构文档是"决策记录"性质：修订需在文档内改写决策及依据，而不是只改代码留文档过期
 
+## 版本号管理
+
+- 升级版本号时**必须同时修改所有版本落点**：`package.json`（+ `package-lock.json` 随 `npm version` 同步）、`packaging/arch/PKGBUILD`（`pkgver`）、`packaging/fedora/openbuilder-desktop.spec`（`Version:`）
+- 打包脚本 `scripts/package-arch.sh` 从 `package.json` 读取 `pkgver` 并自动递增 `pkgrel`（build number），无需手动改 `pkgrel`
+- 升级**第一段或第二段**版本号时（如 `0.3.0` → `0.4.0` 或 `1.0.0`），**必须打 GitHub tag**（`git tag vX.Y`）并推送（`git push origin vX.Y`）；第三段补丁号（`0.3.0` → `0.3.1`）不打 tag
+- commit message 用 `chore: 升级版本号至 X.Y.Z，对齐 vX.Y 标签`（打 tag 时）或 `chore: 升级版本号至 X.Y.Z`
+
 ## 已锁定的语义（实现时不可走样）
 
 - 项目打开/关闭是**纯客户端状态**（按 profile 持久化），server 无此概念；关闭项目 = 不展示 + 事件忽略，重开走 REST 快照

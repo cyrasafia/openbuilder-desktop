@@ -54,7 +54,7 @@ import {
   migrateOpenedKeys,
   type GlobalDirectoryRow,
 } from "@shared/project-entries"
-import type { ConnectionProfile } from "@shared/ipc"
+import type { BrowserViewState, ConnectionProfile } from "@shared/ipc"
 import "@shared/ipc-global"
 import {
   applyCommandFetch,
@@ -85,7 +85,7 @@ import type {
   Workspace,
 } from "@shared/api-types"
 
-export type TabKind = "chat" | "file" | "diff" | "terminal"
+export type TabKind = "chat" | "file" | "diff" | "terminal" | "browser"
 
 /** diff 的来源类型（design-diff-view §2）：单 Tab 内 segment 切换 */
 export type DiffTabType = "round" | "uncommitted" | "branch"
@@ -320,6 +320,19 @@ export class AppStore {
    */
   private ptyRuntimes = new Map<string, { exited: boolean; title: string }>()
   /**
+   * 浏览器 Tab（design-browser-tab §1.3）：tabKey → viewId（main 进程
+   * WebContentsView）；browserStates = main 推送的视图状态（url/title/loading/
+   * 前进后退）。纯内存；teardown/关 Tab 时 dispose view
+   */
+  private browserViewIds = new Map<string, number>()
+  browserStates = new Map<number, BrowserViewState>()
+  /**
+   * 全局浮层计数（design-browser-tab §1.2 z-order 对策）：>0 时隐藏全部浏览器
+   * 视图（原生视图恒在 DOM 之上，设置弹窗/右键菜单等会被挡）。设置弹窗与
+   * 文件树右键菜单挂/卸时 +1/-1
+   */
+  overlayCount = 0
+  /**
    * 作用域最后激活（design-tab-state-memory §2.1）：directory → 最后激活 Tab key；
    * null = 引导页。纯内存（重启无记录，冷启动激活仍走 design-tab-memory §7 记忆
    * 规则）。记录点 = 用户意图激活变更（点击/开 Tab/引导页）+ closeTab 激活回退
@@ -373,6 +386,10 @@ export class AppStore {
   }
 
   private async doInit() {
+    // 浏览器视图状态订阅（design-browser-tab §1.1：main → renderer 推送）
+    window.desktop.onBrowserViewState?.((state) => {
+      if (state && typeof state.viewId === "number") this.applyBrowserState(state)
+    })
     const profileData = (await window.desktop.storeGet("connection.profiles")) ?? {
       profiles: [],
       activeId: null,
@@ -529,6 +546,11 @@ export class AppStore {
       }
     }
     this.ptyRuntimes.clear()
+    // 浏览器视图全部 dispose（main 侧注册表同步清理；teardown 后 renderer 仍可用 IPC）
+    for (const viewId of this.browserViewIds.values()) window.desktop.browserViewDispose(viewId)
+    this.browserViewIds.clear()
+    this.browserStates.clear()
+    this.overlayCount = 0
     this.client = null
     this.managedBaseUrl = null
     this.projects = []
@@ -1324,13 +1346,14 @@ export class AppStore {
     this.guideDrafts.delete(directory)
     this.fileRefs.delete(directory)
     this.killPtyInDirectory(directory)
+    this.disposeBrowserViewsInDirectory(directory)
     // 该目录的 file/diff Tab 与 global 会话的 chat Tab 随之关闭（仅关 Tab，不归档——
     // 归档只发生在显式关闭 Tab；file Tab 作用域化后随目录卸载，2026-08-25 §18）。
     // 双行目录（git 项目 + global 会话共存）下按
     // projectId 过滤：git 项目的 Tab 归 closeProject 管，不随 global entry 关闭
     for (const tab of [...this.tabs]) {
       if (
-        (tab.kind === "diff" || tab.kind === "file" || tab.kind === "terminal") &&
+        (tab.kind === "diff" || tab.kind === "file" || tab.kind === "terminal" || tab.kind === "browser") &&
         tab.directory === directory &&
         tab.projectId === GLOBAL_PROJECT_ID
       ) {
@@ -1439,6 +1462,7 @@ export class AppStore {
         this.guideDrafts.delete(d)
         this.fileRefs.delete(d)
         this.killPtyInDirectory(d)
+        this.disposeBrowserViewsInDirectory(d)
       }
       // 该项目的 pending（授权/问题）一并卸载：目录失去订阅，replied 事件收不到，
       // 留着只会假亮；重开项目时 backfill 会按 server 权威重建
@@ -1449,7 +1473,7 @@ export class AppStore {
     // 双行目录下按 projectId 过滤：global entry 的 Tab 归 closeGlobalDirectory 管，
     // 不随 git 项目关闭（与 chat 分支一致）
     for (const tab of [...this.tabs]) {
-      if (tab.kind === "file" || tab.kind === "diff" || tab.kind === "terminal") {
+      if (tab.kind === "file" || tab.kind === "diff" || tab.kind === "terminal" || tab.kind === "browser") {
         if (tab.projectId === projectId) this.closeTab(tab.key)
         continue
       }
@@ -1834,6 +1858,7 @@ export class AppStore {
       this.guideDrafts.delete(directory)
       this.fileRefs.delete(directory)
       this.killPtyInDirectory(directory)
+      this.disposeBrowserViewsInDirectory(directory)
       // 显式关闭该目录全部 live Tab：订阅即将拆除，chat 的 session.deleted 事件
       // 兜底存在窗口期（design-tab-memory §5）；file/diff 无事件兜底，随目录卸载
       // （全 kind 作用域化，2026-08-25 §18）。双行目录（git worktree 与 global 会话
@@ -1841,7 +1866,7 @@ export class AppStore {
       // 归 global entry 管，删 git worktree 不得误关
       for (const tab of [...this.tabs]) {
         if (
-          (tab.kind === "file" || tab.kind === "diff" || tab.kind === "terminal") &&
+          (tab.kind === "file" || tab.kind === "diff" || tab.kind === "terminal" || tab.kind === "browser") &&
           tab.directory === directory &&
           tab.projectId === project.id
         ) {
@@ -2994,6 +3019,127 @@ export class AppStore {
     }
   }
 
+  // ============ 浏览器 Tab（design-browser-tab） ============
+
+  /** 视图状态事件入口（main 推送；tab 标题取页面 title） */
+  applyBrowserState(state: BrowserViewState) {
+    this.browserStates.set(state.viewId, state)
+    for (const [key, viewId] of this.browserViewIds) {
+      if (viewId === state.viewId) {
+        const tab = this.tabs.find((t) => t.key === key)
+        if (tab) tab.title = state.title || state.url
+        break
+      }
+    }
+    this.emit()
+  }
+
+  browserViewIdFor(tabKey: string): number | null {
+    return this.browserViewIds.get(tabKey) ?? null
+  }
+
+  /**
+   * 打开（或复用）浏览器 Tab：key = 初始 URL（稳定标识）；Electron 不可用
+   * （browser shim，view-create 返回 -1）时返回 false——.html 点击回退文件 Tab。
+   */
+  /** openBrowserTab 在途去重（评审 M2）：IPC 往返窗口内重复调用只建一个 view */
+  private browserOpenInFlight = new Map<string, Promise<boolean>>()
+
+  async openBrowserTab(url: string): Promise<boolean> {
+    const key = `browser:${url}`
+    const inFlight = this.browserOpenInFlight.get(key)
+    if (inFlight) return inFlight
+    const p = this.doOpenBrowserTab(key, url).finally(() => this.browserOpenInFlight.delete(key))
+    this.browserOpenInFlight.set(key, p)
+    return p
+  }
+
+  private async doOpenBrowserTab(key: string, url: string): Promise<boolean> {
+    const existing = this.tabs.find((t) => t.key === key)
+    if (existing) {
+      if (existing.directory !== this.scopeDirectory()) {
+        existing.directory = this.scopeDirectory()
+        existing.projectId = this.currentProject?.id ?? ""
+      }
+      this.activeTabKey = key
+      this.recordScopeActive(this.scopeDirectory(), key)
+      this.emit()
+      return true
+    }
+    const viewId = await window.desktop.browserViewCreate()
+    if (viewId == null || viewId < 0) return false
+    this.browserViewIds.set(key, viewId)
+    this.browserStates.set(viewId, {
+      viewId,
+      url,
+      title: url,
+      loading: false,
+      canGoBack: false,
+      canGoForward: false,
+    })
+    this.tabs.push({
+      kind: "browser",
+      key,
+      projectId: this.currentProject?.id ?? "",
+      title: url,
+      directory: this.scopeDirectory(),
+    })
+    this.activeTabKey = key
+    this.recordScopeActive(this.scopeDirectory(), key)
+    this.emit()
+    window.desktop.browserNavigate(viewId, url)
+    return true
+  }
+
+  /** 关闭浏览器 Tab：dispose view + 关 Tab 入关闭栈（条目记当前页 URL，恢复按它重开） */
+  closeBrowserTab(tabKey: string) {
+    const viewId = this.browserViewIds.get(tabKey)
+    const state = viewId != null ? this.browserStates.get(viewId) : null
+    if (viewId != null) {
+      window.desktop.browserViewDispose(viewId)
+      this.browserViewIds.delete(tabKey)
+      this.browserStates.delete(viewId)
+    }
+    // 关闭栈条目 URL = 当前页（restoreClosedTab 按 title 重开）。无条件写：
+    // 未导航的 Tab title 是页面标题（applyBrowserState 持续覆写），不作恢复 URL
+    const tab = this.tabs.find((t) => t.key === tabKey)
+    if (tab && state?.url) tab.title = state.url
+    this.closeTab(tabKey, { pushClosed: true })
+  }
+
+  /** 浮层计数（z-order 对策，§1.2） */
+  pushOverlay() {
+    this.overlayCount++
+    this.emit()
+  }
+
+  popOverlay() {
+    this.overlayCount = Math.max(0, this.overlayCount - 1)
+    this.emit()
+  }
+
+  /** 激活浏览器视图显隐（Tab 切换协调：激活显示，其余隐藏） */
+  syncBrowserViewVisibility() {
+    const active = this.activeTab
+    for (const [key, viewId] of this.browserViewIds) {
+      const show = this.overlayCount === 0 && active?.key === key && active.directory === this.scopeDirectory()
+      if (show) window.desktop.browserViewShow(viewId)
+      else window.desktop.browserViewHide(viewId)
+    }
+  }
+
+  /** 目录卸载（关项目/删工作区/teardown）时随关 Tab dispose（closeTab 分支兜底） */
+  private disposeBrowserViewsInDirectory(directory: string) {
+    for (const [key, viewId] of [...this.browserViewIds]) {
+      const tab = this.tabs.find((t) => t.key === key)
+      if (tab?.directory === directory) {
+        window.desktop.browserViewDispose(viewId)
+        this.browserViewIds.delete(key)
+        this.browserStates.delete(viewId)
+      }
+    }
+  }
+
   /**
    * 打开（或复用）当前作用域的 diff Tab 并触发加载（design-diff-view §3）。
    * 每作用域单 Tab；来源类型 = 既有选中（复用时保留用户选择），缺省 uncommitted。
@@ -3153,6 +3299,15 @@ export class AppStore {
     if (closed.kind === "chat") this.chatScrollTops.delete(closed.key.slice(5))
     // pty 运行时随 Tab 关闭终结（用户路径经 closeTerminalTab 已清，此处兜底卸载路径）
     if (closed.kind === "terminal") this.ptyRuntimes.delete(closed.key.slice("terminal:".length))
+    // 浏览器视图随 Tab 关闭 dispose（用户路径经 closeBrowserTab 已清，此处兜底卸载路径）
+    if (closed.kind === "browser") {
+      const viewId = this.browserViewIds.get(closed.key)
+      if (viewId != null) {
+        window.desktop.browserViewDispose(viewId)
+        this.browserViewIds.delete(closed.key)
+        this.browserStates.delete(viewId)
+      }
+    }
     if (closed.kind === "file") {
       this.fileViewStates.delete(closed.key.slice(5))
       this.tocStates.delete(closed.key.slice(5))
@@ -3259,7 +3414,11 @@ export class AppStore {
         void this.openTerminalTab()
         return
       }
-      // browser：栈结构兼容，恢复逻辑随对应功能落地接入
+      if (entry.kind === "browser") {
+        // 浏览器恢复 = 按关闭时当前页 URL 重开（title 字段承载，closeBrowserTab 写入）
+        void this.openBrowserTab(entry.title || entry.key.slice("browser:".length))
+        return
+      }
     }
   }
 
@@ -3594,12 +3753,12 @@ export class AppStore {
 
   openSettings() {
     this.settingsOpen = true
-    this.emit()
+    this.pushOverlay()
   }
 
   closeSettings() {
     this.settingsOpen = false
-    this.emit()
+    this.popOverlay()
   }
 
   async saveProfiles(profiles: ConnectionProfile[], activeId: string | null) {

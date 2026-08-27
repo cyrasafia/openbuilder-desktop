@@ -46,12 +46,25 @@ function sessionsOf(...list: Session[]): Map<string, Session> {
 
 let store: AppStore
 let snapshots: Map<string, Promise<Session[]> | Session[]>
+const browserCalls: string[] = []
 
 beforeEach(() => {
   ;(window as unknown as { desktop: unknown }).desktop = {
     storeGet: async () => null,
     storeSet: async () => {},
+    browserViewCreate: vi.fn(async () => 1),
+    browserViewBounds: vi.fn(),
+    browserViewShow: vi.fn(),
+    browserViewHide: vi.fn(),
+    browserViewDispose: vi.fn(),
+    browserNavigate: vi.fn(),
+    browserGoBack: vi.fn(),
+    browserGoForward: vi.fn(),
+    browserReload: vi.fn(),
+    browserStop: vi.fn(),
+    onBrowserViewState: () => () => {},
   }
+  browserCalls.length = 0
   snapshots = new Map()
   store = new AppStore()
   ;(store as unknown as { client: unknown }).client = {
@@ -2640,5 +2653,101 @@ describe("终端 Tab（design-terminal-tab）", () => {
     ;(store as unknown as { teardownConnection: () => void }).teardownConnection()
     expect(calls.some((c) => c === "delete:pty_1")).toBe(true)
     expect(store.ptyRuntimeFor("pty_1")).toBeNull()
+  })
+})
+
+describe("浏览器 Tab（design-browser-tab）", () => {
+  beforeEach(() => {
+    const d = (window as unknown as { desktop: Record<string, unknown> }).desktop
+    for (const [k, fn] of Object.entries(d)) {
+      if (k.startsWith("browser") && typeof fn === "function" && "mock" in (fn as object)) {
+        ;(fn as ReturnType<typeof vi.fn>).mockImplementation((...args: unknown[]) => {
+          browserCalls.push(`${k}:${String(args[0])}`)
+          return k === "browserViewCreate" ? Promise.resolve(1) : undefined
+        })
+      }
+    }
+  })
+
+  it("openBrowserTab：建 view + Tab 归作用域 + 导航初始 URL；重复打开复用激活", async () => {
+    const ok = await store.openBrowserTab("file:///repo/a.html")
+    expect(ok).toBe(true)
+    expect(browserCalls).toEqual(["browserViewCreate:undefined", "browserNavigate:1"])
+    expect(store.tabs.some((t) => t.key === "browser:file:///repo/a.html" && t.directory === ROOT)).toBe(true)
+    expect(store.activeTabKey).toBe("browser:file:///repo/a.html")
+    browserCalls.length = 0
+    await store.openBrowserTab("file:///repo/a.html")
+    expect(browserCalls).toEqual([]) // 复用不建新 view
+    expect(store.tabs.length).toBe(1)
+  })
+
+  it("view-create 失败（shim -1）：返回 false（上层回退文件 Tab）", async () => {
+    const d = (window as unknown as { desktop: { browserViewCreate: ReturnType<typeof vi.fn> } }).desktop
+    d.browserViewCreate.mockResolvedValueOnce(-1)
+    const ok = await store.openBrowserTab("file:///repo/b.html")
+    expect(ok).toBe(false)
+    expect(store.tabs.length).toBe(0)
+  })
+
+  it("closeBrowserTab：dispose + 关闭栈记当前页 URL", async () => {
+    await store.openBrowserTab("file:///repo/a.html")
+    // 导航后当前页变化（main 推送）
+    store.applyBrowserState({ viewId: 1, url: "file:///repo/c.html", title: "C", loading: false, canGoBack: true, canGoForward: false })
+    store.closeBrowserTab("browser:file:///repo/a.html")
+    expect(browserCalls.some((c) => c === "browserViewDispose:1")).toBe(true)
+    expect(store.tabs.length).toBe(0)
+    expect(store.closedTabs.at(-1)).toMatchObject({ kind: "browser", title: "file:///repo/c.html" })
+  })
+
+  it("未导航关闭：恢复条目仍按 URL 重开（title 被页面标题覆写，评审 M1 回归）", async () => {
+    browserCalls.length = 0
+    await store.openBrowserTab("file:///repo/a.html")
+    // 未导航但 main 已推送状态（url=初始、title=页面标题）
+    store.applyBrowserState({ viewId: 1, url: "file:///repo/a.html", title: "My Doc", loading: false, canGoBack: false, canGoForward: false })
+    store.closeBrowserTab("browser:file:///repo/a.html")
+    expect(store.closedTabs.at(-1)?.title).toBe("file:///repo/a.html")
+    store.restoreClosedTab()
+    await vi.waitFor(() => expect(browserCalls).toContain("browserNavigate:1"))
+    expect(store.tabs[0]!.key).toBe("browser:file:///repo/a.html")
+  })
+
+  it("openBrowserTab 并发重入：IPC 往返窗口内同 URL 只建一个 view（评审 M2 回归）", async () => {
+    browserCalls.length = 0
+    const d = (window as unknown as { desktop: { browserViewCreate: ReturnType<typeof vi.fn> } }).desktop
+    let resolveCreate!: (v: number) => void
+    d.browserViewCreate.mockImplementationOnce(() => new Promise<number>((r) => (resolveCreate = r)))
+    const p1 = store.openBrowserTab("file:///repo/dup.html")
+    const p2 = store.openBrowserTab("file:///repo/dup.html")
+    resolveCreate(7)
+    expect([await p1, await p2]).toEqual([true, true])
+    expect(store.tabs.filter((t) => t.key === "browser:file:///repo/dup.html").length).toBe(1)
+    // 只建一个 view（mockImplementationOnce 不经记录包装——以 viewId 映射断言）
+    expect(store.browserViewIdFor("browser:file:///repo/dup.html")).toBe(7)
+    expect(browserCalls.filter((c) => c === "browserNavigate:7").length).toBe(1)
+  })
+
+  it("restoreClosedTab browser 分支：按关闭时 URL 重开", async () => {
+    browserCalls.length = 0
+    store.closedTabs = [{ kind: "browser", key: "browser:x", projectId: "proj1", directory: ROOT, title: "https://example.com/" }]
+    store.restoreClosedTab()
+    await vi.waitFor(() => expect(browserCalls).toContain("browserNavigate:1"))
+    expect(store.tabs[0]!.key).toBe("browser:https://example.com/")
+  })
+
+  it("applyBrowserState：标题同步到 Tab；overlayCount 驱动显隐协调", async () => {
+    await store.openBrowserTab("about:blank")
+    store.applyBrowserState({ viewId: 1, url: "https://example.com/", title: "Example", loading: false, canGoBack: false, canGoForward: true })
+    expect(store.tabs[0]!.title).toBe("Example")
+    // 激活 + 无浮层 → show；overlay 后 → hide
+    browserCalls.length = 0
+    store.syncBrowserViewVisibility()
+    expect(browserCalls).toContain("browserViewShow:1")
+    store.pushOverlay()
+    browserCalls.length = 0
+    store.syncBrowserViewVisibility()
+    expect(browserCalls).toContain("browserViewHide:1")
+    expect(browserCalls).not.toContain("browserViewShow:1")
+    store.popOverlay()
+    expect(store.overlayCount).toBe(0)
   })
 })

@@ -21,12 +21,17 @@ export function PanelResizeHandle({ side }: { side: "left" | "right" }) {
       if (start.current) {
         start.current = null
         document.documentElement.classList.remove("resizing")
+        store.popOverlay()
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return
+    // 重入守卫：多指/第二 pointer 二次 down 不得重复 pushOverlay（一次 endDrag
+    // 只 pop 一次——泄漏会让浏览器视图永久隐藏）
+    if (start.current) return
     const panel = e.currentTarget.parentElement
     if (!panel) return
     start.current = { width: panel.getBoundingClientRect().width, x: e.clientX }
@@ -37,6 +42,9 @@ export function PanelResizeHandle({ side }: { side: "left" | "right" }) {
       // 已释放/无效 pointerId 等抛 NotFoundError——捕获失败不阻断拖拽
     }
     document.documentElement.classList.add("resizing")
+    // 浏览器视图是原生视图（DOM CSS 管不到）：拖拽期间经 overlay 计数隐藏，
+    // 防拖拽路径上的 pointer 事件被 webContents 吞掉（design-browser-tab §1.2）
+    store.pushOverlay()
   }
 
   const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -50,6 +58,7 @@ export function PanelResizeHandle({ side }: { side: "left" | "right" }) {
     if (!start.current) return
     start.current = null
     document.documentElement.classList.remove("resizing")
+    store.popOverlay()
     store.persistLayout()
   }
 

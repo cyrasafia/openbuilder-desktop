@@ -11,6 +11,7 @@ import { useI18n, useStore } from "../app"
 import type { FileNode } from "@shared/api-types"
 import { PanelResizeHandle } from "./panel-resize"
 import { FILEREF_MIME } from "./file-ref"
+import { fileUrlOf } from "@shared/file-url"
 import type { FileRef } from "@shared/api-types"
 
 interface MenuState {
@@ -19,13 +20,15 @@ interface MenuState {
   path: string
   name: string
   isDirectory: boolean
+  /** .html/.htm 文件（「查看源码」项显隐，design-browser-tab §1.4） */
+  isHtml: boolean
   x: number
   y: number
 }
 
 type OpenMenu = (
   e: ReactMouseEvent,
-  target: { absolute: string; path: string; name: string; isDirectory: boolean },
+  target: { absolute: string; path: string; name: string; isDirectory: boolean; isHtml: boolean },
 ) => void
 
 export function FilePanel() {
@@ -70,6 +73,7 @@ export function FilePanel() {
           path: "./",
           name: store.scopeQuery.directory.split("/").pop() || "/",
           isDirectory: true,
+          isHtml: false,
         })
       }
     >
@@ -118,6 +122,7 @@ function ctxTargetOf(node: FileNode) {
     path: node.path,
     name: node.name,
     isDirectory: node.type === "directory",
+    isHtml: node.type === "file" && /\.html?$/i.test(node.name),
   }
 }
 
@@ -180,7 +185,17 @@ function FileRow({
     <div
       className={"tree-row file-row" + (isActive ? " active" : "")}
       style={{ paddingLeft: 8 + depth * 14 + 16 }}
-      onClick={() => store.openFileTab(node.absolute)}
+      onClick={() => {
+        // .html/.htm 默认浏览器 Tab 打开（design-browser-tab §1.4；Electron 不可
+        // 用回退文件 Tab 源码）
+        if (/\.html?$/i.test(node.name)) {
+          void store.openBrowserTab(fileUrlOf(node.absolute)).then((ok) => {
+            if (!ok) store.openFileTab(node.absolute)
+          })
+          return
+        }
+        store.openFileTab(node.absolute)
+      }}
       onContextMenu={(e) => onContextMenu(e, ctxTargetOf(node))}
       draggable
       onDragStart={(e) => {
@@ -219,6 +234,13 @@ function FileContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => vo
     // 初始焦点 = 首项：autoFocus 在隐藏帧落空（同 model-switcher popover 模式），rAF 时定位已完成
     requestAnimationFrame(() => ref.current?.querySelector<HTMLButtonElement>("button")?.focus())
   }, [menu])
+
+  // 浮层计数（design-browser-tab §1.2 z-order）：菜单存在期间隐藏浏览器视图
+  useEffect(() => {
+    store.pushOverlay()
+    return () => store.popOverlay()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // 外部 mousedown / Esc / 滚动 / 失焦关闭（capture 阶段；回调走 ref 免重订阅）
   useEffect(() => {
@@ -279,6 +301,14 @@ function FileContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => vo
       >
         {t.fileOpen}
       </button>
+      {menu.isHtml && (
+        <button
+          className="context-menu-item"
+          onClick={() => run(() => store.openFileTab(menu.absolute))}
+        >
+          {t.fileViewSource}
+        </button>
+      )}
       {showOpenWith && (
         <button
           className="context-menu-item"

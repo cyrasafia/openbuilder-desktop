@@ -67,6 +67,15 @@ export function registerIpc() {
 
   ipcMain.handle("app:getVersion", () => app.getVersion())
 
+  // 浏览器 Tab「打开本地文件」（design-browser-tab §1.3）：HTML 文件选择器
+  ipcMain.handle("dialog:openHtmlFile", async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ["openFile"],
+      filters: [{ name: "HTML", extensions: ["html", "htm"] }],
+    })
+    return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0]
+  })
+
   // 文件栏右键菜单动作（design-file-panel-context-menu）：路径来自本客户端信任域
   // （server 文件列表/作用域目录），错误信息回传渲染层（""=成功）
   ipcMain.handle("shell:openPath", (_e, path: string) => {

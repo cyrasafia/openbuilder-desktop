@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url"
 import { join, dirname } from "node:path"
 import { existsSync } from "node:fs"
 import { registerIpc, bindMainWindow } from "./ipc"
+import { bindMainWindowForBrowserViews, registerBrowserViewIpc } from "./browser-views"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -52,6 +53,7 @@ function createMainWindow() {
   })
 
   bindMainWindow(win)
+  bindMainWindowForBrowserViews(win)
 
   win.on("ready-to-show", () => win.show())
 
@@ -87,6 +89,7 @@ function createMainWindow() {
 
 app.whenReady().then(() => {
   registerIpc()
+  registerBrowserViewIpc()
 
   // pty WS 握手去 Origin（design-terminal-tab §1.2 实测）：server 对 connect 路径
   // 校验 Origin allowlist（localhost/127.0.0.1/官方 scheme），浏览器 WS 必发

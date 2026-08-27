@@ -1,5 +1,7 @@
 # 文件 Tab HTML 预览 — 设计文档
 
+> **（v0.3 已废弃）** HTML 预览已迁移至浏览器 Tab（[design-browser-tab.md](design-browser-tab.md) §1.4）：文件树点击 `.html` 默认开浏览器 Tab（file:// 全能力渲染），右键「查看源码」在文件 Tab 打开源码。本文保留为历史决策记录——sandboxed iframe + CSP 注入方案在桌面端被 WebContentsView 取代（无脚本执行限制不再适用：浏览器 Tab 本就是"执行网页"的语境；本地相对资源加载无需 CSP 放行）。`html-preview.ts` 扫描器与用例已删除。
+
 > 目标：`.html` / `.htm` 文件默认渲染预览（sandboxed iframe），工具条「预览 / 源码」二态与 markdown 预览对齐；源码态走 CodeMirror（lang-html，已具备）。
 >
 > 参考来源（openbuilder 移动端，按 AGENTS.md 约定先行检索）：

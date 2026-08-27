@@ -27,6 +27,9 @@ function createBrowserDesktopApi(): DesktopApi {
     async openPathPicker() {
       return null
     },
+    async openHtmlFilePicker() {
+      return null
+    },
     async getAppVersion() {
       return "0.1.0-browser"
     },
@@ -35,6 +38,26 @@ function createBrowserDesktopApi(): DesktopApi {
     },
     async shellOpenWith() {
       return "系统打开仅 Electron 环境可用"
+    },
+    // 浏览器 Tab（design-browser-tab）：纯浏览器环境无 main 进程，view API 不可用。
+    // create 失败即可让上层回退（openBrowserTab 捕获后走文件 Tab / 隐藏入口）
+    async browserViewCreate() {
+      return -1
+    },
+    browserViewBounds() {},
+    browserViewShow() {},
+    browserViewHide() {},
+    browserViewDispose() {},
+    browserNavigate() {},
+    browserGoBack() {},
+    browserGoForward() {},
+    browserReload() {},
+    browserStop() {},
+    onBrowserViewState() {
+      return () => {}
+    },
+    onBrowserShortcut() {
+      return () => {}
     },
     winMinimize() {},
     winToggleMaximize() {},

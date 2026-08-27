@@ -15,9 +15,30 @@ const api = {
     return () => ipcRenderer.removeListener("managed:event", listener)
   },
   openPathPicker: () => ipcRenderer.invoke("dialog:openPath"),
+  openHtmlFilePicker: () => ipcRenderer.invoke("dialog:openHtmlFile") as Promise<string | null>,
   getAppVersion: () => ipcRenderer.invoke("app:getVersion"),
   shellOpenPath: (path: string) => ipcRenderer.invoke("shell:openPath", path) as Promise<string>,
   shellOpenWith: (path: string) => ipcRenderer.invoke("shell:openWith", path) as Promise<string>,
+  browserViewCreate: () => ipcRenderer.invoke("browser:view-create") as Promise<number>,
+  browserViewBounds: (viewId: number, rect: unknown) => ipcRenderer.send("browser:view-bounds", viewId, rect),
+  browserViewShow: (viewId: number) => ipcRenderer.send("browser:view-show", viewId),
+  browserViewHide: (viewId: number) => ipcRenderer.send("browser:view-hide", viewId),
+  browserViewDispose: (viewId: number) => ipcRenderer.send("browser:view-dispose", viewId),
+  browserNavigate: (viewId: number, url: string) => ipcRenderer.send("browser:navigate", viewId, url),
+  browserGoBack: (viewId: number) => ipcRenderer.send("browser:goBack", viewId),
+  browserGoForward: (viewId: number) => ipcRenderer.send("browser:goForward", viewId),
+  browserReload: (viewId: number) => ipcRenderer.send("browser:reload", viewId),
+  browserStop: (viewId: number) => ipcRenderer.send("browser:stop", viewId),
+  onBrowserViewState: (cb: (state: unknown) => void) => {
+    const listener = (_e: unknown, state: unknown) => cb(state)
+    ipcRenderer.on("browser:view-state", listener)
+    return () => ipcRenderer.removeListener("browser:view-state", listener)
+  },
+  onBrowserShortcut: (cb: (input: unknown) => void) => {
+    const listener = (_e: unknown, input: unknown) => cb(input)
+    ipcRenderer.on("browser:shortcut", listener)
+    return () => ipcRenderer.removeListener("browser:shortcut", listener)
+  },
   winMinimize: () => ipcRenderer.send("win:minimize"),
   winToggleMaximize: () => ipcRenderer.send("win:toggleMaximize"),
   winClose: () => ipcRenderer.send("win:close"),

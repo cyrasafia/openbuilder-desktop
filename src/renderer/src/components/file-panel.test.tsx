@@ -3,7 +3,7 @@
  * 对象解析（行 = 节点绝对路径；空白/标题栏 = 作用域根目录）、
  * 「打开方式」可见性（仅文件行 + win32/darwin）、动作走 IPC/clipboard。
  */
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { FilePanel } from "./file-panel"
 import type { FileNode } from "@shared/api-types"
@@ -22,6 +22,7 @@ vi.mock("../app", () => ({
       fileOpen: "打开",
       fileOpenWith: "打开方式…",
       fileCopyPath: "复制路径",
+      fileViewSource: "查看源码",
     },
     locale: "zh" as const,
   }),
@@ -63,6 +64,8 @@ function makeStore(): Record<string, unknown> {
     fileTreeExpanded: new Map(),
     activeTab: null,
     loadFileNodes: vi.fn(async () => {}),
+    pushOverlay: vi.fn(),
+    popOverlay: vi.fn(),
     toggleFileNode: vi.fn(),
     openFileTab: vi.fn(),
   }
@@ -163,5 +166,46 @@ describe("FilePanel 右键菜单", () => {
     const { container } = render(<FilePanel />)
     fireEvent.contextMenu(container.querySelector("aside") as Element)
     expect(screen.queryByText("打开")).toBeNull()
+  })
+})
+
+describe("FilePanel .html 路由（design-browser-tab §1.4）", () => {
+  it("点击 .html 默认开浏览器 Tab（file URL 编码）；shim 失败回退文件 Tab", async () => {
+    const htmlNode: FileNode = { name: "页 面.html", path: "页 面.html", absolute: `${ROOT}/页 面.html`, type: "file", ignored: false }
+    storeStub = {
+      ...makeStore(),
+      fileTreeNodes: new Map([[".", [dirNode, fileNode, htmlNode]]]),
+      openBrowserTab: vi.fn(async () => true),
+    }
+    render(<FilePanel />)
+    ;(screen.getAllByText("页 面.html")[0] as HTMLElement).click()
+    await waitFor(() => {
+      expect(storeStub.openBrowserTab).toHaveBeenCalledWith("file:///repo/%E9%A1%B5%20%E9%9D%A2.html")
+    })
+    expect(storeStub.openFileTab).not.toHaveBeenCalledWith(`${ROOT}/页 面.html`)
+
+    // 回退：openBrowserTab false → 文件 Tab
+    cleanup()
+    ;(storeStub.openBrowserTab as ReturnType<typeof vi.fn>).mockResolvedValue(false)
+    render(<FilePanel />)
+    ;(screen.getAllByText("页 面.html")[0] as HTMLElement).click()
+    await waitFor(() => expect(storeStub.openFileTab).toHaveBeenCalledWith(`${ROOT}/页 面.html`))
+  })
+
+  it("右键 .html 显示「查看源码」，点击开文件 Tab", async () => {
+    const htmlNode: FileNode = { name: "a.html", path: "a.html", absolute: `${ROOT}/a.html`, type: "file", ignored: false }
+    storeStub = {
+      ...makeStore(),
+      fileTreeNodes: new Map([[".", [htmlNode]]]),
+      openBrowserTab: vi.fn(async () => true),
+      pushOverlay: vi.fn(),
+      popOverlay: vi.fn(),
+    }
+    render(<FilePanel />)
+    fireEvent.contextMenu(screen.getByText("a.html"))
+    const item = await screen.findByText("查看源码")
+    item.click()
+    await waitFor(() => expect(storeStub.openFileTab).toHaveBeenCalledWith(`${ROOT}/a.html`))
+    cleanup()
   })
 })

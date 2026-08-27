@@ -28,12 +28,12 @@ import { externalDirectoryPath, permissionCommand } from "@shared/pending-reques
 import { Markdown } from "./markdown"
 import { ModelSwitcherBar } from "./model-switcher"
 import { CodeView } from "./code-view"
-import { buildHtmlPreviewDocument } from "./html-preview"
 import { collectHeadings, MdToc, type TocHeading } from "./md-toc"
 import { DiffView } from "./diff-view"
 import { parseDiffTabKey } from "../store/app-store"
 import { closeTabInteractive } from "./tab-actions"
 import { TerminalView } from "./terminal-view"
+import { BrowserTabView } from "./browser-tab-view"
 import { FileRefChips, useFileRefInput, type RefChipItem } from "./file-ref"
 import { isFileRefPart } from "@shared/api-types"
 
@@ -45,6 +45,12 @@ export function Workspace() {
   const scopeDir = store.scopeQuery.directory
   const tabs = store.tabs.filter((tab) => tab.directory === scopeDir)
   const active = store.activeTab
+
+  // 浏览器视图显隐协调（design-browser-tab §1.2）：激活 Tab + 无浮层才显示；
+  // Tab 切换/作用域切换/设置弹窗与右键菜单（overlayCount）变化时重算
+  useEffect(() => {
+    store.syncBrowserViewVisibility()
+  }, [store.activeTabKey, store.overlayCount, scopeDir, store])
   // 拖拽重排序（design-tab-drag-rename §1）：dragKey = 拖拽中 Tab；overKey =
   // 悬停目标 + 命中半区（左半 = 插入目标前、右半 = 插入目标后），指示线随半区
   // 亮在目标左/右缘
@@ -231,6 +237,13 @@ export function Workspace() {
           /* key 隔离：pty Tab 切换时重挂载（WS 卸载重连 + cursor replay） */
           <TerminalView key={active.key} ptyID={active.key.slice("terminal:".length)} />
         )}
+        {active?.kind === "browser" &&
+          (() => {
+            const viewId = store.browserViewIdFor(active.key)
+            return viewId != null ? (
+              <BrowserTabView key={active.key} tabKey={active.key} viewId={viewId} />
+            ) : null
+          })()}
       </div>
 
       {store.settingsOpen && <SettingsDialog />}
@@ -326,7 +339,13 @@ function GuidePage() {
           >
             {t.openTerminal}
           </button>
-          <button type="button" className="guide-action" disabled title={t.comingSoon}>
+          <button
+            type="button"
+            className="guide-action"
+            disabled={!store.activeProfile || window.desktop.platform === "browser"}
+            title={window.desktop.platform === "browser" ? t.comingSoon : undefined}
+            onClick={() => void store.openBrowserTab("about:blank")}
+          >
             {t.openBrowser}
           </button>
         </div>
@@ -1476,16 +1495,6 @@ function isMarkdownPath(path: string): boolean {
   return ext === "md" || ext === "markdown"
 }
 
-/**
- * html 文件判定（design-html-preview §3.2）：与 isMarkdownPath 同解析规则。
- */
-function isHtmlPath(path: string): boolean {
-  const base = path.split("/").pop() ?? ""
-  const dot = base.lastIndexOf(".")
-  if (dot <= 0) return false
-  const ext = base.slice(dot + 1).toLowerCase()
-  return ext === "html" || ext === "htm"
-}
 
 /* TOC 悬浮窗布局常量——与 app.css .md-toc 定位公式同源，改 CSS 须同步此处 */
 const TOC_W = 240 // --toc-w
@@ -1818,12 +1827,12 @@ function ImagePreview({ src, title, zoomLabel, failedText }: {
 
 /**
  * 文件 Tab 视图。图片（design-image-preview）：img data URL 渲染 + 点击缩放，
- * 无工具条。预览文件（design-markdown-preview / design-html-preview）：
- * `.md`/`.markdown` 渲染 markdown（内容区动态宽度 [600, 800] 居中，TOC 悬浮窗
- * 挂内容区左侧）；`.html`/`.htm` 渲染 sandboxed iframe——默认预览态 + 工具条
- * 二态切换；模式/滚动/TOC 状态挂载时从 store 按路径恢复（切走保存、切回恢复，
+ * 无工具条。预览文件（design-markdown-preview）：`.md`/`.markdown` 渲染
+ * markdown（内容区动态宽度 [600, 800] 居中，TOC 悬浮窗挂内容区左侧）；
+ * 模式/滚动/TOC 状态挂载时从 store 按路径恢复（切走保存、切回恢复，
  * design-tab-state-memory §2.2/§2.4），仅换文件（key 隔离重挂载无条目）回默认。
- * 其余文件代码视图（行号+语法高亮，design-code-view）；
+ * 其余文件（含 `.html`/`.htm`——预览已迁浏览器 Tab，design-browser-tab §1.4，
+ * 此处恒源码态）走代码视图（行号+语法高亮，design-code-view）；
  * 非图二进制占位提示（不把 base64 当文本）。
  */
 export function FileView({ absolutePath }: { absolutePath: string }) {
@@ -1831,9 +1840,8 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
   const { t, locale } = useI18n()
   const cached = store.fileContents.get(absolutePath)
   const isMarkdown = isMarkdownPath(absolutePath)
-  const isHtml = isHtmlPath(absolutePath)
   const isImage = isImagePath(absolutePath)
-  const previewable = isMarkdown || isHtml
+  const previewable = isMarkdown
   // 文件视图状态记忆（design-tab-state-memory §2.2）：挂载从 store 恢复模式 +
   // 滚动偏移（一次性待恢复）；捕获 = 容器/CM 滚动上报 + 模式切换归零
   const savedView = store.fileViewStateFor(absolutePath)
@@ -1880,12 +1888,6 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
-  // CSP 注入是 O(n) 扫描 + 拼接：只在内容变化时重算（SSE emit 重渲染不重复付出）
-  const htmlDoc = useMemo(
-    () => (isHtml && cached ? buildHtmlPreviewDocument(cached.content) : ""),
-    [isHtml, cached?.content],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  )
   // 图片 data URL 是兆字节级拼接，同此决策：agent 流式期间 emit 频繁，
   // 不可每次渲染重建（store 订阅在 App 层，FileView 非 memo）
   const imageSrc = useMemo(
@@ -2013,7 +2015,7 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
     // onScroll 捕获仅预览态有效：源码态 CM 内滚（经 CodeView onScrollTop 上报），
     // html 沙箱 iframe 容器 overflow:hidden 不滚——捕获写入不 emit（§2.2）
     <div
-      className={"file-view" + (isHtml ? " html-view" : " code-view")}
+      className="file-view code-view"
       ref={fileScrollRef}
       onScroll={(e) => store.setFileViewState(absolutePath, { mode, top: e.currentTarget.scrollTop })}
     >
@@ -2025,17 +2027,6 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
         <div className="file-md" ref={mdRef}>
           <Markdown>{cached.content}</Markdown>
         </div>
-      )}
-      {cached && !cached.error && mode === "preview" && isHtml && (
-        <iframe
-          className="html-preview"
-          title={absolutePath}
-          // 全沙箱：禁脚本 / opaque origin（触不到父页面与 preload 桥）/ 禁顶层
-          // 导航与弹窗；CSP 注入屏蔽外链资源（design-html-preview §2）
-          sandbox=""
-          referrerPolicy="no-referrer"
-          srcDoc={htmlDoc}
-        />
       )}
       {cached && !cached.error && mode === "source" && (
         <CodeView

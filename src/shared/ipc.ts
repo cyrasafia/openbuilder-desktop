@@ -50,6 +50,24 @@ export interface ConnectionProfile {
 /** 运行平台：main 进程 process.platform 的字面量集；纯浏览器 shim 为 "browser" */
 export type DesktopPlatform = "linux" | "darwin" | "win32" | "browser"
 
+/** 浏览器 Tab 视图状态（design-browser-tab §1.1，main 聚合事件推送） */
+export interface BrowserViewState {
+  viewId: number
+  url: string
+  title: string
+  loading: boolean
+  canGoBack: boolean
+  canGoForward: boolean
+}
+
+/** 浏览器视图 bounds（contentView 坐标系，DIP；design-browser-tab §1.1） */
+export interface BrowserViewRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 /** IPC 通道类型（preload ↔ main） */
 export interface DesktopApi {
   platform: DesktopPlatform
@@ -65,12 +83,29 @@ export interface DesktopApi {
   managedStop(): Promise<void>
   onManagedEvent(cb: (payload: string) => void): () => void
   openPathPicker(): Promise<string | null>
+  /** 选 HTML 文件（浏览器 Tab「打开本地文件」，design-browser-tab §1.3） */
+  openHtmlFilePicker(): Promise<string | null>
   getAppVersion(): Promise<string>
   /** 系统默认方式打开文件/目录（shell.openPath）；resolve ""=成功，否则错误信息 */
   shellOpenPath(path: string): Promise<string>
   /** 系统「打开方式」（design-file-panel-context-menu §2.4）：win32 = OpenAs_RunDLL 对话框，
    *  darwin = 系统应用选择器；linux 无系统对话框，渲染层不提供入口。同返回错误信息约定 */
   shellOpenWith(path: string): Promise<string>
+  /** 浏览器 Tab（design-browser-tab §1.1）：WebContentsView 生命周期与导航 */
+  browserViewCreate(): Promise<number>
+  browserViewBounds(viewId: number, rect: BrowserViewRect): void
+  browserViewShow(viewId: number): void
+  browserViewHide(viewId: number): void
+  browserViewDispose(viewId: number): void
+  browserNavigate(viewId: number, url: string): void
+  browserGoBack(viewId: number): void
+  browserGoForward(viewId: number): void
+  browserReload(viewId: number): void
+  browserStop(viewId: number): void
+  /** 视图状态推送（main → renderer），返回取消订阅 */
+  onBrowserViewState(cb: (state: BrowserViewState) => void): () => void
+  /** 浏览器视图内快捷键转发（main → renderer；页面聚焦时 window keydown 不可达，评审 M5） */
+  onBrowserShortcut(cb: (input: { key: string; control: boolean; meta: boolean; shift: boolean; alt: boolean }) => void): () => void
   /** Linux 自定义头部窗口控制（title-bar.tsx；仅 frameless 窗口有意义） */
   winMinimize(): void
   winToggleMaximize(): void

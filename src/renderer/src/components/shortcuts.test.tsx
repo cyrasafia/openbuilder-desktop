@@ -33,6 +33,8 @@ function press(init: KeyboardEventInit): KeyboardEvent {
   return ev
 }
 
+let shortcutCb: ((input: { key: string; control: boolean; meta: boolean; shift: boolean; alt: boolean }) => void) | null = null
+
 beforeEach(() => {
   for (const fn of Object.values(actions)) {
     if (vi.isMockFunction(fn)) fn.mockClear()
@@ -40,6 +42,16 @@ beforeEach(() => {
   actions.activeTab = null
   actions.isSessionActive.mockReturnValue(false)
   vi.spyOn(window, "confirm").mockReturnValue(true)
+  const cur = (window as unknown as { desktop?: Record<string, unknown> }).desktop
+  ;(window as unknown as { desktop: unknown }).desktop = {
+    ...(cur ?? {}),
+    onBrowserShortcut: (cb: typeof shortcutCb) => {
+      shortcutCb = cb
+      return () => {
+        shortcutCb = null
+      }
+    },
+  }
 })
 
 describe("useShortcuts 分发", () => {
@@ -102,6 +114,17 @@ describe("useShortcuts 分发", () => {
     expect(actions.cycleScopeEntry).toHaveBeenCalledWith(1)
     press({ key: "ArrowUp", ctrlKey: true, altKey: true })
     expect(actions.cycleScopeEntry).toHaveBeenCalledWith(-1)
+  })
+
+  it("浏览器视图快捷键转发（onBrowserShortcut）走同一分发", () => {
+    render(<Harness />)
+    expect(shortcutCb).not.toBeNull()
+    shortcutCb?.({ key: "t", control: true, meta: false, shift: false, alt: false })
+    expect(actions.showGuidePage).toHaveBeenCalledTimes(1)
+    shortcutCb?.({ key: "ArrowDown", control: true, meta: false, shift: false, alt: true })
+    expect(actions.cycleScopeEntry).toHaveBeenCalledWith(1)
+    shortcutCb?.({ key: "Tab", control: true, meta: false, shift: true, alt: false })
+    expect(actions.cycleTab).toHaveBeenCalledWith(-1)
   })
 
   it("IME 组合中与其他 Ctrl 组合不触发", () => {
