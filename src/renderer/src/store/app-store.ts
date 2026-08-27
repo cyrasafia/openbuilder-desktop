@@ -2900,8 +2900,9 @@ export class AppStore {
     } else {
       existing.directory = this.scopeDirectory()
       existing.projectId = this.currentProject?.id ?? ""
-      // 从 diff 跳转到已开 Tab 时更新锚定行（重新激活后 FileView 消费）
-      if (revealLine != null) existing.revealLine = revealLine
+      // 从 diff 跳转携带 revealLine 时更新锚定行（重新激活后 FileView 消费）；
+      // undefined = 无锚点（侧栏/关闭栈恢复等），清除残留避免过时行号强制源码模式
+      existing.revealLine = revealLine
     }
     this.activeTabKey = key
     // 任意 kind 最后激活记录（design-tab-state-memory §2.1 挂点：开即激活；
