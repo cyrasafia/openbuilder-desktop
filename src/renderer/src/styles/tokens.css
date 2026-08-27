@@ -39,10 +39,11 @@
   --radius-bubble: 12px;
   --radius-dialog: 12px;
 
-  /* 实心强调面（2026-08-27 统一）：用户气泡、agent 分段（build/plan）激活态、
-     enable 态主按钮（发送等）共用同一深绿底+浅字；底色取值即 openbuilder
-     userBubble 对，浅色主题单独提亮一档（见 light 块）。文字按"气泡内文字
-     对比 ≈ agent 正文对背景对比"校准：dark 正文 11.0:1 → 此处 10.8:1 */
+  /* 实心强调面（2026-08-27 统一）：agent 分段（build/plan）激活态、enable 态
+     主按钮（发送等）共用同一深绿底 + --emphasis-fg 浅字；底色取值即 openbuilder
+     userBubble 对，浅色主题单独提亮一档（见 light 块）。用户气泡文字不再共用
+     emphasis-fg：深色下改为 on-surface 同值对齐 agent 正文亮度（原近白更亮），
+     浅色保持 emphasis-fg（浅底需高明度字才达标对比），分别见 dark/light 块 */
   --emphasis-bg: #1f3d2a;
   --emphasis-fg: #f0f5ee;
 
@@ -106,11 +107,12 @@
   --color-quote-bar: #6e7681;
   /* 用户气泡（2026-08-27 第二次修订，回退前一轮降明度）：气泡底压到 L*≈13.5
      后与 surface（L*≈9.2）块面对比不足 4 档、暗色下轮廓难辨。气泡底与代码
-     块底恢复原值（#1f3d2a / #28513a），文字经 --emphasis-fg 对齐正文色；
-     light 的深底气泡是刻意倒装设计（同 openbuilder），不动 */
+     块底恢复原值（#1f3d2a / #28513a）；文字改用 on-surface 同值对齐 agent
+     正文亮度（原 emphasis-fg 近白 #f0f5ee 比 agent 正文更亮），深绿底上对比
+     ~7.1:1 仍清晰。light 的深底气泡是刻意倒装设计（同 openbuilder），不动 */
   --color-user-bubble: var(--emphasis-bg);
   --color-user-code-bg: #28513a;
-  --color-user-text: var(--emphasis-fg);
+  --color-user-text: var(--on-surface);
   --color-user-outline: #8b938a;
   --color-user-code: #ec407a;
   --color-user-link: #2196f3;
