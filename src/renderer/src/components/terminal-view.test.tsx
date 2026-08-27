@@ -39,6 +39,12 @@ vi.mock("@xterm/addon-fit", () => {
   }
   return { FitAddon: FakeFitAddon }
 })
+vi.mock("@xterm/addon-serialize", () => {
+  class FakeSerializeAddon {
+    serialize = vi.fn(() => "SERIALIZED_OUTPUT")
+  }
+  return { SerializeAddon: FakeSerializeAddon }
+})
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}))
 
 /** WebSocket 假类：记录 url/send，测试侧手动派发 message/open/close */
@@ -65,12 +71,15 @@ class FakeWS {
 }
 
 /** 可变 runtime 对象：markPtyExited 模拟 store 原位突变（真实 store 改同一引用） */
-const runtimeObj: { exited: boolean; title: string } = { exited: false, title: "bash" }
+const runtimeObj: { exited: boolean; title: string; buffer?: string } = { exited: false, title: "bash" }
 const actions = {
   ptyConnectUrl: vi.fn(async (): Promise<string | null> => "ws://s/pty/pty_1/connect?ticket=t"),
   reportPtySize: vi.fn(),
   markPtyExited: vi.fn((_id: string) => {
     runtimeObj.exited = true
+  }),
+  cachePtyBuffer: vi.fn((_id: string, _buf: string) => {
+    runtimeObj.buffer = _buf
   }),
   ptyRuntimeFor: vi.fn(() => runtimeObj),
 }
@@ -97,6 +106,7 @@ beforeEach(() => {
   for (const fn of Object.values(actions)) fn.mockClear()
   actions.ptyConnectUrl.mockResolvedValue("ws://s/pty/pty_1/connect?ticket=t")
   runtimeObj.exited = false
+  runtimeObj.buffer = undefined
   ;(globalThis as unknown as { WebSocket: unknown }).WebSocket = FakeWS
 })
 
@@ -157,12 +167,14 @@ describe("TerminalView", () => {
     expect(await screen.findByText("终端已断开")).toBeTruthy()
   })
 
-  it("已退出的 pty 重挂载：不建 WS 直接只读态（评审 L2）", async () => {
+  it("已退出的 pty 重挂载：不建 WS 直接只读态；有 buffer 缓存则还原（评审 L2）", async () => {
     runtimeObj.exited = true
+    runtimeObj.buffer = "CACHED_OUTPUT"
     render(<TerminalView ptyID="pty_1" />)
     expect(await screen.findByText("终端已退出")).toBeTruthy()
     await new Promise((r) => setTimeout(r, 10))
     expect(FakeWS.instances.length).toBe(0)
+    expect(writes.join("")).toContain("CACHED_OUTPUT")
     expect(writes.join("")).not.toContain("终端连接失败")
   })
 
@@ -179,5 +191,21 @@ describe("TerminalView", () => {
     const ws = FakeWS.instances[0]!
     unmount()
     expect(ws.readyState).toBe(3)
+  })
+
+  it("卸载时 pty 已退出：serialize 缓存到 store（保切回可读回滚）", async () => {
+    runtimeObj.exited = true
+    const { unmount } = render(<TerminalView ptyID="pty_1" />)
+    await screen.findByText("终端已退出")
+    unmount()
+    expect(actions.cachePtyBuffer).toHaveBeenCalledWith("pty_1", "SERIALIZED_OUTPUT")
+    expect(runtimeObj.buffer).toBe("SERIALIZED_OUTPUT")
+  })
+
+  it("卸载时 pty 运行中：不 serialize 缓存（重挂载靠 server 全量回放）", async () => {
+    const { unmount } = render(<TerminalView ptyID="pty_1" />)
+    await waitFor(() => expect(FakeWS.instances.length).toBe(1))
+    unmount()
+    expect(actions.cachePtyBuffer).not.toHaveBeenCalled()
   })
 })

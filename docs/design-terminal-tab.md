@@ -23,7 +23,8 @@
 - **Origin 剥离（打包形态实测）**：server 对 connect 路径校验 Origin allowlist，浏览器 WS 必发 Origin——打包（file://）→ 403；main 进程 `session.webRequest.onBeforeSendHeaders` 对 ws/wss **删 Origin 头**（server 视同无 Origin 放行，实测 101；dev 的 localhost 本就在 allowlist，删除无副作用）。renderer fetch 无此问题（file:// fetch 不发 Origin，实测 200）
 - 入帧：`term.onData` → `ws.send`（文本）
 - 断开/卸载：close WS；重挂载凭全量回放恢复。WS close **code 1000** = 自然退出 → store 标 exited（关闭 Tab 不再 DELETE，legacy 路由已 404）；**其余 code** = 异常断开 → 仅"已断开"叠加态、不标 exited（关闭 Tab 仍 DELETE 防孤儿，评审 M2）。已退出 pty 重挂载不建 WS
-- exited 呈现：WS close（code 1000 = pty 自然退出）→ 终端区叠加「已退出」态（终态提示行），只读；Tab 保持（可读回滚）直至用户关闭
+- exited 呈现：WS close（code 1000 = pty 自然退出）→ 终端区叠加「已退出」态（终态提示行，通栏 banner 警示色——已退出琥珀、已断开红），只读；Tab 保持（可读回滚）直至用户关闭
+- **已退出 Tab 回滚保留（buffer 缓存）**：组件卸载即销毁 xterm buffer，但已退出 pty 的 server attach 抛 ExitedError 无法回放——卸载前用 `@xterm/addon-serialize` 导出 ANSI 序列缓存到 `ptyRuntimes[id].buffer`；重挂载时若有缓存则 `term.write(buffer)` 还原（不建 WS），兑现「Tab 保持可读回滚」。运行中 pty 不缓存（重挂载靠 server 全量回放）
 - **resize**：ResizeObserver → `fitAddon.proposeDimensions()` → `term.resize` + `PUT /pty/{id}` `{size:{rows,cols}}`（节流 200ms）；连接未建立时只 resize 本地
 - **自动聚焦**：`term.open(host)` 后立即 `term.focus()`——Tab 切换走 key 隔离重挂载，打开/切回 terminal 即获焦，无需点击；`.terminal-view` `onMouseDown` 兜底（点击终端任意区域重新聚焦）
 - 复用浏览器 shim：终端纯 renderer + server WS，无 IPC 依赖——shim 下同样可用（jsdom 测试不建真 WS）
@@ -57,7 +58,7 @@ ptyRuntimes = new Map<string, { exited: boolean; title: string }>()  // 纯内�
 | `src/shared/api-types.ts` | `Pty` / `PtyShell` / `PtyTicket` 类型 |
 | `src/shared/rest-client.ts` | `listShells/createPty/updatePtySize/deletePty/ptyConnectToken`（后两者错误静默约定；connect-token 带 `x-opencode-ticket: 1` 头） |
 | `src/renderer/src/store/app-store.ts` | TabKind 扩 terminal；openTerminalTab/ptyRuntimes/closeTerminalTab/restoreClosedTab terminal 分支/cycleTab 无需改（directory 过滤通用）/卸载路径 DELETE |
-| `src/renderer/src/components/terminal-view.tsx` | 新：xterm 终端组件（WS 生命周期/fit/深色） |
+| `src/renderer/src/components/terminal-view.tsx` | xterm 终端组件（WS 生命周期/fit/深色/自动聚焦/已退出 buffer 缓存 serialize 还原） |
 | `src/renderer/src/components/workspace.tsx` | Tab 内容分发 terminal 分支；引导页终端入口解禁；关闭走 closeTabInteractive（terminal 确认文案） |
 | `src/renderer/src/components/tab-actions.ts` | terminal 关闭确认 + closeTerminalTab |
 | `src/renderer/src/styles/app.css` | `.terminal-view`（深色固定 + 已退出叠加态） |

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { Terminal } from "@xterm/xterm"
 import { FitAddon } from "@xterm/addon-fit"
+import { SerializeAddon } from "@xterm/addon-serialize"
 import "@xterm/xterm/css/xterm.css"
 import { useI18n, useStore } from "../app"
 
@@ -94,10 +95,15 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
     observer.observe(host)
 
     const decoder = new TextDecoder()
+    const serialize = new SerializeAddon()
+    term.loadAddon(serialize)
     const openWs = async () => {
-      // 已退出的 pty 不再连接（server legacy 路由 exited 即 404）
-      if (store.ptyRuntimeFor(ptyID)?.exited) {
+      // 已退出的 pty 不再连接（server legacy 路由 exited 即 404）；
+      // 但若有 client 侧序列化缓存（上次卸载前缓存），还原 buffer 保回滚
+      const rt = store.ptyRuntimeFor(ptyID)
+      if (rt?.exited) {
         setState("closed")
+        if (rt.buffer) term.write(rt.buffer)
         return
       }
       const url = await store.ptyConnectUrl(ptyID)
@@ -144,6 +150,15 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
       observer.disconnect()
       wsRef.current?.close()
       wsRef.current = null
+      // 已退出 pty：serialize 导出 buffer 缓存到 store，保 Tab 切走再切回可读回滚
+      // （server attach 对 exited pty 抛 ExitedError 无法回放）
+      if (store.ptyRuntimeFor(ptyID)?.exited) {
+        try {
+          store.cachePtyBuffer(ptyID, serialize.serialize())
+        } catch {
+          // dispose 边界异常不阻断清理
+        }
+      }
       term.dispose()
       termRef.current = null
     }
@@ -165,7 +180,7 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
     <div className="terminal-view" onMouseDown={() => termRef.current?.focus()}>
       <div ref={hostRef} className="terminal-host" />
       {exited && (
-        <div className="terminal-exited-overlay">
+        <div className={`terminal-exited-overlay ${runtime?.exited ? "is-exited" : "is-disconnected"}`}>
           <span>{runtime?.exited ? t.terminalExited : t.terminalDisconnected}</span>
         </div>
       )}
