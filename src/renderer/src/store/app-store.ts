@@ -3149,7 +3149,6 @@ export class AppStore {
       }
     }
   }
-
   /**
    * 打开（或复用）当前作用域的 diff Tab 并触发加载（design-diff-view §3）。
    * 每作用域单 Tab；来源类型 = 既有选中（复用时保留用户选择），缺省 uncommitted。

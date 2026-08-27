@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -26,6 +27,7 @@ import type {
 import type { PendingPermission, PendingQuestion } from "@shared/pending-requests"
 import { externalDirectoryPath, permissionCommand } from "@shared/pending-requests"
 import { Markdown } from "./markdown"
+import { splitFrontMatter } from "./markdown-frontmatter"
 import { ModelSwitcherBar } from "./model-switcher"
 import { CodeView } from "./code-view"
 import { collectHeadings, MdToc, type TocHeading } from "./md-toc"
@@ -46,12 +48,6 @@ export function Workspace() {
   const scopeDir = store.scopeQuery.directory
   const tabs = store.tabs.filter((tab) => tab.directory === scopeDir)
   const active = store.activeTab
-
-  // 浏览器视图显隐协调（design-browser-tab §1.2）：激活 Tab + 无浮层才显示；
-  // Tab 切换/作用域切换/设置弹窗与右键菜单（overlayCount）变化时重算
-  useEffect(() => {
-    store.syncBrowserViewVisibility()
-  }, [store.activeTabKey, store.overlayCount, scopeDir, store])
   // 拖拽重排序（design-tab-drag-rename §1）：dragKey = 拖拽中 Tab；overKey =
   // 悬停目标 + 命中半区（左半 = 插入目标前、右半 = 插入目标后），指示线随半区
   // 亮在目标左/右缘
@@ -73,6 +69,12 @@ export function Workspace() {
       void store.renameSession(tab.key.slice(5), value)
     }
   }
+
+  // 浏览器视图显隐协调（design-browser-tab §1.2）：激活 Tab + 无浮层才显示；
+  // Tab 切换/作用域切换/设置弹窗与右键菜单（overlayCount）变化时重算
+  useEffect(() => {
+    store.syncBrowserViewVisibility()
+  }, [store.activeTabKey, store.overlayCount, scopeDir, store])
 
   return (
     <main className="workspace">
@@ -1903,6 +1905,13 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
     [isImage, absolutePath, cached?.content, cached?.binary, cached?.mimeType],
     // eslint-disable-next-line react-hooks/exhaustive-deps
   )
+  // front matter 拆分（design-markdown-preview §2.5）：O(行数) 扫描 + 卡片条目
+  // 提取，同 htmlDoc/imageSrc 决策——SSE emit 重渲染不重复付出。null = 未检出
+  const mdFrontMatter = useMemo(
+    () => (isMarkdown && cached && !cached.error ? splitFrontMatter(cached.content) : null),
+    [isMarkdown, cached?.content, cached?.error],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  )
 
   // 激活即重拉（缓存仅作首帧显示）
   useEffect(() => {
@@ -2048,7 +2057,19 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
         // 内容区动态宽度 [600, 800] 相对全窗居中（§2.4）；滚动层全宽 →
         // 滚动条贴窗口右缘；TOC 悬浮窗在滚动层之外（.file-view-wrap 绝对定位）
         <div className="file-md" ref={mdRef}>
-          <Markdown>{cached.content}</Markdown>
+          {/* front matter 元数据卡（§2.5）：仅顶层标量条目成卡；纯嵌套容器时
+              无卡但正文仍已剥离；卡在 markdown-body 之外（不受 vendor 排版） */}
+          {mdFrontMatter?.frontMatter && (
+            <dl className="md-frontmatter">
+              {mdFrontMatter.frontMatter.map((e, idx) => (
+                <Fragment key={`${e.key}:${idx}`}>
+                  <dt className="md-fm-key">{e.key}</dt>
+                  <dd className="md-fm-val">{e.value}</dd>
+                </Fragment>
+              ))}
+            </dl>
+          )}
+          <Markdown>{mdFrontMatter ? mdFrontMatter.body : cached.content}</Markdown>
         </div>
       )}
       {cached && !cached.error && mode === "source" && (

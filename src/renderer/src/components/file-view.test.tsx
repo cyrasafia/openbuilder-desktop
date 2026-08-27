@@ -127,6 +127,25 @@ describe("FileView markdown 预览", () => {
     expect(document.querySelector(".cm-content")?.textContent).toContain("# 标题")
     expect(screen.getByRole("button", { name: "源码" }).getAttribute("aria-pressed")).toBe("true")
   })
+  it("front matter：预览态元数据卡 + 正文剥离裸 YAML；源码态原文（§2.5）", async () => {
+    fileContentsStub.set("/repo/post.md", {
+      content: "---\ntitle: 文章标题\ndraft: true\n---\n\n# 正文",
+    })
+    render(<FileView absolutePath="/repo/post.md" />)
+    // 元数据卡：dt/dd 两列
+    const card = document.querySelector("dl.md-frontmatter")
+    expect(card).not.toBeNull()
+    expect(card!.querySelector("dt.md-fm-key")!.textContent).toBe("title")
+    expect(card!.querySelector("dd.md-fm-val")!.textContent).toBe("文章标题")
+    // 正文剥离：不再渲染裸 YAML/围栏
+    const md = document.querySelector(".file-md .markdown-body")!
+    expect(md.textContent).not.toContain("title: 文章标题")
+    expect(md.textContent).toContain("正文")
+
+    // 源码态：原文完整（front matter 属于源码）
+    fireEvent.click(screen.getByRole("button", { name: "源码" }))
+    expect(document.querySelector(".cm-content")?.textContent).toContain("title: 文章标题")
+  })
 
   it(".markdown 扩展名与大小写不敏感（.MD）均走预览", async () => {
     fileContentsStub.set("/repo/notes.markdown", { content: "# A" })

@@ -56,6 +56,12 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 ### 配色（全量沿用，CSS 变量为载体）
 
 - `colorScheme`（dark/light 两套语义色）、`appColors`（code/link/userBubble/border 等语义扩展色）、`status` 四态色（completed/running/error/pending）**逐值沿用**，定义收敛到 `tokens.css` 单文件
+- 桌面端偏离（2026-08-27）——前景降对比：工作区（消息、文件浏览等大面积阅读区）正文对背景原 14.3:1(dark)/16.9:1(light) 过强，dark `on-surface`/`on-surface-variant` `#dfe4dc`/`#c1c9bf` → `#c8d0c4`/`#adb6ab`，light `on-surface` `#181818` → `#2e332e`；dark variant 同步降档防与新正文塌缩（light variant 原本低一截不动），`on-surface > on-surface-variant > outline` 三档层级与中性绿色相族不变，dark `inverse-surface` 维持与 `on-surface` 同值镜像
+- 桌面端偏离（2026-08-27）——实心强调面统一：用户气泡、agent 分段（build/plan）激活态、enable 态主按钮（发送等）共用同一深绿底+浅字 `--emphasis-bg`/`--emphasis-fg`；`--color-user-bubble`/`--color-user-text` 改为其别名，`.ms-seg.active`（原 primary-container 对，亮色浅底深字）与 `.btn-primary`（原 --primary/--on-primary，暗色浅绿底深字）统一切换；`.ms-seg` 为 agent 二态与文件视图预览/源码共用组件，后者激活态同步同款；强调面默认 `#1f3d2a`+`#f0f5ee`，light 单独覆写 `#2b573c`（同色相 142°，L* 23→35——L*≈23 对浅色 surface L*≈95 跨 72 档过强）+`#f9fcf7`；文字对比按"气泡内 ≈ agent 正文对背景"校准——dark 10.8 vs 11.0:1（精确对齐），light 8.0 vs 11.4:1（气泡底较暗，纯白上限 8.3:1，已至物理上限的折中）
+- 桌面端偏离（2026-08-27）——次级钮同风格化：`.btn-tonal` 由灰底填充（观感似禁用）改为与 primary 同风格的无描边浅绿底+深绿字（primary-container 对）——"次级"由明度对比表现（浅容器 vs 实心强调）；中间曾改描边次级钮，因与实心按钮族风格差异过大再修订为容器色方案；hover brightness 1.08
+- 桌面端偏离（2026-08-27）——危险钮浅色实心红：`.btn-danger`（停止/拒绝）浅色覆写为 `--error`/`--on-error`（红底白字 `#ba1a1a`/`#ffffff`），与实心强调面样式协调；暗色保持 `--error-container` 对（深红底浅字，本即实心观感）
+- 桌面端偏离（2026-08-27）——dark 用户气泡文字对齐正文：仅 `userText` `#dfe4dc` → `#c8d0c4`（对齐 on-surface，收敛与 agent 正文的文字明度差；气泡底与气泡内代码块底保持 openbuilder 原值——曾试降气泡底至 L*≈13.5 消块面明度断层，但与 surface（L*≈9）对比不足、轮廓难辨，回退）；light 的深底气泡是刻意倒装设计（同 openbuilder），不动
+- 桌面端偏离（2026-08-27）——背景跨应用明度衔接：应用主题不必与系统/邻接应用一致（亮色浏览器 ↔ 暗色主题、深色终端 ↔ 亮色主题），背景避免走向明度极端以收窄切换跳变——dark 表面阶梯整体 +6/通道（base `#101510` → `#161b16`，L*≈6→9，向 VS Code/GNOME dark L*≈11–14 靠拢），light 阶梯整体 −9/通道（base `#f7fbf2` → `#eef2e9`，L*≈98→95，略低于浏览器白/GNOME light L*≈98–100）；阶梯档差与色相族不变，代码块底色随各自 base 同幅移动（dark `#161b22`→`#1a2027`、light `#f0f2f5`→`#e9edf0`）保持"dark 浮起/light 微沉"的块面关系；其余语义色仍逐值沿用
 - 实现差异：Flutter `ColorScheme.fromSeed()` → CSS 自定义属性两套 `:root[data-theme=…]`；跟随系统（`prefers-color-scheme`）+ 手动切换
 - 使用规范同源：优先语义角色，不硬编码 hex；`status` 四色是唯一豁免
 - 深色为默认主题（开发者工具惯例，且主力环境 GNOME 多为深色）

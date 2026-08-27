@@ -39,6 +39,13 @@
   --radius-bubble: 12px;
   --radius-dialog: 12px;
 
+  /* 实心强调面（2026-08-27 统一）：用户气泡、agent 分段（build/plan）激活态、
+     enable 态主按钮（发送等）共用同一深绿底+浅字；底色取值即 openbuilder
+     userBubble 对，浅色主题单独提亮一档（见 light 块）。文字按"气泡内文字
+     对比 ≈ agent 正文对背景对比"校准：dark 正文 11.0:1 → 此处 10.8:1 */
+  --emphasis-bg: #1f3d2a;
+  --emphasis-fg: #f0f5ee;
+
   /* 项目头像内容色（非主题语义色，不随主题切换；调色板/命名色映射沿用 openbuilder ProjectAvatar） */
   --avatar-green: #4ade80;
   --avatar-mint: #34d399;
@@ -69,27 +76,41 @@
   --on-error: #690005;
   --error-container: #93000a;
   --on-error-container: #ffdad6;
-  --surface: #101510;
-  --on-surface: #dfe4dc;
-  --surface-container-lowest: #0b0f0b;
-  --surface-container-low: #181d18;
-  --surface-container: #1c211c;
-  --surface-container-high: #262b26;
-  --surface-container-highest: #313631;
-  --on-surface-variant: #c1c9bf;
+  /* 背景阶梯整体上移 +6/通道（2026-08-27，跨应用明度衔接）：原 base L*≈6，
+     深于常见系统深色面（VS Code #1e1e1e / GNOME dark，L*≈11–14），从亮色
+     应用（浏览器）切入明度跳变过强；上移后 base L*≈9、面板低档 L*≈13，
+     阶梯各档差值不变 */
+  --surface: #161b16;
+  /* 前景对比度调优（2026-08-27，桌面端偏离 openbuilder 逐值沿用）：正文原
+     #dfe4dc 对旧 surface 14.3:1 过强（消息/文件浏览等大面积阅读区刺眼），
+     降档至 ~11.0:1；variant 若不动会与新正文塌缩成一档，同步降至 ~8.4:1，
+     on-surface > variant > outline 三档层级保持；inverse-surface 沿用与
+     on-surface 同值的镜像关系（原两者同为 #dfe4dc） */
+  --on-surface: #c8d0c4;
+  --surface-container-lowest: #111511;
+  --surface-container-low: #1e231e;
+  --surface-container: #222722;
+  --surface-container-high: #2c312c;
+  --surface-container-highest: #373c37;
+  --on-surface-variant: #adb6ab;
   --outline: #8b938a;
   --outline-variant: #414941;
-  --inverse-surface: #dfe4dc;
+  --inverse-surface: #c8d0c4;
   --on-inverse-surface: #2d322d;
 
   --color-code: #ec407a;
   --color-link: #2196f3;
-  --color-code-bg: #161b22;
+  /* 原 #161b22：随 base 上移同幅抬升，保持代码块浮起于正文 ~3 L* 的块面关系 */
+  --color-code-bg: #1a2027;
   --color-border: #30363d;
   --color-quote-bar: #6e7681;
-  --color-user-bubble: #1f3d2a;
+  /* 用户气泡（2026-08-27 第二次修订，回退前一轮降明度）：气泡底压到 L*≈13.5
+     后与 surface（L*≈9.2）块面对比不足 4 档、暗色下轮廓难辨。气泡底与代码
+     块底恢复原值（#1f3d2a / #28513a），文字经 --emphasis-fg 对齐正文色；
+     light 的深底气泡是刻意倒装设计（同 openbuilder），不动 */
+  --color-user-bubble: var(--emphasis-bg);
   --color-user-code-bg: #28513a;
-  --color-user-text: #dfe4dc;
+  --color-user-text: var(--emphasis-fg);
   --color-user-outline: #8b938a;
   --color-user-code: #ec407a;
   --color-user-link: #2196f3;
@@ -132,6 +153,14 @@
 }
 
 :root[data-theme="light"] {
+  /* 浅色强调面提亮一档（2026-08-27）：暗绿 #1f3d2a（L*≈23）对浅色 surface
+     （L*≈95）跨 72 档过强；同色相（142°）提亮至 L*≈35 收窄块面跳变，
+     深底浅字样式与另两处（分段激活/主按钮）经共享 token 同步变化 */
+  --emphasis-bg: #2b573c;
+  /* 浅色文字近白（2026-08-27）：agent 正文对比 11.4:1，气泡底 #2b573c 上
+     纯白上限仅 8.3:1——取近白微绿 8.0:1，已至物理上限（要精确对齐需把
+     气泡底压回暗绿，与上一条提亮诉求冲突，取此折中） */
+  --emphasis-fg: #f9fcf7;
   --primary: #35693e;
   --on-primary: #ffffff;
   --primary-container: #b7f1ba;
@@ -146,13 +175,18 @@
   --on-error: #ffffff;
   --error-container: #ffdad6;
   --on-error-container: #93000a;
-  --surface: #f7fbf2;
-  --on-surface: #181818;
+  /* 背景阶梯整体下移 −9/通道（2026-08-27，跨应用明度衔接）：原 base L*≈98
+     与系统浅色面（浏览器白/GNOME light #fafafa，L*≈98–100）同档顶格，从
+     深色应用（终端）切入明度跳变过强；下移后 base L*≈95 略低于系统浅色面 */
+  --surface: #eef2e9;
+  /* 同深色的对比度调优（2026-08-27）：正文原 #181818 对旧 surface 16.9:1
+     过强，降档至 ~11.4:1；variant ~8.2:1 本就低于新正文，层级自然保持，不动 */
+  --on-surface: #2e332e;
   --surface-container-lowest: #ffffff;
-  --surface-container-low: #f1f5ec;
-  --surface-container: #ebefe7;
-  --surface-container-high: #e5e9e1;
-  --surface-container-highest: #e0e4db;
+  --surface-container-low: #e8ece3;
+  --surface-container: #e2e6de;
+  --surface-container-high: #dce0d8;
+  --surface-container-highest: #d7dbd2;
   --on-surface-variant: #414941;
   --outline: #727970;
   --outline-variant: #c1c9be;
@@ -161,12 +195,13 @@
 
   --color-code: #c2185b;
   --color-link: #2196f3;
-  --color-code-bg: #f0f2f5;
+  /* 原 #f0f2f5：随 base 下移同幅压低，保持代码块微沉于正文档的块面关系 */
+  --color-code-bg: #e9edf0;
   --color-border: #dadde3;
   --color-quote-bar: #8c959f;
-  --color-user-bubble: #1f3d2a;
+  --color-user-bubble: var(--emphasis-bg);
   --color-user-code-bg: #162b1c;
-  --color-user-text: #dfe4dc;
+  --color-user-text: var(--emphasis-fg);
   --color-user-outline: #8b938a;
   --color-user-code: #ec407a;
   --color-user-link: #2196f3;

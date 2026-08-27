@@ -4,8 +4,9 @@
 >
 > 参考来源（openbuilder 移动端，按 AGENTS.md 约定先行检索）：
 > - `openbuilder/docs/design-file-view.md` —— FileView 按文件类型分发 Render Mode 的总设计（Markdown Mode：默认预览态、AppBar 源码/预览切换、渲染范围、不支持 mermaid）
+> - `openbuilder/docs/design-markdown-webview.md` + `lib/features/files/markdown_html.dart` —— front matter 拆分与元数据卡（`splitFrontMatter`，§2.5 语义移植来源）
 > - 本仓库 `markdown.tsx` —— 消息流 markdown 渲染组件（streamdown + tokens.css 语义令牌覆写），直接复用为预览渲染器（桌面端无 webview 一说，`design-markdown-webview.md` 的动机不适用）
-> - TOC 无移动端先例（检索 openbuilder docs 未见大纲/TOC 设计），§2.4 为桌面端新设计
+> - TOC 无移动端先例（检索 openbuilder docs 未见大纲/TOC 设计），§2.4 为桌面端新设计；GFM alert（§2.6）移动端亦未做过，规格对齐 GitHub 官方（https://docs.github.com/en/get-started/writing-on-github/get-started-writing-to-format-your-message-using-markdown/alerts），样式复用 vendor github-markdown-css 自带的 `.markdown-alert` 系列
 
 ## 1. 问题
 
@@ -49,21 +50,51 @@
 - **锚定**：点击条目 `scrollIntoView({ behavior: "smooth", block: "start" })`；标题 `scroll-margin-top: 8px` 留白。
 - **不做滚动位置高亮（scrollspy）**：锚点是消费主体，active 追踪是增量收益，等真实诉求。
 
+### 2.5 YAML front matter 元数据卡（2026-08-27 增）
+
+`.md` 文件头部的 `---\nkey: value\n---` 块不再当正文渲染（此前会呈现为两条分隔线夹一段裸 YAML），拆分为元数据卡 + 正文：
+
+- **拆分语义移植 openbuilder** `markdown_html.dart:splitFrontMatter`（不重新发明）：起始 `---` 必须在首字节、闭合线 trim 后恰为 `---`、块内至少一条任意缩进层级的 `key: value`（纯 `---` 夹心 = 分隔线，不是 front matter）；判定成立后 YAML 头恒从正文剥离，元数据卡为尽力提取——只收**顶层标量**条目（含 `|`/`>` 块标量、引号解包、空值 em dash 占位），嵌套容器成员不入卡、纯嵌套容器时无卡但正文仍剥离。实现落 `markdown-frontmatter.ts`（+ 同名测试，用例随移动端移植）。**已知局限**（继承自 openbuilder，review 记录）：闭合围栏按首条 trim 后 `---` 判定，块标量内嵌 `---` 行会被误认闭合线——修需两端口同步偏离，暂记录不修。
+- **卡渲染**：FileView 预览态、内容区 `.file-md` 内、markdown 体之上；`<dl>` 键左值右两列 grid（键 mono 弱色，值保留块标量换行）——移动端是上下堆叠，此处按桌面密度改两列。卡在 `.markdown-body` 之外，样式自成一体（`--surface-container` 底 + `--outline-variant` 边）。源码态/TOC 不受影响；拆分结果 memo（同 htmlDoc/imageSrc 决策）。
+- **仅文件预览生效**：拆分在 FileView 做，不进共享 `Markdown` 组件——消息流内容以 `---` 开头时（分隔线夹心）不得被误吞。
+
+### 2.6 GFM alert（`[!NOTE]` 系引用块，2026-08-27 增）
+
+GitHub Alerts 规范：blockquote 首段以 `[!NOTE]` / `[!TIP]` / `[!IMPORTANT]` / `[!WARNING]` / `[!CAUTION]`（大小写不敏感）开头 → 渲染为对应语义提示卡；标记不在首段首块（如普通段落后的引用块）按普通引用块字面渲染。
+
+- **实现位置：共享 `markdown.tsx` 的 blockquote 覆写层**——组件层检查首段文本（streamdown 给每个组件传 hast `node`，但标记剥离在 React children 上做，不动 remark 管道、不传自定义插件替换 streamdown 默认插件集（默认集含 gfm/sanitize/harden，替换有丢失风险））。识别后剥离标记文本、克隆首段，输出 `blockquote.markdown-alert.markdown-alert-{kind}` + 标题行 `p.markdown-alert-title`（lucide 线性图标 16px + canonical 英文标签——标签是文档语义而非 UI chrome，不做 i18n）。**消息流与文件预览同时生效**（同组件，行为一致）。
+- **样式**：vendor github-markdown-css 自带 `.markdown-alert` 全套（明暗主题、五色边框与标题色），零新增配色；本地仅补标题图标 8px 间距，并把本地 blockquote 覆写改为 `:not(.markdown-alert)` 让路（原覆写的引用条配色会覆盖 alert 彩边）。
+
+### 2.7 mermaid 图渲染（2026-08-27 增）
+
+` ```mermaid ` 代码块渲染为图（此前在 §3「不做」中标注"引入 mermaid 运行时收益低"——该决策作废：mermaid 本就是 streamdown 依赖树中的传递依赖（锁文件已含，无新增安装成本），桌面端磁盘/内存预算也与移动端不同）。
+
+- **为什么不用 streamdown 内建路径**：streamdown 自带 mermaid 支持，但其分发在默认 `code` 组件内部且 UI 是 Tailwind 样式——本项目 `mdComponents` 全量覆写 code/pre（无 Tailwind），其路径不可达也不合视觉语言。改为 `renderPre` 按语言分发到自建 `MermaidDiagram`（mermaid-diagram.tsx）。openbuilder/opencode session-ui 均未做过 mermaid 渲染，无先例可借，桌面端新设计。
+- **懒加载 + 显式依赖**：`import("mermaid")` 动态导入（模块级缓存），electron-vite 自动分包——无 mermaid 块的会话/文档不付出 ~1.4MB chunk 加载成本；因直连导入，`package.json` 显式声明 `mermaid`（^11.17.0，与 streamdown 传递依赖同版本树）。
+- **渲染管线**：`mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme })`——strict 级 mermaid 内置 DOMPurify 清洗 SVG（`dangerouslySetInnerHTML` 注入的安全前提）；render 走模块级串行队列（mermaid 内部经全局测量元素排版，并发互相踩踏）+ 递增唯一 id。**主题**（light→default / dark→dark）读取 `document.documentElement[data-theme]` + MutationObserver 监听，切换即重渲染（app 无 store 级主题订阅，属性观察是唯一直连源）。
+- **流式友好**：源/主题变化防抖 200ms（流式期间逐 emit render 既昂贵又必然失败）；stale-while-revalidate 保留旧图直到新图落地，不闪加载态。**失败回落代码块外壳**（renderPre 预构建同一 `md-codeblock` 作为 fallback 传入）——流式中图未画完是常态，回落源码比报错卡友好；语法错误同样回落（GitHub 无效 mermaid 亦显示源码），复制按钮/语言标签俱全。
+- **样式**：`.md-mermaid` 与代码块同视觉家族（同底色/边框/圆角），居中、svg 限宽自适应（覆盖 mermaid 内联固定尺寸）；消息流 max-height 300px 同 `.md-pre` 内滚，`.file-md` 下放开（同代码块覆写）。加载态为语言标签 + 呼吸骨架（无文案，不引 i18n）。
+- **消息流与文件预览同时生效**（共享 `Markdown` 组件）。
+
 ## 3. 不做的事
 
 | 项 | 原因 |
 |---|---|
-| mermaid 图表渲染 | openbuilder 同决策；引入 mermaid 运行时收益低 |
+| ~~mermaid 图表渲染~~ | 已做（2026-08-27，§2.7）：mermaid 是 streamdown 既有传递依赖，懒加载零增量成本 |
 | ~~模式偏好持久化（记住上次源码/预览）~~ | 已做运行期按文件记忆（2026-08-26，见 [design-tab-state-memory.md](./design-tab-state-memory.md) §2.2）；per-profile 跨文件偏好仍不做 |
 | 内部相对链接跳转（md → md 导航） | nice-to-have（openbuilder 同标注），等真实需求 |
 | TOC 滚动位置高亮（scrollspy） | 见 §2.4：锚点是消费主体，增量收益有限 |
 | 预览内容键盘可达（放开链接/复制按钮 tabIndex） | 复用 `Markdown` 继承消息流「内容不入焦点序列」决策（review P3 备注）；后续需要时给组件加 interactive 变体 |
+| mermaid 图交互（缩放/平移/导出 PNG） | streamdown 内建有 zoom/pan/下载控件（Tailwind 样式，不合本项目视觉语言）；渲染阅读优先，交互等真实诉求 |
 
 ## 4. 涉及文件
 
 | 文件 | 改动 |
 |---|---|
-| `src/renderer/src/components/workspace.tsx` | FileView：扩展名分发 + markdown mode（工具条 + 预览/源码 + TOC 收起态与工具条按钮）+ TOC 标题扫描与布局 |
+| `src/renderer/src/components/workspace.tsx` | FileView：扩展名分发 + markdown mode（工具条 + 预览/源码 + TOC 收起态与工具条按钮）+ TOC 标题扫描与布局 + front matter 拆分 memo 与元数据卡（§2.5） |
+| `src/renderer/src/components/markdown-frontmatter.ts` | `splitFrontMatter`（语义移植 openbuilder）+ 同名测试（用例随移动端移植） |
+| `src/renderer/src/components/markdown.tsx` | 消息流共享渲染器：blockquote 覆写增加 GFM alert 识别/标记剥离（§2.6）+ 测试用例 |
+| `src/renderer/src/components/mermaid-diagram.tsx` | mermaid 懒加载/串行渲染/主题跟随/失败回落（§2.7）+ markdown.test.tsx 用例（vi.mock mermaid） |
 | `src/renderer/src/components/md-toc.tsx` | TOC 悬浮窗：标题收集/章节树/按章节折叠/点击锚定（收起态由 FileView 控制） |
 | `src/renderer/src/i18n/index.ts` | `preview` / `source` / TOC 文案 |
 | `src/renderer/src/styles/tokens.css` | `--file-toolbar-h`（工具条高度单一来源）、`--toc-w` / `--toc-gap` |
@@ -74,5 +105,8 @@
 ## 5. 验收
 
 - 打开 `.md` 文件默认渲染预览；切换源码显示原文；非 md 文件无工具条、行为不变；
+- 带 YAML front matter 的 `.md`：预览态顶部呈现元数据卡（键左值右，块标量保留换行），正文不再出现裸 YAML/双分隔线；纯嵌套容器 front matter 无卡但正文已剥离；无映射的 `---` 夹心按普通分隔线渲染；源码态原样显示全文；消息流中 `---` 开头的消息不受影响；
+- `[!NOTE]`/`[!TIP]`/`[!IMPORTANT]`/`[!WARNING]`/`[!CAUTION]` 引用块渲染为对应颜色的 alert 卡（标记剥离、标题行图标 + 标签）；未知标记或标记不在首段按普通引用块字面渲染；消息流同样生效；
+- ` ```mermaid ` 块：懒加载后渲染为图（明暗主题跟随 `[data-theme]`，切换重渲染）；语法错误/流式未完成回落代码块外壳（源码可见、可复制）；无 mermaid 块的文档不加载 mermaid chunk；消息流同样生效；
 - 有标题的 `.md` 预览：内容区 [600, 800] 自适应居中；侧缘够宽时 TOC 悬浮窗挂内容区左侧；滚动条贴窗口右缘、滚动时悬浮窗常驻可见、高度不超可见区（超出自滚）；悬浮窗会遮挡内容区时默认收起、工具条按钮可显式展开（悬浮覆盖内容区）；可按章节收起/展开、工具条按钮可整体收起/展开悬浮窗、点击条目平滑滚动锚定到对应标题；无标题文档无 TOC 无按钮；源码态无 TOC；
 - `npm run test` / `npm run typecheck` 全绿。

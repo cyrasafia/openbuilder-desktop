@@ -55,7 +55,6 @@ function dispatch(
   }
   return false
 }
-
 export function useShortcuts() {
   const store = useStore()
   const { t } = useI18n()
@@ -72,7 +71,6 @@ export function useShortcuts() {
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
   }, [store, t])
-
   // 浏览器视图内快捷键转发（main → renderer；无 preventDefault 语义——页面
   // 原按键已发生，转发仅驱动应用侧动作）
   useEffect(() => {

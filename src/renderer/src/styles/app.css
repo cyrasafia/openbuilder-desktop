@@ -1028,11 +1028,18 @@
 }
 
 /* blockquote：vendor 用硬编码灰边/灰字，回归项目调色板（--color-quote-bar /
- * --on-surface-variant），保持与移动端 openbuilder 一致的引用块语义 */
-:root[data-theme] .markdown-body.md blockquote {
+ * --on-surface-variant），保持与移动端 openbuilder 一致的引用块语义。
+ * GFM alert（[!NOTE] 等）走 vendor 的 .markdown-alert 系列自成体系（彩色边/
+ * 彩色标题），本地覆写以 :not(.markdown-alert) 让路（design-markdown-preview §2.6） */
+:root[data-theme] .markdown-body.md blockquote:not(.markdown-alert) {
   border-left: 3px solid var(--color-quote-bar);
   padding: 2px 0 2px 12px;
   color: var(--on-surface-variant);
+}
+
+/* GFM alert 标题行图标间距（GitHub 用 mr-2 = 8px；配色/字重由 vendor 接管） */
+:root[data-theme] .markdown-body.md .markdown-alert-title svg {
+  margin-right: 8px;
 }
 
 /* 分隔线：vendor 用 height:0.25em + background + border-bottom 画粗实线（两条线
@@ -1107,6 +1114,54 @@
 .md-copy:hover {
   color: var(--on-surface);
   background: var(--surface-container-high);
+}
+
+/* mermaid 图容器（design-markdown-preview §2.7）：卡片外壳与代码块同视觉家族
+ *（同底色/边框/圆角）；图随容器滚动（消息流上限同 .md-pre 300px，文件预览放开），
+ * 居中呈现；svg 限宽自适应（覆盖 mermaid 内联的固定宽高属性） */
+:root[data-theme] .markdown-body.md .md-mermaid {
+  background: var(--color-code-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-chip);
+  overflow: auto;
+  max-height: 300px;
+  padding: 12px;
+  text-align: center;
+}
+
+:root[data-theme] .markdown-body.md .md-mermaid svg {
+  max-width: 100%;
+  height: auto;
+  display: inline-block;
+}
+
+/* 加载态：语言标签 + 呼吸骨架（无文案，不引 i18n） */
+.md-mermaid-pending {
+  min-height: 72px;
+}
+
+.md-mermaid-label {
+  font-size: var(--text-xs);
+  color: var(--outline);
+  text-align: left;
+  margin-bottom: 8px;
+}
+
+.md-mermaid-skeleton {
+  height: 40px;
+  border-radius: 6px;
+  background: var(--surface-container-high);
+  animation: md-mermaid-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes md-mermaid-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 /* 代码块滚动体：vendor 的 .markdown-body pre 设了 padding/bg/border-radius，
@@ -1395,8 +1450,10 @@
   transition: background 150ms ease, color 150ms ease;
 }
 .ms-seg.active {
-  background: var(--primary-container);
-  color: var(--on-primary-container);
+  /* 实心强调面（2026-08-27 统一）：与用户气泡、enable 态主按钮同款深绿底
+     +浅字（原 primary-container 对，亮色呈浅底深字与另两处不一致） */
+  background: var(--emphasis-bg);
+  color: var(--emphasis-fg);
 }
 .ms-seg:hover:not(.active):not(:disabled),
 .ms-seg:focus-visible:not(.active):not(:disabled) {
@@ -1908,6 +1965,37 @@
   padding: 4px 24px 24px;
 }
 
+/* ---------- markdown 预览 front matter 元数据卡（design-markdown-preview §2.5） ----------
+ * 语义移植 openbuilder markdown_html.dart（splitFrontMatter）；样式按桌面密度重排：
+ * 键左值右两列 grid（移动端为上下堆叠）。卡在 .markdown-body 之外，样式自成一体。 */
+.md-frontmatter {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  align-items: baseline;
+  column-gap: 16px;
+  row-gap: 6px;
+  padding: 12px 16px;
+  margin: 0 0 16px;
+  background: var(--surface-container);
+  border: 1px solid var(--outline-variant);
+  border-radius: 8px;
+}
+
+.md-fm-key {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--on-surface-variant);
+  white-space: nowrap;
+}
+
+/* 值保留块标量换行（| 字面量）；长值折行不撑破卡片 */
+.md-fm-val {
+  margin: 0;
+  font-size: var(--text-md);
+  color: inherit;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
 
 /* ---------- 图片预览（design-image-preview §2.3/§2.4） ----------
  * 点击二态：适应窗口（按钮满容器、img 受限居中）↔ 原始尺寸（按钮收为内容尺寸，
@@ -1963,8 +2051,13 @@
 }
 
 /* 文件预览覆写消息流 .md-pre 的代码块高度上限——文档预览长代码块不套内滚
- * （渲染阅读优先）。须用 vendor 同等前缀覆盖上方 .md-pre 的 max-height */
+ * （渲染阅读优先）。须用 vendor 同等前缀覆盖上方 .md-pre 的 max-height；
+ * mermaid 图同理放开（§2.7） */
 :root[data-theme] .file-md .markdown-body.md .md-pre {
+  max-height: none;
+}
+
+:root[data-theme] .file-md .markdown-body.md .md-mermaid {
   max-height: none;
 }
 
@@ -2282,8 +2375,10 @@
 }
 
 .btn-primary {
-  background: var(--primary);
-  color: var(--on-primary);
+  /* 实心强调面（2026-08-27 统一）：与用户气泡、分段激活态同款深绿底+浅字
+     （原 --primary/--on-primary：暗色为浅绿底深字，与另两处反相） */
+  background: var(--emphasis-bg);
+  color: var(--emphasis-fg);
   border-radius: var(--radius-chip);
   height: var(--control-h);
   padding: 0 14px;
@@ -2308,16 +2403,30 @@
   padding: 0 14px;
 }
 
+/* 浅色实心红（2026-08-27）：error-container 对（#ffdad6/#93000a）在浅色下呈
+   淡粉底深红字，与实心强调面（气泡/发送/分段）样式不协调；覆写为红底白字
+   （--error/--on-error）。暗色保持 error-container 深红底浅字（本即实心观感） */
+:root[data-theme="light"] .btn-danger {
+  background: var(--error);
+  color: var(--on-error);
+}
+
+/* 次级钮（2026-08-27 二次修订）：与 primary 同风格的无描边浅绿底+深绿字
+   （primary-container 对）——"次级"由明度对比表现（浅容器 vs 实心强调），
+   不引入描边（与实心强调面体系的按钮族保持一致）；hover 浮一档底色 */
 .btn-tonal {
-  background: var(--surface-container-high);
-  color: var(--on-surface);
+  background: var(--primary-container);
+  color: var(--on-primary-container);
   border-radius: var(--radius-chip);
   height: var(--control-h);
   padding: 0 14px;
 }
 
 .btn-tonal:hover:not(:disabled),
-.btn-tonal:focus-visible:not(:disabled),
+.btn-tonal:focus-visible:not(:disabled) {
+  filter: brightness(1.08);
+}
+
 .btn-danger:hover:not(:disabled),
 .btn-danger:focus-visible:not(:disabled) {
   filter: brightness(1.1);
@@ -2591,6 +2700,14 @@
 .dialog-actions button:hover,
 .dialog-actions button:focus-visible {
   filter: brightness(1.1);
+}
+
+/* 主按钮特异性修复（2026-08-27）：上方 .dialog-actions button（0,1,1）压过
+   .btn-primary（0,1,0），实心强调面被灰底 container-highest 覆盖（自
+   btn-primary 进入弹窗起即如此）；显式恢复强调面样式 */
+.dialog-actions .btn-primary {
+  background: var(--emphasis-bg);
+  color: var(--emphasis-fg);
 }
 
 /* 表单 */
@@ -2995,7 +3112,6 @@
   font-size: var(--text-sm);
   pointer-events: none;
 }
-
 /* ---------- 浏览器 Tab（design-browser-tab §1.3） ---------- */
 .browser-tab {
   flex: 1;

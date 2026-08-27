@@ -4,11 +4,86 @@
  * 其内置样式依赖 Tailwind（本项目无），排版主体改由 vendor/github-markdown-css
  * （按 [data-theme] 切明暗）承担，本地仅覆写代码块外壳/表格包裹/链接色等结构。
  * 用户参考移动端 app：assistant 与 user 文本均走 markdown（用户消息气泡内），
- * reasoning 同走 markdown。
+ * reasoning 同走 markdown；GFM alert（[!NOTE] 等）在 blockquote 覆写层支持；
+ * mermaid 图在 pre 覆写层分发（§2.7）。
  */
-import { cloneElement, isValidElement, useState, type ReactNode } from "react"
+import { cloneElement, isValidElement, useState, type ReactElement, type ReactNode } from "react"
+import { Info, Lightbulb, MessageSquareWarning, OctagonX, TriangleAlert, type LucideIcon } from "lucide-react"
 import { Streamdown, type Components, type LinkSafetyConfig } from "streamdown"
 import { useI18n } from "../app"
+import { MermaidDiagram } from "./mermaid-diagram"
+
+/* ---------- GFM Alerts（[!NOTE]/[!TIP]/…，design-markdown-preview §2.6） ----------
+ * GitHub 规范：blockquote 首段以 [!TYPE] 标记开头即渲染为对应语义的提示卡。
+ * 样式完全由 vendor github-markdown-css 的 .markdown-alert 系列承担（明暗两套
+ * 主题齐全）；本层只做两件事——识别标记（在组件层检查首段文本，不动 streamdown
+ * 的 remark 管道/插件默认集）+ 剥离标记并补标题行（图标用 lucide 线性，项目
+ * 图标语言；GitHub 用 octicon 填充，语义对齐）。消息流与文件预览共用此组件，
+ * 两处同时生效。 */
+const ALERT_LABELS = {
+  note: "Note",
+  tip: "Tip",
+  important: "Important",
+  warning: "Warning",
+  caution: "Caution",
+} as const
+type AlertKind = keyof typeof ALERT_LABELS
+const ALERT_ICONS: Record<AlertKind, LucideIcon> = {
+  note: Info,
+  tip: Lightbulb,
+  important: MessageSquareWarning,
+  warning: TriangleAlert,
+  caution: OctagonX,
+}
+/** 吞掉标记后同行空隙或单个换行（软换行不产生空行） */
+const ALERT_MARKER = /^\[!(note|tip|important|warning|caution)\][ \t]*(?:\r?\n)?[ \t]*/i
+
+/** hast 节点的最小结构视图（alert 识别用；不引入 hast 类型依赖） */
+interface HastLike {
+  type: string
+  tagName?: string
+  children?: HastLike[]
+  value?: string
+}
+
+/** blockquote 的 hast 节点是否为 GFM alert：首个元素子节点是 <p> 且该段首个
+ *  子节点是以 [!TYPE] 开头的文本（标记必须在首段最前——嵌套引用/列表/标题
+ *  开头、或标记在后续段落，均不成立，按普通引用块字面渲染） */
+function alertKindFromNode(node: unknown): AlertKind | null {
+  const bq = node as HastLike | null | undefined
+  if (!bq || !Array.isArray(bq.children)) return null
+  const firstEl = bq.children.find((c) => c.type === "element")
+  if (!firstEl || firstEl.tagName !== "p" || !Array.isArray(firstEl.children)) return null
+  const first = firstEl.children[0]
+  if (!first || first.type !== "text" || typeof first.value !== "string") return null
+  const m = ALERT_MARKER.exec(first.value)
+  return m ? (m[1].toLowerCase() as AlertKind) : null
+}
+
+/** React children 侧剥离首段开头的标记文本（与 alertKindFromNode 同一棵树：
+ *  块级 children 形如 ["\n", <P/>, "\n", <P/>, "\n"]，按首个元素子节点定位，
+ *  标记所在的文本是段 props.children 的首个字符串）。整段只剩标记则丢弃该段。 */
+function stripAlertMarker(children: ReactNode): ReactNode[] {
+  const list = Array.isArray(children) ? children : [children]
+  const firstIdx = list.findIndex((c) => isValidElement(c))
+  if (firstIdx === -1) return list
+  const first = list[firstIdx] as ReactElement<{ children?: ReactNode }>
+  const inner = first.props.children
+  const innerList = Array.isArray(inner) ? inner : [inner]
+  const firstText = innerList[0]
+  if (typeof firstText !== "string") return list
+  const m = ALERT_MARKER.exec(firstText)
+  if (!m) return list
+  const rest = firstText.slice(m[0].length)
+  const newInner = rest === "" ? innerList.slice(1) : [rest, ...innerList.slice(1)]
+  const newList = [...list]
+  if (newInner.length > 0) {
+    newList[firstIdx] = cloneElement(first, {}, ...newInner)
+  } else {
+    newList.splice(firstIdx, 1)
+  }
+  return newList
+}
 
 /** 递归提取 ReactNode 纯文本（代码块复制用） */
 function extractText(node: ReactNode): string {
@@ -41,11 +116,13 @@ function CopyButton({ getText }: { getText: () => string }) {
   )
 }
 
-/** 代码块：语言标签 + 复制 + 滚动体（沿用 chip 展开体 code-block 的视觉语言） */
+/** 代码块：语言标签 + 复制 + 滚动体（沿用 chip 展开体 code-block 的视觉语言）。
+ * mermaid 语言（design-markdown-preview §2.7）分发到 MermaidDiagram：失败回落
+ * 本外壳（由 MermaidDiagram 持有，二态共用同一视觉语言） */
 function renderPre(children: ReactNode) {
   const child = isValidElement<{ className?: string; children?: ReactNode }>(children) ? children : null
   const lang = child ? (/language-(\S+)/.exec(child.props.className ?? "")?.[1] ?? "") : ""
-  return (
+  const block = (
     <div className="md-codeblock">
       <div className="md-codeblock-header">
         <span className="md-codeblock-lang">{lang}</span>
@@ -55,6 +132,16 @@ function renderPre(children: ReactNode) {
       <pre className="md-pre" tabIndex={-1}>{child ? cloneElement(child, { "data-block": "true" } as never) : children}</pre>
     </div>
   )
+  if (child && lang.toLowerCase() === "mermaid") {
+    return (
+      <MermaidDiagram
+        source={extractText(child.props.children)}
+        langLabel={lang}
+        fallback={block}
+      />
+    )
+  }
+  return block
 }
 
 const mdComponents: Components = {
@@ -78,7 +165,22 @@ const mdComponents: Components = {
   tr: ({ node: _node, children }) => <tr>{children}</tr>,
   th: ({ node: _node, children }) => <th>{children}</th>,
   td: ({ node: _node, children }) => <td>{children}</td>,
-  blockquote: ({ node: _node, children }) => <blockquote>{children}</blockquote>,
+  blockquote: ({ node, children }) => {
+    const kind = alertKindFromNode(node)
+    if (kind) {
+      const Icon = ALERT_ICONS[kind]
+      return (
+        <blockquote className={`markdown-alert markdown-alert-${kind}`}>
+          <p className="markdown-alert-title">
+            <Icon size={16} aria-hidden />
+            {ALERT_LABELS[kind]}
+          </p>
+          {stripAlertMarker(children)}
+        </blockquote>
+      )
+    }
+    return <blockquote>{children}</blockquote>
+  },
   img: ({ node: _node, ...rest }) => <img {...rest} />,
   sup: ({ node: _node, children }) => <sup>{children}</sup>,
   sub: ({ node: _node, children }) => <sub>{children}</sub>,

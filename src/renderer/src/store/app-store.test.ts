@@ -2655,7 +2655,6 @@ describe("终端 Tab（design-terminal-tab）", () => {
     expect(store.ptyRuntimeFor("pty_1")).toBeNull()
   })
 })
-
 describe("浏览器 Tab（design-browser-tab）", () => {
   beforeEach(() => {
     const d = (window as unknown as { desktop: Record<string, unknown> }).desktop
