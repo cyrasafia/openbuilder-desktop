@@ -85,6 +85,20 @@ private tocStates = new Map<string, { visible?: boolean; folded: string[] }>()  
 - **恢复时序**：标题扫描可能晚于首帧（异步 MutationObserver 路径）——恢复以「标题数组引用」记账（`tocFoldInitFor`），空标题落地不消耗恢复机会；该引用已初始化后 StrictMode 双跑/重复触发不再重置（否则恢复结果被二次触发的重置覆盖）
 - 低频写入（仅点击触发），不 emit；与 §2.2 分账（滚动捕获高频），两 Map 互不牵动
 
+### 2.5 diff 视图状态（app-store：`diffViewStates`）
+
+```ts
+private diffViewStates = new Map<string, { foldOpen: boolean; closedFiles: ReadonlySet<string>; scrollTop: number }>()  // key = diffTabKey(directory)
+```
+
+- `foldOpen`：全局折叠意图（工具条「全部折叠/展开」按钮方向）。true = 展开态；手动折叠/展开单文件块不回写——按钮在两种意图间交替，手动操作不改变标签
+- `closedFiles`：手动折叠的文件路径集（`file.file` 相对路径）。恢复时 `foldOpen=true` → 集合内文件收起、其余展开；`foldOpen=false` → 全部收起（全局意图优先，手动展开的单文件不跨卸载保留——取舍：全局意图 + 集合已足够覆盖主要场景，逐文件精确状态需追踪手动展开与全局意图的交叉态，复杂度不值）
+- `scrollTop`：滚动容器（`.diff-view.scroll`）偏移。`onScroll` 写 ref（不触发重渲染）；卸载落 store
+- **恢复时序**：foldOpen/closedFiles 经 `useState` 初始化值恢复（挂载即生效）；scrollTop 经 `useLayoutEffect` 在 `data.files` 落地后一次性应用（内容未渲染时 scrollHeight=0，设值被 clamp）
+- **卸载落 store**：`useEffect(() => { return cleanup }, [])` 经 ref 读最新值（foldOpen/closedFiles 的 state 闭包在挂载时捕获、不随 state 更新）；**复活闸门**——Tab 仍在（`store.tabs.some`）才写，否则 closeTab 已清的条目被卸载写复活（同 §2.3 chatScrollTops 模式）
+- 写入不 emit（滚动高频 + 折叠低频同 §2.2 fileViewStates 模式）
+- **首次挂载跳过 foldOpen 覆盖**：FileDiffBlock 的 `useLayoutEffect([foldOpen])` 在首次挂载时跳过（`firstMount` ref 标记），避免全局意图覆盖从 closedFiles 恢复的逐文件状态；仅在 foldOpen **变化**（工具条按钮触发）时覆盖所有文件块
+
 ## 3. 生命周期清理（与草稿同构，防无界增长/跨作用域残留）
 
 **顺序约束（实现实测）**：目录卸载路径对 `scopeActiveKeys` 的清除**必须在关 Tab 循环之后**——被关的是激活 Tab 时，`closeTab` 回退钩子会 `recordScopeActive`，回退链末端无邻可退写 `null` 哨兵；先删会被写回，重开经规则 1.5 误落引导页（与 `tabMemory` 删除的同款顺序约束同源）。
@@ -95,6 +109,7 @@ private tocStates = new Map<string, { visible?: boolean; folded: string[] }>()  
 | `fileViewStates[path]` | `closeTab` file 分支（关 Tab 即弃，重开回到默认预览——同草稿"关闭 = 决断"语义）；`teardownConnection` 全清（关项目/删工作区经 `closeTab` 覆盖） |
 | `chatScrollTops[id]` | `closeTab` chat 分支 + `cleanupSessionState`（同草稿挂点）；`teardownConnection` 全清 |
 | `tocStates[path]` | 同 `fileViewStates`（`closeTab` file 分支 + `teardownConnection`） |
+| `diffViewStates[diffTabKey]` | `closeTab` diff 分支（关 Tab 即弃，重开回到缺省全展开 + 顶部）；`teardownConnection` 全清 |
 
 **双行目录边角（已知取舍）**：`closeTab` 激活回退候选按 directory 取样、不区分 projectId——双行目录下项目 X 卸载关 Tab 时，可能把同目录项目 Y 的存活 Tab 键写进 `scopeActiveKeys[X 的目录]`，重开 X 经规则 1.5 激活 Y 的 Tab。行为尚可接受（该 Tab 确实在此目录可见），不引入 projectId 维度（与 §2.1 键选择一致）。
 
@@ -122,8 +137,9 @@ private tocStates = new Map<string, { visible?: boolean; folded: string[] }>()  
 
 ## 5. 不做的事
 
-- 跨重启持久化（开篇决策；重启后 file Tab 不存在，模式/滚动无宿主；激活/消息滚动留作增量）
-- DiffView / TOC / 侧栏滚动位置
+- 跨重启持久化（开篇决策；重启后 file/diff Tab 不存在，模式/滚动/折叠无宿主；激活/消息滚动留作增量）
+- ~~DiffView~~ 滚动位置（**2026-08-27 修订**：已实现 §2.5 diff 视图状态——foldOpen + 文件折叠 + 滚动位置）
+- TOC / 侧栏滚动位置
 - html 沙箱 iframe 内部滚动（不可达）
 - 文件树展开/滚动状态（右栏随作用域重置是既有语义）
 - Tab 拖拽排序（v0.1 无；顺序语义由 design-tab-memory 记忆结构预留）
@@ -132,8 +148,9 @@ private tocStates = new Map<string, { visible?: boolean; folded: string[] }>()  
 
 | 文件 | 改动 |
 |---|---|
-| `src/renderer/src/store/app-store.ts` | 四个内存 Map + 读写方法（不 emit）；记录点（setActiveTab/open*Tab/closeTab 回退/showGuidePage）；restoreScopeTabs 规则 1.5；清理挂点 |
+| `src/renderer/src/store/app-store.ts` | 五个内存 Map + 读写方法（不 emit）；记录点（setActiveTab/open*Tab/closeTab 回退/showGuidePage）；restoreScopeTabs 规则 1.5；清理挂点 |
 | `src/renderer/src/components/workspace.tsx` | ChatView 滚动捕获/恢复（pinned 初始化、卸载落 store、布局效果恢复）；FileView 模式/滚动恢复（含非预览文件分支）+ TOC 显隐/折叠恢复（标题引用记账防 StrictMode 覆盖） |
+| `src/renderer/src/components/diff-view.tsx` | diff 视图状态恢复（foldOpen/closedFiles useState 初始化 + scrollTop useLayoutEffect）+ 卸载落 store（ref 读最新值 + 复活闸门） |
 | `src/renderer/src/components/code-view.tsx` | `initialScrollTop` / `onScrollTop` 接线（创建后设 scrollDOM + 滚动监听） |
 | `src/renderer/src/store/app-store.test.ts` | store 级用例 |
 | `docs/design-tab-memory.md` / `docs/design-markdown-preview.md` / `docs/spec-v0.1.md` | 决策修订与范围同步 |

@@ -167,6 +167,9 @@ export interface TabEntity {
   /** 全 kind 作用域归属（Tab 条按 directory 过滤）：chat = 会话目录；
    *  diff = 作用域目录；file = 打开时作用域目录 */
   directory?: string
+  /** file Tab 锚定行号（1-based）：从 diff 跳转时携带，FileView 传给 CodeView
+   *  滚动到目标行；仅首次挂载消费，不持久化（复用已开 Tab 时不覆盖已有值） */
+  revealLine?: number
 }
 
 /** 关闭栈条目（design-keyboard-shortcuts §2）：TabEntity 快照，恢复按 kind 分流 */
@@ -363,6 +366,15 @@ export class AppStore {
    * 后标题元素重建，按文本匹配仍存活的章节；章节文本重复则同折叠。低频写入不 emit
    */
   private tocStates = new Map<string, { visible?: boolean; folded: string[] }>()
+  /**
+   * diff 视图状态（design-tab-state-memory §2.5）：diffTabKey(directory) →
+   * {foldOpen 全局折叠意图, closedFiles 折叠文件路径集, scrollTop 滚动偏移}。
+   * 纯内存、不跨重启；写入不 emit（滚动高频 + 折叠低频同 fileViewState 模式）
+   */
+  private diffViewStates = new Map<
+    string,
+    { foldOpen: boolean; closedFiles: ReadonlySet<string>; scrollTop: number }
+  >()
 
   // ---- 内部 ----
   private client: RestClient | null = null
@@ -580,6 +592,7 @@ export class AppStore {
     this.fileViewStates.clear()
     this.chatScrollTops.clear()
     this.tocStates.clear()
+    this.diffViewStates.clear()
     this.tabs = []
     this.activeTabKey = null
     this.diffData.clear()
@@ -2876,7 +2889,7 @@ export class AppStore {
   /** file Tab 作用域化（§18）：directory = 打开时作用域；复用已开同路径 Tab 时
    *  归属当前作用域（directory + projectId 一并更新，使关项目/关 global entry 的
    *  projectId 守卫可靠——双行目录下同文件可从两个作用域打开，显式重开 = 要在当前作用域看） */
-  openFileTab(absolutePath: string) {
+  openFileTab(absolutePath: string, revealLine?: number) {
     const key = `file:${absolutePath}`
     const existing = this.tabs.find((t) => t.key === key)
     if (!existing) {
@@ -2887,11 +2900,15 @@ export class AppStore {
         projectId: this.currentProject?.id ?? "",
         title: name,
         directory: this.scopeDirectory(),
+        revealLine,
       })
       void this.loadFileContent(absolutePath)
     } else {
       existing.directory = this.scopeDirectory()
       existing.projectId = this.currentProject?.id ?? ""
+      // 从 diff 跳转携带 revealLine 时更新锚定行（重新激活后 FileView 消费）；
+      // undefined = 无锚点（侧栏/关闭栈恢复等），清除残留避免过时行号强制源码模式
+      existing.revealLine = revealLine
     }
     this.activeTabKey = key
     // 任意 kind 最后激活记录（design-tab-state-memory §2.1 挂点：开即激活；
@@ -3311,6 +3328,7 @@ export class AppStore {
     if (closed.kind === "diff") {
       for (const ty of DIFF_TAB_TYPES) this.diffData.delete(diffDataKey(ty, closed.directory ?? ""))
       this.diffSelectedTypes.delete(key)
+      this.diffViewStates.delete(key)
     }
     // chat 草稿随 Tab 关闭终结（关 Tab = 归档决断，重开不复活旧草稿；死会话收敛
     // 路径只经 closeTab 不经 cleanupSessionState，须在此清，design-compose-draft §3）
@@ -3635,6 +3653,19 @@ export class AppStore {
   setTocFolded(path: string, folded: string[]) {
     const cur = this.tocStates.get(path)
     this.tocStates.set(path, { visible: cur?.visible, folded })
+  }
+
+  /** diff 视图状态读（无条目 = 缺省全展开 + 顶部） */
+  diffViewStateFor(tabKey: string): { foldOpen: boolean; closedFiles: ReadonlySet<string>; scrollTop: number } | null {
+    return this.diffViewStates.get(tabKey) ?? null
+  }
+
+  /** diff 视图状态写。不 emit（滚动高频 + 折叠低频同 fileViewState 模式） */
+  setDiffViewState(
+    tabKey: string,
+    state: { foldOpen: boolean; closedFiles: ReadonlySet<string>; scrollTop: number },
+  ) {
+    this.diffViewStates.set(tabKey, state)
   }
 
   // ============ 文件树 ============

@@ -396,6 +396,17 @@ describe("非聊天 Tab 作用域化（design-tab-memory §18）", () => {
     expect(res.ok).toBe(true)
     expect(store.tabs.some((t) => t.directory === WT1)).toBe(false)
   })
+
+  it("openFileTab revealLine：携带时设置，无锚点调用时清除残留", () => {
+    snapshots.set(ROOT, [])
+    store.openFileTab(ROOT + "/a.md", 42)
+    const tab = store.tabs.find((t) => t.key === `file:${ROOT}/a.md`)!
+    expect(tab.revealLine).toBe(42)
+
+    // 复用已开 Tab 且不传 revealLine → 清除残留（防过时行号强制源码模式）
+    store.openFileTab(ROOT + "/a.md")
+    expect(store.tabs.find((t) => t.key === `file:${ROOT}/a.md`)?.revealLine).toBeUndefined()
+  })
 })
 
 describe("先切换后加载：openProject 直达工作区", () => {

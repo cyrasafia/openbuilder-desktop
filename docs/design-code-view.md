@@ -67,7 +67,8 @@ FileView 源码态是 `<pre className="file-content">`：无行号、无高亮�
 |---|---|
 | 编辑/保存 | 文件 Tab 是浏览语义；编辑是独立大功能 |
 | 软换行切换按钮 | 无用户诉求；CM lineWrapping 后续一个 compartm­ent 就能加 |
-| 折叠/大纲/跳行 | basicSetup 级功能，浏览优先级低 |
+| 折叠/大纲 | basicSetup 级功能，浏览优先级低 |
+| 跳行（手动 go-to-line） | 无用户诉求；但从 diff 跳转的**自动行锚定**已实现（`revealLine` prop → CM `scrollIntoView`，见 design-diff-view §4.3「查看文件」），两者不同——自动锚定是外部携带的一次性意图，非用户交互式跳行面板 |
 | shiki 双轨高亮 | openchamber 为主题兼容所迫；本项目单一 CSS 变量体系无此需求 |
 | 大文件门限（异步高亮降级） | CM 增量解析天然延迟着色；移动端 >2000 行降级是 Flutter 手搓方案的补丁，不适用 |
 

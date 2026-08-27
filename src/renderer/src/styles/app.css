@@ -2992,6 +2992,18 @@
   font-size: var(--text-sm);
   white-space: nowrap;
 }
+
+/* 查看文件按钮：文件头下方右对齐，打开文件 Tab 并锚定首个 hunk */
+.diff-view-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 12px 0 auto;
+  padding: 4px 10px;
+}
+.diff-view-file svg {
+  flex-shrink: 0;
+}
 .diff-add-num {
   color: var(--diff-add-fg);
   font-weight: 600;
@@ -3011,7 +3023,7 @@
   border-top: none;
 }
 
-/* hunk 头 = 折叠开关（点击收起/展开本段行，同文件块 chevron 语义） */
+/* hunk 头 = 静态分节标签（不可折叠，仅展示段号/行范围/统计） */
 .diff-hunk-header {
   display: flex;
   align-items: center;
@@ -3019,15 +3031,8 @@
   width: 100%;
   padding: 4px 12px;
   background: var(--surface-container-high);
-  border: none;
-  font: inherit;
   font-size: var(--text-xs);
   color: var(--on-surface-variant);
-  text-align: left;
-  cursor: pointer;
-}
-.diff-hunk-header:hover {
-  background: var(--surface-container-highest);
 }
 .diff-hunk-header > .mono {
   font-size: var(--text-xs);
