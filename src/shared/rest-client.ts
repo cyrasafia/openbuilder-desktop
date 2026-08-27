@@ -20,6 +20,7 @@ import type {
 } from "./api-types"
 import type { Part } from "./api-types"
 import type { FilePartInput } from "./api-types"
+import type { Pty, PtyShell, PtyTicket } from "./api-types"
 
 export interface RestClientOptions {
   baseUrl: string
@@ -74,6 +75,11 @@ export class RestClient {
     }
     // Electron renderer 的 fetch 是绑定 window 的包装，脱离 this 调用会 Illegal invocation
     this.f = opts.fetchImpl ?? fetch.bind(globalThis)
+  }
+
+  /** pty WebSocket 连接基址（design-terminal-tab §1.2）：http(s) → ws(s) 换 scheme */
+  ptyWsOrigin(): string {
+    return this.base.replace(/^http/, "ws")
   }
 
   /** 底层 fetch（鉴权 + 超时 + 错误分类）；需要读响应头的端点（cursor 分页）也走这里。
@@ -150,6 +156,53 @@ export class RestClient {
 
   listSessions(directory: string, workspace?: string): Promise<Session[]> {
     return this.request<Session[]>(`/session${RestClient.dirQuery(directory, { workspace })}`)
+  }
+
+  // ============ pty（design-terminal-tab §1，契约经 opencode 源码核实） ============
+
+  /** 可用 shell 列表（首个 acceptable 为客户端默认） */
+  listShells(directory: string): Promise<PtyShell[]> {
+    return this.request<PtyShell[]>(`/pty/shells${RestClient.dirQuery(directory)}`)
+  }
+
+  /** 创建 pty：cwd = 作用域目录；command 省略时 server 用默认 shell */
+  createPty(
+    directory: string,
+    body: { command?: string; args?: string[]; cwd?: string; env?: Record<string, string> } = {},
+  ): Promise<Pty> {
+    return this.request<Pty>(`/pty${RestClient.dirQuery(directory)}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    })
+  }
+
+  /** resize（TerminalView 节流调用；失败静默由调用方 catch） */
+  updatePtySize(ptyID: string, directory: string, size: { rows: number; cols: number }): Promise<Pty> {
+    return this.request<Pty>(
+      `/pty/${encodeURIComponent(ptyID)}${RestClient.dirQuery(directory)}`,
+      { method: "PUT", body: JSON.stringify({ size }) },
+    )
+  }
+
+  /** 关 Tab = 杀 pty；404（已退出被 legacy 路由回收）由调用方视为成功 */
+  deletePty(ptyID: string, directory: string): Promise<void> {
+    return this.request<void>(`/pty/${encodeURIComponent(ptyID)}${RestClient.dirQuery(directory)}`, {
+      method: "DELETE",
+    })
+  }
+
+  /**
+   * WS 连接票据（PtyTicketConnectToken）。**必须带头 `x-opencode-ticket: 1`**
+   * （opencode pty-ticket.ts：无此头的请求 403 PtyForbiddenError——这是"我知道
+   * 我在开 WS"的客户端确认信号，而非鉴权本身）；带 ticket 的 connect 路径跳过
+   * Basic Auth（isPtyConnectPath），票据即 WS 鉴权。
+   */
+  ptyConnectToken(ptyID: string, directory: string): Promise<PtyTicket> {
+    return this.request<PtyTicket>(
+      `/pty/${encodeURIComponent(ptyID)}/connect-token${RestClient.dirQuery(directory)}`,
+      // 必须 POST：GET 无此路由，落到 server web UI 的 SPA fallback（HTML，实测）
+      { method: "POST", headers: { "x-opencode-ticket": "1" } },
+    )
   }
 
   /**

@@ -236,6 +236,30 @@ export interface FileRef {
   isDir: boolean
 }
 
+// ---- pty（design-terminal-tab §1，openapi Pty/PtyTicketConnectToken/shells） ----
+
+export interface Pty {
+  id: string
+  title?: string
+  command: string
+  args?: string[]
+  cwd: string
+  status: "running" | "exited"
+  pid: number
+  exitCode?: number
+}
+
+export interface PtyShell {
+  path: string
+  name: string
+  acceptable: boolean
+}
+
+export interface PtyTicket {
+  ticket: string
+  expires_in: number
+}
+
 /** 回灌 file part（user 消息 parts 内，openapi FilePart 的消费子集）。
  *  source?.type==="file" 即引用回灌（乐观/接收侧渲染分流依据）；二进制回灌
  *  时 url 会被 server 重写为 data:（移动端 3R-B 实测）——跳转不得用 url。 */

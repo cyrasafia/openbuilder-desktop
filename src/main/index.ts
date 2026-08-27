@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell } from "electron"
+import { app, BrowserWindow, session, shell } from "electron"
 import { fileURLToPath } from "node:url"
 import { join, dirname } from "node:path"
 import { existsSync } from "node:fs"
@@ -87,6 +87,21 @@ function createMainWindow() {
 
 app.whenReady().then(() => {
   registerIpc()
+
+  // pty WS 握手去 Origin（design-terminal-tab §1.2 实测）：server 对 connect 路径
+  // 校验 Origin allowlist（localhost/127.0.0.1/官方 scheme），浏览器 WS 必发
+  // Origin——打包形态 renderer 是 file://，dev 是 localhost:5173。删头后 server
+  // 视同无 Origin 放行（实测 101）；dev 的 localhost Origin 本就在 allowlist 内，
+  // 删除无副作用。锚定 /pty/ 路径（host 随用户配置不可枚举）——未来引入第三方
+  // WS 不受影响。版本前提：webRequest 拦截 WS 握手需较新 Electron（旧版不拦，
+  // electron#20710），本仓库 ^43 实测有效
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: ["ws://*/pty/*", "wss://*/pty/*"] },
+    (details, callback) => {
+      delete details.requestHeaders.Origin
+      callback({ requestHeaders: details.requestHeaders })
+    },
+  )
   mainWindow = createMainWindow()
 
   app.on("activate", () => {

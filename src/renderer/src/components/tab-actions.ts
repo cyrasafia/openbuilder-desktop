@@ -12,6 +12,12 @@ export function closeTabInteractive(store: AppStore, tab: TabEntity, t: Catalog)
     const streaming = store.isSessionActive(tab.key.slice(5))
     if (streaming && !confirm(t.confirmCloseStreamingTab)) return
     void store.closeChatTab(tab.key.slice(5), { streaming })
+  } else if (tab.kind === "terminal") {
+    // 关终端 Tab = 杀 pty（design-terminal-tab §1.1）：运行中先确认
+    const ptyID = tab.key.slice("terminal:".length)
+    const running = !store.ptyRuntimeFor(ptyID)?.exited
+    if (running && !confirm(t.confirmCloseTerminal)) return
+    void store.closeTerminalTab(ptyID)
   } else {
     store.closeTab(tab.key, { pushClosed: true })
   }

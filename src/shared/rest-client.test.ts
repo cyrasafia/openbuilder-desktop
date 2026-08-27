@@ -209,3 +209,47 @@ describe("readFileContent（design-image-preview §2.1）", () => {
     await expect(client.readFileContent("/repo", "/repo/a")).rejects.toBeInstanceOf(ApiError)
   })
 })
+
+describe("pty 端点（design-terminal-tab §1）", () => {
+  it("createPty：POST /pty + directory query + body", async () => {
+    let hit = ""
+    const client = mkClient((url, init) => {
+      hit = `${init.method} ${url} ${String(init.body)}`
+      return new Response(JSON.stringify({ id: "pty_1", command: "bash", cwd: "/repo", status: "running", pid: 1 }))
+    })
+    const pty = await client.createPty("/repo", { command: "/bin/bash", cwd: "/repo" })
+    expect(pty.id).toBe("pty_1")
+    expect(hit).toBe('POST http://server/pty?directory=%2Frepo {"command":"/bin/bash","cwd":"/repo"}')
+  })
+
+  it("ptyConnectToken：POST + x-opencode-ticket 头（缺头 403；GET 会落 SPA fallback，实测）", async () => {
+    let header = ""
+    let method = ""
+    const client = mkClient((url, init) => {
+      header = ((init.headers as Record<string, string>) ?? {})["x-opencode-ticket"] ?? ""
+      method = init.method ?? ""
+      return new Response(JSON.stringify({ ticket: "tkt", expires_in: 30 }))
+    })
+    const ticket = await client.ptyConnectToken("pty_1", "/repo")
+    expect(ticket.ticket).toBe("tkt")
+    expect(header).toBe("1")
+    expect(method).toBe("POST")
+  })
+
+  it("updatePtySize/deletePty：PUT/DELETE + size body；ws origin 换 scheme", async () => {
+    const calls: string[] = []
+    const client = mkClient((url, init) => {
+      calls.push(`${init.method} ${url}`)
+      return new Response()
+    })
+    await client.updatePtySize("pty 1", "/repo", { rows: 30, cols: 100 })
+    await client.deletePty("pty 1", "/repo")
+    expect(calls).toEqual([
+      "PUT http://server/pty/pty%201?directory=%2Frepo",
+      "DELETE http://server/pty/pty%201?directory=%2Frepo",
+    ])
+    expect(client.ptyWsOrigin()).toBe("ws://server")
+    const https = new RestClient({ baseUrl: "https://s/", fetchImpl: (async () => new Response()) as typeof fetch })
+    expect(https.ptyWsOrigin()).toBe("wss://s")
+  })
+})

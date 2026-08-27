@@ -2550,3 +2550,95 @@ describe("文件引用（design-file-reference）", () => {
     expect(store.fileRefsFor(ROOT).length).toBe(1)
   })
 })
+
+describe("终端 Tab（design-terminal-tab）", () => {
+  function ptyClient(pty = { id: "pty_1", title: "bash", command: "bash", cwd: ROOT, status: "running", pid: 1 }) {
+    const calls: string[] = []
+    ;(store as unknown as { client: unknown }).client = {
+      listSessions: async () => [],
+      listSessionStatus: async () => ({}),
+      listProjects: async () => [project()],
+      listPendingPermissions: async () => [],
+      listPendingQuestions: async () => [],
+      listShells: async () => [
+        { path: "/bin/false", name: "false", acceptable: false },
+        { path: "/bin/bash", name: "bash", acceptable: true },
+      ],
+      createPty: async (dir: string, body: { command?: string }) => {
+        calls.push(`create:${dir}:${body.command}`)
+        return { ...pty, cwd: dir }
+      },
+      deletePty: async (id: string) => {
+        calls.push(`delete:${id}`)
+      },
+      ptyConnectToken: async () => ({ ticket: "tkt", expires_in: 30 }),
+      ptyWsOrigin: () => "ws://127.0.0.1:1",
+    }
+    return calls
+  }
+
+  it("openTerminalTab：shells 首个 acceptable + cwd = 作用域目录 + Tab 归作用域", async () => {
+    const calls = ptyClient()
+    const ok = await store.openTerminalTab()
+    expect(ok).toBe(true)
+    expect(calls).toEqual([`create:${ROOT}:/bin/bash`])
+    expect(store.tabs.some((t) => t.key === "terminal:pty_1" && t.directory === ROOT)).toBe(true)
+    expect(store.activeTabKey).toBe("terminal:pty_1")
+    expect(store.ptyRuntimeFor("pty_1")).toEqual({ exited: false, title: "bash" })
+  })
+
+  it("closeTerminalTab：DELETE pty + 关 Tab + 入关闭栈", async () => {
+    const calls = ptyClient()
+    await store.openTerminalTab()
+    await store.closeTerminalTab("pty_1")
+    expect(calls).toEqual([`create:${ROOT}:/bin/bash`, "delete:pty_1"])
+    expect(store.tabs.length).toBe(0)
+    expect(store.closedTabs.some((e) => e.kind === "terminal" && e.directory === ROOT)).toBe(true)
+    expect(store.ptyRuntimeFor("pty_1")).toBeNull()
+  })
+
+  it("已退出 pty 关 Tab 不再 DELETE", async () => {
+    const calls = ptyClient()
+    await store.openTerminalTab()
+    store.markPtyExited("pty_1")
+    await store.closeTerminalTab("pty_1")
+    expect(calls).toEqual([`create:${ROOT}:/bin/bash`])
+  })
+
+  it("restoreClosedTab terminal 分支：原目录新建（新 pty id）", async () => {
+    const calls = ptyClient()
+    store.tabs = []
+    store.closedTabs = [
+      { kind: "terminal", key: "terminal:pty_old", projectId: "proj1", directory: WT1, title: "bash" },
+    ]
+    store.restoreClosedTab()
+    // ensureScopeFor 同步切到 WT1 → openTerminalTab（异步）用当前作用域
+    expect(store.scopeQuery.directory).toBe(WT1)
+    await vi.waitFor(() => expect(calls).toEqual([`create:${WT1}:/bin/bash`]))
+    expect(store.tabs[0]!.directory).toBe(WT1)
+  })
+
+  it("closeProject：该目录运行中 pty 被杀（防孤儿）", async () => {
+    const calls = ptyClient()
+    await store.openTerminalTab()
+    await store.closeProject("proj1")
+    expect(calls.some((c) => c === "delete:pty_1")).toBe(true)
+    expect(store.tabs.length).toBe(0)
+  })
+
+  it("ptyConnectUrl：ticket 组装、不带 cursor（全量回放语义，评审 H1）", async () => {
+    ptyClient()
+    await store.openTerminalTab()
+    const url = await store.ptyConnectUrl("pty_1")
+    expect(url).toBe("ws://127.0.0.1:1/pty/pty_1/connect?ticket=tkt&directory=%2Frepo")
+  })
+
+  it("teardownConnection：pty 全杀在 client 置 null 之前执行（评审 H2）", async () => {
+    const calls = ptyClient()
+    await store.openTerminalTab()
+    // 直接调 teardown（绕过 disconnect 的其他清理路径）——DELETE 应被发出
+    ;(store as unknown as { teardownConnection: () => void }).teardownConnection()
+    expect(calls.some((c) => c === "delete:pty_1")).toBe(true)
+    expect(store.ptyRuntimeFor("pty_1")).toBeNull()
+  })
+})

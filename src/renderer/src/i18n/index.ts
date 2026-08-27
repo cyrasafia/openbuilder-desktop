@@ -75,6 +75,7 @@ const zh = {
   fileOpenWith: "打开方式…",
   fileCopyPath: "复制路径",
   // 文件引用（design-file-reference）
+  // 文件引用（design-file-reference）
   fileRefToSession: "引用到会话",
   fileRefNoMatch: "无匹配文件",
   fileRefRemove: "移除引用",
@@ -145,6 +146,11 @@ const zh = {
   openBrowser: "网页",
   comingSoon: "即将支持",
   restoreHint: "点击恢复",
+  // 终端 Tab（design-terminal-tab）
+  confirmCloseTerminal: "终端中有进程在运行，关闭将终止它。继续？",
+  terminalExited: "终端已退出",
+  terminalDisconnected: "终端已断开",
+  terminalConnectFailed: "终端连接失败",
   // diff 详情页（design-diff-view）：单 Tab + segment 切换；短标签同移动端 diffMode*
   diffTitle: "改动",
   diffRound: "上一轮",
@@ -295,6 +301,10 @@ const en: typeof zh = {
   openBrowser: "Browser",
   comingSoon: "Coming soon",
   restoreHint: "Click to restore",
+  confirmCloseTerminal: "A process is running in this terminal. Closing will terminate it. Continue?",
+  terminalExited: "Terminal exited",
+  terminalDisconnected: "Terminal disconnected",
+  terminalConnectFailed: "Terminal connection failed",
   diffTitle: "Changes",
   diffRound: "Last round",
   diffUncommitted: "Uncommitted",

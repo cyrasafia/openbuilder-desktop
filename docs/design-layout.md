@@ -70,7 +70,7 @@
 |---|---|---|
 | `chat` 会话 Tab | 聊天视图（消息流 + 底部输入区）；标题 = 会话标题（无标题时取首条消息摘要），流式进行中显示动态指示 | v0.1 || `file` 文件 Tab | 文件树点击文件 → 新开（或复用同文件）纯文本视图；标题 = 文件名；无 dirty 态（只读） | v0.1 |
 | `diff` | 作用域改动详情（上一轮/未提交/分支三来源，单 Tab + 页内 segment 切换），见 [design-diff-view.md](./design-diff-view.md) | v0.2（已落地） |
-| `terminal` | xterm.js + pty 会话（server pty API） | v0.2（M2） |
+| `terminal` | xterm.js + pty 会话（server pty API），恒深色、关 Tab = 杀 pty（[design-terminal-tab.md](design-terminal-tab.md)，v0.3 已落地） | v0.3 |
 | `browser` | WebContentsView 内嵌浏览器 tab | v0.3+ |
 | `editor` | CodeMirror 6 编辑器 | v0.3+ |
 

@@ -72,6 +72,7 @@ import type {
   FileRef,
   Message,
   MessageWithParts,
+  Pty,
   ModelInfo,
   ModelRef,
   OpencodeEvent,
@@ -84,7 +85,7 @@ import type {
   Workspace,
 } from "@shared/api-types"
 
-export type TabKind = "chat" | "file" | "diff"
+export type TabKind = "chat" | "file" | "diff" | "terminal"
 
 /** diff 的来源类型（design-diff-view §2）：单 Tab 内 segment 切换 */
 export type DiffTabType = "round" | "uncommitted" | "branch"
@@ -311,6 +312,14 @@ export class AppStore {
    */
   private fileRefs = new Map<string, FileRef[]>()
   /**
+   * pty 运行时（design-terminal-tab §2，纯内存）：exited = 进程自然退出（只读态，
+   * 仅 WS close code 1000 置位——异常断开不标，关闭 Tab 仍尝试 DELETE 防孤儿）。
+   * cursor 记忆已移除：组件卸载即销毁 xterm buffer，重挂载是全新 Terminal，
+   * connect 不带 cursor 让 server 全量回放（带 cursor 只回放其后增量——语义用
+   * 反会导致切回空白，评审 H1）；同 buffer 重连场景本架构不存在
+   */
+  private ptyRuntimes = new Map<string, { exited: boolean; title: string }>()
+  /**
    * 作用域最后激活（design-tab-state-memory §2.1）：directory → 最后激活 Tab key；
    * null = 引导页。纯内存（重启无记录，冷启动激活仍走 design-tab-memory §7 记忆
    * 规则）。记录点 = 用户意图激活变更（点击/开 Tab/引导页）+ closeTab 激活回退
@@ -508,6 +517,18 @@ export class AppStore {
   private teardownConnection() {
     this.sseSubscriber?.stop()
     this.sseSubscriber = null
+    // pty 全杀（fire-and-forget）+ 运行时全清——**必须在 client 置 null 之前**
+    // 执行（评审 H2：置 null 后再杀是死代码，远程 server 留孤儿进程）
+    const killClient = this.client
+    if (killClient) {
+      for (const tab of this.tabs) {
+        if (tab.kind !== "terminal" || !tab.directory) continue
+        if (!this.ptyRuntimes.get(tab.key.slice("terminal:".length))?.exited) {
+          void killClient.deletePty(tab.key.slice("terminal:".length), tab.directory).catch(() => {})
+        }
+      }
+    }
+    this.ptyRuntimes.clear()
     this.client = null
     this.managedBaseUrl = null
     this.projects = []
@@ -1302,13 +1323,14 @@ export class AppStore {
     // 目录卸载随清引导页草稿（目录失去订阅/展示，草稿同灭，design-compose-draft §3）
     this.guideDrafts.delete(directory)
     this.fileRefs.delete(directory)
+    this.killPtyInDirectory(directory)
     // 该目录的 file/diff Tab 与 global 会话的 chat Tab 随之关闭（仅关 Tab，不归档——
     // 归档只发生在显式关闭 Tab；file Tab 作用域化后随目录卸载，2026-08-25 §18）。
     // 双行目录（git 项目 + global 会话共存）下按
     // projectId 过滤：git 项目的 Tab 归 closeProject 管，不随 global entry 关闭
     for (const tab of [...this.tabs]) {
       if (
-        (tab.kind === "diff" || tab.kind === "file") &&
+        (tab.kind === "diff" || tab.kind === "file" || tab.kind === "terminal") &&
         tab.directory === directory &&
         tab.projectId === GLOBAL_PROJECT_ID
       ) {
@@ -1416,6 +1438,7 @@ export class AppStore {
         this.snapshottedDirs.delete(d)
         this.guideDrafts.delete(d)
         this.fileRefs.delete(d)
+        this.killPtyInDirectory(d)
       }
       // 该项目的 pending（授权/问题）一并卸载：目录失去订阅，replied 事件收不到，
       // 留着只会假亮；重开项目时 backfill 会按 server 权威重建
@@ -1426,7 +1449,7 @@ export class AppStore {
     // 双行目录下按 projectId 过滤：global entry 的 Tab 归 closeGlobalDirectory 管，
     // 不随 git 项目关闭（与 chat 分支一致）
     for (const tab of [...this.tabs]) {
-      if (tab.kind === "file" || tab.kind === "diff") {
+      if (tab.kind === "file" || tab.kind === "diff" || tab.kind === "terminal") {
         if (tab.projectId === projectId) this.closeTab(tab.key)
         continue
       }
@@ -1810,6 +1833,7 @@ export class AppStore {
       // 目录已死，引导页草稿同灭（design-compose-draft §3）
       this.guideDrafts.delete(directory)
       this.fileRefs.delete(directory)
+      this.killPtyInDirectory(directory)
       // 显式关闭该目录全部 live Tab：订阅即将拆除，chat 的 session.deleted 事件
       // 兜底存在窗口期（design-tab-memory §5）；file/diff 无事件兜底，随目录卸载
       // （全 kind 作用域化，2026-08-25 §18）。双行目录（git worktree 与 global 会话
@@ -1817,7 +1841,7 @@ export class AppStore {
       // 归 global entry 管，删 git worktree 不得误关
       for (const tab of [...this.tabs]) {
         if (
-          (tab.kind === "file" || tab.kind === "diff") &&
+          (tab.kind === "file" || tab.kind === "diff" || tab.kind === "terminal") &&
           tab.directory === directory &&
           tab.projectId === project.id
         ) {
@@ -2845,6 +2869,131 @@ export class AppStore {
     this.emit()
   }
 
+  // ============ 终端 Tab（design-terminal-tab） ============
+
+  /** pty 运行时读（TerminalView 挂载判断已退出态；无条目 = 全新） */
+  ptyRuntimeFor(ptyID: string): { exited: boolean; title: string } | null {
+    return this.ptyRuntimes.get(ptyID) ?? null
+  }
+
+  /** 自然退出标记（WS close code 1000；emit 驱动叠加态渲染） */
+  markPtyExited(ptyID: string) {
+    const rt = this.ptyRuntimes.get(ptyID)
+    if (rt && !rt.exited) {
+      rt.exited = true
+      this.emit()
+    }
+  }
+
+  /**
+   * 新建终端 Tab：shell 取 /pty/shells 首个 acceptable（失败省略 command 用
+   * server 默认）；cwd = 当前作用域目录；Tab 归作用域（directory 过滤通用）。
+   * 失败经 connectionError 呈现（引导页按钮不额外提示）。
+   */
+  async openTerminalTab(): Promise<boolean> {
+    if (!this.client || !this.scopeDirectory()) {
+      this.connectionError = "无法创建终端：未连接或无作用域"
+      this.emit()
+      return false
+    }
+    // 入口同步捕获（M1）：await 期间作用域可能已切走——directory/projectId 用
+    // 捕获值（Tab 归属创建时作用域），激活只在仍在该作用域时抢
+    const directory = this.scopeDirectory()
+    const projectId = this.currentProject?.id ?? ""
+    const body: { command?: string } = {}
+    try {
+      const shells = await this.client.listShells(directory)
+      const shell = shells.find((x) => x.acceptable)
+      if (shell) body.command = shell.path
+    } catch {
+      // shells 失败不阻断：省略 command，server 用默认 shell
+    }
+    try {
+      const pty = await this.client.createPty(directory, { ...body, cwd: directory })
+      this.ptyRuntimes.set(pty.id, { exited: false, title: pty.title ?? "terminal" })
+      const key = `terminal:${pty.id}`
+      this.tabs.push({
+        kind: "terminal",
+        key,
+        projectId,
+        title: pty.title ?? "terminal",
+        directory,
+      })
+      // 在途切走作用域：Tab 照开（归 directory 作用域）但不抢激活、不记 scopeActive
+      if (this.scopeDirectory() === directory) {
+        this.activeTabKey = key
+        this.recordScopeActive(directory, key)
+      }
+      this.emit()
+      return true
+    } catch (e) {
+      this.connectionError = e instanceof Error ? e.message : String(e)
+      this.emit()
+      return false
+    }
+  }
+
+  /**
+   * WS 连接 URL 组装（design-terminal-tab §1.2）：connect-token（POST + 专用头）→
+   * ws://…/pty/{id}/connect?ticket=&directory=（不带 cursor = 全量回放，见 §1.2）。
+   * 失败/无 client → null（调用方呈现错误态）。
+   */
+  async ptyConnectUrl(ptyID: string): Promise<string | null> {
+    if (!this.client) return null
+    const directory = this.tabs.find((t) => t.key === `terminal:${ptyID}`)?.directory
+    if (!directory) return null
+    try {
+      const ticket = await this.client.ptyConnectToken(ptyID, directory)
+      // 不带 cursor：server cursor 省略 = 全量回放（重挂载全新 Terminal 的正确语义）
+      // **必须带 directory**（实测）：pty 路由按 directory 实例路由，缺参落到
+      // server cwd 实例 → pty NotFound 404
+      const qs = new URLSearchParams({ ticket: ticket.ticket, directory })
+      return `${this.client.ptyWsOrigin()}/pty/${encodeURIComponent(ptyID)}/connect?${qs.toString()}`
+    } catch {
+      return null
+    }
+  }
+
+  /** pty resize 上报（TerminalView 节流调用；失败静默——尺寸下次再同步） */
+  reportPtySize(ptyID: string, rows: number, cols: number) {
+    if (!this.client) return
+    const directory = this.tabs.find((t) => t.key === `terminal:${ptyID}`)?.directory
+    if (!directory) return
+    void this.client.updatePtySize(ptyID, directory, { rows, cols }).catch(() => {})
+  }
+
+  /**
+   * 关终端 Tab = 杀 pty（design-terminal-tab §1.1）：DELETE（404 = 已退出被
+   * legacy 路由回收，视为成功）；入关闭栈（Ctrl+Shift+T 恢复 = 原目录新建）。
+   */
+  async closeTerminalTab(ptyID: string): Promise<void> {
+    const key = `terminal:${ptyID}`
+    const tab = this.tabs.find((t) => t.key === key)
+    const directory = tab?.directory
+    if (this.client && directory && !this.ptyRuntimes.get(ptyID)?.exited) {
+      try {
+        await this.client.deletePty(ptyID, directory)
+      } catch {
+        // 404（已退出）/ 网络失败：本地 Tab 照关（server 侧孤儿由其自身回收）
+      }
+    }
+    this.ptyRuntimes.delete(ptyID)
+    this.closeTab(key, { pushClosed: true })
+  }
+
+  /** 目录卸载（关项目/删工作区/teardown）时杀该目录运行中 pty（fire-and-forget，防孤儿） */
+  private killPtyInDirectory(directory: string) {
+    if (!this.client) return
+    for (const tab of this.tabs) {
+      if (tab.kind !== "terminal" || tab.directory !== directory) continue
+      const id = tab.key.slice("terminal:".length)
+      if (!this.ptyRuntimes.get(id)?.exited) {
+        void this.client.deletePty(id, directory).catch(() => {})
+      }
+      this.ptyRuntimes.delete(id)
+    }
+  }
+
   /**
    * 打开（或复用）当前作用域的 diff Tab 并触发加载（design-diff-view §3）。
    * 每作用域单 Tab；来源类型 = 既有选中（复用时保留用户选择），缺省 uncommitted。
@@ -3002,6 +3151,8 @@ export class AppStore {
     // 视图状态随 Tab 关闭终结（同草稿"关闭 = 决断"语义，design-tab-state-memory §3）：
     // chat 滚动位置、文件模式/滚动。死会话收敛只经 closeTab，须在此清
     if (closed.kind === "chat") this.chatScrollTops.delete(closed.key.slice(5))
+    // pty 运行时随 Tab 关闭终结（用户路径经 closeTerminalTab 已清，此处兜底卸载路径）
+    if (closed.kind === "terminal") this.ptyRuntimes.delete(closed.key.slice("terminal:".length))
     if (closed.kind === "file") {
       this.fileViewStates.delete(closed.key.slice(5))
       this.tocStates.delete(closed.key.slice(5))
@@ -3102,7 +3253,13 @@ export class AppStore {
         this.openDiffTab()
         return
       }
-      // terminal/browser：栈结构兼容，恢复逻辑随对应功能落地接入
+      if (entry.kind === "terminal") {
+        // 终端恢复 = 原 directory 新建 pty（原 pty 已随关 Tab 销毁，spec #2）；
+        // ensureScopeFor 已把作用域切到原目录（openTerminalTab 用当前作用域）
+        void this.openTerminalTab()
+        return
+      }
+      // browser：栈结构兼容，恢复逻辑随对应功能落地接入
     }
   }
 

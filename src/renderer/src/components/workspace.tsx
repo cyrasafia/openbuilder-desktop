@@ -33,6 +33,7 @@ import { collectHeadings, MdToc, type TocHeading } from "./md-toc"
 import { DiffView } from "./diff-view"
 import { parseDiffTabKey } from "../store/app-store"
 import { closeTabInteractive } from "./tab-actions"
+import { TerminalView } from "./terminal-view"
 import { FileRefChips, useFileRefInput, type RefChipItem } from "./file-ref"
 import { isFileRefPart } from "@shared/api-types"
 
@@ -226,6 +227,10 @@ export function Workspace() {
             const diff = parseDiffTabKey(active.key)
             return diff ? <DiffView key={active.key} tabKey={active.key} directory={diff.directory} /> : null
           })()}
+        {active?.kind === "terminal" && (
+          /* key 隔离：pty Tab 切换时重挂载（WS 卸载重连 + cursor replay） */
+          <TerminalView key={active.key} ptyID={active.key.slice("terminal:".length)} />
+        )}
       </div>
 
       {store.settingsOpen && <SettingsDialog />}
@@ -313,7 +318,12 @@ function GuidePage() {
           <button type="button" className="guide-action" onClick={() => store.openDiffTab()}>
             {t.diffTitle}
           </button>
-          <button type="button" className="guide-action" disabled title={t.comingSoon}>
+          <button
+            type="button"
+            className="guide-action"
+            onClick={() => void store.openTerminalTab()}
+            disabled={!store.activeProfile}
+          >
             {t.openTerminal}
           </button>
           <button type="button" className="guide-action" disabled title={t.comingSoon}>
