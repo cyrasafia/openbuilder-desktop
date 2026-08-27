@@ -24,8 +24,8 @@
 - 入帧：`term.onData` → `ws.send`（文本）
 - 断开/卸载：close WS；重挂载凭全量回放恢复。WS close **code 1000** = 自然退出 → store 标 exited（关闭 Tab 不再 DELETE，legacy 路由已 404）；**其余 code** = 异常断开 → 仅"已断开"叠加态、不标 exited（关闭 Tab 仍 DELETE 防孤儿，评审 M2）。已退出 pty 重挂载不建 WS
 - exited 呈现：WS close（code 1000 = pty 自然退出）→ 终端区叠加「已退出」态（终态提示行，通栏 banner 警示色——已退出琥珀、已断开红），只读；Tab 保持（可读回滚）直至用户关闭
-- **已退出 Tab 回滚保留（buffer 缓存）**：组件卸载即销毁 xterm buffer，但已退出 pty 的 server attach 抛 ExitedError 无法回放——卸载前用 `@xterm/addon-serialize` 导出 ANSI 序列缓存到 `ptyRuntimes[id].buffer`；重挂载时若有缓存则 `term.write(buffer)` 还原（不建 WS），兑现「Tab 保持可读回滚」。运行中 pty 不缓存（重挂载靠 server 全量回放）
-- **resize**：ResizeObserver → `fitAddon.proposeDimensions()` → `term.resize` + `PUT /pty/{id}` `{size:{rows,cols}}`（节流 200ms）；连接未建立时只 resize 本地
+- **已退出 Tab 回滚保留（buffer 缓存）**：组件卸载即销毁 xterm buffer，但已退出 pty 的 server attach 抛 ExitedError 无法回放——卸载前用 `@xterm/addon-serialize` 导出 ANSI 序列缓存到 `ptyRuntimes[id].buffer`；重挂载时若有缓存则 `term.write(buffer)` 还原（不建 WS），兑现「Tab 保持可读回滚」。运行中 pty 不缓存（重挂载靠 server 全量回放）。**bufferReady 守卫**：xterm `write` 是异步队列，重挂载后立即切走时回调未触发、serialize 返回空——故 `cachePtyBuffer` 空串不覆盖（保留首次好缓存），且 cleanup 在 `bufferReady=true`（write 回调触发 / WS close）后才 serialize
+- **resize**：ResizeObserver → `fitAddon.proposeDimensions()` → `term.resize` + `PUT /pty/{id}` `{size:{rows,cols}}`（节流 200ms）；连接未建立时只 resize 本地；**已退出 pty 跳过上报**（server 404，防 ResizeObserver 在 exited 后仍触发报错）
 - **自动聚焦**：`term.open(host)` 后立即 `term.focus()`——Tab 切换走 key 隔离重挂载，打开/切回 terminal 即获焦，无需点击；`.terminal-view` `onMouseDown` 兜底（点击终端任意区域重新聚焦）
 - 复用浏览器 shim：终端纯 renderer + server WS，无 IPC 依赖——shim 下同样可用（jsdom 测试不建真 WS）
 

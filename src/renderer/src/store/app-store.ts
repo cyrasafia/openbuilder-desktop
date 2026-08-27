@@ -2922,7 +2922,9 @@ export class AppStore {
    */
   cachePtyBuffer(ptyID: string, buffer: string) {
     const rt = this.ptyRuntimes.get(ptyID)
-    if (rt && rt.exited) rt.buffer = buffer
+    // 空串不覆盖：重挂载后切走的 serialize 可能返回空（fit/resize 时序），
+    // 覆盖会丢失首次缓存的好内容
+    if (rt && rt.exited && buffer) rt.buffer = buffer
   }
 
   /**

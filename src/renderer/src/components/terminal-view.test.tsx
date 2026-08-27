@@ -19,8 +19,10 @@ vi.mock("@xterm/xterm", () => {
     loadAddon = vi.fn()
     open = vi.fn()
     focus = vi.fn()
-    write = vi.fn((d: string) => {
+    write = vi.fn((d: string, cb?: () => void) => {
       writes.push(d)
+      // xterm write 回调是异步的（队列渲染后），用 setTimeout 模拟
+      if (cb) setTimeout(cb, 0)
     })
     writeln = vi.fn((d: string) => {
       writes.push(d + "\n")
@@ -195,8 +197,11 @@ describe("TerminalView", () => {
 
   it("卸载时 pty 已退出：serialize 缓存到 store（保切回可读回滚）", async () => {
     runtimeObj.exited = true
+    runtimeObj.buffer = "OLD"
     const { unmount } = render(<TerminalView ptyID="pty_1" />)
     await screen.findByText("终端已退出")
+    // 等 term.write 回调触发 bufferReady（xterm write 异步）
+    await new Promise((r) => setTimeout(r, 10))
     unmount()
     expect(actions.cachePtyBuffer).toHaveBeenCalledWith("pty_1", "SERIALIZED_OUTPUT")
     expect(runtimeObj.buffer).toBe("SERIALIZED_OUTPUT")

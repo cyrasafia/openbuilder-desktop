@@ -86,6 +86,8 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
       } catch {
         return
       }
+      // 已退出 pty 不再上报 size（server 404）
+      if (store.ptyRuntimeFor(ptyID)?.exited) return
       if (resizeTimer != null) window.clearTimeout(resizeTimer)
       resizeTimer = window.setTimeout(() => {
         store.reportPtySize(ptyID, term.rows, term.cols)
@@ -97,13 +99,22 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
     const decoder = new TextDecoder()
     const serialize = new SerializeAddon()
     term.loadAddon(serialize)
+    // 已退出 pty 的重挂载：write 缓存到 term 后标记 ready，
+    // cleanup 时仅在 write 完成后才 serialize（xterm write 是异步队列）
+    let bufferReady = false
     const openWs = async () => {
       // 已退出的 pty 不再连接（server legacy 路由 exited 即 404）；
       // 但若有 client 侧序列化缓存（上次卸载前缓存），还原 buffer 保回滚
       const rt = store.ptyRuntimeFor(ptyID)
       if (rt?.exited) {
         setState("closed")
-        if (rt.buffer) term.write(rt.buffer)
+        if (rt.buffer) {
+          term.write(rt.buffer, () => {
+            bufferReady = true
+          })
+        } else {
+          bufferReady = true
+        }
         return
       }
       const url = await store.ptyConnectUrl(ptyID)
@@ -137,6 +148,7 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
       ws.onclose = (ev) => {
         if (disposed) return
         setState("closed")
+        bufferReady = true
         // 1000 = pty 自然退出（server onEnd 主动关）；其余 = 异常断开——
         // 不标 exited，关闭 Tab 时仍尝试 DELETE 防孤儿
         if (ev.code === 1000) store.markPtyExited(ptyID)
@@ -151,8 +163,11 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
       wsRef.current?.close()
       wsRef.current = null
       // 已退出 pty：serialize 导出 buffer 缓存到 store，保 Tab 切走再切回可读回滚
-      // （server attach 对 exited pty 抛 ExitedError 无法回放）
-      if (store.ptyRuntimeFor(ptyID)?.exited) {
+      // （server attach 对 exited pty 抛 ExitedError 无法回放）。
+      // bufferReady 守卫：重挂载的 term write 是异步队列，未渲染完时 serialize 返回空；
+      // 未 ready 时保留首次缓存（cachePtyBuffer 空串不覆盖）
+      const rt = store.ptyRuntimeFor(ptyID)
+      if (rt?.exited && bufferReady) {
         try {
           store.cachePtyBuffer(ptyID, serialize.serialize())
         } catch {
