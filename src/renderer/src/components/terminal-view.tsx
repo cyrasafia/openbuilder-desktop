@@ -162,19 +162,34 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
       observer.disconnect()
       wsRef.current?.close()
       wsRef.current = null
-      // 已退出 pty：serialize 导出 buffer 缓存到 store，保 Tab 切走再切回可读回滚
-      // （server attach 对 exited pty 抛 ExitedError 无法回放）。
-      // bufferReady 守卫：重挂载的 term write 是异步队列，未渲染完时 serialize 返回空；
-      // 未 ready 时保留首次缓存（cachePtyBuffer 空串不覆盖）
+      // 已退出 pty 的 serialize 遍历 scrollback 可能阻塞 Tab 切换渲染。
+      // 延迟到空闲帧：切 Tab 立即完成，serialize + dispose 在原 term 仍持
+      // buffer 期间跑（dispose 推迟到回调内）。延迟 dispose 对运行中 pty
+      // 也安全（WS 已断、观察者已拆）。兜底 1s 防空闲帧不触发。
       const rt = store.ptyRuntimeFor(ptyID)
-      if (rt?.exited && bufferReady) {
-        try {
-          store.cachePtyBuffer(ptyID, serialize.serialize())
-        } catch {
-          // dispose 边界异常不阻断清理
+      const needSerialize = !!rt?.exited && bufferReady
+      const ric = (window as unknown as {
+        requestIdleCallback?: (cb: IdleRequestCallback) => number
+      }).requestIdleCallback
+      let done = false
+      const finalize = () => {
+        if (done) return
+        done = true
+        if (needSerialize) {
+          try {
+            store.cachePtyBuffer(ptyID, serialize.serialize())
+          } catch {
+            // dispose 边界异常不阻断
+          }
         }
+        term.dispose()
       }
-      term.dispose()
+      if (needSerialize && ric) {
+        ric(() => finalize())
+        window.setTimeout(finalize, 1000)
+      } else {
+        finalize()
+      }
       termRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
