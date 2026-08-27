@@ -781,6 +781,7 @@ function ChatView({ sessionID }: { sessionID: string }) {
           value={draft}
           placeholder={t.inputPlaceholder}
           rows={1}
+          autoFocus
           onChange={(e) => {
             setDraft(e.target.value)
             setCmdDismissed(false)
