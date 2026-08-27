@@ -3111,7 +3111,6 @@
 
 .terminal-host .xterm {
   height: 100%;
-  padding: 4px 0;
 }
 
 .terminal-exited-overlay {
