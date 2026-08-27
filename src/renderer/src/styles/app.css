@@ -3101,7 +3101,7 @@
   position: relative;
   flex: 1;
   min-height: 0;
-  background: #1e1e2e;
+  background: #161b16;
   padding: 4px 0 4px 8px;
 }
 
@@ -3111,7 +3111,6 @@
 
 .terminal-host .xterm {
   height: 100%;
-  padding: 4px 0;
 }
 
 .terminal-exited-overlay {

@@ -20,29 +20,34 @@ import { useI18n, useStore } from "../app"
  * 已退出的 Tab 重挂载：不建 WS（server 侧 exited 即 404），直接呈只读态。
  */
 
-/** 恒深色主题（不接 data-theme，spec #5） */
+/**
+ * 恒深色主题（不接 data-theme，spec #5）。
+ * 背景 = 深色 surface（#161b16），与工作区一致；前景/ANSI 16 色对齐项目
+ * 语法高亮色板（tokens.css §syntax-*，GitHub dark），cursor 取 primary 绿，
+ * selection 取 outline-variant 半透明——整体与项目配色协调而非独立 Catppuccin
+ */
 const DARK_THEME = {
-  background: "#1e1e2e",
-  foreground: "#cdd6f4",
-  cursor: "#f5e0dc",
-  cursorAccent: "#1e1e2e",
-  selectionBackground: "#585b7055",
-  black: "#45475a",
-  red: "#f38ba8",
-  green: "#a6e3a1",
-  yellow: "#f9e2af",
-  blue: "#89b4fa",
-  magenta: "#f5c2e7",
-  cyan: "#94e2d5",
-  white: "#bac2de",
-  brightBlack: "#585b70",
-  brightRed: "#f38ba8",
-  brightGreen: "#a6e3a1",
-  brightYellow: "#f9e2af",
-  brightBlue: "#89b4fa",
-  brightMagenta: "#f5c2e7",
-  brightCyan: "#94e2d5",
-  brightWhite: "#a6adc8",
+  background: "#161b16",
+  foreground: "#c8d0c4",
+  cursor: "#98d4a3",
+  cursorAccent: "#161b16",
+  selectionBackground: "#41494188",
+  black: "#111511",
+  red: "#ff7b72",
+  green: "#7ee787",
+  yellow: "#ffa657",
+  blue: "#79c0ff",
+  magenta: "#d2a8ff",
+  cyan: "#a5d6ff",
+  white: "#adb6ab",
+  brightBlack: "#8b949e",
+  brightRed: "#f85149",
+  brightGreen: "#3fb950",
+  brightYellow: "#fbbf24",
+  brightBlue: "#58a6ff",
+  brightMagenta: "#d2a8ff",
+  brightCyan: "#a5d6ff",
+  brightWhite: "#c8d0c4",
 }
 
 export function TerminalView({ ptyID }: { ptyID: string }) {
