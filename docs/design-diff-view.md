@@ -71,6 +71,7 @@
 - **折叠体系（2026-08-27 修订）**：原设计含 hunk 级 + 文件级两级折叠，**已移除 hunk 级折叠**（实际使用中文件级折叠已足够，hunk 折叠增加交互复杂度且与文件折叠语义重叠），仅保留文件级折叠——
   - **hunk 级**：~~可折叠~~ **改为静态分节头**（`<div>`，非 `<button>`，无 chevron/`aria-expanded`/点击），仅展示段号、行范围、增删统计。
   - **文件级 + 全局**：文件块头部（`<button>` + chevron，`aria-expanded`）点击收起/展开本文件；工具条右侧「全部折叠 / 全部展开」（`btn-tonal` chip，仅渲染于有文件且非错误态；右对齐，与 segment 同高）。实现为**意图信号** `foldOpen: boolean`（DiffView state → DiffBody → FileDiffBlock `useLayoutEffect` 应用 `setOpen`，免首帧闪现）：折叠 = 关闭所有文件块；展开 = 全部打开。意图只表达按钮交替方向、不追踪各块本地状态（手动折叠不改变按钮标签）；deps 仅 `foldOpen`——**数据刷新（激活即重拉）不重置手动状态**，但意图切换后新挂载的文件块继承当前意图。
+  - **视图状态持久化（2026-08-27 增补）**：切 Tab 卸载前落 store（`diffViewStates`，design-tab-state-memory §2.5），重挂载恢复——`foldOpen`（全局折叠意图）、`closedFiles`（手动折叠的文件路径集）、`scrollTop`（滚动偏移）。卸载经 ref 读最新值 + 复活闸门（Tab 仍在才写）；恢复 foldOpen/closedFiles 经 `useState` 初始化值、scrollTop 经 `useLayoutEffect` 在内容落地后应用。首次挂载跳过 foldOpen 覆盖（`firstMount` ref），避免全局意图覆盖从 closedFiles 恢复的逐文件状态。
 - 行：双 gutter（oldNo | newNo，等宽两列——桌面宽裕，信息全）+ marker（+/−）+ 内容；added 绿底 tint / removed 红底 tint / context 透明，token 色 = `--syntax-*`（GitHub 风格与代码视图一致）；`diffAddBg/diffDelBg/diffAddFg/diffDelFg` 令牌进 tokens.css 双主题。
 - 永不换行：整页唯一横滚（外层容器），各文件/hunk 宽度统一（移动端同决策——换行破坏对齐）。
 - 大 diff 性能：**hunk 级** `content-visibility: auto` + `contain-intrinsic-size`——文件展开时屏外 hunk 仍可跳过渲染（粒度优于文件块级，零 JS 等价虚拟化）；解析/高亮全在 useMemo。

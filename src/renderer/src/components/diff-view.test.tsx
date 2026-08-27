@@ -15,10 +15,14 @@ import { ResizeObserverStub } from "./resize-observer-stub"
 const loadDiffTab = vi.fn()
 const switchDiffType = vi.fn()
 const openFileTab = vi.fn()
+const diffViewStateFor = vi.fn()
+const setDiffViewState = vi.fn()
 
 /** 当前选中来源（测试按用例设置，模拟 store.diffSelectedTypes） */
 let selType: DiffTabType
 let visibleSessions: Session[]
+/** store.tabs 副本（卸载复活闸门用；测试可控制是否含 diff Tab） */
+let tabsStub: { key: string }[]
 
 vi.mock("../app", () => ({
   useI18n: () => ({
@@ -47,6 +51,9 @@ vi.mock("../app", () => ({
     pushOverlay: vi.fn(),
     popOverlay: vi.fn(),
     diffTypeFor: () => selType,
+    diffViewStateFor,
+    setDiffViewState,
+    tabs: tabsStub,
     visibleSessions,
   }),
 }))
@@ -66,6 +73,11 @@ beforeEach(() => {
   loadDiffTab.mockClear()
   switchDiffType.mockClear()
   openFileTab.mockClear()
+  diffViewStateFor.mockClear()
+  setDiffViewState.mockClear()
+  diffViewStateFor.mockReturnValue(null)
+  setDiffViewState.mockImplementation(() => {})
+  tabsStub = [{ key: TAB_KEY }]
   dataStub = new Map()
   selType = "uncommitted"
   visibleSessions = []
@@ -248,5 +260,59 @@ describe("DiffView", () => {
     selType = "round"
     render(<DiffView tabKey={TAB_KEY} directory="/repo" />)
     expect(loadDiffTab).toHaveBeenCalledWith("round", "/repo")
+  })
+
+  it("视图状态恢复：从 store 恢复 foldOpen / 文件折叠 / 滚动位置", () => {
+    selType = "round"
+    dataStub.set("diff\0round\0/repo", { files: [file(PATCH), file(PATCH, "added", "src/b.ts")] })
+    diffViewStateFor.mockReturnValue({
+      foldOpen: true,
+      closedFiles: new Set(["src/a.ts"]),
+      scrollTop: 200,
+    })
+    const { container } = render(<DiffView tabKey={TAB_KEY} directory="/repo" />)
+    // src/a.ts 折叠、src/b.ts 展开
+    const blocks = container.querySelectorAll(".diff-file")
+    expect(blocks[0].classList.contains("closed")).toBe(true)
+    expect(blocks[1].classList.contains("closed")).toBe(false)
+  })
+
+  it("视图状态保存：卸载时落 store（Tab 仍在）", () => {
+    selType = "round"
+    dataStub.set("diff\0round\0/repo", { files: [file(PATCH)] })
+    render(<DiffView tabKey={TAB_KEY} directory="/repo" />)
+    // 手动折叠文件
+    fireEvent.click(screen.getByTitle("src/a.ts"))
+    // 卸载
+    cleanup()
+    expect(setDiffViewState).toHaveBeenCalledWith(
+      TAB_KEY,
+      expect.objectContaining({ closedFiles: new Set(["src/a.ts"]) }),
+    )
+  })
+
+  it("视图状态保存：Tab 已关闭时不写（复活闸门）", () => {
+    selType = "round"
+    dataStub.set("diff\0round\0/repo", { files: [file(PATCH)] })
+    tabsStub = [] // Tab 已关闭
+    render(<DiffView tabKey={TAB_KEY} directory="/repo" />)
+    cleanup()
+    expect(setDiffViewState).not.toHaveBeenCalled()
+  })
+
+  it("全部折叠恢复：foldOpen=false 时所有文件块收起", () => {
+    selType = "round"
+    dataStub.set("diff\0round\0/repo", { files: [file(PATCH), file(PATCH, "added", "src/b.ts")] })
+    diffViewStateFor.mockReturnValue({
+      foldOpen: false,
+      closedFiles: new Set(),
+      scrollTop: 0,
+    })
+    const { container } = render(<DiffView tabKey={TAB_KEY} directory="/repo" />)
+    const blocks = container.querySelectorAll(".diff-file")
+    expect(blocks[0].classList.contains("closed")).toBe(true)
+    expect(blocks[1].classList.contains("closed")).toBe(true)
+    // 按钮标签 = 全部展开（foldOpen=false）
+    expect(screen.getByText("全部展开")).not.toBeNull()
   })
 })

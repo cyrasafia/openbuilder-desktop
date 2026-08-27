@@ -360,6 +360,15 @@ export class AppStore {
    * 后标题元素重建，按文本匹配仍存活的章节；章节文本重复则同折叠。低频写入不 emit
    */
   private tocStates = new Map<string, { visible?: boolean; folded: string[] }>()
+  /**
+   * diff 视图状态（design-tab-state-memory §2.5）：diffTabKey(directory) →
+   * {foldOpen 全局折叠意图, closedFiles 折叠文件路径集, scrollTop 滚动偏移}。
+   * 纯内存、不跨重启；写入不 emit（滚动高频 + 折叠低频同 fileViewState 模式）
+   */
+  private diffViewStates = new Map<
+    string,
+    { foldOpen: boolean; closedFiles: ReadonlySet<string>; scrollTop: number }
+  >()
 
   // ---- 内部 ----
   private client: RestClient | null = null
@@ -577,6 +586,7 @@ export class AppStore {
     this.fileViewStates.clear()
     this.chatScrollTops.clear()
     this.tocStates.clear()
+    this.diffViewStates.clear()
     this.tabs = []
     this.activeTabKey = null
     this.diffData.clear()
@@ -3303,6 +3313,7 @@ export class AppStore {
     if (closed.kind === "diff") {
       for (const ty of DIFF_TAB_TYPES) this.diffData.delete(diffDataKey(ty, closed.directory ?? ""))
       this.diffSelectedTypes.delete(key)
+      this.diffViewStates.delete(key)
     }
     // chat 草稿随 Tab 关闭终结（关 Tab = 归档决断，重开不复活旧草稿；死会话收敛
     // 路径只经 closeTab 不经 cleanupSessionState，须在此清，design-compose-draft §3）
@@ -3627,6 +3638,19 @@ export class AppStore {
   setTocFolded(path: string, folded: string[]) {
     const cur = this.tocStates.get(path)
     this.tocStates.set(path, { visible: cur?.visible, folded })
+  }
+
+  /** diff 视图状态读（无条目 = 缺省全展开 + 顶部） */
+  diffViewStateFor(tabKey: string): { foldOpen: boolean; closedFiles: ReadonlySet<string>; scrollTop: number } | null {
+    return this.diffViewStates.get(tabKey) ?? null
+  }
+
+  /** diff 视图状态写。不 emit（滚动高频 + 折叠低频同 fileViewState 模式） */
+  setDiffViewState(
+    tabKey: string,
+    state: { foldOpen: boolean; closedFiles: ReadonlySet<string>; scrollTop: number },
+  ) {
+    this.diffViewStates.set(tabKey, state)
   }
 
   // ============ 文件树 ============

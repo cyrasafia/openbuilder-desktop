@@ -2,7 +2,8 @@
  * Diff 详情视图（design-diff-view §4）：顶部 segment 切换三种来源
  * （上一轮/未提交/分支，同移动端 DiffListScreen 的 SegmentedButton），
  * 主体 = 文件块（可折叠）→ hunk（静态分节头，不可折叠）；工具条「全部折叠/
- * 全部展开」一键切换所有文件块（hunk 折叠已移除，仅保留文件级折叠）。
+ * 全部展开」一键切换所有文件块。视图状态（segment 选中 / foldOpen / 文件折叠 /
+ * 滚动位置）切 Tab 卸载前落 store、重挂载恢复（design-tab-state-memory §2.5）。
  * 行 = 双 gutter（old|new）+ marker + 内容；added/removed 底色 tint 为主标识，
  * token 走 --syntax-*（与代码视图同表）。高亮 = 双路重建（new/old 各整段
  * tokenize 再映射回行，openbuilder design-diff-view 同法），headless
@@ -12,7 +13,12 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { ChevronDown, ChevronRight, ExternalLink, LoaderCircle } from "lucide-react"
 import { createPortal } from "react-dom"
-import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react"
+import type {
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  MutableRefObject,
+  RefObject,
+} from "react"
 import { EditorState } from "@codemirror/state"
 import { ensureSyntaxTree } from "@codemirror/language"
 import { highlightCode } from "@lezer/highlight"
@@ -148,9 +154,21 @@ export function DiffView({
   const store = useStore()
   const { t } = useI18n()
   const type = store.diffTypeFor(tabKey)
-  // 全局折叠意图（工具条「全部折叠/展开」）：true = 展开态（缺省）。
+  // 视图状态恢复（design-tab-state-memory §2.5）：切 Tab 卸载前落 store，重挂载恢复
+  const savedState = store.diffViewStateFor(tabKey)
+  // 全局折叠意图（工具条「全部折叠/展开」）：true = 展开态。
   // 只表达意图、不追踪各块本地状态——按钮在两种意图间交替，手动折叠不改变标签。
-  const [foldOpen, setFoldOpen] = useState(true)
+  const [foldOpen, setFoldOpen] = useState(savedState?.foldOpen ?? true)
+  /** 折叠中的文件路径集（手动点击文件头切换）；从 store 恢复 + 卸载落 store */
+  const [closedFiles, setClosedFiles] = useState<ReadonlySet<string>>(savedState?.closedFiles ?? new Set())
+  // 滚动偏移：不设 state（避免高频 emit），ref 读写 + 卸载落 store
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const scrollTopRef = useRef(savedState?.scrollTop ?? 0)
+  // 卸载落 store 需读最新值（cleanup 闭包在挂载时捕获、不随 state 更新）
+  const foldOpenRef = useRef(foldOpen)
+  const closedFilesRef = useRef(closedFiles)
+  foldOpenRef.current = foldOpen
+  closedFilesRef.current = closedFiles
 
   // 激活即重拉当前选中来源（同 FileView 语义；旧数据作首帧）
   useEffect(() => {
@@ -158,8 +176,34 @@ export function DiffView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabKey])
 
+  // 卸载落 store（design-tab-state-memory §2.5）：复活闸门——Tab 仍在才写，
+  // 否则 closeTab 已清的条目被卸载写复活（同 chatScrollTops 模式）。
+  // 经 ref 读最新值（cleanup 闭包在挂载时捕获、不随 state 更新）
+  useEffect(() => {
+    return () => {
+      if (store.tabs.some((t) => t.key === tabKey)) {
+        store.setDiffViewState(tabKey, {
+          foldOpen: foldOpenRef.current,
+          closedFiles: closedFilesRef.current,
+          scrollTop: scrollTopRef.current,
+        })
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const data = store.diffData.get(diffDataKey(type, directory))
   const hasFiles = !!data && !data.error && data.files.length > 0
+
+  // 文件折叠/展开切换 → 更新 closedFiles
+  const toggleFile = (filePath: string) => {
+    setClosedFiles((prev) => {
+      const next = new Set(prev)
+      if (next.has(filePath)) next.delete(filePath)
+      else next.add(filePath)
+      return next
+    })
+  }
 
   // segment 常驻渲染（同 FileView 工具条——避免内容落地时工具条弹入的布局跳动）
   return (
@@ -188,7 +232,15 @@ export function DiffView({
           </button>
         )}
       </div>
-      <DiffBody type={type} directory={directory} foldOpen={foldOpen} />
+      <DiffBody
+        type={type}
+        directory={directory}
+        foldOpen={foldOpen}
+        closedFiles={closedFiles}
+        onToggleFile={toggleFile}
+        scrollRef={scrollRef}
+        scrollTopRef={scrollTopRef}
+      />
     </div>
   )
 }
@@ -197,14 +249,32 @@ function DiffBody({
   type,
   directory,
   foldOpen,
+  closedFiles,
+  onToggleFile,
+  scrollRef,
+  scrollTopRef,
 }: {
   type: DiffTabType
   directory: string
   foldOpen: boolean
+  closedFiles: ReadonlySet<string>
+  onToggleFile: (filePath: string) => void
+  scrollRef: RefObject<HTMLDivElement | null>
+  scrollTopRef: MutableRefObject<number>
 }) {
   const store = useStore()
   const { t } = useI18n()
   const data = store.diffData.get(diffDataKey(type, directory))
+
+  // 滚动位置恢复（design-tab-state-memory §2.5）：内容落地后一次性恢复。
+  // 数据从 store 变更（激活重拉）会重触发，但 scrollTopRef 已被 onScroll 更新为当前值，
+  // 恢复值 = 当前值 → 无跳动；首次挂载从 savedState 恢复切走前的偏移
+  useLayoutEffect(() => {
+    if (!data || data.error || data.files.length === 0) return
+    const el = scrollRef.current
+    if (el && scrollTopRef.current > 0) el.scrollTop = scrollTopRef.current
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data?.files])
 
   if (!data || (data.loading && data.files.length === 0)) {
     return (
@@ -237,28 +307,70 @@ function DiffBody({
     )
   }
   return (
-    <div className="diff-view scroll" tabIndex={-1}>
+    <div
+      className="diff-view scroll"
+      tabIndex={-1}
+      ref={scrollRef}
+      onScroll={(e) => {
+        scrollTopRef.current = e.currentTarget.scrollTop
+      }}
+    >
       {data.files.map((file) => (
-        <FileDiffBlock key={`${file.status}:${file.file}`} file={file} foldOpen={foldOpen} directory={directory} />
+        <FileDiffBlock
+          key={`${file.status}:${file.file}`}
+          file={file}
+          foldOpen={foldOpen}
+          directory={directory}
+          closedFiles={closedFiles}
+          onToggleFile={onToggleFile}
+        />
       ))}
     </div>
   )
 }
 
-function FileDiffBlock({ file, foldOpen, directory }: { file: FileDiff; foldOpen: boolean; directory: string }) {
+function FileDiffBlock({
+  file,
+  foldOpen,
+  directory,
+  closedFiles,
+  onToggleFile,
+}: {
+  file: FileDiff
+  foldOpen: boolean
+  directory: string
+  closedFiles: ReadonlySet<string>
+  onToggleFile: (filePath: string) => void
+}) {
   const { t } = useI18n()
   const store = useStore()
-  const [open, setOpen] = useState(true)
+  // 挂载恢复：foldOpen=false（全局折叠意图）→ 收起；否则看 closedFiles（手动折叠记录）
+  const [open, setOpen] = useState(!foldOpen ? false : !closedFiles.has(file.file))
   const [hunkMenu, setHunkMenu] = useState<HunkMenuState | null>(null)
   // 解析 + 高亮一次成型（重渲染零重活，移动端教训：build 路径零重活）
   const prepared = useMemo(() => prepareFile(file), [file])
+  // 首次挂载标记：foldOpen 的 useLayoutEffect 仅在意图变化时覆盖，不覆盖恢复值
+  const firstMount = useRef(true)
 
   // 全局折叠/展开：意图覆盖文件块开关（含后续挂载的新文件块）；数据刷新不重置
   // 手动状态（deps 仅 foldOpen）。useLayoutEffect 免折叠态首帧闪现。
+  // 首次挂载跳过——open 已从 closedFiles 恢复，不应被 foldOpen 覆盖。
   useLayoutEffect(() => {
+    if (firstMount.current) {
+      firstMount.current = false
+      return
+    }
     setOpen(foldOpen)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [foldOpen])
+
+  const toggleOpen = () => {
+    setOpen((v) => {
+      const next = !v
+      onToggleFile(file.file)
+      return next
+    })
+  }
 
   // 查看文件：在新 Tab 中打开，锚定至首个 hunk 的 newStart 行（1-based）
   const viewFile = () => {
@@ -274,7 +386,7 @@ function FileDiffBlock({ file, foldOpen, directory }: { file: FileDiff; foldOpen
         type="button"
         className="diff-file-header"
         aria-expanded={open}
-        onClick={() => setOpen(!open)}
+        onClick={toggleOpen}
       >
         {open ? (
           <ChevronDown className="diff-chevron" size={14} aria-hidden />
