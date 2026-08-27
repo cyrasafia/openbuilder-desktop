@@ -65,6 +65,7 @@
 
 - **顶部 segment 工具条（2026-08-25 修订）**：`.diff-toolbar` 常驻渲染（同 `.file-toolbar` 决策——loading/error 态也渲染，避免内容落地时工具条弹入的布局跳动）；分段控件复用 `.ms-segmented`/`.ms-seg`（单一来源，不另起一套，同 FileView 预览/源码切换）；`role="group"` + `aria-pressed` 分组按钮（不冒充 tabs，无方向键导航）。三段 = `round|uncommitted|branch`，短标签。
 - 文件块（可折叠，chip 头部模式）：状态图标（added +/deleted −/modified M）+ 文件路径（mono）+ `+N −N` 统计；折叠只渲染头部。
+- **查看文件（2026-08-27 增补）**：文件块展开时，头部下方右对齐「查看文件」按钮（`btn-tonal` + FileEye 图标），点击在新 Tab 打开该文件的 CodeView，并锚定至首个 hunk 的 `newStart` 行（1-based）。实现链：`store.openFileTab(absolutePath, revealLine)` → `TabEntity.revealLine` → `FileView` → `CodeView.revealLine` → CodeMirror `EditorView.scrollIntoView(pos, { y: "center" })`。路径拼接 = `directory + "/" + file.file`（file.file 为相对路径）；无 hunk（二进制）时 revealLine = undefined（仅打开文件、不锚定）。复用已开同路径 Tab 时更新 revealLine（重新激活后 FileView 消费）；revealLine 携带时 FileView 强制源码模式（行锚定仅对 CodeView 有意义）。
 - hunk 头：`第 N 段 · L{newStart}–{newEnd} · +a −d`。
 - **折叠体系（2026-08-27 修订）**：原设计含 hunk 级 + 文件级两级折叠，**已移除 hunk 级折叠**（实际使用中文件级折叠已足够，hunk 折叠增加交互复杂度且与文件折叠语义重叠），仅保留文件级折叠——
   - **hunk 级**：~~可折叠~~ **改为静态分节头**（`<div>`，非 `<button>`，无 chevron/`aria-expanded`/点击），仅展示段号、行范围、增删统计。
@@ -99,10 +100,11 @@
 | `src/shared/api-types.ts` | `SnapshotFileDiff` 类型 |
 | `src/shared/rest-client.ts` | `listVcsDiff` / `listSessionDiff` |
 | `src/shared/diff-parse.ts` + `.test.ts` | 解析层（新） |
-| `src/renderer/src/components/diff-view.tsx` + `.test.tsx` | 渲染层（segment 工具条 + 来源内容） |
-| `src/renderer/src/store/app-store.ts` | TabKind diff / `diffTabKey(directory)` / `diffDataKey(type,directory)` / `diffSelectedTypes`+`diffTypeFor`+`switchDiffType` / openDiffTab / loadDiffTab / 清理挂点（closeProject/closeGlobalDirectory/removeWorkspace/closeTab/teardown） |
-| `src/renderer/src/components/workspace.tsx` | GuidePage 单入口 + 预留终端/网页 + Tab 条过滤/关闭 + Workspace 渲染分支 |
-| `src/renderer/src/i18n/index.ts` | diff 文案（标题「改动」+ 短标签） |
+| `src/renderer/src/components/diff-view.tsx` + `.test.tsx` | 渲染层（segment 工具条 + 来源内容 + 查看文件按钮） |
+| `src/renderer/src/store/app-store.ts` | TabKind diff / `diffTabKey(directory)` / `diffDataKey(type,directory)` / `diffSelectedTypes`+`diffTypeFor`+`switchDiffType` / openDiffTab / loadDiffTab / `openFileTab` revealLine 参数 / 清理挂点（closeProject/closeGlobalDirectory/removeWorkspace/closeTab/teardown） |
+| `src/renderer/src/components/workspace.tsx` | GuidePage 单入口 + 预留终端/网页 + Tab 条过滤/关闭 + Workspace 渲染分支 + FileView revealLine 传递 |
+| `src/renderer/src/components/code-view.tsx` | `revealLine` prop（CM scrollIntoView 行锚定） |
+| `src/renderer/src/i18n/index.ts` | diff 文案（标题「改动」+ 短标签 + 「查看文件」） |
 | `src/renderer/src/styles/tokens.css` + `app.css` | diff 令牌与样式（`.diff-view-wrap`/`.diff-toolbar`/`.guide-actions`/`.guide-action`） |
 
 ## 7. 验收
@@ -111,5 +113,6 @@
 - 页内 segment 切换三来源：默认未提交；切换即拉对应来源、缓存作首帧、重复点击不动作；选中跨 Tab 切换存活、关 Tab 清除；
 - 上一轮无会话 → 「当前作用域暂无会话」；无 user 消息/无改动 → 「无改动」；vcs 空 → 「无改动」；非 git 目录 → 错误态可重试；
 - 文件块折叠/展开、工具条「全部折叠/全部展开」一键切换（折叠后手动开文件 → hunk 头与行恢复）、行号、增删底色、语法高亮（ts/md 等已映射语言）、长行横滚；
+- 文件块展开时「查看文件」按钮 → 新 Tab 打开文件 CodeView 并锚定首个 hunk 行（center）；复用已开 Tab 更新锚定行；无 hunk 仅打开不锚定；revealLine 强制源码模式；
 - 解析器单测（含 `+++i` 内容行、多文件兜底、`\ No newline`）；
 - `npm run test` / `npm run typecheck` 全绿；本机 15120 实测三端点。

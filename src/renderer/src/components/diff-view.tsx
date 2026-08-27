@@ -10,7 +10,7 @@
  * content-visibility 让浏览器跳过屏外渲染（零 JS 虚拟化）。
  */
 import { useEffect, useLayoutEffect, useMemo, useState } from "react"
-import { ChevronDown, ChevronRight, LoaderCircle } from "lucide-react"
+import { ChevronDown, ChevronRight, ExternalLink, LoaderCircle } from "lucide-react"
 import { EditorState } from "@codemirror/state"
 import { ensureSyntaxTree } from "@codemirror/language"
 import { highlightCode } from "@lezer/highlight"
@@ -21,6 +21,12 @@ import { languageForPath } from "./cm-lang"
 import { classHighlighter } from "./cm-theme"
 import { parseDiffHunks, type DiffHunk } from "@shared/diff-parse"
 import type { FileDiff } from "@shared/api-types"
+
+/** 拼接作用域目录 + diff 相对路径为绝对路径 */
+function joinPath(directory: string, relative: string): string {
+  if (!directory) return relative
+  return directory.replace(/\/$/, "") + "/" + relative.replace(/^\//, "")
+}
 
 /** segment 短标签（移动端 diffMode* 同源；完整语义在 Tab 标题「改动」之下） */
 function diffSegLabel(t: Catalog, type: DiffTabType): string {
@@ -231,14 +237,15 @@ function DiffBody({
   return (
     <div className="diff-view scroll" tabIndex={-1}>
       {data.files.map((file) => (
-        <FileDiffBlock key={`${file.status}:${file.file}`} file={file} foldOpen={foldOpen} />
+        <FileDiffBlock key={`${file.status}:${file.file}`} file={file} foldOpen={foldOpen} directory={directory} />
       ))}
     </div>
   )
 }
 
-function FileDiffBlock({ file, foldOpen }: { file: FileDiff; foldOpen: boolean }) {
+function FileDiffBlock({ file, foldOpen, directory }: { file: FileDiff; foldOpen: boolean; directory: string }) {
   const { t } = useI18n()
+  const store = useStore()
   const [open, setOpen] = useState(true)
   // 解析 + 高亮一次成型（重渲染零重活，移动端教训：build 路径零重活）
   const prepared = useMemo(() => prepareFile(file), [file])
@@ -249,6 +256,14 @@ function FileDiffBlock({ file, foldOpen }: { file: FileDiff; foldOpen: boolean }
     setOpen(foldOpen)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [foldOpen])
+
+  // 查看文件：在新 Tab 中打开，锚定至首个 hunk 的 newStart 行（1-based）
+  const viewFile = () => {
+    const abs = joinPath(directory, file.file)
+    const firstHunk = prepared.hunks[0]
+    const line = firstHunk ? firstHunk.newStart : undefined
+    store.openFileTab(abs, line)
+  }
 
   return (
     <section className={"diff-file" + (open ? "" : " closed")}>
@@ -272,6 +287,17 @@ function FileDiffBlock({ file, foldOpen }: { file: FileDiff; foldOpen: boolean }
           <span className="diff-del-num">−{file.deletions}</span>
         </span>
       </button>
+      {open && (
+        <button
+          type="button"
+          className="btn-tonal diff-view-file"
+          title={t.diffViewFile}
+          onClick={viewFile}
+        >
+          <ExternalLink size={14} aria-hidden />
+          {t.diffViewFile}
+        </button>
+      )}
       {open &&
         prepared.hunks.map((hunk, hi) => {
           const spans = prepared.spans[hi] ?? []

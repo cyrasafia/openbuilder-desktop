@@ -167,6 +167,9 @@ export interface TabEntity {
   /** 全 kind 作用域归属（Tab 条按 directory 过滤）：chat = 会话目录；
    *  diff = 作用域目录；file = 打开时作用域目录 */
   directory?: string
+  /** file Tab 锚定行号（1-based）：从 diff 跳转时携带，FileView 传给 CodeView
+   *  滚动到目标行；仅首次挂载消费，不持久化（复用已开 Tab 时不覆盖已有值） */
+  revealLine?: number
 }
 
 /** 关闭栈条目（design-keyboard-shortcuts §2）：TabEntity 快照，恢复按 kind 分流 */
@@ -2870,7 +2873,7 @@ export class AppStore {
   /** file Tab 作用域化（§18）：directory = 打开时作用域；复用已开同路径 Tab 时
    *  归属当前作用域（directory + projectId 一并更新，使关项目/关 global entry 的
    *  projectId 守卫可靠——双行目录下同文件可从两个作用域打开，显式重开 = 要在当前作用域看） */
-  openFileTab(absolutePath: string) {
+  openFileTab(absolutePath: string, revealLine?: number) {
     const key = `file:${absolutePath}`
     const existing = this.tabs.find((t) => t.key === key)
     if (!existing) {
@@ -2881,11 +2884,14 @@ export class AppStore {
         projectId: this.currentProject?.id ?? "",
         title: name,
         directory: this.scopeDirectory(),
+        revealLine,
       })
       void this.loadFileContent(absolutePath)
     } else {
       existing.directory = this.scopeDirectory()
       existing.projectId = this.currentProject?.id ?? ""
+      // 从 diff 跳转到已开 Tab 时更新锚定行（重新激活后 FileView 消费）
+      if (revealLine != null) existing.revealLine = revealLine
     }
     this.activeTabKey = key
     // 任意 kind 最后激活记录（design-tab-state-memory §2.1 挂点：开即激活；

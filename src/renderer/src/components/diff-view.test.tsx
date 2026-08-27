@@ -14,6 +14,7 @@ import { ResizeObserverStub } from "./resize-observer-stub"
 
 const loadDiffTab = vi.fn()
 const switchDiffType = vi.fn()
+const openFileTab = vi.fn()
 
 /** 当前选中来源（测试按用例设置，模拟 store.diffSelectedTypes） */
 let selType: DiffTabType
@@ -34,6 +35,7 @@ vi.mock("../app", () => ({
       diffNoTextDiff: "无文本差异或二进制文件",
       diffCollapseAll: "全部折叠",
       diffExpandAll: "全部展开",
+      diffViewFile: "查看文件",
     },
     locale: "zh" as const,
   }),
@@ -41,6 +43,7 @@ vi.mock("../app", () => ({
     diffData: dataStub,
     loadDiffTab,
     switchDiffType,
+    openFileTab,
     diffTypeFor: () => selType,
     visibleSessions,
   }),
@@ -60,6 +63,7 @@ beforeEach(() => {
   cleanup()
   loadDiffTab.mockClear()
   switchDiffType.mockClear()
+  openFileTab.mockClear()
   dataStub = new Map()
   selType = "uncommitted"
   visibleSessions = []
@@ -193,6 +197,23 @@ describe("DiffView", () => {
     fireEvent.click(screen.getByText("全部展开"))
     expect(document.querySelectorAll(".diff-row").length).toBe(8)
     expect(screen.getByText("全部折叠")).not.toBeNull()
+  })
+
+  it("查看文件：点击后调用 openFileTab，传绝对路径与首个 hunk 的 newStart", () => {
+    selType = "round"
+    dataStub.set("diff\0round\0/repo", { files: [file(PATCH)] })
+    render(<DiffView tabKey={TAB_KEY} directory="/repo" />)
+    // PATCH 首个 hunk = @@ -1,2 +1,3 @@ → newStart = 1
+    fireEvent.click(screen.getByText("查看文件"))
+    expect(openFileTab).toHaveBeenCalledWith("/repo/src/a.ts", 1)
+  })
+
+  it("查看文件（无 hunk）：传绝对路径、行号为 undefined", () => {
+    selType = "round"
+    dataStub.set("diff\0round\0/repo", { files: [file("Binary files differ\n")] })
+    render(<DiffView tabKey={TAB_KEY} directory="/repo" />)
+    fireEvent.click(screen.getByText("查看文件"))
+    expect(openFileTab).toHaveBeenCalledWith("/repo/src/a.ts", undefined)
   })
 
   it("激活即重拉当前选中来源（useEffect 调用 loadDiffTab）", () => {

@@ -2992,6 +2992,18 @@
   font-size: var(--text-sm);
   white-space: nowrap;
 }
+
+/* 查看文件按钮：文件头下方右对齐，打开文件 Tab 并锚定首个 hunk */
+.diff-view-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 12px 0 auto;
+  padding: 4px 10px;
+}
+.diff-view-file svg {
+  flex-shrink: 0;
+}
 .diff-add-num {
   color: var(--diff-add-fg);
   font-weight: 600;

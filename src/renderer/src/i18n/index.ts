@@ -172,6 +172,7 @@ const zh = {
   diffNoTextDiff: "无文本差异或二进制文件",
   diffCollapseAll: "全部折叠",
   diffExpandAll: "全部展开",
+  diffViewFile: "查看文件",
   confirmCloseStreamingTab:
     "会话正在运行，关闭将停止并归档该会话。继续？",
   confirmSwitchProject:
@@ -334,6 +335,7 @@ const en: typeof zh = {
   diffNoTextDiff: "No text changes / binary file",
   diffCollapseAll: "Collapse all",
   diffExpandAll: "Expand all",
+  diffViewFile: "View file",
   confirmCloseStreamingTab: "Session is running. Closing stops and archives it. Continue?",
   confirmSwitchProject: "Switching projects closes and archives all open sessions. Continue?",
   confirmDeleteWorkspace: "Delete worktree?",

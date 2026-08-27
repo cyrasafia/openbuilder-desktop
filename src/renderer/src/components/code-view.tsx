@@ -48,6 +48,7 @@ export function CodeView({
   content,
   locale,
   initialScrollTop,
+  revealLine,
   onScrollTop,
 }: {
   path: string
@@ -55,6 +56,8 @@ export function CodeView({
   locale?: Locale
   /** 挂载后恢复的滚动偏移（design-tab-state-memory §2.2；超界由浏览器 clamp） */
   initialScrollTop?: number
+  /** 挂载后滚动到指定行（1-based）；从 diff 跳转时携带，优先于 initialScrollTop */
+  revealLine?: number
   /** 滚动偏移上报（上层落 store，供切走再回恢复；高频，上层写入不得触发重渲染） */
   onScrollTop?: (top: number) => void
 }) {
@@ -72,7 +75,17 @@ export function CodeView({
     // CM 内滚（.cm-scroller）：布局落定（rAF）后一次性恢复偏移——创建当帧
     // scrollHeight 未建立，直接设会被 clamp 到 0；另挂滚动监听上报
     let raf = 0
-    if (initialScrollTop) {
+    if (revealLine != null && revealLine > 0) {
+      // 从 diff 跳转：滚动到目标行（1-based → 0-based offset），优先于 scrollTop 偏移
+      raf = requestAnimationFrame(() => {
+        if (viewRef.current !== view) return
+        const line = Math.min(revealLine - 1, view.state.doc.lines - 1)
+        const pos = Math.max(0, view.state.doc.line(line + 1).from)
+        view.dispatch({
+          effects: EditorView.scrollIntoView(pos, { y: "center" }),
+        })
+      })
+    } else if (initialScrollTop) {
       raf = requestAnimationFrame(() => {
         if (viewRef.current === view) view.scrollDOM.scrollTop = initialScrollTop
       })

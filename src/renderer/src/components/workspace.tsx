@@ -235,7 +235,7 @@ export function Workspace() {
         {active?.kind === "chat" && <ChatView key={active.key} sessionID={active.key.slice(5)} />}
         {active?.kind === "file" && (
           /* key 隔离：file Tab 切换时防 mode（预览/源码）等局部 state 跨文件残留（同 ChatView） */
-          <FileView key={active.key} absolutePath={active.key.slice(5)} />
+          <FileView key={active.key} absolutePath={active.key.slice(5)} revealLine={active.revealLine} />
         )}
         {active?.kind === "diff" &&
           (() => {
@@ -1850,7 +1850,7 @@ function ImagePreview({ src, title, zoomLabel, failedText }: {
  * 此处恒源码态）走代码视图（行号+语法高亮，design-code-view）；
  * 非图二进制占位提示（不把 base64 当文本）。
  */
-export function FileView({ absolutePath }: { absolutePath: string }) {
+export function FileView({ absolutePath, revealLine }: { absolutePath: string; revealLine?: number }) {
   const store = useStore()
   const { t, locale } = useI18n()
   const cached = store.fileContents.get(absolutePath)
@@ -1861,7 +1861,10 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
   // 文件视图状态记忆（design-tab-state-memory §2.2）：挂载从 store 恢复模式 +
   // 滚动偏移（一次性待恢复）；捕获 = 容器/CM 滚动上报 + 模式切换归零
   const savedView = store.fileViewStateFor(absolutePath)
-  const [mode, setMode] = useState<"preview" | "source">(savedView?.mode ?? "preview")
+  // 从 diff 跳转携带 revealLine 时强制源码模式（行锚定仅对 CodeView 有意义）
+  const [mode, setMode] = useState<"preview" | "source">(
+    revealLine != null ? "source" : savedView?.mode ?? "preview",
+  )
   const fileScrollRef = useRef<HTMLDivElement>(null)
   const pendingScroll = useRef(savedView && savedView.top > 0 ? savedView.top : null)
   // TOC 大纲（design-markdown-preview §2.4）：预览体 DOM 扫描 h1–h6
@@ -2026,6 +2029,7 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
           content={cached.content}
           locale={locale}
           initialScrollTop={pendingScroll.current ?? undefined}
+          revealLine={revealLine}
           onScrollTop={(top) => store.setFileViewState(absolutePath, { mode: "source", top })}
         />
       </div>
@@ -2085,6 +2089,7 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
           content={cached.content}
           locale={locale}
           initialScrollTop={pendingScroll.current ?? undefined}
+          revealLine={revealLine}
           onScrollTop={(top) => store.setFileViewState(absolutePath, { mode: "source", top })}
         />
       )}
