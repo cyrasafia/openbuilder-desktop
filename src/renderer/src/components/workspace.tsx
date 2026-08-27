@@ -366,6 +366,14 @@ function GuidePage() {
             placeholder={t.guidePlaceholder}
             rows={1}
             autoFocus
+            onFocus={(e) => {
+              // 默认聚焦（autoFocus）时光标置于末尾，而非开头（有草稿时）
+              const el = e.currentTarget
+              requestAnimationFrame(() => {
+                const len = el.value.length
+                el.setSelectionRange(len, len)
+              })
+            }}
             onChange={(e) => {
               setDraft(e.target.value)
               refInput.onTextChange(e.target.value, e.target.selectionStart)
@@ -781,6 +789,15 @@ function ChatView({ sessionID }: { sessionID: string }) {
           value={draft}
           placeholder={t.inputPlaceholder}
           rows={1}
+          autoFocus
+          onFocus={(e) => {
+            // 默认聚焦（autoFocus）时光标置于末尾，而非开头（有草稿时）
+            const el = e.currentTarget
+            requestAnimationFrame(() => {
+              const len = el.value.length
+              el.setSelectionRange(len, len)
+            })
+          }}
           onChange={(e) => {
             setDraft(e.target.value)
             setCmdDismissed(false)
