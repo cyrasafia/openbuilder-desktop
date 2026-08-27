@@ -2734,6 +2734,26 @@ describe("浏览器 Tab（design-browser-tab）", () => {
     expect(store.tabs[0]!.key).toBe("browser:https://example.com/")
   })
 
+  it("PDF 文件 Tab 视图：注册即显隐协调 + 关 Tab 注册表兜底 dispose（design-pdf-preview，评审 L5）", async () => {
+    browserCalls.length = 0
+    store.tabs = [{ kind: "file", key: "file:/repo/a.pdf", projectId: "proj1", title: "a.pdf", directory: ROOT }]
+    store.activeTabKey = "file:/repo/a.pdf"
+    store.registerFileTabView("file:/repo/a.pdf", 9)
+    // 注册即 sync：激活 + 无浮层 → show
+    expect(browserCalls).toContain("browserViewShow:9")
+    // 浮层中注册 → 立即 hide（M1）
+    store.pushOverlay()
+    browserCalls.length = 0
+    store.registerFileTabView("file:/repo/a.pdf", 10)
+    expect(browserCalls).toContain("browserViewHide:10")
+    expect(browserCalls).not.toContain("browserViewShow:10")
+    // 关 Tab（file kind）→ 注册表兜底 dispose（不限 browser kind）
+    store.closeTab("file:/repo/a.pdf")
+    expect(browserCalls).toContain("browserViewDispose:10")
+    expect(store.browserViewIdFor("file:/repo/a.pdf")).toBeNull()
+    store.popOverlay()
+  })
+
   it("applyBrowserState：标题同步到 Tab；overlayCount 驱动显隐协调", async () => {
     await store.openBrowserTab("about:blank")
     store.applyBrowserState({ viewId: 1, url: "https://example.com/", title: "Example", loading: false, canGoBack: false, canGoForward: true })

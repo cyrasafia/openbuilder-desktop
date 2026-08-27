@@ -12,7 +12,7 @@
 | 4 | 文件引用 | 把当前作用域文件/目录引用进消息（`FilePartInput.source`，零字节、服务端注入内容，契约移植移动端 `design-file-reference`）。三种入口：输入框打 `@` 弹文件搜索浮层选中；文件树右键「引用到会话」；文件树拖拽进输入框。引用以 chip 呈现于输入区（可删），支持纯引用发送；用户气泡渲染引用回灌 |
 | 5 | 终端 Tab | 内嵌终端（xterm.js + server pty API：`POST /pty` 创建、connect-token + WebSocket 连接、`?cursor=` 断线续传回放、`PUT` resize、`DELETE` 销毁）。新建终端 cwd = 当前作用域目录，Tab 归作用域；**关闭 Tab = 杀掉 pty**（运行中二次确认）；**终端恒深色渲染，不随主题切换** |
 | 6 | 浏览器 Tab | WebContentsView 内嵌浏览器（地址栏 + 前进/后退/刷新 + 打开本地文件），Tab 归作用域。**文件树点击 `.html/.htm` 默认在浏览器 Tab 打开（`file://` URL）**；右键菜单提供「查看源码」，在文件 Tab 打开 HTML 源码（文件 Tab 仅源码、无预览，原 iframe 预览方案废弃）。导航安全：远端页面禁跳 `file://`，外链走系统浏览器 |
-| 7 | PDF 预览 | 文件 Tab 内预览 PDF（`/file/content` 取字节 → blob URL → Chromium 内置 PDF 查看），与图片预览同体系：仅预览态、随文件监听刷新 |
+| 7 | PDF 预览 | 文件 Tab 内预览 PDF：文件 Tab 内嵌专用 WebContentsView + 顶层 `file://` 导航（Chromium 内置 PDFium 查看器渲染；iframe/embed/pdfjs 路线实测不可行，见 design-pdf-preview §0）。仅预览态；非二进制/错误走占位（随文件监听刷新），内容变更重开 Tab 即见 |
 | 8 | Linux Open With | 文件树右键「打开方式…」在 Linux 恢复显示：`xdg-mime` 查 MIME → 解析 .desktop 枚举支持该类型的应用 → 应用内选择器 → `gio launch` 启动。修订 design-file-panel-context-menu §2.4 原「Linux 不提供」决策；win32/darwin 原路径不变 |
 
 ## 范围外（明确不做）
@@ -43,5 +43,5 @@
 - [ ] 三种引用入口各添加一个文件 + 一个目录，chip 正确、纯引用可发送，AI 收到文件/目录内容；@ 浮层搜索可用键盘选择
 - [ ] 新建终端落在当前作用域目录，输入输出/中文/resize 正常；切走再切回内容经 cursor 回放不丢；关 Tab 后 `GET /pty` 无该会话；浅色主题下终端仍深色
 - [ ] 点击 .html 开浏览器 Tab 渲染正确（本地相对资源可加载）；右键「查看源码」在文件 Tab 打开源码；地址栏导航、前进/后退、打开本地文件可用；远端页面无法跳转 `file://`
-- [ ] PDF 文件在文件 Tab 内渲染预览，文件变更后自动刷新
+- [ ] PDF 文件在文件 Tab 内渲染预览（PDFium），非二进制/错误占位随文件监听更新；内容变更重开 Tab 即见
 - [ ] Linux 右键「打开方式…」列出支持该 MIME 的应用，选择后文件被对应应用打开；目录行不显示该项

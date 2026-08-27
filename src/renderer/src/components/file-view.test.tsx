@@ -614,3 +614,41 @@ describe("图片缩放纯函数（design-image-preview §2.4）", () => {
     expect(clampImageScale(1000)).toBe(IMAGE_MAX_SCALE)
   })
 })
+
+// PDF 宿主 mock（main 侧视图在 jsdom 不存在；FileView 层只断言分发与参数）
+vi.mock("./pdf-frame-view", () => ({
+  PdfFrameView: ({ absolutePath }: { absolutePath: string }) => (
+    <div className="pdf-frame-stub" data-path={absolutePath} />
+  ),
+}))
+
+describe("FileView PDF 预览（design-pdf-preview：专用视图宿主分发）", () => {
+  it("binary PDF → PdfFrameView（透传绝对路径）；无工具条切换", () => {
+    fileContentsStub.set("/repo/doc.pdf", { content: btoa("PDFBYTES!"), binary: true, mimeType: "application/pdf" })
+    render(<FileView absolutePath="/repo/doc.pdf" />)
+    const stub = document.querySelector(".pdf-frame-stub") as HTMLElement
+    expect(stub).not.toBeNull()
+    expect(stub.dataset.path).toBe("/repo/doc.pdf")
+    // 仅预览：无预览/源码切换工具条（.ms-segmented）
+    expect(document.querySelector(".ms-segmented")).toBeNull()
+  })
+
+  it("大小写不敏感（.PDF）；文本型/错误走占位或回退", () => {
+    fileContentsStub.set("/repo/BIG.PDF", { content: btoa("%PDF fake"), binary: true })
+    const { unmount } = render(<FileView absolutePath="/repo/BIG.PDF" />)
+    expect(document.querySelector(".pdf-frame-stub")).not.toBeNull()
+    unmount()
+
+    // 服务端按文本返回（罕见）：非 binary → 占位
+    fileContentsStub.set("/repo/t.pdf", { content: "not really pdf" })
+    render(<FileView absolutePath="/repo/t.pdf" />)
+    expect(document.querySelector(".pdf-frame-stub")).toBeNull()
+    expect(document.querySelector(".file-binary")).toBeTruthy()
+  })
+
+  it("加载错误呈现错误态", () => {
+    fileContentsStub.set("/repo/err.pdf", { content: "", binary: true, error: "boom" })
+    render(<FileView absolutePath="/repo/err.pdf" />)
+    expect(document.querySelector(".file-view.error")?.textContent).toContain("boom")
+  })
+})

@@ -3037,3 +3037,16 @@
   min-height: 0;
   background: var(--surface);
 }
+
+/* ---------- PDF 预览（design-pdf-preview §1 终态：专用 WebContentsView + PDFium） ---------- */
+.file-view.pdf-view {
+  position: relative;
+  padding: 0;
+  overflow: hidden;
+}
+
+/* PDF 预览宿主（design-pdf-preview §1 终态）：渲染在 main 侧原生视图（PDFium） */
+.file-view.pdf-view .pdf-host {
+  position: absolute;
+  inset: 0;
+}

@@ -44,6 +44,8 @@ export function registerBrowserViewIpc() {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
+        // PDF 顶层导航的 PDFium 查看器（设计备选路线验证用）
+        plugins: true,
       },
     })
     const viewId = nextViewId++

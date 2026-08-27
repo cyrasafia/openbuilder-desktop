@@ -30,6 +30,7 @@ import { ModelSwitcherBar } from "./model-switcher"
 import { CodeView } from "./code-view"
 import { collectHeadings, MdToc, type TocHeading } from "./md-toc"
 import { DiffView } from "./diff-view"
+import { PdfFrameView } from "./pdf-frame-view"
 import { parseDiffTabKey } from "../store/app-store"
 import { closeTabInteractive } from "./tab-actions"
 import { TerminalView } from "./terminal-view"
@@ -1531,6 +1532,12 @@ const IMAGE_MIME_BY_EXT: Record<string, string> = {
   ico: "image/x-icon",
 }
 
+/** PDF 判定（design-pdf-preview §1）：仅 .pdf 扩展名（大小写不敏感） */
+function isPdfPath(path: string): boolean {
+  const base = path.split("/").pop() ?? ""
+  return base.toLowerCase().endsWith(".pdf")
+}
+
 function isImagePath(path: string): boolean {
   const base = path.split("/").pop() ?? ""
   const dot = base.lastIndexOf(".")
@@ -1841,6 +1848,7 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
   const cached = store.fileContents.get(absolutePath)
   const isMarkdown = isMarkdownPath(absolutePath)
   const isImage = isImagePath(absolutePath)
+  const isPdf = isPdfPath(absolutePath)
   const previewable = isMarkdown
   // 文件视图状态记忆（design-tab-state-memory §2.2）：挂载从 store 恢复模式 +
   // 滚动偏移（一次性待恢复）；捕获 = 容器/CM 滚动上报 + 模式切换归零
@@ -1954,6 +1962,21 @@ export function FileView({ absolutePath }: { absolutePath: string }) {
         />
       )
   }
+
+  // PDF 分支（design-pdf-preview §1 终态）：先经 /file/content 判可用性
+  // （错误/非二进制走占位），渲染 = 专用 WebContentsView（PDFium 顶层接管）
+  if (isPdf) {
+    if (!cached) return <div className="file-view pdf-view">{t.loading}</div>
+    if (cached.error) return <div className="file-view error">{cached.error}</div>
+    if (!cached.binary)
+      return (
+        <div className="file-view pdf-view">
+          <div className="file-state file-binary">{t.binaryUnsupported}</div>
+        </div>
+      )
+    return <PdfFrameView tabKey={`file:${absolutePath}`} absolutePath={absolutePath} />
+  }
+
 
   // 滚动偏移一次性恢复（§2.2）：预览 = 内容落地后设滚动层；源码 = 经
   // CodeView initialScrollTop prop 在同 commit 消费（rAF 布局落定后应用）。

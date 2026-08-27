@@ -3021,13 +3021,23 @@ export class AppStore {
 
   // ============ 浏览器 Tab（design-browser-tab） ============
 
-  /** 视图状态事件入口（main 推送；tab 标题取页面 title） */
+  /** 文件 Tab 的 PDF 视图注册（design-pdf-preview：懒建后挂 Tab key，关 Tab 统一
+   *  dispose）。注册即跑一次显隐协调——main 侧新建 view 默认可见，若此时有
+   *  浮层/Tab 已切走而注册不 emit，sync 的 effect 依赖不会触发，视图会绘制在
+   *  浮层之上（评审 M1） */
+  registerFileTabView(tabKey: string, viewId: number) {
+    this.browserViewIds.set(tabKey, viewId)
+    this.syncBrowserViewVisibility()
+  }
+
+  /** 视图状态事件入口（main 推送；tab 标题取页面 title——仅浏览器 Tab，
+   *  PDF 文件 Tab 标题恒文件名，不被 PDFium 的 title 覆写，评审 N3） */
   applyBrowserState(state: BrowserViewState) {
     this.browserStates.set(state.viewId, state)
     for (const [key, viewId] of this.browserViewIds) {
       if (viewId === state.viewId) {
         const tab = this.tabs.find((t) => t.key === key)
-        if (tab) tab.title = state.title || state.url
+        if (tab && tab.kind === "browser") tab.title = state.title || state.url
         break
       }
     }
@@ -3118,7 +3128,7 @@ export class AppStore {
     this.emit()
   }
 
-  /** 激活浏览器视图显隐（Tab 切换协调：激活显示，其余隐藏） */
+  /** 激活视图显隐（Tab 切换协调：激活显示，其余隐藏；PDF 文件 Tab 视图同规则） */
   syncBrowserViewVisibility() {
     const active = this.activeTab
     for (const [key, viewId] of this.browserViewIds) {
@@ -3299,8 +3309,9 @@ export class AppStore {
     if (closed.kind === "chat") this.chatScrollTops.delete(closed.key.slice(5))
     // pty 运行时随 Tab 关闭终结（用户路径经 closeTerminalTab 已清，此处兜底卸载路径）
     if (closed.kind === "terminal") this.ptyRuntimes.delete(closed.key.slice("terminal:".length))
-    // 浏览器视图随 Tab 关闭 dispose（用户路径经 closeBrowserTab 已清，此处兜底卸载路径）
-    if (closed.kind === "browser") {
+    // 视图随 Tab 关闭 dispose（浏览器 Tab 用户路径经 closeBrowserTab 已清；
+    // PDF 文件 Tab（design-pdf-preview）与卸载路径在此兜底——按注册表命中）
+    {
       const viewId = this.browserViewIds.get(closed.key)
       if (viewId != null) {
         window.desktop.browserViewDispose(viewId)

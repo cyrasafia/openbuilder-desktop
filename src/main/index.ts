@@ -69,10 +69,10 @@ function createMainWindow() {
     if (!devUrl || !url.startsWith(devUrl)) e.preventDefault()
   })
 
-  // 子帧（html 预览的 sandboxed iframe）禁止一切导航：will-navigate 只覆盖主帧，
-  // meta refresh / 链接点击可导航 iframe 自身——新文档不携带注入的 CSP，
-  // 主动外发请求即绕过预览安全模型（design-html-preview §2）。srcdoc 初始
-  // 建档不走 renderer-initiated 的 WillStartRequest 路径，不触发本事件、无误伤
+  // 子帧导航拦截（原 html 沙箱预览防御，design-html-preview §2——html 预览
+  // v0.3 已迁浏览器 Tab，保留作通用防线）：will-navigate 只覆盖主帧，
+  // meta refresh / 链接点击可导航 iframe 自身，子帧一律拦截（PDF 渲染在
+  // 独立 WebContentsView，不经此 handler）
   win.webContents.on("will-frame-navigate", (details) => {
     if (!details.isMainFrame) details.preventDefault()
   })
