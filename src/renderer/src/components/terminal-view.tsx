@@ -69,6 +69,8 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.open(host)
+    // 打开/切换至 terminal Tab 时自动聚焦（key 隔离重挂载，mount 即获焦）
+    term.focus()
     try {
       fit.fit()
     } catch {
@@ -160,7 +162,7 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
   }, [ptyID])
 
   return (
-    <div className="terminal-view">
+    <div className="terminal-view" onMouseDown={() => termRef.current?.focus()}>
       <div ref={hostRef} className="terminal-host" />
       {exited && (
         <div className="terminal-exited-overlay">

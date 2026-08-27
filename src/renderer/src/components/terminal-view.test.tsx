@@ -18,6 +18,7 @@ vi.mock("@xterm/xterm", () => {
     cols = 80
     loadAddon = vi.fn()
     open = vi.fn()
+    focus = vi.fn()
     write = vi.fn((d: string) => {
       writes.push(d)
     })
