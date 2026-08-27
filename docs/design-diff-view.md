@@ -66,9 +66,9 @@
 - **顶部 segment 工具条（2026-08-25 修订）**：`.diff-toolbar` 常驻渲染（同 `.file-toolbar` 决策——loading/error 态也渲染，避免内容落地时工具条弹入的布局跳动）；分段控件复用 `.ms-segmented`/`.ms-seg`（单一来源，不另起一套，同 FileView 预览/源码切换）；`role="group"` + `aria-pressed` 分组按钮（不冒充 tabs，无方向键导航）。三段 = `round|uncommitted|branch`，短标签。
 - 文件块（可折叠，chip 头部模式）：状态图标（added +/deleted −/modified M）+ 文件路径（mono）+ `+N −N` 统计；折叠只渲染头部。
 - hunk 头：`第 N 段 · L{newStart}–{newEnd} · +a −d`。
-- **折叠体系（2026-08-26 增补）**：移动端将 hunk 折叠列为 future scope（openbuilder design-diff-view §5「不做的事」），桌面端按需求补齐——
-  - **hunk 级**：hunk 头即折叠开关（`<button>` + chevron，`aria-expanded`），点击收起/展开本段行；文件块折叠与 hunk 折叠两级独立（文件收起时 hunk 状态保留，重开文件仍按原状态呈现）。
-  - **全局**：工具条右侧「全部折叠 / 全部展开」（`btn-tonal` chip，仅渲染于有文件且非错误态；右对齐，与 segment 同高）。实现为**意图信号** `foldOpen: boolean`（DiffView state → DiffBody → FileDiffBlock `useLayoutEffect` 应用，免首帧闪现）：折叠 = 关闭所有文件块 + 所有 hunk 标记收起；展开 = 全部打开。意图只表达按钮交替方向、不追踪各块本地状态（手动折叠不改变按钮标签）；deps 仅 `foldOpen`——**数据刷新（激活即重拉）不重置手动状态**，但意图切换后新挂载的文件块继承当前意图。
+- **折叠体系（2026-08-27 修订）**：原设计含 hunk 级 + 文件级两级折叠，**已移除 hunk 级折叠**（实际使用中文件级折叠已足够，hunk 折叠增加交互复杂度且与文件折叠语义重叠），仅保留文件级折叠——
+  - **hunk 级**：~~可折叠~~ **改为静态分节头**（`<div>`，非 `<button>`，无 chevron/`aria-expanded`/点击），仅展示段号、行范围、增删统计。
+  - **文件级 + 全局**：文件块头部（`<button>` + chevron，`aria-expanded`）点击收起/展开本文件；工具条右侧「全部折叠 / 全部展开」（`btn-tonal` chip，仅渲染于有文件且非错误态；右对齐，与 segment 同高）。实现为**意图信号** `foldOpen: boolean`（DiffView state → DiffBody → FileDiffBlock `useLayoutEffect` 应用 `setOpen`，免首帧闪现）：折叠 = 关闭所有文件块；展开 = 全部打开。意图只表达按钮交替方向、不追踪各块本地状态（手动折叠不改变按钮标签）；deps 仅 `foldOpen`——**数据刷新（激活即重拉）不重置手动状态**，但意图切换后新挂载的文件块继承当前意图。
 - 行：双 gutter（oldNo | newNo，等宽两列——桌面宽裕，信息全）+ marker（+/−）+ 内容；added 绿底 tint / removed 红底 tint / context 透明，token 色 = `--syntax-*`（GitHub 风格与代码视图一致）；`diffAddBg/diffDelBg/diffAddFg/diffDelFg` 令牌进 tokens.css 双主题。
 - 永不换行：整页唯一横滚（外层容器），各文件/hunk 宽度统一（移动端同决策——换行破坏对齐）。
 - 大 diff 性能：**hunk 级** `content-visibility: auto` + `contain-intrinsic-size`——文件展开时屏外 hunk 仍可跳过渲染（粒度优于文件块级，零 JS 等价虚拟化）；解析/高亮全在 useMemo。
@@ -110,6 +110,6 @@
 - GuidePage 单「改动」入口开/复用作用域唯一 diff Tab，与终端/网页预留入口同行平级（后两者禁用、`title`=即将支持）；
 - 页内 segment 切换三来源：默认未提交；切换即拉对应来源、缓存作首帧、重复点击不动作；选中跨 Tab 切换存活、关 Tab 清除；
 - 上一轮无会话 → 「当前作用域暂无会话」；无 user 消息/无改动 → 「无改动」；vcs 空 → 「无改动」；非 git 目录 → 错误态可重试；
-- 文件块折叠/展开、hunk 点头击折叠/展开、工具条「全部折叠/全部展开」一键切换（折叠后手动开文件 → hunk 头可见、行仍收起）、行号、增删底色、语法高亮（ts/md 等已映射语言）、长行横滚；
+- 文件块折叠/展开、工具条「全部折叠/全部展开」一键切换（折叠后手动开文件 → hunk 头与行恢复）、行号、增删底色、语法高亮（ts/md 等已映射语言）、长行横滚；
 - 解析器单测（含 `+++i` 内容行、多文件兜底、`\ No newline`）；
 - `npm run test` / `npm run typecheck` 全绿；本机 15120 实测三端点。

@@ -1,6 +1,6 @@
 /**
  * DiffView 渲染测试（design-diff-view §4）：segment 切换、加载/错误/空态、
- * 多 hunk 渲染、二进制空 hunk 兜底、文件块折叠、hunk 级折叠、工具条全部折叠/
+ * 多 hunk 渲染、二进制空 hunk 兜底、文件块折叠、工具条全部折叠/
  * 展开（含手动开文件的中间态）。store 经 vi.mock 提供
  * diffData + diffTypeFor/switchDiffType/loadDiffTab/visibleSessions。
  * CodeMirror headless 高亮依赖 ResizeObserver（jsdom 缺失），补 stub。
@@ -171,20 +171,7 @@ describe("DiffView", () => {
     expect(document.querySelectorAll(".diff-row").length).toBe(4)
   })
 
-  it("hunk 折叠：点击 hunk 头收起本段行，再点展开", () => {
-    selType = "round"
-    dataStub.set("diff\0round\0/repo", { files: [file(PATCH)] })
-    render(<DiffView tabKey={TAB_KEY} directory="/repo" />)
-    expect(document.querySelectorAll(".diff-row").length).toBe(4)
-    fireEvent.click(screen.getByText("第 1 段"))
-    // 行收起、hunk 头保留
-    expect(document.querySelectorAll(".diff-row").length).toBe(0)
-    expect(document.querySelectorAll(".diff-hunk-header").length).toBe(1)
-    fireEvent.click(screen.getByText("第 1 段"))
-    expect(document.querySelectorAll(".diff-row").length).toBe(4)
-  })
-
-  it("全部折叠/展开：文件块与 hunk 一并切换；手动打开的文件内 hunk 仍为收起", () => {
+  it("全部折叠/展开：文件块一并切换；手动打开的文件行恢复", () => {
     selType = "round"
     dataStub.set("diff\0round\0/repo", {
       files: [file(PATCH), file(PATCH, "added", "src/b.ts")],
@@ -198,11 +185,11 @@ describe("DiffView", () => {
     expect(document.querySelectorAll(".diff-row").length).toBe(0)
     expect(screen.queryByText("全部折叠")).toBeNull()
     expect(screen.getByText("全部展开")).not.toBeNull()
-    // 手动打开文件：文件块展开但 hunk 仍是全局收起意图 → 有头无行
+    // 手动打开文件：文件块展开 → hunk 头与行恢复
     fireEvent.click(screen.getByTitle("src/a.ts"))
     expect(document.querySelectorAll(".diff-hunk-header").length).toBe(1)
-    expect(document.querySelectorAll(".diff-row").length).toBe(0)
-    // 全部展开：行恢复
+    expect(document.querySelectorAll(".diff-row").length).toBe(4)
+    // 全部展开：所有行恢复
     fireEvent.click(screen.getByText("全部展开"))
     expect(document.querySelectorAll(".diff-row").length).toBe(8)
     expect(screen.getByText("全部折叠")).not.toBeNull()

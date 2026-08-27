@@ -1,9 +1,8 @@
 /**
  * Diff 详情视图（design-diff-view §4）：顶部 segment 切换三种来源
  * （上一轮/未提交/分支，同移动端 DiffListScreen 的 SegmentedButton），
- * 主体 = 文件块（可折叠）→ hunk（可折叠，点头部收起行）；工具条「全部折叠/
- * 全部展开」一键切换所有文件块与 hunk（移动端将 hunk 折叠列为 future scope，
- * 桌面端按需求补齐）。
+ * 主体 = 文件块（可折叠）→ hunk（静态分节头，不可折叠）；工具条「全部折叠/
+ * 全部展开」一键切换所有文件块（hunk 折叠已移除，仅保留文件级折叠）。
  * 行 = 双 gutter（old|new）+ marker + 内容；added/removed 底色 tint 为主标识，
  * token 走 --syntax-*（与代码视图同表）。高亮 = 双路重建（new/old 各整段
  * tokenize 再映射回行，openbuilder design-diff-view 同法），headless
@@ -241,34 +240,15 @@ function DiffBody({
 function FileDiffBlock({ file, foldOpen }: { file: FileDiff; foldOpen: boolean }) {
   const { t } = useI18n()
   const [open, setOpen] = useState(true)
-  /** 折叠中的 hunk 下标（缺省空 = 全展开） */
-  const [closedHunks, setClosedHunks] = useState<ReadonlySet<number>>(new Set())
   // 解析 + 高亮一次成型（重渲染零重活，移动端教训：build 路径零重活）
   const prepared = useMemo(() => prepareFile(file), [file])
 
-  // 全局折叠/展开：意图覆盖本地状态（含后续挂载的新文件块）；数据刷新不重置
+  // 全局折叠/展开：意图覆盖文件块开关（含后续挂载的新文件块）；数据刷新不重置
   // 手动状态（deps 仅 foldOpen）。useLayoutEffect 免折叠态首帧闪现。
-  // 函数式更新 + 无变化返回 prev：新 Set 恒不等价旧值，直接 set 会让每个文件块
-  // 挂载时多一次 pre-paint 重渲染（大 diff 文件多时翻倍首屏开销）。
   useLayoutEffect(() => {
     setOpen(foldOpen)
-    setClosedHunks((prev) => {
-      if (foldOpen) return prev.size === 0 ? prev : new Set()
-      return new Set(prepared.hunks.keys())
-    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [foldOpen])
-
-  const toggleHunk = (hi: number) =>
-    setClosedHunks((prev) => {
-      const next = new Set(prev)
-      if (next.has(hi)) {
-        next.delete(hi)
-      } else {
-        next.add(hi)
-      }
-      return next
-    })
 
   return (
     <section className={"diff-file" + (open ? "" : " closed")}>
@@ -296,20 +276,9 @@ function FileDiffBlock({ file, foldOpen }: { file: FileDiff; foldOpen: boolean }
         prepared.hunks.map((hunk, hi) => {
           const spans = prepared.spans[hi] ?? []
           const newEnd = hunk.newStart + Math.max(0, hunk.lines.filter((l) => l.kind !== "-").length - 1)
-          const hunkOpen = !closedHunks.has(hi)
           return (
             <div className="diff-hunk" key={hi}>
-              <button
-                type="button"
-                className="diff-hunk-header"
-                aria-expanded={hunkOpen}
-                onClick={() => toggleHunk(hi)}
-              >
-                {hunkOpen ? (
-                  <ChevronDown className="diff-chevron" size={12} aria-hidden />
-                ) : (
-                  <ChevronRight className="diff-chevron" size={12} aria-hidden />
-                )}
+              <div className="diff-hunk-header">
                 <span>{t.diffHunkSegment.replace("{n}", String(hi + 1))}</span>
                 <span className="mono">
                   L{hunk.newStart}–{newEnd}
@@ -318,14 +287,12 @@ function FileDiffBlock({ file, foldOpen }: { file: FileDiff; foldOpen: boolean }
                   <span className="diff-add-num">+{hunk.additions}</span>{" "}
                   <span className="diff-del-num">−{hunk.deletions}</span>
                 </span>
-              </button>
-              {hunkOpen && (
-                <div className="diff-hunk-body">
-                  {hunk.lines.map((line, li) => (
-                    <DiffRow key={li} line={line} tokens={spans[li]} />
-                  ))}
-                </div>
-              )}
+              </div>
+              <div className="diff-hunk-body">
+                {hunk.lines.map((line, li) => (
+                  <DiffRow key={li} line={line} tokens={spans[li]} />
+                ))}
+              </div>
             </div>
           )
         })}
