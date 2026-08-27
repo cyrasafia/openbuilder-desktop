@@ -3122,14 +3122,12 @@
 }
 /* pty 自然退出：琥珀色（正常终态） */
 .terminal-exited-overlay.is-exited {
-  background: rgba(249, 226, 175, 0.18);
-  border-bottom: 1px solid #f9e2af;
+  background: #6d6220;
   color: #f9e2af;
 }
 /* 异常断开：红色警示 */
 .terminal-exited-overlay.is-disconnected {
-  background: rgba(243, 139, 168, 0.18);
-  border-bottom: 1px solid #f38ba8;
+  background: #7a3848;
   color: #f38ba8;
 }
 /* ---------- 浏览器 Tab（design-browser-tab §1.3） ---------- */
