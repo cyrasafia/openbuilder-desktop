@@ -44,6 +44,8 @@ vi.mock("../app", () => ({
     loadDiffTab,
     switchDiffType,
     openFileTab,
+    pushOverlay: vi.fn(),
+    popOverlay: vi.fn(),
     diffTypeFor: () => selType,
     visibleSessions,
   }),
@@ -214,6 +216,32 @@ describe("DiffView", () => {
     render(<DiffView tabKey={TAB_KEY} directory="/repo" />)
     fireEvent.click(screen.getByText("查看文件"))
     expect(openFileTab).toHaveBeenCalledWith("/repo/src/a.ts", undefined)
+  })
+
+  it("hunk 右键菜单：在 hunk header 触发，点击菜单项调用 openFileTab 锚定该 hunk 行", () => {
+    selType = "round"
+    dataStub.set("diff\0round\0/repo", { files: [file(PATCH)] })
+    render(<DiffView tabKey={TAB_KEY} directory="/repo" />)
+    // 右键 hunk header → 菜单出现
+    const hunkHeader = document.querySelector(".diff-hunk-header") as HTMLElement
+    fireEvent.contextMenu(hunkHeader, { clientX: 100, clientY: 100 })
+    const menu = document.querySelector(".context-menu") as HTMLElement
+    expect(menu).not.toBeNull()
+    // 点击菜单项 → openFileTab with newStart=1
+    fireEvent.click(menu.querySelector("button")!)
+    expect(openFileTab).toHaveBeenCalledWith("/repo/src/a.ts", 1)
+  })
+
+  it("hunk 右键菜单：在 hunk body 触发同样锚定该 hunk 行", () => {
+    selType = "round"
+    dataStub.set("diff\0round\0/repo", { files: [file(PATCH)] })
+    render(<DiffView tabKey={TAB_KEY} directory="/repo" />)
+    const hunkBody = document.querySelector(".diff-hunk-body") as HTMLElement
+    fireEvent.contextMenu(hunkBody, { clientX: 50, clientY: 50 })
+    const menu = document.querySelector(".context-menu") as HTMLElement
+    expect(menu).not.toBeNull()
+    fireEvent.click(menu.querySelector("button")!)
+    expect(openFileTab).toHaveBeenCalledWith("/repo/src/a.ts", 1)
   })
 
   it("激活即重拉当前选中来源（useEffect 调用 loadDiffTab）", () => {

@@ -9,8 +9,10 @@
  * CodeMirror + @lezer/highlight 官方编辑器外 API。大 diff 用
  * content-visibility 让浏览器跳过屏外渲染（零 JS 虚拟化）。
  */
-import { useEffect, useLayoutEffect, useMemo, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { ChevronDown, ChevronRight, ExternalLink, LoaderCircle } from "lucide-react"
+import { createPortal } from "react-dom"
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react"
 import { EditorState } from "@codemirror/state"
 import { ensureSyntaxTree } from "@codemirror/language"
 import { highlightCode } from "@lezer/highlight"
@@ -247,6 +249,7 @@ function FileDiffBlock({ file, foldOpen, directory }: { file: FileDiff; foldOpen
   const { t } = useI18n()
   const store = useStore()
   const [open, setOpen] = useState(true)
+  const [hunkMenu, setHunkMenu] = useState<HunkMenuState | null>(null)
   // 解析 + 高亮一次成型（重渲染零重活，移动端教训：build 路径零重活）
   const prepared = useMemo(() => prepareFile(file), [file])
 
@@ -302,9 +305,14 @@ function FileDiffBlock({ file, foldOpen, directory }: { file: FileDiff; foldOpen
         prepared.hunks.map((hunk, hi) => {
           const spans = prepared.spans[hi] ?? []
           const newEnd = hunk.newStart + Math.max(0, hunk.lines.filter((l) => l.kind !== "-").length - 1)
+          const onHunkContextMenu = (e: ReactMouseEvent) => {
+            e.preventDefault()
+            e.stopPropagation()
+            setHunkMenu({ x: e.clientX, y: e.clientY, line: hunk.newStart })
+          }
           return (
             <div className="diff-hunk" key={hi}>
-              <div className="diff-hunk-header">
+              <div className="diff-hunk-header" onContextMenu={onHunkContextMenu}>
                 <span>{t.diffHunkSegment.replace("{n}", String(hi + 1))}</span>
                 <span className="mono">
                   L{hunk.newStart}–{newEnd}
@@ -314,7 +322,7 @@ function FileDiffBlock({ file, foldOpen, directory }: { file: FileDiff; foldOpen
                   <span className="diff-del-num">−{hunk.deletions}</span>
                 </span>
               </div>
-              <div className="diff-hunk-body">
+              <div className="diff-hunk-body" onContextMenu={onHunkContextMenu}>
                 {hunk.lines.map((line, li) => (
                   <DiffRow key={li} line={line} tokens={spans[li]} />
                 ))}
@@ -326,6 +334,14 @@ function FileDiffBlock({ file, foldOpen, directory }: { file: FileDiff; foldOpen
         <div className="diff-hunk-body">
           <div className="diff-binary">{t.diffNoTextDiff}</div>
         </div>
+      )}
+      {hunkMenu && (
+        <DiffHunkContextMenu
+          menu={hunkMenu}
+          directory={directory}
+          file={file.file}
+          onClose={() => setHunkMenu(null)}
+        />
       )}
     </section>
   )
@@ -351,5 +367,103 @@ function DiffRow({ line, tokens }: { line: DiffHunk["lines"][number]; tokens?: T
           : line.text || " "}
       </span>
     </div>
+  )
+}
+
+/** hunk 右键菜单态：坐标 + 目标行号 */
+interface HunkMenuState {
+  x: number
+  y: number
+  /** 锚定行（1-based，hunk.newStart） */
+  line: number
+}
+
+/** hunk 右键菜单：单项「查看文件」，打开文件 Tab 并锚定至该 hunk 行。
+ *  复用 FileContextMenu 模式（首帧隐藏测量钳制 + capture 四触发关闭 + 浮层计数） */
+function DiffHunkContextMenu({
+  menu,
+  directory,
+  file,
+  onClose,
+}: {
+  menu: HunkMenuState
+  directory: string
+  file: string
+  onClose: () => void
+}) {
+  const { t } = useI18n()
+  const store = useStore()
+  const ref = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    setPos({
+      left: Math.max(4, Math.min(menu.x, window.innerWidth - el.offsetWidth - 4)),
+      top: Math.max(4, Math.min(menu.y, window.innerHeight - el.offsetHeight - 4)),
+    })
+    requestAnimationFrame(() => ref.current?.querySelector<HTMLButtonElement>("button")?.focus())
+  }, [menu])
+
+  useEffect(() => {
+    store.pushOverlay()
+    return () => store.popOverlay()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    const outside = (target: EventTarget | null) => !ref.current?.contains(target as Node)
+    const onDown = (e: MouseEvent) => {
+      if (outside(e.target)) onCloseRef.current()
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation()
+        onCloseRef.current()
+      }
+    }
+    const onWheel = (e: WheelEvent) => {
+      if (outside(e.target)) onCloseRef.current()
+    }
+    const onBlur = () => onCloseRef.current()
+    window.addEventListener("mousedown", onDown, true)
+    window.addEventListener("keydown", onKey, true)
+    window.addEventListener("wheel", onWheel, true)
+    window.addEventListener("blur", onBlur)
+    return () => {
+      window.removeEventListener("mousedown", onDown, true)
+      window.removeEventListener("keydown", onKey, true)
+      window.removeEventListener("wheel", onWheel, true)
+      window.removeEventListener("blur", onBlur)
+    }
+  }, [])
+
+  const onKeyDown = (e: ReactKeyboardEvent) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return
+    e.preventDefault()
+  }
+
+  return createPortal(
+    <div
+      ref={ref}
+      className="popover context-menu"
+      style={pos ? { left: pos.left, top: pos.top } : { left: 0, top: 0, visibility: "hidden" }}
+      onContextMenu={(e) => e.preventDefault()}
+      onKeyDown={onKeyDown}
+    >
+      <button
+        className="context-menu-item"
+        onClick={() => {
+          onClose()
+          store.openFileTab(joinPath(directory, file), menu.line)
+        }}
+      >
+        {t.diffViewFile}
+      </button>
+    </div>,
+    document.body,
   )
 }
