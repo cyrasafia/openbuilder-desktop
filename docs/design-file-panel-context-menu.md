@@ -41,7 +41,7 @@
 |---|---|
 | win32 | `rundll32.exe shell32.dll,OpenAs_RunDLL <path>`——Windows 原生「打开方式」对话框（detached spawn，fire-and-forget） |
 | darwin | 无系统对话框；`osascript` 调系统应用选择器（`choose application`）取 bundle id 后 `open -b <id> <path>`；用户取消选择器 = 静默无操作 |
-| linux | **不显示该项**——GNOME 无系统级「打开方式」对话框（xdg-open 只有默认应用；portal OpenURI 亦无 chooser），伪造一个应用选择器违背「用系统的打开功能」初衷 |
+| linux | ~~不显示该项~~（**2026-08-27 修订**：显示该项，走**应用内自建选择器**——xdg-mime 查 MIME → 枚举 .desktop → 弹窗选择 → gio launch，见 [design-linux-open-with.md](design-linux-open-with.md)；spec-v0.3 #8） |
 
 判定依据是渲染层 `window.desktop.platform`（browser shim = "browser"，同样不显示）。
 
@@ -50,7 +50,7 @@
 | 通道 | 语义 |
 |---|---|
 | `shell:openPath` | `shell.openPath(path)`；resolve ""=成功，否则错误信息（shell.openPath 原契约） |
-| `shell:openWith` | §2.4 分平台动作；linux 端防御性返回 unsupported（渲染层不会调用） |
+| `shell:openWith` | §2.4 分平台动作（win32/darwin）；linux 走 §2.4 修订的自建选择器（shellListOpenWithApps/shellOpenWithApp，见 design-linux-open-with） |
 
 - 返回 `Promise<string>`（错误信息）而非布尔：失败原因可诊断，渲染层当前仅静默（文件在列表后消失等罕见场景，不为此建 toast 基建）。
 - 路径来源 = server 文件列表 / 作用域目录（本客户端信任域内），不加额外白名单。
@@ -61,7 +61,7 @@
 | 项 | 原因 |
 |---|---|
 | 「在文件管理器中显示」（showItemInFolder） | 本需求未提；需要时同通道加一项即可 |
-| Linux「打开方式」降级方案（回退打开/回退文件管理器） | 用户决策：无系统机制则不显示，不做语义替换 |
+| ~~Linux「打开方式」降级方案~~（v0.3 修订：自建选择器落地，见 design-linux-open-with） | — |
 | 复制成功的 toast 反馈 | 菜单关闭本身即反馈；无全局 toast 基建 |
 | 菜单项键盘可达之外的完整菜单语义（子菜单、快捷键标注） | 三项扁平菜单，不预建 |
 

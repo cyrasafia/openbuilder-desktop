@@ -4,6 +4,7 @@ import { readFile, writeFile, mkdir } from "node:fs/promises"
 import { join, dirname } from "node:path"
 import type { StoreShape } from "../shared/ipc"
 import { startManagedServer, stopManagedServer, killManagedSync } from "./managed-server"
+import { listOpenWithApps, openWithApp } from "./linux-open-with"
 
 const storePath = join(app.getPath("userData"), "store.json")
 
@@ -123,6 +124,21 @@ export function registerIpc() {
     }
     // linux：渲染层不提供入口，防御分支
     return "unsupported platform"
+  })
+
+  // Linux「打开方式」自建选择器（design-linux-open-with）：枚举 + 白名单启动
+  ipcMain.handle("shell:listOpenWithApps", (_e, path: string) => {
+    if (process.platform !== "linux" || typeof path !== "string" || !path) return []
+    // app.getLocale() 是 BCP47 连字符（zh-CN）；desktop 本地化键是下划线（zh_CN）
+    const locale = (app.getLocale() || "en").replace("-", "_")
+    return listOpenWithApps(path, locale)
+  })
+  ipcMain.handle("shell:openWithApp", (_e, path: string, appId: string): Promise<string> => {
+    if (process.platform !== "linux") return Promise.resolve("unsupported platform")
+    if (typeof path !== "string" || !path || typeof appId !== "string") {
+      return Promise.resolve("invalid path")
+    }
+    return openWithApp(path, appId)
   })
 
   // Linux 自定义头部窗口控制（renderer title-bar.tsx）

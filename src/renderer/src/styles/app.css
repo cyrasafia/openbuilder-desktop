@@ -3050,3 +3050,48 @@
   position: absolute;
   inset: 0;
 }
+
+/* ---------- Linux「打开方式」选择器（design-linux-open-with §1.3） ---------- */
+.open-with-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: var(--radius-chip);
+  text-align: left;
+  font-size: var(--text-md);
+}
+
+.open-with-row:hover,
+.open-with-row:focus-visible,
+.open-with-row.selected {
+  background: var(--surface-container-highest);
+}
+
+.open-with-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--primary) 18%, transparent);
+  color: var(--primary);
+  font-size: var(--text-sm);
+}
+
+.open-with-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.open-with-id {
+  margin-left: auto;
+  color: var(--outline);
+  font-size: var(--text-sm);
+  flex-shrink: 0;
+}

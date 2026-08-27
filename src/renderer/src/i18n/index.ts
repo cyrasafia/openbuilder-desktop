@@ -154,6 +154,8 @@ const zh = {
   browserOpenFile: "打开本地文件…",
   browserAddressPlaceholder: "输入地址",
   fileViewSource: "查看源码",
+  openWithLoading: "正在枚举应用…",
+  openWithEmpty: "无支持该类型的应用",
   // 终端 Tab（design-terminal-tab）
   confirmCloseTerminal: "终端中有进程在运行，关闭将终止它。继续？",
   terminalExited: "终端已退出",
@@ -316,6 +318,8 @@ const en: typeof zh = {
   browserOpenFile: "Open local file…",
   browserAddressPlaceholder: "Enter address",
   fileViewSource: "View source",
+  openWithLoading: "Listing apps…",
+  openWithEmpty: "No apps for this file type",
   confirmCloseTerminal: "A process is running in this terminal. Closing will terminate it. Continue?",
   terminalExited: "Terminal exited",
   terminalDisconnected: "Terminal disconnected",

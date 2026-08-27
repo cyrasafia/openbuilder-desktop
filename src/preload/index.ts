@@ -19,6 +19,12 @@ const api = {
   getAppVersion: () => ipcRenderer.invoke("app:getVersion"),
   shellOpenPath: (path: string) => ipcRenderer.invoke("shell:openPath", path) as Promise<string>,
   shellOpenWith: (path: string) => ipcRenderer.invoke("shell:openWith", path) as Promise<string>,
+  shellListOpenWithApps: (path: string) =>
+    ipcRenderer.invoke("shell:listOpenWithApps", path) as Promise<
+      { id: string; name: string }[]
+    >,
+  shellOpenWithApp: (path: string, appId: string) =>
+    ipcRenderer.invoke("shell:openWithApp", path, appId) as Promise<string>,
   browserViewCreate: () => ipcRenderer.invoke("browser:view-create") as Promise<number>,
   browserViewBounds: (viewId: number, rect: unknown) => ipcRenderer.send("browser:view-bounds", viewId, rect),
   browserViewShow: (viewId: number) => ipcRenderer.send("browser:view-show", viewId),

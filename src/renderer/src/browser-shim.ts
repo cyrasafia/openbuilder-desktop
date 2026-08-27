@@ -39,6 +39,12 @@ function createBrowserDesktopApi(): DesktopApi {
     async shellOpenWith() {
       return "系统打开仅 Electron 环境可用"
     },
+    async shellListOpenWithApps() {
+      return []
+    },
+    async shellOpenWithApp() {
+      return "系统打开仅 Electron 环境可用"
+    },
     // 浏览器 Tab（design-browser-tab）：纯浏览器环境无 main 进程，view API 不可用。
     // create 失败即可让上层回退（openBrowserTab 捕获后走文件 Tab / 隐藏入口）
     async browserViewCreate() {

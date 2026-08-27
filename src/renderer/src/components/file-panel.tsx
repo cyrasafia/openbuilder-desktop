@@ -10,6 +10,7 @@ import { createPortal } from "react-dom"
 import { useI18n, useStore } from "../app"
 import type { FileNode } from "@shared/api-types"
 import { PanelResizeHandle } from "./panel-resize"
+import { OpenWithDialog } from "./open-with-dialog"
 import { FILEREF_MIME } from "./file-ref"
 import { fileUrlOf } from "@shared/file-url"
 import type { FileRef } from "@shared/api-types"
@@ -38,6 +39,7 @@ export function FilePanel() {
   const hasLoaded = store.fileTreeNodes.has(".")
   const rootNodes = store.fileTreeNodes.get(".") ?? []
   const [menu, setMenu] = useState<MenuState | null>(null)
+  const [openWith, setOpenWith] = useState<string | null>(null)
   const collapsed = store.layoutRightCollapsed
 
   // Hooks 必须无条件执行（项目有↔无切换时不允许 Hook 数量变化）
@@ -84,7 +86,22 @@ export function FilePanel() {
         {!hasLoaded && <div className="tree-empty">{t.loading}</div>}
         <NodeList nodes={rootNodes} depth={0} onContextMenu={openMenu} />
       </div>
-      {menu && <FileContextMenu menu={menu} onClose={() => setMenu(null)} />}
+      {menu && (
+        <FileContextMenu
+          menu={menu}
+          onClose={() => setMenu(null)}
+          onOpenWith={(path) => setOpenWith(path)}
+        />
+      )}
+      {openWith && (
+        <OpenWithDialog
+          path={openWith}
+          onLaunch={(appId) => {
+            void window.desktop.shellOpenWithApp(openWith, appId)
+          }}
+          onClose={() => setOpenWith(null)}
+        />
+      )}
       {/* 内缘调宽手柄（折叠时随面板 display:none 一并消失） */}
       {!collapsed && <PanelResizeHandle side="right" />}
     </aside>
@@ -210,7 +227,15 @@ function FileRow({
 }
 
 /** 右键菜单（design-file-panel-context-menu）：打开 / 打开方式 / 引用到会话 / 复制路径 */
-function FileContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) {
+function FileContextMenu({
+  menu,
+  onClose,
+  onOpenWith,
+}: {
+  menu: MenuState
+  onClose: () => void
+  onOpenWith: (path: string) => void
+}) {
   const { t } = useI18n()
   const store = useStore()
   const ref = useRef<HTMLDivElement>(null)
@@ -218,10 +243,13 @@ function FileContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => vo
   const onCloseRef = useRef(onClose)
   onCloseRef.current = onClose
 
-  // linux/browser 无系统级「打开方式」（§2.4）；目录无打开方式语义
+  // 目录无打开方式语义；win32/darwin 走系统对话框；linux 走自建选择器弹窗
+  // （design-linux-open-with，修订 §2.4 原"Linux 不显示"决策）
   const showOpenWith =
     !menu.isDirectory &&
-    (window.desktop.platform === "win32" || window.desktop.platform === "darwin")
+    (window.desktop.platform === "win32" ||
+      window.desktop.platform === "darwin" ||
+      window.desktop.platform === "linux")
 
   // 首帧隐藏渲染供测量，再钳制到视口内定位（同 Popover 无闪烁模式）
   useLayoutEffect(() => {
@@ -312,7 +340,12 @@ function FileContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => vo
       {showOpenWith && (
         <button
           className="context-menu-item"
-          onClick={() => run(() => void window.desktop.shellOpenWith(menu.absolute))}
+          onClick={() =>
+            run(() => {
+              if (window.desktop.platform === "linux") onOpenWith(menu.absolute)
+              else void window.desktop.shellOpenWith(menu.absolute)
+            })
+          }
         >
           {t.fileOpenWith}
         </button>

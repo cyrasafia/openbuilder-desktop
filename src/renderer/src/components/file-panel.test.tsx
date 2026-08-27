@@ -11,6 +11,7 @@ import type { FileNode } from "@shared/api-types"
 let platform: "linux" | "win32" | "darwin" | "browser" = "linux"
 const shellOpenPath = vi.fn(async () => "")
 const shellOpenWith = vi.fn(async () => "")
+const openWithApp = vi.fn(async () => "")
 const writeText = vi.fn(async () => {})
 
 vi.mock("../app", () => ({
@@ -122,10 +123,34 @@ describe("FilePanel 右键菜单", () => {
     expect(shellOpenPath).toHaveBeenCalledWith(ROOT)
   })
 
-  it("「打开方式」仅文件行 + win32/darwin 可见；动作走 shellOpenWith", () => {
+  it("「打开方式」linux 可见且开自建选择器（design-linux-open-with）；目录行不显示", async () => {
+    const listApps = vi.fn(async () => [{ id: "editor.desktop", name: "文本编辑器" }])
+    Object.defineProperty(window, "desktop", {
+      configurable: true,
+      get: () => ({
+        platform,
+        shellOpenPath,
+        shellOpenWith,
+        shellListOpenWithApps: listApps,
+        shellOpenWithApp: openWithApp,
+      }),
+    })
     render(<FilePanel />)
     fireEvent.contextMenu(screen.getByText("README.md"))
+    fireEvent.click(screen.getByText("打开方式…"))
+    expect(listApps).toHaveBeenCalledWith("/repo/README.md")
+    // 枚举落地 → 弹窗列出应用（弹窗交互细节见 open-with-dialog.test）
+    expect(await screen.findByText("文本编辑器")).toBeTruthy()
+    cleanup()
+    // 目录行不显示
+    render(<FilePanel />)
+    fireEvent.contextMenu(screen.getByText("src"))
     expect(screen.queryByText("打开方式…")).toBeNull()
+  })
+
+  it("「打开方式」win32/darwin 走系统对话框 shellOpenWith", () => {
+    render(<FilePanel />)
+    fireEvent.contextMenu(screen.getByText("README.md"))
     fireEvent.click(screen.getByText("打开"))
     cleanup()
 
