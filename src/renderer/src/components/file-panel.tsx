@@ -124,7 +124,8 @@ function NodeList({
   return (
     <>
       {sorted
-        .filter((n) => !n.name.startsWith(".") && !n.ignored)
+        // dot 文件与 ignored（server 按 .gitignore/.ignore 规则标记）均展示；
+        // ignored 以弱化样式区分（design-layout §5，2026-08-27）
         .map((n) => (
           <FileRow key={n.path} node={n} depth={depth} onContextMenu={onContextMenu} />
         ))}
@@ -170,7 +171,7 @@ function FileRow({
     return (
       <>
         <div
-          className="tree-row file-row"
+          className={"tree-row file-row" + (node.ignored ? " ignored" : "")}
           style={{ paddingLeft: 8 + depth * 14 }}
           onClick={() => store.toggleFileNode(node.path)}
           onContextMenu={(e) =>
@@ -200,7 +201,9 @@ function FileRow({
 
   return (
     <div
-      className={"tree-row file-row" + (isActive ? " active" : "")}
+      className={
+        "tree-row file-row" + (isActive ? " active" : "") + (node.ignored ? " ignored" : "")
+      }
       style={{ paddingLeft: 8 + depth * 14 + 16 }}
       onClick={() => {
         // .html/.htm 默认浏览器 Tab 打开（design-browser-tab §1.4；Electron 不可

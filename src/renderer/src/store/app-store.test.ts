@@ -2724,7 +2724,6 @@ describe("浏览器 Tab（design-browser-tab）", () => {
     expect(store.browserViewIdFor("browser:file:///repo/dup.html")).toBe(7)
     expect(browserCalls.filter((c) => c === "browserNavigate:7").length).toBe(1)
   })
-
   it("restoreClosedTab browser 分支：按关闭时 URL 重开", async () => {
     browserCalls.length = 0
     store.closedTabs = [{ kind: "browser", key: "browser:x", projectId: "proj1", directory: ROOT, title: "https://example.com/" }]
@@ -2752,7 +2751,6 @@ describe("浏览器 Tab（design-browser-tab）", () => {
     expect(store.browserViewIdFor("file:/repo/a.pdf")).toBeNull()
     store.popOverlay()
   })
-
   it("applyBrowserState：标题同步到 Tab；overlayCount 驱动显隐协调", async () => {
     await store.openBrowserTab("about:blank")
     store.applyBrowserState({ viewId: 1, url: "https://example.com/", title: "Example", loading: false, canGoBack: false, canGoForward: true })

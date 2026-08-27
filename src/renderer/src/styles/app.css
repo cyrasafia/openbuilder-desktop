@@ -231,6 +231,15 @@
   background: color-mix(in srgb, var(--surface-container-highest) 96%, var(--on-surface));
 }
 
+/* gitignore 项弱化（design-layout §5，2026-08-27）：server 的 ignored = 根 .gitignore/.ignore
+   规则命中（规则不存在则恒 false，等价"未 git 初始化不区分"）。样式参考 openbuilder
+   file_list_screen.dart 同款语义（outline 色 + 斜体）；hover/active 背景态照常
+   （选中信号仍由背景独立承载）；chevron 本就是 --outline 色无需另弱化 */
+.tree-row.ignored .tree-label {
+  color: var(--outline);
+  font-style: italic;
+}
+
 .ws-row,
 .file-row {
   height: var(--row-tree);

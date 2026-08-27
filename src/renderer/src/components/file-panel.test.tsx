@@ -46,6 +46,20 @@ const dirNode: FileNode = {
   type: "directory",
   ignored: false,
 }
+const ignoredFileNode: FileNode = {
+  name: "dist.zip",
+  path: "dist.zip",
+  absolute: `${ROOT}/dist.zip`,
+  type: "file",
+  ignored: true,
+}
+const ignoredDirNode: FileNode = {
+  name: "node_modules",
+  path: "node_modules/",
+  absolute: `${ROOT}/node_modules`,
+  type: "directory",
+  ignored: true,
+}
 
 /** 测试内动态替换的 store 桩（vi.mock 提升导致闭包需经变量间接） */
 let storeStub: Record<string, unknown>
@@ -61,7 +75,7 @@ function makeStore(): Record<string, unknown> {
     },
     currentWorkspace: null,
     scopeQuery: { directory: ROOT },
-    fileTreeNodes: new Map([[".", [dirNode, fileNode]]]),
+    fileTreeNodes: new Map([[".", [dirNode, fileNode, ignoredFileNode, ignoredDirNode]]]),
     fileTreeExpanded: new Map(),
     activeTab: null,
     loadFileNodes: vi.fn(async () => {}),
@@ -184,6 +198,21 @@ describe("FilePanel 右键菜单", () => {
     ;(document.activeElement as HTMLElement | null)?.blur()
     fireEvent.keyDown(menu, { key: "ArrowDown" })
     expect(document.activeElement).toBe(screen.getByText("打开"))
+  })
+
+  it("ignored 节点展示且带弱化类（design-layout §5：不再过滤）", () => {
+    render(<FilePanel />)
+    // 文件行与目录行都覆盖
+    expect(screen.getByText("dist.zip").closest(".tree-row")?.classList.contains("ignored")).toBe(
+      true,
+    )
+    expect(
+      screen.getByText("node_modules").closest(".tree-row")?.classList.contains("ignored"),
+    ).toBe(true)
+    // 非 ignored 行不带弱化类
+    expect(screen.getByText("README.md").closest(".tree-row")?.classList.contains("ignored")).toBe(
+      false,
+    )
   })
 
   it("无项目时不渲染菜单入口", () => {

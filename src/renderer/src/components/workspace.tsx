@@ -48,6 +48,12 @@ export function Workspace() {
   const scopeDir = store.scopeQuery.directory
   const tabs = store.tabs.filter((tab) => tab.directory === scopeDir)
   const active = store.activeTab
+
+  // 浏览器视图显隐协调（design-browser-tab §1.2）：激活 Tab + 无浮层才显示；
+  // Tab 切换/作用域切换/设置弹窗与右键菜单（overlayCount）变化时重算
+  useEffect(() => {
+    store.syncBrowserViewVisibility()
+  }, [store.activeTabKey, store.overlayCount, scopeDir, store])
   // 拖拽重排序（design-tab-drag-rename §1）：dragKey = 拖拽中 Tab；overKey =
   // 悬停目标 + 命中半区（左半 = 插入目标前、右半 = 插入目标后），指示线随半区
   // 亮在目标左/右缘
