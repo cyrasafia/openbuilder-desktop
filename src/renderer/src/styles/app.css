@@ -3111,15 +3111,24 @@
 
 .terminal-exited-overlay {
   position: absolute;
-  right: 12px;
-  bottom: 10px;
-  padding: 2px 10px;
-  border-radius: var(--radius-chip);
-  background: rgba(30, 30, 46, 0.85);
-  border: 1px solid #585b70;
-  color: #f9e2af;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 6px 14px;
   font-size: var(--text-sm);
+  letter-spacing: 0.02em;
+  text-align: center;
   pointer-events: none;
+}
+/* pty 自然退出：琥珀色（正常终态） */
+.terminal-exited-overlay.is-exited {
+  background: #6d6220;
+  color: #f9e2af;
+}
+/* 异常断开：红色警示 */
+.terminal-exited-overlay.is-disconnected {
+  background: #7a3848;
+  color: #f38ba8;
 }
 /* ---------- 浏览器 Tab（design-browser-tab §1.3） ---------- */
 .browser-tab {

@@ -316,9 +316,15 @@ export class AppStore {
    * 仅 WS close code 1000 置位——异常断开不标，关闭 Tab 仍尝试 DELETE 防孤儿）。
    * cursor 记忆已移除：组件卸载即销毁 xterm buffer，重挂载是全新 Terminal，
    * connect 不带 cursor 让 server 全量回放（带 cursor 只回放其后增量——语义用
-   * 反会导致切回空白，评审 H1）；同 buffer 重连场景本架构不存在
+   * 反会导致切回空白，评审 H1）；同 buffer 重连场景本架构不存在。
+   *
+   * buffer = 已退出 pty 的序列化输出缓存（@xterm/addon-serialize）：组件卸载前
+   * 若 pty 已 exited，serialize 导出 ANSI 序列存此（server attach 对 exited pty
+   * 抛 ExitedError 无法回放，故需 client 侧缓存以保 Tab 切走再切回可读回滚，
+   * 兑现 §1.2「Tab 保持可读回滚直至用户关闭」）。运行中 pty 不缓存——重挂载靠
+   * server 全量回放恢复。
    */
-  private ptyRuntimes = new Map<string, { exited: boolean; title: string }>()
+  private ptyRuntimes = new Map<string, { exited: boolean; title: string; buffer?: string }>()
   /**
    * 浏览器 Tab（design-browser-tab §1.3）：tabKey → viewId（main 进程
    * WebContentsView）；browserStates = main 推送的视图状态（url/title/loading/
@@ -2897,7 +2903,7 @@ export class AppStore {
   // ============ 终端 Tab（design-terminal-tab） ============
 
   /** pty 运行时读（TerminalView 挂载判断已退出态；无条目 = 全新） */
-  ptyRuntimeFor(ptyID: string): { exited: boolean; title: string } | null {
+  ptyRuntimeFor(ptyID: string): { exited: boolean; title: string; buffer?: string } | null {
     return this.ptyRuntimes.get(ptyID) ?? null
   }
 
@@ -2911,9 +2917,25 @@ export class AppStore {
   }
 
   /**
-   * 新建终端 Tab：shell 取 /pty/shells 首个 acceptable（失败省略 command 用
-   * server 默认）；cwd = 当前作用域目录；Tab 归作用域（directory 过滤通用）。
-   * 失败经 connectionError 呈现（引导页按钮不额外提示）。
+   * 缓存已退出 pty 的序列化输出（TerminalView 卸载前调用）。
+   * 重挂载时 TerminalView 读此还原 buffer（不建 WS——server attach 抛 ExitedError）。
+   */
+  cachePtyBuffer(ptyID: string, buffer: string) {
+    const rt = this.ptyRuntimes.get(ptyID)
+    // 空串不覆盖：重挂载后切走的 serialize 可能返回空（fit/resize 时序），
+    // 覆盖会丢失首次缓存的好内容
+    if (rt && rt.exited && buffer) rt.buffer = buffer
+  }
+
+  /**
+   * 新建终端 Tab：command 省略——server 走 Shell.preferred($SHELL)，与
+   * server 进程的默认登录 shell 一致（如 fish）；cwd = 当前作用域目录；Tab
+   * 归作用域（directory 过滤通用）。失败经 connectionError 呈现（引导页按钮
+   * 不额外提示）。
+   *
+   * 不取 /pty/shells 首个 acceptable：那会取 /etc/shells 顺序首个（实测
+   * /bin/sh），反而覆盖 server 正确的 $SHELL 默认。/pty/shells 留待将来做
+   * shell 选择器。
    */
   async openTerminalTab(): Promise<boolean> {
     if (!this.client || !this.scopeDirectory()) {
@@ -2925,16 +2947,8 @@ export class AppStore {
     // 捕获值（Tab 归属创建时作用域），激活只在仍在该作用域时抢
     const directory = this.scopeDirectory()
     const projectId = this.currentProject?.id ?? ""
-    const body: { command?: string } = {}
     try {
-      const shells = await this.client.listShells(directory)
-      const shell = shells.find((x) => x.acceptable)
-      if (shell) body.command = shell.path
-    } catch {
-      // shells 失败不阻断：省略 command，server 用默认 shell
-    }
-    try {
-      const pty = await this.client.createPty(directory, { ...body, cwd: directory })
+      const pty = await this.client.createPty(directory, { cwd: directory })
       this.ptyRuntimes.set(pty.id, { exited: false, title: pty.title ?? "terminal" })
       const key = `terminal:${pty.id}`
       this.tabs.push({

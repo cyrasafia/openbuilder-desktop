@@ -9,7 +9,7 @@
 ### 1.1 Tab
 
 - `TabKind` 扩 `"terminal"`；key = `terminal:<ptyID>`；directory = 创建时作用域目录（cwd）
-- 创建入口：引导页「终端」按钮（解禁）→ `store.openTerminalTab()`：`POST /pty`（cwd = 作用域目录；shell 取 `GET /pty/shells` 首个 `acceptable`，失败省略 command 让 server 用默认）→ Tab 入列 + 激活
+- 创建入口：引导页「终端」按钮（解禁）→ `store.openTerminalTab()`：`POST /pty`（cwd = 作用域目录；**command 省略**——server 走 `Shell.preferred($SHELL)`，与 server 进程默认登录 shell 一致，如 fish）→ Tab 入列 + 激活。**不取 `/pty/shells` 首个 acceptable**：那是 `/etc/shells` 顺序首个（实测 /bin/sh），反而覆盖 server 正确的 $SHELL；`/pty/shells` 留待将来做 shell 选择器（源码 `pty.ts: command = input.command || Shell.preferred(...)`，`Shell.preferred` 取 `process.env.SHELL`）
 - 标题 = `Pty.title`（server 给，如进程名）；无则 "terminal"
 - **关 Tab = DELETE /pty/{id}**（运行中 status==="running" 时二次确认，文案同关流式 chat Tab 风格）；pty exited 后关 Tab 仅清理本地（DELETE 404 静默）
 - restoreClosedTab 的 terminal 分支（spec #2）：在原 directory **新建**终端（原 pty 已销毁）
@@ -23,8 +23,10 @@
 - **Origin 剥离（打包形态实测）**：server 对 connect 路径校验 Origin allowlist，浏览器 WS 必发 Origin——打包（file://）→ 403；main 进程 `session.webRequest.onBeforeSendHeaders` 对 ws/wss **删 Origin 头**（server 视同无 Origin 放行，实测 101；dev 的 localhost 本就在 allowlist，删除无副作用）。renderer fetch 无此问题（file:// fetch 不发 Origin，实测 200）
 - 入帧：`term.onData` → `ws.send`（文本）
 - 断开/卸载：close WS；重挂载凭全量回放恢复。WS close **code 1000** = 自然退出 → store 标 exited（关闭 Tab 不再 DELETE，legacy 路由已 404）；**其余 code** = 异常断开 → 仅"已断开"叠加态、不标 exited（关闭 Tab 仍 DELETE 防孤儿，评审 M2）。已退出 pty 重挂载不建 WS
-- exited 呈现：WS close（code 1000 = pty 自然退出）→ 终端区叠加「已退出」态（终态提示行），只读；Tab 保持（可读回滚）直至用户关闭
-- **resize**：ResizeObserver → `fitAddon.proposeDimensions()` → `term.resize` + `PUT /pty/{id}` `{size:{rows,cols}}`（节流 200ms）；连接未建立时只 resize 本地
+- exited 呈现：WS close（code 1000 = pty 自然退出）→ 终端区叠加「已退出」态（终态提示行，通栏 banner 警示色——已退出琥珀、已断开红），只读；Tab 保持（可读回滚）直至用户关闭
+- **已退出 Tab 回滚保留（buffer 缓存）**：组件卸载即销毁 xterm buffer，但已退出 pty 的 server attach 抛 ExitedError 无法回放——卸载前用 `@xterm/addon-serialize` 导出 ANSI 序列缓存到 `ptyRuntimes[id].buffer`；重挂载时若有缓存则 `term.write(buffer)` 还原（不建 WS），兑现「Tab 保持可读回滚」。运行中 pty 不缓存（重挂载靠 server 全量回放）。**bufferReady 守卫**：xterm `write` 是异步队列，重挂载后立即切走时回调未触发、serialize 返回空——故 `cachePtyBuffer` 空串不覆盖（保留首次好缓存），且 cleanup 在 `bufferReady=true`（write 回调触发 / WS close）后才 serialize
+- **resize**：ResizeObserver → `fitAddon.proposeDimensions()` → `term.resize` + `PUT /pty/{id}` `{size:{rows,cols}}`（节流 200ms）；连接未建立时只 resize 本地；**已退出 pty 跳过上报**（server 404，防 ResizeObserver 在 exited 后仍触发报错）
+- **自动聚焦**：`term.open(host)` 后立即 `term.focus()`——Tab 切换走 key 隔离重挂载，打开/切回 terminal 即获焦，无需点击；`.terminal-view` `onMouseDown` 兜底（点击终端任意区域重新聚焦）
 - 复用浏览器 shim：终端纯 renderer + server WS，无 IPC 依赖——shim 下同样可用（jsdom 测试不建真 WS）
 
 ### 1.3 恒深色
@@ -37,7 +39,7 @@
 ptyRuntimes = new Map<string, { exited: boolean; title: string }>()  // 纯内存（cursor 记忆已移除，见 §1.2）
 ```
 
-- `openTerminalTab()`（async）：shells → create → Tab + runtime + emit；失败 connectionError。**入口同步捕获 directory/projectId**（await 期间切作用域：Tab 照开归原目录但不抢激活——防 projectId/directory 错配孤儿与跨作用域激活错位，评审 M1）
+- `openTerminalTab()`（async）：create（不带 command） → Tab + runtime + emit；失败 connectionError。**入口同步捕获 directory/projectId**（await 期间切作用域：Tab 照开归原目录但不抢激活——防 projectId/directory 错配孤儿与跨作用域激活错位，评审 M1）
 - `ptyRuntimeFor(id)` 读；`markPtyExited` 写（emit——驱动"已退出"叠加态）
 - `closeTerminalTab(key)`：确认（UI 侧）→ `DELETE /pty/{id}`（404 静默）→ closeTab（terminal 分支：runtime 清理 + WS 由组件卸载自断）+ 入关闭栈
 - teardown/closeProject/removeWorkspace：遍历该作用域 running terminal Tab → DELETE（fire-and-forget）。**teardown 全杀必须在 client 置 null 之前**（置 null 后杀是死代码，评审 H2）
@@ -56,7 +58,7 @@ ptyRuntimes = new Map<string, { exited: boolean; title: string }>()  // 纯内�
 | `src/shared/api-types.ts` | `Pty` / `PtyShell` / `PtyTicket` 类型 |
 | `src/shared/rest-client.ts` | `listShells/createPty/updatePtySize/deletePty/ptyConnectToken`（后两者错误静默约定；connect-token 带 `x-opencode-ticket: 1` 头） |
 | `src/renderer/src/store/app-store.ts` | TabKind 扩 terminal；openTerminalTab/ptyRuntimes/closeTerminalTab/restoreClosedTab terminal 分支/cycleTab 无需改（directory 过滤通用）/卸载路径 DELETE |
-| `src/renderer/src/components/terminal-view.tsx` | 新：xterm 终端组件（WS 生命周期/fit/深色） |
+| `src/renderer/src/components/terminal-view.tsx` | xterm 终端组件（WS 生命周期/fit/深色/自动聚焦/已退出 buffer 缓存 serialize 还原） |
 | `src/renderer/src/components/workspace.tsx` | Tab 内容分发 terminal 分支；引导页终端入口解禁；关闭走 closeTabInteractive（terminal 确认文案） |
 | `src/renderer/src/components/tab-actions.ts` | terminal 关闭确认 + closeTerminalTab |
 | `src/renderer/src/styles/app.css` | `.terminal-view`（深色固定 + 已退出叠加态） |

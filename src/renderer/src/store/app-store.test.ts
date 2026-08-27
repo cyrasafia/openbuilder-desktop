@@ -2590,11 +2590,11 @@ describe("终端 Tab（design-terminal-tab）", () => {
     return calls
   }
 
-  it("openTerminalTab：shells 首个 acceptable + cwd = 作用域目录 + Tab 归作用域", async () => {
+  it("openTerminalTab：省略 command（走 server $SHELL）+ cwd = 作用域目录 + Tab 归作用域", async () => {
     const calls = ptyClient()
     const ok = await store.openTerminalTab()
     expect(ok).toBe(true)
-    expect(calls).toEqual([`create:${ROOT}:/bin/bash`])
+    expect(calls).toEqual([`create:${ROOT}:undefined`])
     expect(store.tabs.some((t) => t.key === "terminal:pty_1" && t.directory === ROOT)).toBe(true)
     expect(store.activeTabKey).toBe("terminal:pty_1")
     expect(store.ptyRuntimeFor("pty_1")).toEqual({ exited: false, title: "bash" })
@@ -2604,7 +2604,7 @@ describe("终端 Tab（design-terminal-tab）", () => {
     const calls = ptyClient()
     await store.openTerminalTab()
     await store.closeTerminalTab("pty_1")
-    expect(calls).toEqual([`create:${ROOT}:/bin/bash`, "delete:pty_1"])
+    expect(calls).toEqual([`create:${ROOT}:undefined`, "delete:pty_1"])
     expect(store.tabs.length).toBe(0)
     expect(store.closedTabs.some((e) => e.kind === "terminal" && e.directory === ROOT)).toBe(true)
     expect(store.ptyRuntimeFor("pty_1")).toBeNull()
@@ -2615,7 +2615,7 @@ describe("终端 Tab（design-terminal-tab）", () => {
     await store.openTerminalTab()
     store.markPtyExited("pty_1")
     await store.closeTerminalTab("pty_1")
-    expect(calls).toEqual([`create:${ROOT}:/bin/bash`])
+    expect(calls).toEqual([`create:${ROOT}:undefined`])
   })
 
   it("restoreClosedTab terminal 分支：原目录新建（新 pty id）", async () => {
@@ -2627,7 +2627,7 @@ describe("终端 Tab（design-terminal-tab）", () => {
     store.restoreClosedTab()
     // ensureScopeFor 同步切到 WT1 → openTerminalTab（异步）用当前作用域
     expect(store.scopeQuery.directory).toBe(WT1)
-    await vi.waitFor(() => expect(calls).toEqual([`create:${WT1}:/bin/bash`]))
+    await vi.waitFor(() => expect(calls).toEqual([`create:${WT1}:undefined`]))
     expect(store.tabs[0]!.directory).toBe(WT1)
   })
 

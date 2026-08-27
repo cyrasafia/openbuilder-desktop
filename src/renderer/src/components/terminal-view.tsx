@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { Terminal } from "@xterm/xterm"
 import { FitAddon } from "@xterm/addon-fit"
+import { SerializeAddon } from "@xterm/addon-serialize"
 import "@xterm/xterm/css/xterm.css"
 import { useI18n, useStore } from "../app"
 
@@ -69,6 +70,8 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.open(host)
+    // 打开/切换至 terminal Tab 时自动聚焦（key 隔离重挂载，mount 即获焦）
+    term.focus()
     try {
       fit.fit()
     } catch {
@@ -83,6 +86,8 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
       } catch {
         return
       }
+      // 已退出 pty 不再上报 size（server 404）
+      if (store.ptyRuntimeFor(ptyID)?.exited) return
       if (resizeTimer != null) window.clearTimeout(resizeTimer)
       resizeTimer = window.setTimeout(() => {
         store.reportPtySize(ptyID, term.rows, term.cols)
@@ -92,10 +97,24 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
     observer.observe(host)
 
     const decoder = new TextDecoder()
+    const serialize = new SerializeAddon()
+    term.loadAddon(serialize)
+    // 已退出 pty 的重挂载：write 缓存到 term 后标记 ready，
+    // cleanup 时仅在 write 完成后才 serialize（xterm write 是异步队列）
+    let bufferReady = false
     const openWs = async () => {
-      // 已退出的 pty 不再连接（server legacy 路由 exited 即 404）
-      if (store.ptyRuntimeFor(ptyID)?.exited) {
+      // 已退出的 pty 不再连接（server legacy 路由 exited 即 404）；
+      // 但若有 client 侧序列化缓存（上次卸载前缓存），还原 buffer 保回滚
+      const rt = store.ptyRuntimeFor(ptyID)
+      if (rt?.exited) {
         setState("closed")
+        if (rt.buffer) {
+          term.write(rt.buffer, () => {
+            bufferReady = true
+          })
+        } else {
+          bufferReady = true
+        }
         return
       }
       const url = await store.ptyConnectUrl(ptyID)
@@ -129,6 +148,7 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
       ws.onclose = (ev) => {
         if (disposed) return
         setState("closed")
+        bufferReady = true
         // 1000 = pty 自然退出（server onEnd 主动关）；其余 = 异常断开——
         // 不标 exited，关闭 Tab 时仍尝试 DELETE 防孤儿
         if (ev.code === 1000) store.markPtyExited(ptyID)
@@ -142,7 +162,34 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
       observer.disconnect()
       wsRef.current?.close()
       wsRef.current = null
-      term.dispose()
+      // 已退出 pty 的 serialize 遍历 scrollback 可能阻塞 Tab 切换渲染。
+      // 延迟到空闲帧：切 Tab 立即完成，serialize + dispose 在原 term 仍持
+      // buffer 期间跑（dispose 推迟到回调内）。延迟 dispose 对运行中 pty
+      // 也安全（WS 已断、观察者已拆）。兜底 1s 防空闲帧不触发。
+      const rt = store.ptyRuntimeFor(ptyID)
+      const needSerialize = !!rt?.exited && bufferReady
+      const ric = (window as unknown as {
+        requestIdleCallback?: (cb: IdleRequestCallback) => number
+      }).requestIdleCallback
+      let done = false
+      const finalize = () => {
+        if (done) return
+        done = true
+        if (needSerialize) {
+          try {
+            store.cachePtyBuffer(ptyID, serialize.serialize())
+          } catch {
+            // dispose 边界异常不阻断
+          }
+        }
+        term.dispose()
+      }
+      if (needSerialize && ric) {
+        ric(() => finalize())
+        window.setTimeout(finalize, 1000)
+      } else {
+        finalize()
+      }
       termRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -160,10 +207,10 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
   }, [ptyID])
 
   return (
-    <div className="terminal-view">
+    <div className="terminal-view" onMouseDown={() => termRef.current?.focus()}>
       <div ref={hostRef} className="terminal-host" />
       {exited && (
-        <div className="terminal-exited-overlay">
+        <div className={`terminal-exited-overlay ${runtime?.exited ? "is-exited" : "is-disconnected"}`}>
           <span>{runtime?.exited ? t.terminalExited : t.terminalDisconnected}</span>
         </div>
       )}
