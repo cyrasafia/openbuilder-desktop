@@ -44,7 +44,12 @@ export function App() {
     const unsub = store.subscribe(() => force((n) => n + 1))
     store.mountReconciler()
     void store.init().finally(() => setReady(true))
-    const onFocus = () => store.kickReconnect()
+    const onFocus = () => {
+      store.kickReconnect()
+      // worktree 删除检测（design-worktree-sync §2）：删除无 SSE 事件，窗口 focus 时
+      // 刷新 listProjects() diff 补偿他端删除（切回应用即见最新态）
+      void store.syncWorktrees()
+    }
     window.addEventListener("focus", onFocus)
     return () => {
       unsub()

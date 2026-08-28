@@ -3,7 +3,7 @@
  * 事件闸门、乐观消息、SSE 生命周期都在这里收敛。
  */
 import { RestClient, ApiError } from "@shared/rest-client"
-import { SseSubscriber, type SseStatus } from "@shared/sse-subscriber"
+import { SseSubscriber, type SseStatus, type SseEventMeta } from "@shared/sse-subscriber"
 import { Reconciler } from "@shared/reconciler"
 import { mergeSessionsSnapshot } from "@shared/session-merge"
 import { inferFailedFromMessages, inferIdleFromMessages, mergeStatusSnapshot } from "@shared/session-status"
@@ -541,6 +541,7 @@ export class AppStore {
       this.restoreScopeTabs(this.scopeDirectory(), true)
     }
     this.startSse()
+    this.startWorktreeSyncTimer()
     // 冷启动 pending 回填（离线期间产生的授权/问题请求）
     void this.backfillPending()
     this.connectionState = "streaming"
@@ -614,6 +615,7 @@ export class AppStore {
       this.catalogRefreshTimer = null
     }
     this.clearFileWatchTimers()
+    this.stopWorktreeSyncTimer()
     this.snapshottedDirs.clear()
     // agent/模型目录：切 profile 全量重建（与命令缓存同模式）
     this.modelCatalogs.clear()
@@ -709,9 +711,13 @@ export class AppStore {
       baseUrl: this.activeBaseUrl!,
       username,
       password,
-      onEvent: (dir, ev) => this.handleEvent(dir, ev),
+      onEvent: (dir, ev, meta) => this.handleEvent(dir, ev, meta),
       onReconnected: () => {
         this.reconciler?.request()
+        // worktree 增删补偿（design-worktree-sync §2）：断连窗口内他端创建的 worktree
+        // 若 SSE 丢 worktree.ready（只发一次，重连不补发），靠此刷新补齐；删除无 SSE
+        // 事件，刷新是唯一通道
+        void this.syncWorktrees()
         // 命令缓存自愈：重连后重拉，让网络抖动恢复期的瞬时空被自动覆盖
         // （openbuilder design-slash-command-refresh：事件驱动重拉 + 缓存保留两层互补）
         const cmdDir = this.activeChatDirectory() ?? this.commandCache.cacheDir
@@ -768,7 +774,23 @@ export class AppStore {
 
   // ============ 事件处理（闸门 + 应用） ============
 
-  private handleEvent(directory: string, ev: OpencodeEvent) {
+  private handleEvent(directory: string, ev: OpencodeEvent, meta?: SseEventMeta) {
+    // ---- worktree 生命周期（design-worktree-sync）：目录闸门不适用——新 directory
+    // 尚未进本地 sandboxes，按信封 project 字段（projectID）判断"该项目是否打开"。
+    // ready → 重拉项目列表拿 sandboxes（左栏即时多一行）；failed 仅日志（createWorkspace
+    // 是同步 await，无 busy UI 需复位）。本端创建已 await refreshWorkspacesForProject，
+    // 他端创建靠此事件刷新。
+    if (ev.type === "worktree.ready" || ev.type === "worktree.failed") {
+      const projectId = meta?.project
+      if (!projectId || !this.openedProjects.some((p) => p.id === projectId)) return
+      if (ev.type === "worktree.ready") {
+        // 重拉项目列表（refreshWorkspacesForProject 全局拉取并覆盖 this.projects，
+        // project 参数仅为文档化作用域，不参与请求——见该函数注释）
+        const project = this.projects.find((p) => p.id === projectId)
+        if (project) void this.refreshWorkspacesForProject(project)
+      }
+      return
+    }
     // 前置闸门（design-sse-global-event §4.2）：单流收到 server 全部目录的事件，
     // 仅打开项目的目录全集（worktree ∪ sandboxes）放行——关闭项目 = 事件忽略。
     // 此前 message.*/session.created 等依赖"订阅集合即打开集合"隐式隔离，单流后必须显式过滤
@@ -988,6 +1010,28 @@ export class AppStore {
   }
 
   private catalogRefreshTimer: ReturnType<typeof setTimeout> | null = null
+
+  /**
+   * worktree 删除检测定时器（design-worktree-sync §2）：删除无 SSE 事件，靠周期
+   * listProjects() diff 检测。60s 一次（低频，用户不操作时也兜底）。SSE 断连/
+   * focus/重连时额外触发一次（补偿窗口）。连接拆除时停。
+   */
+  private worktreeSyncTimer: ReturnType<typeof setInterval> | null = null
+  private static readonly WORKTREE_SYNC_INTERVAL_MS = 60_000
+
+  private startWorktreeSyncTimer() {
+    this.stopWorktreeSyncTimer()
+    this.worktreeSyncTimer = setInterval(() => {
+      void this.syncWorktrees()
+    }, AppStore.WORKTREE_SYNC_INTERVAL_MS)
+  }
+
+  private stopWorktreeSyncTimer() {
+    if (this.worktreeSyncTimer) {
+      clearInterval(this.worktreeSyncTimer)
+      this.worktreeSyncTimer = null
+    }
+  }
 
   private scheduleCatalogRefresh() {
     if (this.catalogRefreshTimer != null) return
@@ -1884,72 +1928,128 @@ export class AppStore {
       await this.client.removeWorktree(project.worktree, directory)
       // worktree 列表数据源是 Project.sandboxes，重拉项目列表同步（刷新全局 projects）
       await this.refreshWorkspacesForProject(project)
-      // 卸载已删目录的会话与状态（目录已出 sandboxes，此后无快照/订阅通道覆盖它）
-      const map = this.sessionsByProject.get(project.id)
-      if (map) {
-        for (const [id, s] of map) {
-          if (s.directory === directory) map.delete(id)
-        }
-      }
-      this.purgeStatusForDirectories([directory])
-      this.snapshottedDirs.delete(directory)
-      // 目录已死，引导页草稿同灭（design-compose-draft §3）
-      this.guideDrafts.delete(directory)
-      this.fileRefs.delete(directory)
-      this.killPtyInDirectory(directory)
-      this.disposeBrowserViewsInDirectory(directory)
-      // 显式关闭该目录全部 live Tab：订阅即将拆除，chat 的 session.deleted 事件
-      // 兜底存在窗口期（design-tab-memory §5）；file/diff 无事件兜底，随目录卸载
-      // （全 kind 作用域化，2026-08-25 §18）。双行目录（git worktree 与 global 会话
-      // 同路径）下按 projectId 过滤——与 closeGlobalDirectory 对称：global 会话 Tab
-      // 归 global entry 管，删 git worktree 不得误关
-      for (const tab of [...this.tabs]) {
-        if (
-          (tab.kind === "file" || tab.kind === "diff" || tab.kind === "terminal" || tab.kind === "browser") &&
-          tab.directory === directory &&
-          tab.projectId === project.id
-        ) {
-          this.closeTab(tab.key)
-          continue
-        }
-        if (tab.kind === "chat" && tab.directory === directory && tab.projectId === project.id) {
-          this.closeTab(tab.key)
-          this.cleanupSessionState(tab.key.slice(5))
-        }
-      }
-      // 最后激活记录随目录卸载（须在关 Tab 之后——关激活 Tab 的回退钩子会
-      // recordScopeActive 重建条目，先删会被写回，重开误落引导页/错激活）
-      this.scopeActiveKeys.delete(directory)
-      // 删除该目录记忆（目录已死；须在关 Tab 之后——closeTab 同步会重建条目）。
-      // 仅删该项目侧记忆：双行目录的记忆经 findProjectOwningDirectory 归属，
-      // global 侧记忆（projectId === global）不随 worktree 删除——与 closeGlobalDirectory 对称
-      const key = this.profileKey()
-      if (this.tabMemory[key]?.[directory]?.projectId === project.id) {
-        delete this.tabMemory[key][directory]
-        void window.desktop.storeSet("tabs.memory", this.tabMemory).catch(() => {})
-      }
-      this.dropPendingForDirectories([directory])
-      const ps = this.projectStateFor()
-      // 仅当前项目删除当前 worktree 时需复位 currentWorkspaceId 并恢复根作用域；
-      // 非当前项目的 worktree 不影响当前作用域（currentWorkspaceId 必不等于该目录）
-      if (isCurrent && ps.currentWorkspaceId === directory) {
-        ps.currentWorkspaceId = null
-        await this.persistProjectState()
-      }
-      await this.refreshSessionsForProject(project)
-      if (isCurrent) {
-        this.resetFileTree()
-        // 删除的是当前 worktree → 作用域已切回项目根：与其他切换路径一致，
-        // 恢复根作用域的 Tab 与激活（否则有根 Tab 却落到会话列表视图）
-        if (!ps.currentWorkspaceId) {
-          this.restoreScopeTabs(project.worktree, true)
-        }
-      }
+      const restored = await this.unloadWorktreeDirectory(directory, project.id, isCurrent)
+      if (restored) this.restoreScopeTabs(project.worktree, true)
       this.emit()
       return { ok: true }
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     }
+  }
+
+  /**
+   * 卸载一个 worktree directory 的全部本地状态（会话/Tab/记忆/状态/pty/浏览器视图）。
+   * removeWorkspace 与 syncWorktrees（刷新检测他端删除）共用——后者无 API 调用，
+   * 仅对 listProjects diff 出的消失目录执行此清理（design-worktree-sync §2）。
+   * 返回是否复位了当前作用域（仅当前项目删当前 worktree 时为 true，调用方据此恢复根 Tab）。
+   */
+  private async unloadWorktreeDirectory(
+    directory: string,
+    projectId: string,
+    isCurrent: boolean,
+  ): Promise<boolean> {
+    const project = this.projects.find((p) => p.id === projectId)
+    // 卸载已删目录的会话与状态（目录已出 sandboxes，此后无快照/订阅通道覆盖它）
+    const map = this.sessionsByProject.get(projectId)
+    if (map) {
+      for (const [id, s] of map) {
+        if (s.directory === directory) map.delete(id)
+      }
+    }
+    this.purgeStatusForDirectories([directory])
+    this.snapshottedDirs.delete(directory)
+    // 目录已死，引导页草稿同灭（design-compose-draft §3）
+    this.guideDrafts.delete(directory)
+    this.fileRefs.delete(directory)
+    this.killPtyInDirectory(directory)
+    this.disposeBrowserViewsInDirectory(directory)
+    // 显式关闭该目录全部 live Tab：订阅即将拆除，chat 的 session.deleted 事件
+    // 兜底存在窗口期（design-tab-memory §5）；file/diff 无事件兜底，随目录卸载
+    // （全 kind 作用域化，2026-08-25 §18）。双行目录（git worktree 与 global 会话
+    // 同路径）下按 projectId 过滤——与 closeGlobalDirectory 对称：global 会话 Tab
+    // 归 global entry 管，删 git worktree 不得误关
+    for (const tab of [...this.tabs]) {
+      if (
+        (tab.kind === "file" || tab.kind === "diff" || tab.kind === "terminal" || tab.kind === "browser") &&
+        tab.directory === directory &&
+        tab.projectId === projectId
+      ) {
+        this.closeTab(tab.key)
+        continue
+      }
+      if (tab.kind === "chat" && tab.directory === directory && tab.projectId === projectId) {
+        this.closeTab(tab.key)
+        this.cleanupSessionState(tab.key.slice(5))
+      }
+    }
+    // 最后激活记录随目录卸载（须在关 Tab 之后——关激活 Tab 的回退钩子会
+    // recordScopeActive 重建条目，先删会被写回，重开误落引导页/错激活）
+    this.scopeActiveKeys.delete(directory)
+    // 删除该目录记忆（目录已死；须在关 Tab 之后——closeTab 同步会重建条目）。
+    // 仅删该项目侧记忆：双行目录的记忆经 findProjectOwningDirectory 归属，
+    // global 侧记忆（projectId === global）不随 worktree 删除——与 closeGlobalDirectory 对称
+    const key = this.profileKey()
+    if (this.tabMemory[key]?.[directory]?.projectId === projectId) {
+      delete this.tabMemory[key][directory]
+      void window.desktop.storeSet("tabs.memory", this.tabMemory).catch(() => {})
+    }
+    this.dropPendingForDirectories([directory])
+    const ps = this.projectStateFor()
+    // 仅当前项目删除当前 worktree 时需复位 currentWorkspaceId 并恢复根作用域；
+    // 非当前项目的 worktree 不影响当前作用域（currentWorkspaceId 必不等于该目录）
+    let restored = false
+    if (isCurrent && ps.currentWorkspaceId === directory) {
+      ps.currentWorkspaceId = null
+      await this.persistProjectState()
+      restored = true
+    }
+    if (project) await this.refreshSessionsForProject(project)
+    if (isCurrent) this.resetFileTree()
+    return restored
+  }
+
+  /**
+   * 刷新对账检测他端 worktree 增删（design-worktree-sync §2）：删除无 SSE 事件，
+   * 靠 listProjects() diff sandboxes 检测。新建由 worktree.ready SSE 实时刷新，
+   * 此方法是 SSE 丢消息/断连/未收事件的补偿兜底（启动/focus/定时/reconnect 触发）。
+   * 幂等：无变化时只重拉 projects（同 refreshWorkspacesForProject，无害 emit）。
+   */
+  async syncWorktrees(): Promise<void> {
+    const client = this.client
+    if (!client) return
+    const before = this.projects
+    const fresh = await client.listProjects().catch(() => null)
+    if (!fresh) return
+    // 在途闸门：diff 期间 client 可能已拆（disconnect/切 profile）
+    if (this.client !== client) return
+    // 比对每个打开项目（含未打开项目的 worktree 变化不影响左栏展示，跳过）
+    const toUnload: Array<{ directory: string; projectId: string; isCurrent: boolean }> = []
+    for (const old of before) {
+      if (old.id === GLOBAL_PROJECT_ID) continue
+      const opened = this.openedProjects.some((p) => p.id === old.id)
+      if (!opened) continue
+      const next = fresh.find((p) => p.id === old.id)
+      const oldDirs = new Set([...(old.sandboxes ?? [])])
+      const nextDirs = new Set([...(next?.sandboxes ?? [])])
+      for (const d of oldDirs) {
+        if (!nextDirs.has(d)) {
+          toUnload.push({
+            directory: d,
+            projectId: old.id,
+            isCurrent: old.id === this.currentProject?.id,
+          })
+        }
+      }
+    }
+    this.projects = fresh
+    for (const { directory, projectId, isCurrent } of toUnload) {
+      const restored = await this.unloadWorktreeDirectory(directory, projectId, isCurrent)
+      if (restored) {
+        const p = this.projects.find((x) => x.id === projectId)
+        if (p) this.restoreScopeTabs(p.worktree, true)
+      }
+    }
+    this.emit()
   }
 
   private async refreshWorkspacesForProject(project: Project) {
