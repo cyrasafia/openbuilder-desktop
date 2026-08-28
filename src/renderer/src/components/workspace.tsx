@@ -10,7 +10,21 @@ import {
   type ReactNode,
   type WheelEvent,
 } from "react"
-import { ChevronDown, ChevronRight, ChevronUp, CircleHelp, ListTree, LoaderCircle, RotateCcw, ShieldAlert } from "lucide-react"
+import {
+  ChevronDown,
+  ChevronRight,
+  ChevronUp,
+  Circle,
+  CircleCheck,
+  CircleDot,
+  CircleHelp,
+  CircleX,
+  ListChecks,
+  ListTree,
+  LoaderCircle,
+  RotateCcw,
+  ShieldAlert,
+} from "lucide-react"
 import { useI18n, useStore } from "../app"
 import { format, relativeTime } from "../i18n"
 import type { Catalog } from "../i18n"
@@ -22,10 +36,12 @@ import type {
   Session,
   SessionStatusValue,
   SubtaskPart,
+  Todo,
   ToolPart,
 } from "@shared/api-types"
 import type { PendingPermission, PendingQuestion } from "@shared/pending-requests"
 import { externalDirectoryPath, permissionCommand } from "@shared/pending-requests"
+import { todoActive, todoDone, todoKey, todosActive } from "@shared/session-todos"
 import { Markdown } from "./markdown"
 import { splitFrontMatter } from "./markdown-frontmatter"
 import { ModelSwitcherBar } from "./model-switcher"
@@ -484,10 +500,14 @@ function ChatView({ sessionID }: { sessionID: string }) {
   const headIdOf = (list: ChatEntry[]): string | null =>
     list[0]?.kind === "message" ? list[0].data.info.id : null
 
-  // 激活即重拉（design-layout §5：切回 Tab 时重拉；快照与 SSE 状态合并不丢数据）
+  // 激活即重拉（design-layout §5：切回 Tab 时重拉；快照与 SSE 状态合并不丢数据）。
+  // 任务列表同挂点回填（design-task-list：补 SSE 断线窗口的全量快照）
   useEffect(() => {
     const session = store.findSession(sessionID)
-    if (session) void store.loadSessionMessages(sessionID, session.directory)
+    if (session) {
+      void store.loadSessionMessages(sessionID, session.directory)
+      void store.loadSessionTodos(sessionID, session.directory)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionID])
 
@@ -970,6 +990,8 @@ function CommandHints({
  * 会话底部待处理面板：一次渲染一张卡（授权优先于问题，同移动端 _FooterPanel——
  * 权限通常阻塞执行），队列 >1 时计数提示。卡片按 id 键控（review-73dcfa6：
  * 队列推进时复用组件 State 导致选中/提交态残留的教训）。
+ * 任务卡（design-task-list）是第三类：有待处理人机交互时不渲染（授权/问题卡
+ * 需用户动作，不得被遮挡或推高），全部完成也不渲染（todosActive 闸门）。
  */
 function ChatFooter({ sessionID }: { sessionID: string }) {
   const store = useStore()
@@ -977,13 +999,77 @@ function ChatFooter({ sessionID }: { sessionID: string }) {
   const questions = store.questionsForSession(sessionID)
   const question = permission ? null : (questions[0] ?? null)
   const queueTotal = (permission ? 1 : 0) + questions.length
-  if (queueTotal === 0) return null
+  const todos = queueTotal === 0 ? store.todosForSession(sessionID) : []
+  const showTodos = queueTotal === 0 && todosActive(todos)
+  if (queueTotal === 0 && !showTodos) return null
   return (
     <div className="chat-footer">
       {permission && (
         <PermissionCard key={permission.id} permission={permission} queueTotal={queueTotal} />
       )}
       {question && <QuestionCard key={question.id} question={question} queueTotal={queueTotal} />}
+      {showTodos && <TodoCard todos={todos} />}
+    </div>
+  )
+}
+
+/**
+ * 任务卡（design-task-list）：默认收起——头部一行（图标 + 标题 + done/total
+ * 计数 + 展开箭头），点击切换；展开显示进度条 + 逐条状态行。无提交态，列表
+ * 整体重渲染即正确（键控无必要，见设计「与移动端的差异」）。
+ */
+function TodoCard({ todos }: { todos: Todo[] }) {
+  const { t } = useI18n()
+  const [expanded, setExpanded] = useState(false)
+  const done = todos.filter(todoDone).length
+  const pct = todos.length === 0 ? 0 : Math.round((done / todos.length) * 100)
+  return (
+    <div className="pending-card todo">
+      <button
+        className="pending-card-header"
+        aria-expanded={expanded}
+        onClick={() => setExpanded(!expanded)}
+      >
+        <ListChecks className="pending-card-icon" size={16} aria-hidden />
+        <span className="pending-card-title">{t.todoTitle}</span>
+        <span className="pending-card-sub">{format(t.todoCount, { done, total: todos.length })}</span>
+        {expanded ? (
+          <ChevronDown className="pending-card-chevron" size={16} aria-hidden />
+        ) : (
+          <ChevronRight className="pending-card-chevron" size={16} aria-hidden />
+        )}
+      </button>
+      {expanded && (
+        <div className="pending-card-body">
+          <div
+            className="todo-progress"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={pct}
+          >
+            <div className="todo-progress-fill" style={{ width: `${pct}%` }} />
+          </div>
+          <ul className="todo-list">
+            {todos.map((todo, i) => (
+              <li key={todoKey(todo, i)} className={"todo-row" + (todoDone(todo) ? " done" : "")}>
+                <span className="todo-row-icon" aria-hidden>
+                  {todo.status === "cancelled" ? (
+                    <CircleX size={14} />
+                  ) : todo.status === "completed" ? (
+                    <CircleCheck size={14} />
+                  ) : todoActive(todo) ? (
+                    <CircleDot className="todo-active" size={14} />
+                  ) : (
+                    <Circle size={14} />
+                  )}
+                </span>
+                <span className="todo-row-text">{todo.content}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   )
 }

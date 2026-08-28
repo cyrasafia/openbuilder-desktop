@@ -65,6 +65,9 @@ const zh = {
   questionSubmit: "提交",
   questionNext: "下一步",
   replyFailed: "操作失败",
+  // 任务卡（design-task-list；标题对齐移动端 arb todoTitle）
+  todoTitle: "任务",
+  todoCount: "{done}/{total}",
   // 文件
   filesTitle: "文件",
   loading: "加载中…",
@@ -244,6 +247,9 @@ const en: typeof zh = {
   questionSubmit: "Submit",
   questionNext: "Next",
   replyFailed: "Action failed",
+  // Task card (design-task-list; title aligns with mobile arb todoTitle)
+  todoTitle: "Tasks",
+  todoCount: "{done}/{total}",
   filesTitle: "Files",
   loading: "Loading…",
   empty: "Empty",

@@ -542,6 +542,15 @@ export class RestClient {
     )
   }
 
+  // ---- 会话任务列表（design-task-list）。契约：opencode_openapi.json session.todo。
+  // 全量替换语义；directory 同 pending 系端点作实例路由。----
+
+  listSessionTodos(sessionID: string, directory: string): Promise<unknown> {
+    return this.request<unknown>(
+      `/session/${encodeURIComponent(sessionID)}/todo${RestClient.dirQuery(directory)}`,
+    )
+  }
+
   // ---- agent / model（design-agent-model-switch）----
 
   /** 列 agents（v1 `GET /agent?directory=`）。过滤逻辑在 model-catalog.ts。 */

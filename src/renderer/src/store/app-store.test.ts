@@ -544,6 +544,75 @@ describe("busy 补充发送（design-supplement-send）", () => {
   })
 })
 
+describe("会话任务列表（design-task-list）", () => {
+  function dispatch(dir: string, ev: { type: string; properties: unknown }) {
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(dir, ev)
+  }
+
+  it("todo.updated 全量替换（非合并）+ 空表 = server 侧清空", () => {
+    dispatch(ROOT, {
+      type: "todo.updated",
+      properties: { sessionID: "s1", todos: [{ content: "a", status: "in_progress", priority: "high" }] },
+    })
+    expect(store.todosForSession("s1")).toEqual([
+      { content: "a", status: "in_progress", priority: "high" },
+    ])
+    dispatch(ROOT, {
+      type: "todo.updated",
+      properties: { sessionID: "s1", todos: [{ content: "b", status: "pending", priority: "low" }] },
+    })
+    expect(store.todosForSession("s1")).toEqual([{ content: "b", status: "pending", priority: "low" }])
+    dispatch(ROOT, { type: "todo.updated", properties: { sessionID: "s1", todos: [] } })
+    expect(store.todosForSession("s1")).toEqual([])
+  })
+
+  it("畸形载荷（todos 缺失/非数组）忽略保留本地，显式 [] 才权威清空（review #2）", () => {
+    dispatch(ROOT, {
+      type: "todo.updated",
+      properties: { sessionID: "s1", todos: [{ content: "a", status: "pending", priority: "low" }] },
+    })
+    dispatch(ROOT, { type: "todo.updated", properties: { sessionID: "s1" } })
+    dispatch(ROOT, { type: "todo.updated", properties: { sessionID: "s1", todos: "oops" } })
+    expect(store.todosForSession("s1")).toEqual([{ content: "a", status: "pending", priority: "low" }])
+    dispatch(ROOT, { type: "todo.updated", properties: { sessionID: "s1", todos: [] } })
+    expect(store.todosForSession("s1")).toEqual([])
+  })
+
+  it("事件闸门：关闭项目目录的事件被丢弃", () => {
+    dispatch("/other", {
+      type: "todo.updated",
+      properties: { sessionID: "s1", todos: [{ content: "a", status: "pending", priority: "low" }] },
+    })
+    expect(store.sessionTodos.has("s1")).toBe(false)
+  })
+
+  it("loadSessionTodos：成功整表覆盖、失败保留本地、空数组权威清空", async () => {
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    client.listSessionTodos = async () => [{ content: "r", status: "pending", priority: "medium" }]
+    await store.loadSessionTodos("s1", ROOT)
+    expect(store.todosForSession("s1")).toEqual([{ content: "r", status: "pending", priority: "medium" }])
+    client.listSessionTodos = async () => {
+      throw new Error("boom")
+    }
+    await store.loadSessionTodos("s1", ROOT)
+    expect(store.todosForSession("s1")).toEqual([{ content: "r", status: "pending", priority: "medium" }])
+    client.listSessionTodos = async () => []
+    await store.loadSessionTodos("s1", ROOT)
+    expect(store.todosForSession("s1")).toEqual([])
+  })
+
+  it("会话删除事件清理任务列表（cleanupSessionState 挂点）", () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    dispatch(ROOT, {
+      type: "todo.updated",
+      properties: { sessionID: "s1", todos: [{ content: "a", status: "pending", priority: "low" }] },
+    })
+    dispatch(ROOT, { type: "session.deleted", properties: { sessionID: "s1", info: s1 } })
+    expect(store.sessionTodos.has("s1")).toBe(false)
+  })
+})
+
 describe("斜杠命令发送（design-slash-command SC-4：同步端点无限等待）", () => {
   function dispatch(ev: { type: string; properties: unknown }) {
     ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, ev)

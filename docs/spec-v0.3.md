@@ -14,6 +14,7 @@
 | 6 | 浏览器 Tab | WebContentsView 内嵌浏览器（地址栏 + 前进/后退/刷新 + 打开本地文件），Tab 归作用域。**文件树点击 `.html/.htm` 默认在浏览器 Tab 打开（`file://` URL）**；右键菜单提供「查看源码」，在文件 Tab 打开 HTML 源码（文件 Tab 仅源码、无预览，原 iframe 预览方案废弃）。导航安全：远端页面禁跳 `file://`，外链走系统浏览器 |
 | 7 | PDF 预览 | 文件 Tab 内预览 PDF：文件 Tab 内嵌专用 WebContentsView + 顶层 `file://` 导航（Chromium 内置 PDFium 查看器渲染；iframe/embed/pdfjs 路线实测不可行，见 design-pdf-preview §0）。仅预览态；非二进制/错误走占位（随文件监听刷新），内容变更重开 Tab 即见 |
 | 8 | Linux Open With | 文件树右键「打开方式…」在 Linux 恢复显示：`xdg-mime` 查 MIME → 解析 .desktop 枚举支持该类型的应用 → 应用内选择器 → `gio launch` 启动。修订 design-file-panel-context-menu §2.4 原「Linux 不提供」决策；win32/darwin 原路径不变 |
+| 9 | 会话任务列表展示 | ChatFooter 第三类卡片（见 [design-task-list.md](design-task-list.md)）：agent 用 todowrite 维护的任务清单在会话底部展示，默认收起（头部 done/total 计数，点击展开进度条 + 逐条状态行）；任务全部完成（completed/cancelled）时整卡隐藏；有待处理授权/问题卡时不渲染（不遮挡人机交互卡） |
 
 ## 范围外（明确不做）
 
@@ -33,6 +34,7 @@
 | 终端连接 | `POST /pty/{id}/connect-token`（头 `x-opencode-ticket: 1`）→ WS `/pty/{id}/connect?ticket=&cursor=`（控制帧 `0x00`+JSON 携带 cursor） |
 | 终端 resize | `PUT /pty/{id}`（`size: {rows, cols}`） |
 | Shell 列表 | `GET /pty/shells` |
+| 会话任务列表 | `GET /session/{id}/todo`（全量列表）；SSE `todo.updated`（sessionID + 全量 todos） |
 | 文件引用发送 | `POST /session/{id}/prompt_async` parts 扩 `FilePartInput`（`url` = absolute `file://`，`source.type=file`，mime 占位 `text/plain`） |
 
 ## 验收口径
@@ -45,3 +47,4 @@
 - [ ] 点击 .html 开浏览器 Tab 渲染正确（本地相对资源可加载）；右键「查看源码」在文件 Tab 打开源码；地址栏导航、前进/后退、打开本地文件可用；远端页面无法跳转 `file://`
 - [ ] PDF 文件在文件 Tab 内渲染预览（PDFium），非二进制/错误占位随文件监听更新；内容变更重开 Tab 即见
 - [ ] Linux 右键「打开方式…」列出支持该 MIME 的应用，选择后文件被对应应用打开；目录行不显示该项
+- [ ] agent 更新任务（todowrite）时会话底部出现任务卡：默认收起、头部计数正确，展开可见进度条与逐条状态；全部完成后整卡隐藏；授权/问题卡在队时任务卡不渲染，应答后自动回归

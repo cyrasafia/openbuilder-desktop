@@ -2650,6 +2650,90 @@
   text-align: right;
 }
 
+/* ---------- 任务卡（design-task-list）：中性 surface-container 系（区别于授权
+   primary / 问题 tertiary，移动端 surfaceContainerHighest 同判） ---------- */
+.pending-card.todo {
+  background: color-mix(in srgb, var(--surface-container-high) 55%, var(--surface));
+  border-color: var(--outline-variant);
+}
+
+.pending-card.todo .pending-card-icon {
+  color: var(--on-surface-variant);
+}
+
+.todo-progress {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--surface-container-highest);
+  overflow: hidden;
+}
+
+.todo-progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--primary);
+  transition: width 150ms ease;
+}
+
+.todo-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.todo-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.todo-row-icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--outline);
+}
+
+.todo-row-icon svg {
+  display: block;
+}
+
+/* 进行中：primary 圆点呼吸（同 session-running 光晕语义，进度可感知） */
+.todo-row-icon .todo-active {
+  color: var(--primary);
+  animation: todo-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes todo-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.todo-row-text {
+  font-size: var(--text-md);
+  line-height: 1.5;
+  color: var(--on-surface);
+  overflow-wrap: anywhere;
+}
+
+/* 完成/取消行：弱化 + 删除线 */
+.todo-row.done .todo-row-text {
+  color: var(--outline);
+  text-decoration: line-through;
+}
+
+.todo-row.done .todo-row-icon {
+  color: var(--outline);
+}
+
 /* ---------- 弹窗 ---------- */
 .dialog-mask {
   position: fixed;
