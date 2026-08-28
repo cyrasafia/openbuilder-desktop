@@ -14,6 +14,28 @@ export interface OpenWithApp {
   name: string
 }
 
+/**
+ * 启动用户会话应用（gio launch / xdg-open / rundll32 / open）时剥离的环境前缀：
+ * 本进程在 dev（electron-vite `npm run dev`）注入的 NODE_ENV / ELECTRON_* / VITE_* 是
+ * 应用内部约定，泄漏给外部应用会改变其行为。实证（2026-08-28 真机复现）：MarkText
+ * 读到 NODE_ENV=development 后丢弃文件参数、改用 marktext-dev 数据目录起独立实例，
+ * 且其 dev URL 构造失败 + GPU 崩溃循环 → 无响应幽灵窗口无法关闭。
+ */
+const SESSION_APP_ENV_STRIP_PREFIXES = ["NODE_", "ELECTRON_", "VITE_"]
+
+/** 子进程环境净化（纯函数，供单测）：拷贝并剥离上述前缀键。
+ *  比较大小写不敏感——Windows 环境变量名不区分大小写（Node 读取即命中），
+ *  小写变体（node_env）同样必须剥离 */
+export function sanitizedChildEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {}
+  for (const [key, value] of Object.entries(env)) {
+    const upper = key.toUpperCase()
+    if (SESSION_APP_ENV_STRIP_PREFIXES.some((p) => upper.startsWith(p))) continue
+    out[key] = value
+  }
+  return out
+}
+
 /** 解析后的 desktop 条目（内部域模型） */
 interface DesktopEntry {
   name: string
@@ -131,12 +153,13 @@ export async function listOpenWithApps(path: string, locale: string): Promise<Op
   return apps
 }
 
-export function openWithApp(path: string, appId: string): Promise<string> {
-  const desktop = lastEnumerated.get(appId)
-  if (!desktop) return Promise.resolve("unknown app (list expired, reopen the picker)")
-  // gio launch 负责 Exec 的 %u/%f 展开与转义（不自解析 Exec）。
-  // detached + 短等待窗口：spawn error（gio 不存在等）与立即退出（非零 code）
-  // 在此窗口内回报；长驻进程正常 detach（resolve("") 后事件不再影响结果）
+/**
+ * detached spawn 用户会话应用辅助进程（gio/xdg-open/open 共用）+ 短等待窗口：
+ * spawn error 与立即非零退出在此窗口内回报（stderr 首行）；长驻/正常 detach
+ * 按成功（resolve("") 后事件不再影响结果）。env 必须经 sanitizedChildEnv
+ * 净化（见该函数注释的实证事故）。
+ */
+export function spawnSessionApp(cmd: string, args: string[], timeoutMs = 1500): Promise<string> {
   return new Promise((resolve) => {
     let settled = false
     const done = (err: string) => {
@@ -146,22 +169,40 @@ export function openWithApp(path: string, appId: string): Promise<string> {
       }
     }
     let stderr = ""
-    const child = spawn("gio", ["launch", desktop, path], {
+    const child = spawn(cmd, args, {
       detached: true,
       stdio: ["ignore", "ignore", "pipe"],
+      env: sanitizedChildEnv(process.env),
     })
     child.stderr?.on("data", (d: Buffer) => {
       if (stderr.length < 200) stderr += d.toString()
     })
-    child.on("error", () => done("gio spawn failed"))
+    child.on("error", () => done(`${cmd} spawn failed`))
     child.on("exit", (code) => {
-      // gio launch 正常路径：spawn 目标应用为子进程后自身立即退出 0（无 exec 替换）；
       // 非零 = 启动失败（stderr 首行）；被信号杀死（code=null）按成功（病态场景兜底）
-      if (code != null && code !== 0) done(`gio launch failed: ${stderr.split("\n")[0] || code}`)
+      if (code != null && code !== 0) done(`${cmd} failed: ${stderr.split("\n")[0] || code}`)
       else done("")
     })
     child.unref()
     // 短窗口兜底：无事件（正常 detach）即按成功
-    setTimeout(() => done(""), 1500)
+    setTimeout(() => done(""), timeoutMs)
   })
+}
+
+export function openWithApp(path: string, appId: string): Promise<string> {
+  const desktop = lastEnumerated.get(appId)
+  if (!desktop) return Promise.resolve("unknown app (list expired, reopen the picker)")
+  // gio launch 负责 Exec 的 %u/%f 展开与转义（不自解析 Exec）
+  return spawnSessionApp("gio", ["launch", desktop, path])
+}
+
+/**
+ * 系统默认方式打开（Linux 分支，「打开」菜单项）：Electron shell.openPath 内部
+ * 同样 spawn xdg-open 但无法定制 env——dev 模式 NODE_ENV 泄漏问题同 gio launch，
+ * 故 Linux 自管 xdg-open 走净化环境（win32/darwin 见 ipc.ts 分支注记）。
+ * 观察窗 5s（宽于 gio launch 的 1.5s）：xdg-open 是脚本，冷缓存/NFS 下枚举
+ * handler 可能超 1.5s 才以非零退出，窗口过窄会把真失败当成功。
+ */
+export function xdgOpen(path: string): Promise<string> {
+  return spawnSessionApp("xdg-open", [path], 5000)
 }

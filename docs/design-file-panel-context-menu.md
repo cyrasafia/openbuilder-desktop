@@ -49,7 +49,7 @@
 
 | 通道 | 语义 |
 |---|---|
-| `shell:openPath` | `shell.openPath(path)`；resolve ""=成功，否则错误信息（shell.openPath 原契约） |
+| `shell:openPath` | `shell.openPath(path)`；resolve ""=成功，否则错误信息（shell.openPath 原契约）。Linux/darwin 改走自管 spawn（净化 env，防 dev 变量泄漏破坏外部应用——见 design-linux-open-with §1.2 修订） |
 | `shell:openWith` | §2.4 分平台动作（win32/darwin）；linux 走 §2.4 修订的自建选择器（shellListOpenWithApps/shellOpenWithApp，见 design-linux-open-with） |
 
 - 返回 `Promise<string>`（错误信息）而非布尔：失败原因可诊断，渲染层当前仅静默（文件在列表后消失等罕见场景，不为此建 toast 基建）。
