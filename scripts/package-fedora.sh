@@ -12,16 +12,21 @@ npx electron-builder --linux dir --config electron-builder.config.ts
 FED_DIR=release/fedora
 mkdir -p "$FED_DIR/src" "$FED_DIR/out"
 
+VERSION=$(jq -r .version package.json)
+
+# 同步 spec 文件版本号
+sed -i "s/^Version:.*/Version: $VERSION/" packaging/fedora/openbuilder-desktop.spec
+
 # Source0：app/ = linux-unpacked 内容（spec 内 %setup 展开后即为 app/）
-STAGE="$FED_DIR/src/openbuilder-desktop-0.1.0"
+STAGE="$FED_DIR/src/openbuilder-desktop-$VERSION"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
 cp -a release/linux-unpacked/. "$STAGE/app"
 cp packaging/fedora/openbuilder-desktop.desktop "$FED_DIR/src/"
 cp -r build/icons "$STAGE/icons"
 
-tar -cJf "$FED_DIR/src/openbuilder-desktop-0.1.0.tar.xz" -C "$FED_DIR/src" \
-  openbuilder-desktop-0.1.0 openbuilder-desktop.desktop
+tar -cJf "$FED_DIR/src/openbuilder-desktop-$VERSION.tar.xz" -C "$FED_DIR/src" \
+  openbuilder-desktop-$VERSION openbuilder-desktop.desktop
 
 # 容器内 rpmbuild（挂载整个仓库；产物属主修正为当前用户）
 docker run --rm \
