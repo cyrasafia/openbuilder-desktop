@@ -18,6 +18,8 @@
 - `gio launch <appId 对应 desktop 文件绝对路径> <文件路径>`（detached spawn + 1.5s 观察窗：spawn error/立即非零退出回报 stderr 首行，正常 detach 按成功；`gio launch` 负责 Exec 的 %u/%f 替代与 URL/路径转义——不自解析 Exec）
 - appId 白名单校验：必须来自上次枚举结果（main 缓存最近一次枚举的 id→desktop 路径映射；未命中返回错误信息）——防任意 desktop 路径注入
 - 失败返回 stderr 首行（渲染层经 connectionError 同类通道？否——右键菜单动作静默约定：返回错误字符串，UI 不弹 toast，与既有 shellOpenPath 一致）
+- **子进程环境净化（2026-08-28 修订）**：所有「启动用户会话应用」的 spawn 一律经 `sanitizedChildEnv(process.env)` 剥离 `NODE_` / `ELECTRON_` / `VITE_` 前缀变量（大小写不敏感——Windows env 名不区分大小写）。实证事故：dev 模式（electron-vite 注入 `NODE_ENV=development`）下 spawn 链 gio→MarkText 继承该变量，MarkText 视为自身 dev 模式——**丢弃文件参数**、改用 `marktext-dev` 数据目录起独立实例，且 dev URL 构造失败 + GPU 崩溃循环 → 无响应幽灵窗口（用户报障「右键打开 md 在 MarkText 中开出无法关闭的空窗口」）。真机复现确认后修复。剥离面有意宽于 dev 注入集（开发者 shell 的 NODE_OPTIONS/NODE_EXTRA_CA_CERTS 等也剥离）——外部应用所得环境与文件管理器启动一致，是其正常态
+- **「打开」（shell:openPath）Linux/darwin 分支同修**：Electron `shell.openPath` 无法定制子进程 env，Linux 改为自管 `xdgOpen(path)`（观察窗 5s——xdg-open 是脚本，冷缓存枚举 handler 可能慢于 gio launch 的 1.5s 窗）；darwin 改为自管 `open <path>`（与「打开方式」open -b 同机制）；契约不变（""=成功）。win32 保留 `shell.openPath`（ShellExecuteEx；其 env 继承的同类泄漏为**已知残余风险**——`cmd /c start` 的引号/元字符注入面更不可取，且主开发环境 Linux 无法实测），win32/darwin 的「打开方式」自有 spawn（rundll32 / open -b）同样净化
 
 ### 1.3 UI（渲染层）
 
@@ -39,11 +41,12 @@
 |---|---|
 | `src/shared/ipc.ts` | `OpenWithApp` 类型；`shellListOpenWithApps(path)` / `shellOpenWithApp(path, appId)` |
 | `src/preload/index.ts` / `src/renderer/src/browser-shim.ts` | 暴露/不可用桩 |
-| `src/main/ipc.ts` | 两个 handler（xdg-mime 子进程、desktop 枚举与解析、gio launch + 白名单） |
+| `src/main/ipc.ts` | 两个 handler（xdg-mime 子进程、desktop 枚举与解析、gio launch + 白名单）；`shell:openPath` Linux/darwin 分支改走自管 spawn（§1.2 修订） |
+| `src/main/linux-open-with.ts` | 枚举/解析 + `sanitizedChildEnv` 净化 + `spawnSessionApp` 共用启动封装（gio launch / xdg-open） |
 | `src/renderer/src/components/open-with-dialog.tsx` | 新：选择器弹窗 |
 | `src/renderer/src/components/file-panel.tsx` | 菜单项 Linux 可见 + 打开弹窗 |
 | `src/renderer/src/i18n/index.ts` | openWithEmpty/openWithLoading（标题复用 fileOpenWith） |
-| 测试 | main：desktop 解析纯函数（fixture 字符串：MimeType 命中/NoDisplay/本地化名）；组件：弹窗渲染与选择回调 |
+| 测试 | main：desktop 解析纯函数（fixture 字符串：MimeType 命中/NoDisplay/本地化名）+ sanitizedChildEnv（前缀剥离/会话变量保留）；组件：弹窗渲染与选择回调 |
 
 ## 4. 验收（对齐 spec #8）
 

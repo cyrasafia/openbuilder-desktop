@@ -4,7 +4,7 @@
  * 子进程与文件系统路径（listOpenWithApps/openWithApp）不做单测——真机 E2E 覆盖。
  */
 import { describe, expect, it } from "vitest"
-import { parseDesktopEntry } from "./linux-open-with"
+import { parseDesktopEntry, sanitizedChildEnv } from "./linux-open-with"
 
 const ENTRY = (body: string) => `[Desktop Entry]\n${body}\n`
 
@@ -49,5 +49,41 @@ describe("parseDesktopEntry", () => {
     expect(parseDesktopEntry(ENTRY("# comment\nExec=x\n"), "en")).toBeNull()
     const e = parseDesktopEntry(ENTRY("Name=N\nMimeType=a;;b;\n"), "en")
     expect([...e!.mimeTypes].sort()).toEqual(["a", "b"])
+  })
+})
+
+describe("sanitizedChildEnv", () => {
+  it("剥离 NODE_/ELECTRON_/VITE_ 前缀（dev 注入变量不泄漏给外部应用）", () => {
+    const out = sanitizedChildEnv({
+      NODE_ENV: "development",
+      NODE_OPTIONS: "--inspect",
+      NODE_PATH: "/x/node_modules",
+      ELECTRON_RUN_AS_NODE: "1",
+      ELECTRON_RENDERER_URL: "http://localhost:5173",
+      VITE_DEV_SERVER_URL: "http://localhost:5173",
+      PATH: "/usr/bin",
+      HOME: "/home/u",
+      WAYLAND_DISPLAY: "wayland-0",
+      XDG_CURRENT_DESKTOP: "GNOME",
+    })
+    expect(out).toEqual({
+      PATH: "/usr/bin",
+      HOME: "/home/u",
+      WAYLAND_DISPLAY: "wayland-0",
+      XDG_CURRENT_DESKTOP: "GNOME",
+    })
+  })
+
+  it("会话变量（DISPLAY/DBUS/locale 等）全量保留；返回拷贝不改原对象", () => {
+    const env: NodeJS.ProcessEnv = { DISPLAY: ":0", NODE_ENV: "development" }
+    const out = sanitizedChildEnv(env)
+    expect(out.DISPLAY).toBe(":0")
+    expect("NODE_ENV" in out).toBe(false)
+    expect(env.NODE_ENV).toBe("development")
+  })
+
+  it("前缀匹配大小写不敏感（Windows env 名不区分大小写，node_env 同样剥离）", () => {
+    const out = sanitizedChildEnv({ node_env: "development", electron_run_as_node: "1" })
+    expect(out).toEqual({})
   })
 })

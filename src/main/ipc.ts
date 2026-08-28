@@ -4,7 +4,13 @@ import { readFile, writeFile, mkdir } from "node:fs/promises"
 import { join, dirname } from "node:path"
 import type { StoreShape } from "../shared/ipc"
 import { startManagedServer, stopManagedServer, killManagedSync } from "./managed-server"
-import { listOpenWithApps, openWithApp } from "./linux-open-with"
+import {
+  listOpenWithApps,
+  openWithApp,
+  sanitizedChildEnv,
+  spawnSessionApp,
+  xdgOpen,
+} from "./linux-open-with"
 
 const storePath = join(app.getPath("userData"), "store.json")
 
@@ -78,9 +84,17 @@ export function registerIpc() {
   })
 
   // 文件栏右键菜单动作（design-file-panel-context-menu）：路径来自本客户端信任域
-  // （server 文件列表/作用域目录），错误信息回传渲染层（""=成功）
-  ipcMain.handle("shell:openPath", (_e, path: string) => {
-    if (typeof path !== "string" || path.length === 0) return "invalid path"
+  // （server 文件列表/作用域目录），错误信息回传渲染层（""=成功）。
+  // Linux/darwin 走自管 spawn（净化 env）：shell.openPath 无法定制子进程环境，
+  // dev 模式 NODE_ENV 泄漏会破坏外部应用（见 linux-open-with.ts 实证注释）；
+  // darwin `open` 与「打开方式」的 open -b 同机制。win32 保留 shell.openPath
+  // （ShellExecuteEx；其 env 继承的同类泄漏为已知残余风险——`cmd /c start`
+  // 的引号/元字符注入面更不可取，且主开发环境为 Linux 无法实测验证）
+  ipcMain.handle("shell:openPath", (_e, path: string): Promise<string> => {
+    if (typeof path !== "string" || path.length === 0) return Promise.resolve("invalid path")
+    if (process.platform === "linux") return xdgOpen(path)
+    // 观察窗同 xdgOpen 的 5s（LaunchServices 首调/慢盘可能超默认 1.5s）
+    if (process.platform === "darwin") return spawnSessionApp("open", [path], 5000)
     return shell.openPath(path)
   })
 
@@ -93,6 +107,7 @@ export function registerIpc() {
         spawn("rundll32.exe", ["shell32.dll,OpenAs_RunDLL", path], {
           detached: true,
           stdio: "ignore",
+          env: sanitizedChildEnv(process.env),
         })
           .on("error", () => {})
           .unref()
@@ -111,7 +126,11 @@ export function registerIpc() {
             const bundleId = stdout?.trim() ?? ""
             if (err || !bundleId) return resolve("")
             try {
-              spawn("open", ["-b", bundleId, path], { detached: true, stdio: "ignore" })
+              spawn("open", ["-b", bundleId, path], {
+                detached: true,
+                stdio: "ignore",
+                env: sanitizedChildEnv(process.env),
+              })
                 .on("error", () => {})
                 .unref()
               resolve("")
