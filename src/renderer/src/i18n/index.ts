@@ -183,6 +183,8 @@ const zh = {
   confirmSwitchProject:
     "切换项目将关闭并归档当前所有打开的会话。继续？",
   confirmDeleteWorkspace: "删除工作区？",
+  confirmDeleteWorkspaceMsg: "删除后不可恢复，该工作区下的会话、文件树与终端将一并清理。",
+  deletingWorkspace: "正在清理…",
   // agent/模型/思考强度切换（design-agent-model-switch）
   model: "模型",
   thinkingLabel: "思考强度",
@@ -349,6 +351,8 @@ const en: typeof zh = {
   confirmCloseStreamingTab: "Session is running. Closing stops and archives it. Continue?",
   confirmSwitchProject: "Switching projects closes and archives all open sessions. Continue?",
   confirmDeleteWorkspace: "Delete worktree?",
+  confirmDeleteWorkspaceMsg: "This cannot be undone. Sessions, file tree, and terminals under this worktree will be cleaned up.",
+  deletingWorkspace: "Cleaning up…",
   model: "Model",
   thinkingLabel: "Thinking",
   thinkingDefault: "Default",

@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties } from "react"
 import { FolderGit2, FolderPlus, Trash2 } from "lucide-react"
 import { useI18n, useStore } from "../app"
+import { ConfirmDialog } from "./confirm-dialog"
 import { relativeTime } from "../i18n"
 import { GLOBAL_PROJECT_ID, globalEntryKey } from "@shared/project-entries"
 import type { Project, Session } from "@shared/api-types"
@@ -166,6 +167,10 @@ function ProjectTree() {
   const store = useStore()
   const { t } = useI18n()
   const [pickerOpen, setPickerOpen] = useState(false)
+  const [pendingDelete, setPendingDelete] = useState<{
+    directory: string
+    projectId: string
+  } | null>(null)
 
   const entries = store.openedEntries
   const current = store.currentProject
@@ -270,7 +275,7 @@ function ProjectTree() {
                     title={t.deleteWorkspace}
                     onClick={(ev) => {
                       ev.stopPropagation()
-                      if (confirm(t.confirmDeleteWorkspace)) void store.removeWorkspace(w.directory, e.project.id)
+                      setPendingDelete({ directory: w.directory, projectId: e.project.id })
                     }}
                   >
                     <Trash2 size={16} aria-hidden />
@@ -283,6 +288,21 @@ function ProjectTree() {
       </div>
 
       {pickerOpen && <ProjectPicker onClose={() => setPickerOpen(false)} />}
+
+      {pendingDelete && (
+        <ConfirmDialog
+          title={t.confirmDeleteWorkspace}
+          message={t.confirmDeleteWorkspaceMsg}
+          confirmLabel={t.confirm}
+          cancelLabel={t.cancel}
+          loadingLabel={t.deletingWorkspace}
+          danger
+          onConfirm={async () => {
+            await store.removeWorkspace(pendingDelete.directory, pendingDelete.projectId)
+          }}
+          onClose={() => setPendingDelete(null)}
+        />
+      )}
     </>
   )
 }

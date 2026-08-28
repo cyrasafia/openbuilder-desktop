@@ -1925,6 +1925,21 @@ export class AppStore {
     if (!this.client || !project) return { ok: false, error: "no project" }
     const isCurrent = project.id === this.currentProject?.id
     try {
+      // 删除 worktree 前，先级联删除该目录全部会话（服务器 DELETE /experimental/worktree
+      // 不级联删会话，同名 worktree 重建后会继承旧会话——服务器以 directory 路径关联，
+      // 无 worktree 代次标识）。best-effort：单个删除失败不阻断 worktree 删除
+      const sessionMap = this.sessionsByProject.get(project.id)
+      const sessionIds: string[] = []
+      if (sessionMap) {
+        for (const [id, s] of sessionMap) {
+          if (s.directory === directory) sessionIds.push(id)
+        }
+      }
+      await Promise.all(
+        sessionIds.map((id) =>
+          this.client!.deleteSession(id, directory).catch(() => {}),
+        ),
+      )
       await this.client.removeWorktree(project.worktree, directory)
       // worktree 列表数据源是 Project.sandboxes，重拉项目列表同步（刷新全局 projects）
       await this.refreshWorkspacesForProject(project)

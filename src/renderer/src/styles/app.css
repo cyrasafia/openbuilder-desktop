@@ -2803,6 +2803,42 @@
   color: var(--emphasis-fg);
 }
 
+.dialog-actions .btn-primary.danger {
+  background: var(--error-container);
+  color: var(--on-error-container);
+}
+
+:root[data-theme="light"] .dialog-actions .btn-primary.danger {
+  background: var(--error);
+  color: var(--on-error);
+}
+
+.dialog-actions .btn-primary:disabled,
+.dialog-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* 应用内确认弹窗 */
+.confirm-message {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--on-surface-variant);
+  line-height: 1.5;
+}
+
+.confirm-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.confirm-loading-text {
+  font-size: var(--text-sm);
+  color: var(--on-surface-variant);
+}
+
 /* 表单 */
 .form-label {
   display: flex;

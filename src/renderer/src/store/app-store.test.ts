@@ -386,6 +386,7 @@ describe("非聊天 Tab 作用域化（design-tab-memory §18）", () => {
     snapshots.set(WT2, [])
     const client = (store as unknown as { client: Record<string, unknown> }).client
     client.removeWorktree = async () => {}
+    client.deleteSession = async () => {}
     client.listProjects = async () => [{ ...project(), sandboxes: [WT2] }]
 
     await store.setCurrentWorkspace(WT1)
