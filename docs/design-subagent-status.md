@@ -30,7 +30,9 @@
 
 `task` 工具的 ToolChip 替换为 SubagentPanel 组件：
 - **收起态**：与现有 ToolChip 收起态同构——agent 名 + 描述 + 状态图标（spinner / ✓ / ✗）。
-  点击 header 切换展开/收起。
+  点击 header 切换展开/收起。骨架同 chip，但底色与消息区一致 + 边框分隔——
+  面板是"内嵌模块"而非工具调用，用 chip 底色（surface-container-highest）会与
+  真实工具 chip 混淆，边框（outline-variant）负责圈出面板范围。
 - **展开态**：在 header 下方渲染一个内嵌模块，显示子会话的消息流。模块有**独立滚动**
   （overflow-y: auto，max-height: 400px），不随主消息流滚动。
 
