@@ -29,11 +29,11 @@
 ### D1：展开/收起
 
 `task` 工具的 ToolChip 替换为 SubagentPanel 组件：
-- **收起态**：与现有 ToolChip 收起态同构——agent 名 + 描述 + 状态图标（spinner / ✓ / ✗）。
-  点击 header 切换展开/收起。骨架同 chip，但底色与消息区一致 + 边框分隔——
-  面板是"内嵌模块"而非工具调用，用 chip 底色（surface-container-highest）会与
-  真实工具 chip 混淆，边框（outline-variant）负责圈出面板范围。
-- **展开态**：在 header 下方渲染一个内嵌模块，显示子会话的消息流。模块有**独立滚动**
+- **收起态**：与现有 ToolChip 收起态同构——灰色填充 chip（`surface-container-highest`）
+  + agent 名 + 描述 + 状态图标（spinner / ✓ / ✗）。点击 header 切换展开/收起。
+- **展开态**：面板整体保持 chip 灰底（与消息区同宽），子会话消息流嵌入圆角矩形块——
+  观感对齐工具 input/output 的 `.code-block`（`color-code-bg` 底 + `color-border` 边），
+  内嵌模块与面板通过底色差自然分层。模块有**独立滚动**
   （overflow-y: auto，max-height: 400px），不随主消息流滚动。
 
 ### D2：子会话消息流渲染
@@ -73,6 +73,13 @@ SubagentPanel body 设置 `overflow-y: auto; max-height: 400px`，滚轮事件�
   内，`width: 100%` 即消息区内容宽，无独立 max-width 上限。
 - **滚动条隐藏**：`scrollbar-width: none` + `::-webkit-scrollbar { display: none }`，
   与 `.message-list` 同款（消息区滚动条本就隐藏，内嵌容器保持一致）。
+- **贴底跟随**（ChatView 同构语义）：展开挂载即贴底；贴底时新消息/流式更新跟随
+  （useLayoutEffect 置底）。上滚解除：wheel（deltaY<0）+ 键盘上滚键（ArrowUp/
+  PageUp/Home/Shift+Space——body tabIndex=-1 可被点击聚焦，键盘滚动只产生
+  scroll 事件，不清 pinned 则流式更新拉回底部，§7.14 同款教训）；只认 body
+  自身聚焦的按键（焦点在可滚后代 pre.code-block 时按键滚的是内层，误清会让
+  跟随静默停摆）。回底吸附带滞回（向下滚且距底 <8px 才恢复）。收起重置 pinned，
+  再展开恢复默认贴底。
 
 ## 坑
 
@@ -93,8 +100,3 @@ SubagentPanel body 设置 `overflow-y: auto; max-height: 400px`，滚轮事件�
 - **启发式匹配局限**（已知取舍）：`findChildSession` description 前缀匹配不上时回退
   "该父会话最新创建的子会话"——父会话并发跑多个 task 工具时可能挂到别的任务的子会话
   （`metadata.sessionId` 权威路径不受影响）；同 created 并列时排序结果不稳定。
-
-## 后续迭代
-
-- 子面板自动贴底：流式输出时新消息落在可视区之下且滚动条隐藏，与主消息流的
-  跟随行为不一致（当前无 scroll-to-bottom 逻辑）。

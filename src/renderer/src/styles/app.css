@@ -1329,16 +1329,15 @@
 }
 
 /* ---------- subagent 面板（design-subagent-status） ----------
- * 收起态同 chip 骨架（fit-content）；展开态与消息区同宽（面板已在
- * .message-list-inner 限宽层内，width:100% 即消息区内容宽），body 为
- * 独立滚动容器，滚动条隐藏（同 .message-list），滚轮事件 stopPropagation
- * 不冒泡到主消息流。
- * 背景与消息区一致（--surface）+ 边框分隔——不用 chip 底色（同底色无法
- * 区分内嵌模块与工具调用），靠边框圈出面板范围。 */
+ * 对齐 ToolChip 收起/展开样式：收起态 = 灰色填充 chip（fit-content，同
+ * .chip 底色）；展开态 = 面板整体灰底（width:100% 与消息区同宽，面板已在
+ * .message-list-inner 限宽层内），子会话消息嵌入圆角矩形块——同工具
+ * input/output 的 .code-block 观感（code-bg 底 + color-border 边）。
+ * body 为独立滚动容器，滚动条隐藏（同 .message-list），滚轮事件
+ * stopPropagation 不冒泡到主消息流。 */
 .subagent-panel {
   border-radius: var(--radius-chip);
-  border: 1px solid var(--outline-variant);
-  background: var(--surface);
+  background: var(--surface-container-highest);
   overflow: hidden;
   width: fit-content;
   max-width: 100%;
@@ -1380,7 +1379,12 @@
 }
 
 .subagent-body {
-  padding: 4px 8px 8px;
+  /* 嵌入消息块：观感对齐工具 input/output 的 .code-block（不计 mono 字体） */
+  margin: 0 8px 8px;
+  padding: 8px;
+  background: var(--color-code-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-chip);
   overflow-y: auto;
   max-height: 400px;
   /* 独立滚动但隐藏滚动条（同 .message-list） */

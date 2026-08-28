@@ -1667,6 +1667,66 @@ function SubagentPanel({ part, parentSessionID }: { part: ToolPart; parentSessio
   // 子会话消息列表
   const childEntries = childSessionId ? store.chatEntries(childSessionId) : []
 
+  // 独立滚动跟随（design-subagent-status §D5，ChatView 贴底语义同构）：
+  // 展开挂载即贴底；贴底时新消息/流式更新跟随。上滚解除：wheel deltaY<0 +
+  // 键盘上滚键（ArrowUp/PageUp/Home/Shift+Space——body tabIndex=-1 可被点击
+  // 聚焦，键盘滚动只产生 scroll 事件，不清 pinned 则流式更新拉回底部，§7.14）。
+  // 回底吸附带滞回（向下滚且距底 <8px 才恢复——防 smooth 动画帧间 gap 抖动
+  // 误吸附）。收起重置 pinned，再展开恢复默认贴底
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const bodyPinned = useRef(true)
+  const bodyPrevTop = useRef(0)
+
+  useEffect(() => {
+    if (!open) {
+      bodyPinned.current = true
+      bodyPrevTop.current = 0
+    }
+  }, [open])
+
+  useLayoutEffect(() => {
+    if (!open) return
+    const el = bodyRef.current
+    if (!el) return
+    if (bodyPinned.current) {
+      // auto 瞬时贴底（同 ChatView 流式更新路径）；面板上限 400px，动画增益有限
+      el.scrollTop = el.scrollHeight
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, childEntries])
+
+  const onBodyScroll = () => {
+    const el = bodyRef.current
+    if (!el) return
+    const gap = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (el.scrollTop > bodyPrevTop.current && gap < 8) bodyPinned.current = true
+    bodyPrevTop.current = el.scrollTop
+  }
+
+  const onBodyWheel = (e: WheelEvent) => {
+    // 不冒泡：面板内滚轮不得触发主消息流的上滚解跟（ChatView onWheel）
+    e.stopPropagation()
+    if (e.ctrlKey) return
+    const el = bodyRef.current
+    if (e.deltaY < 0 && el && el.scrollHeight - el.clientHeight > 0) bodyPinned.current = false
+  }
+
+  // 键盘上滚解除（同 ChatView onKeyScroll）：只认 body 自身聚焦的按键——
+  // 焦点在可滚后代（pre.code-block 自带 overflow:auto）时按键滚的是内层、
+  // body 不产生 scroll 事件，误清 pinned 会让跟随静默停摆
+  const onBodyKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return
+    if (e.ctrlKey || e.metaKey || e.altKey) return
+    const up =
+      e.key === "ArrowUp" ||
+      e.key === "PageUp" ||
+      e.key === "Home" ||
+      (e.key === " " && e.shiftKey)
+    if (!up) return
+    const el = bodyRef.current
+    if (el && el.scrollHeight - el.clientHeight > 0) bodyPinned.current = false
+  }
+
   return (
     <div className={"subagent-panel" + (open ? " open" : "")}>
       <button
@@ -1694,7 +1754,11 @@ function SubagentPanel({ part, parentSessionID }: { part: ToolPart; parentSessio
       {open && (
         <div
           className="subagent-body"
-          onWheel={(e) => e.stopPropagation()}
+          ref={bodyRef}
+          tabIndex={-1}
+          onScroll={onBodyScroll}
+          onWheel={onBodyWheel}
+          onKeyDown={onBodyKeyDown}
         >
           {!childSessionId ? (
             <div className="subagent-empty">{t.subagentNoSession}</div>
