@@ -33,6 +33,14 @@
 
 - xterm theme 固定深色板（对齐终端惯例：背景 #1e1e2e 系、前景浅灰）；容器 `.terminal-view` 固定深底——**不接 data-theme**，浅色主题下终端仍深色（spec 明确）
 
+### 1.4 复制/粘贴
+
+- **快捷键**：`Ctrl+Shift+C` 复制选区到剪贴板、`Ctrl+Shift+V` 粘贴剪贴板到 pty。经 `term.attachCustomKeyEventHandler` 拦截：命中组合键时 `ev.preventDefault()` + `return false`（吞掉 xterm 默认处理），其余键 `return true` 放行。Ctrl+Shift+C **无选区时不拦截**——保留终端对该组合键的默认处理（用户自定义 shell 键绑定等）。
+- **右键菜单**：`.terminal-view` `onContextMenu` 阻止 xterm 默认（其内置无菜单），弹出复制/粘贴菜单。复用 `FileContextMenu` 模式（首帧隐藏测量钳制到视口 + capture 阶段 mousedown/Escape/wheel/blur 四触发关闭 + `pushOverlay` z-order 计数 + 键盘 ↑↓ 导航）。
+  - 复制项按选区有无启用/禁用（`term.hasSelection()`，菜单打开瞬间快照）
+  - 粘贴读 `navigator.clipboard.readText()` → `term.paste(text)`（xterm paste 走其 bracketed-paste 模式，安全）
+- 已退出态终端仍可复制（只读 buffer 仍可选区）；粘贴到已退出 pty 无害（WS 已断，`ws.send` 不执行——onData 仍挂但 readyState 非 OPEN）
+
 ## 2. store 侧
 
 ```ts
@@ -58,11 +66,11 @@ ptyRuntimes = new Map<string, { exited: boolean; title: string }>()  // 纯内�
 | `src/shared/api-types.ts` | `Pty` / `PtyShell` / `PtyTicket` 类型 |
 | `src/shared/rest-client.ts` | `listShells/createPty/updatePtySize/deletePty/ptyConnectToken`（后两者错误静默约定；connect-token 带 `x-opencode-ticket: 1` 头） |
 | `src/renderer/src/store/app-store.ts` | TabKind 扩 terminal；openTerminalTab/ptyRuntimes/closeTerminalTab/restoreClosedTab terminal 分支/cycleTab 无需改（directory 过滤通用）/卸载路径 DELETE |
-| `src/renderer/src/components/terminal-view.tsx` | xterm 终端组件（WS 生命周期/fit/深色/自动聚焦/已退出 buffer 缓存 serialize 还原） |
+| `src/renderer/src/components/terminal-view.tsx` | xterm 终端组件（WS 生命周期/fit/深色/自动聚焦/已退出 buffer 缓存 serialize 还原/复制粘贴快捷键+右键菜单） |
 | `src/renderer/src/components/workspace.tsx` | Tab 内容分发 terminal 分支；引导页终端入口解禁；关闭走 closeTabInteractive（terminal 确认文案） |
 | `src/renderer/src/components/tab-actions.ts` | terminal 关闭确认 + closeTerminalTab |
 | `src/renderer/src/styles/app.css` | `.terminal-view`（深色固定 + 已退出叠加态） |
-| `src/renderer/src/i18n/index.ts` | confirmCloseTerminal / terminalExited 等 |
+| `src/renderer/src/i18n/index.ts` | confirmCloseTerminal / terminalExited / terminalCopy / terminalPaste 等 |
 | 测试 | store（创建/关闭/恢复/卸载 DELETE/teardown 杀序）；rest-client pty 端点 URL/头/方法断言；TerminalView 用注入 WS 假类测生命周期（open/write/控制帧跳过/close code 区分/exited） |
 
 ## 5. 验收（对齐 spec #5）

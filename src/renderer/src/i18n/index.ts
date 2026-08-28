@@ -164,6 +164,8 @@ const zh = {
   terminalExited: "终端已退出",
   terminalDisconnected: "终端已断开",
   terminalConnectFailed: "终端连接失败",
+  terminalCopy: "复制",
+  terminalPaste: "粘贴",
   // diff 详情页（design-diff-view）：单 Tab + segment 切换；短标签同移动端 diffMode*
   diffTitle: "改动",
   diffRound: "上一轮",
@@ -331,6 +333,8 @@ const en: typeof zh = {
   terminalExited: "Terminal exited",
   terminalDisconnected: "Terminal disconnected",
   terminalConnectFailed: "Terminal connection failed",
+  terminalCopy: "Copy",
+  terminalPaste: "Paste",
   diffTitle: "Changes",
   diffRound: "Last round",
   diffUncommitted: "Uncommitted",
