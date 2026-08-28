@@ -35,6 +35,9 @@ export default defineConfig({
         "@shared": resolve(__dirname, "src/shared"),
       },
     },
+    optimizeDeps: {
+      include: ["lucide-react"],
+    },
     server: {
       // renderer 直连 opencode server；server CORS 对 localhost 无条件放行
       allowedHosts: true,
