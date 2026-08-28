@@ -1069,7 +1069,10 @@ export class AppStore {
   private ensureConversation(sessionID: string) {
     if (this.messagesBySession.has(sessionID)) return
     const hasTab = this.tabs.some((t) => t.kind === "chat" && t.key === `chat:${sessionID}`)
-    if (!hasTab && this.messagesBySession.size >= 20) return
+    // 子会话（subagent，design-subagent-status）无 Tab 但需在 SubagentPanel 内展示
+    // 消息流——豁免容器上限，防 SSE 增量被拒导致展开后内容缺失
+    const isChild = !!this.findSession(sessionID)?.parentID
+    if (!hasTab && !isChild && this.messagesBySession.size >= 20) return
     this.messagesBySession.set(sessionID, new Map())
   }
 
@@ -2351,6 +2354,30 @@ export class AppStore {
       if (s) return s
     }
     return null
+  }
+
+  /**
+   * 查找子会话（design-subagent-status §D3 降级路径）：
+   * metadata.sessionId 缺失时按 parentID 在 sessionsByProject 中匹配，
+   * title 前缀消歧（server title 派生自 task description），取 created 最新。
+   */
+  findChildSession(parentSessionID: string, description?: string): Session | null {
+    const candidates: Session[] = []
+    for (const map of this.sessionsByProject.values()) {
+      for (const s of map.values()) {
+        if (s.parentID === parentSessionID) candidates.push(s)
+      }
+    }
+    if (candidates.length === 0) return null
+    if (description) {
+      const matched = candidates.filter((s) =>
+        (s.title ?? "").startsWith(description),
+      )
+      if (matched.length > 0) {
+        return matched.sort((a, b) => (b.time.created ?? 0) - (a.time.created ?? 0))[0]
+      }
+    }
+    return candidates.sort((a, b) => (b.time.created ?? 0) - (a.time.created ?? 0))[0]
   }
 
   async sendPrompt(

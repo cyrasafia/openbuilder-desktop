@@ -1328,6 +1328,82 @@
   margin: 0;
 }
 
+/* ---------- subagent 面板（design-subagent-status） ----------
+ * 对齐 ToolChip 收起/展开样式：收起态 = 灰色填充 chip（fit-content，同
+ * .chip 底色）；展开态 = 面板整体灰底（width:100% 与消息区同宽，面板已在
+ * .message-list-inner 限宽层内），子会话消息嵌入圆角矩形块——同工具
+ * input/output 的 .code-block 观感（code-bg 底 + color-border 边）。
+ * body 为独立滚动容器，滚动条隐藏（同 .message-list），滚轮事件
+ * stopPropagation 不冒泡到主消息流。 */
+.subagent-panel {
+  border-radius: var(--radius-chip);
+  background: var(--surface-container-highest);
+  overflow: hidden;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.subagent-panel.open {
+  width: 100%;
+}
+
+.subagent-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: var(--row-tree);
+  padding: 0 10px;
+  text-align: left;
+}
+
+.subagent-header:hover {
+  background: var(--surface-container-high);
+}
+
+.subagent-status-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--outline);
+}
+
+.subagent-status-icon .spin {
+  animation: typing-spin 1s linear infinite;
+}
+
+.subagent-agent-label {
+  font-size: var(--text-sm);
+  color: var(--on-surface-variant);
+  font-weight: 500;
+}
+
+.subagent-body {
+  /* 嵌入消息块：观感对齐工具 input/output 的 .code-block（不计 mono 字体） */
+  margin: 0 8px 8px;
+  padding: 8px;
+  background: var(--color-code-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-chip);
+  overflow-y: auto;
+  max-height: 400px;
+  /* 独立滚动但隐藏滚动条（同 .message-list） */
+  scrollbar-width: none;
+}
+.subagent-body::-webkit-scrollbar {
+  display: none;
+}
+
+.subagent-body .msg {
+  margin-bottom: 4px;
+}
+
+.subagent-empty {
+  font-size: var(--text-sm);
+  color: var(--outline);
+  padding: 8px 4px;
+}
+
 /* ---------- 输入区 ---------- */
 .composer {
   position: relative; /* 斜杠命令菜单槽位的定位锚点 */

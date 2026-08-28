@@ -196,6 +196,14 @@ const zh = {
   defaultsTitle: "默认值",
   defaultsHint:
     "新建会话自动应用：最后一次手动选择的模型即全局默认，未手动选择时取列表第一项（仅本客户端）",
+  // subagent 工作状态（design-subagent-status）
+  subagentRunning: "运行中",
+  subagentCompleted: "已完成",
+  subagentError: "出错",
+  subagentExpand: "展开子会话",
+  subagentCollapse: "收起子会话",
+  subagentNoSession: "子会话未就绪",
+  subagentLoading: "加载中…",
 }
 
 const en: typeof zh = {
@@ -363,6 +371,13 @@ const en: typeof zh = {
   defaultsTitle: "Defaults",
   defaultsHint:
     "Applied to new sessions: the last model you picked is the default; otherwise the first in the list (this client only)",
+  subagentRunning: "Running",
+  subagentCompleted: "Done",
+  subagentError: "Error",
+  subagentExpand: "Expand sub-session",
+  subagentCollapse: "Collapse sub-session",
+  subagentNoSession: "Sub-session not ready",
+  subagentLoading: "Loading…",
 }
 
 export type MessageKey = keyof typeof zh
