@@ -3,7 +3,7 @@
  * WebSocket 假类，验证 connect-token→WS 组装、出帧 write / 控制帧 cursor、
  * onData 直发、close → 已退出叠加态。
  */
-import { cleanup, render, screen, waitFor } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { TerminalView } from "./terminal-view"
 import { ResizeObserverStub } from "./resize-observer-stub"
@@ -31,6 +31,10 @@ vi.mock("@xterm/xterm", () => {
       dataHandler = cb
       return { dispose: vi.fn() }
     })
+    attachCustomKeyEventHandler = vi.fn(() => true)
+    hasSelection = vi.fn(() => false)
+    getSelection = vi.fn(() => "")
+    paste = vi.fn()
     dispose = vi.fn()
   }
   return { Terminal: FakeTerminal }
@@ -84,6 +88,8 @@ const actions = {
     runtimeObj.buffer = _buf
   }),
   ptyRuntimeFor: vi.fn(() => runtimeObj),
+  pushOverlay: vi.fn(),
+  popOverlay: vi.fn(),
 }
 let storeStub = actions
 
@@ -93,6 +99,8 @@ vi.mock("../app", () => ({
       terminalExited: "终端已退出",
       terminalDisconnected: "终端已断开",
       terminalConnectFailed: "终端连接失败",
+      terminalCopy: "复制",
+      terminalPaste: "粘贴",
     },
     locale: "zh" as const,
   }),
@@ -212,5 +220,39 @@ describe("TerminalView", () => {
     await waitFor(() => expect(FakeWS.instances.length).toBe(1))
     unmount()
     expect(actions.cachePtyBuffer).not.toHaveBeenCalled()
+  })
+
+  it("右键：弹复制/粘贴菜单；无选区时复制项禁用，粘贴项可用", async () => {
+    render(<TerminalView ptyID="pty_1" />)
+    await waitFor(() => expect(FakeWS.instances.length).toBe(1))
+    const termEl = document.querySelector(".terminal-view") as Element
+    fireEvent.contextMenu(termEl, { clientX: 100, clientY: 100 })
+    const pasteBtn = (await screen.findByText("粘贴")) as HTMLButtonElement
+    expect(pasteBtn.disabled).toBe(false)
+    // 无选区（hasSelection mock 默认 false）→ 复制项 disabled
+    const copyBtn = (await screen.findByText("复制")) as HTMLButtonElement
+    expect(copyBtn.disabled).toBe(true)
+    // 浮层计数：菜单存在期间 pushOverlay
+    expect(actions.pushOverlay).toHaveBeenCalled()
+  })
+
+  it("右键菜单：点粘贴项 → 关闭菜单（popOverlay 回调清理）", async () => {
+    render(<TerminalView ptyID="pty_1" />)
+    await waitFor(() => expect(FakeWS.instances.length).toBe(1))
+    const termEl = document.querySelector(".terminal-view") as Element
+    fireEvent.contextMenu(termEl, { clientX: 50, clientY: 50 })
+    const pasteItem = await screen.findByText("粘贴")
+    fireEvent.click(pasteItem)
+    await waitFor(() => expect(screen.queryByText("粘贴")).toBeNull())
+  })
+
+  it("右键菜单：Escape 关闭", async () => {
+    render(<TerminalView ptyID="pty_1" />)
+    await waitFor(() => expect(FakeWS.instances.length).toBe(1))
+    const termEl = document.querySelector(".terminal-view") as Element
+    fireEvent.contextMenu(termEl, { clientX: 10, clientY: 10 })
+    await screen.findByText("粘贴")
+    fireEvent.keyDown(window, { key: "Escape" })
+    await waitFor(() => expect(screen.queryByText("粘贴")).toBeNull())
   })
 })

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 import { Terminal } from "@xterm/xterm"
 import { FitAddon } from "@xterm/addon-fit"
 import { SerializeAddon } from "@xterm/addon-serialize"
@@ -60,6 +61,7 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
   const [state, setState] = useState<"connecting" | "live" | "closed">("connecting")
   // 已退出 = store 标记（自然退出，重挂载仍呈只读态）或本次连接已关闭
   const exited = !!runtime?.exited || state === "closed"
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
 
   useEffect(() => {
     const host = hostRef.current
@@ -75,6 +77,31 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.open(host)
+
+    // 复制/粘贴快捷键（design-terminal-tab §1.4）：Ctrl+Shift+C 复制选区、
+    // Ctrl+Shift+V 粘贴剪贴板。attachCustomKeyEventHandler 返回 false 即
+    // 吞掉 xterm 默认处理（仅这两个组合键），返回 true 则放行其余键不受影响。
+    term.attachCustomKeyEventHandler((ev) => {
+      if (ev.type !== "keydown") return true
+      if (ev.ctrlKey && ev.shiftKey && (ev.code === "KeyC" || ev.key === "C" || ev.key === "c")) {
+        const sel = term.getSelection()
+        if (sel) {
+          ev.preventDefault()
+          void navigator.clipboard?.writeText(sel).catch(() => {})
+          return false
+        }
+        // 无选区时不拦截：保留终端对该组合键的默认处理（用户自定义 shell 键绑定等）
+        return true
+      }
+      if (ev.ctrlKey && ev.shiftKey && (ev.code === "KeyV" || ev.key === "V" || ev.key === "v")) {
+        ev.preventDefault()
+        void navigator.clipboard?.readText().then((text) => {
+          if (text) term.paste(text)
+        }).catch(() => {})
+        return false
+      }
+      return true
+    })
     // 打开/切换至 terminal Tab 时自动聚焦（key 隔离重挂载，mount 即获焦）
     term.focus()
     try {
@@ -211,14 +238,155 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
     return () => d.dispose()
   }, [ptyID])
 
+  const onContextMenu = (e: React.MouseEvent) => {
+    // 终端右键：阻止 xterm 默认（其内置无菜单），弹复制/粘贴菜单
+    e.preventDefault()
+    setMenu({ x: e.clientX, y: e.clientY })
+  }
+
   return (
-    <div className="terminal-view" onMouseDown={() => termRef.current?.focus()}>
+    <div className="terminal-view" onMouseDown={() => termRef.current?.focus()} onContextMenu={onContextMenu}>
       <div ref={hostRef} className="terminal-host" />
       {exited && (
         <div className={`terminal-exited-overlay ${runtime?.exited ? "is-exited" : "is-disconnected"}`}>
           <span>{runtime?.exited ? t.terminalExited : t.terminalDisconnected}</span>
         </div>
       )}
+      {menu && (
+        <TerminalContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          hasSelection={() => !!termRef.current?.hasSelection()}
+          onCopy={() => {
+            const sel = termRef.current?.getSelection() ?? ""
+            if (sel) void navigator.clipboard?.writeText(sel).catch(() => {})
+          }}
+          onPaste={() => {
+            void navigator.clipboard
+              ?.readText()
+              .then((text) => {
+                if (text) termRef.current?.paste(text)
+              })
+              .catch(() => {})
+          }}
+        />
+      )}
     </div>
+  )
+}
+
+/**
+ * 终端右键菜单（design-terminal-tab §1.4）：复用 FileContextMenu 模式
+ * （首帧隐藏测量钳制 + capture 四触发关闭 + 浮层计数 z-order）。
+ * 复制 = 选区写入剪贴板；粘贴 = 读剪贴板 term.paste。
+ */
+function TerminalContextMenu({
+  x,
+  y,
+  onClose,
+  hasSelection,
+  onCopy,
+  onPaste,
+}: {
+  x: number
+  y: number
+  onClose: () => void
+  hasSelection: () => boolean
+  onCopy: () => void
+  onPaste: () => void
+}) {
+  const { t } = useI18n()
+  const store = useStore()
+  const ref = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
+  const [sel, setSel] = useState(false)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+
+  // 首帧隐藏渲染供测量，再钳制到视口内定位（同 Popover 无闪烁模式）
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    setPos({
+      left: Math.max(4, Math.min(x, window.innerWidth - el.offsetWidth - 4)),
+      top: Math.max(4, Math.min(y, window.innerHeight - el.offsetHeight - 4)),
+    })
+    setSel(hasSelection())
+    requestAnimationFrame(() => ref.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 浮层计数（design-browser-tab §1.2 z-order）：菜单存在期间隐藏浏览器视图
+  useEffect(() => {
+    store.pushOverlay()
+    return () => store.popOverlay()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 外部 mousedown / Esc / 滚动 / 失焦关闭（capture 阶段；回调走 ref 免重订阅）
+  useEffect(() => {
+    const outside = (target: EventTarget | null) => !ref.current?.contains(target as Node)
+    const onDown = (e: MouseEvent) => {
+      if (outside(e.target)) onCloseRef.current()
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation()
+        onCloseRef.current()
+      }
+    }
+    const onWheel = (e: WheelEvent) => {
+      if (outside(e.target)) onCloseRef.current()
+    }
+    const onBlur = () => onCloseRef.current()
+    window.addEventListener("mousedown", onDown, true)
+    window.addEventListener("keydown", onKey, true)
+    window.addEventListener("wheel", onWheel, true)
+    window.addEventListener("blur", onBlur)
+    return () => {
+      window.removeEventListener("mousedown", onDown, true)
+      window.removeEventListener("keydown", onKey, true)
+      window.removeEventListener("wheel", onWheel, true)
+      window.removeEventListener("blur", onBlur)
+    }
+  }, [])
+
+  const run = (action: () => void) => {
+    onClose()
+    action()
+  }
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return
+    e.preventDefault()
+    const items = Array.from(ref.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? [])
+    if (items.length === 0) return
+    const idx = items.indexOf(document.activeElement as HTMLButtonElement)
+    const next =
+      e.key === "ArrowDown" ? (idx + 1) % items.length : idx <= 0 ? items.length - 1 : idx - 1
+    items[next].focus()
+  }
+
+  return createPortal(
+    <div
+      ref={ref}
+      className="popover context-menu"
+      style={pos ? { left: pos.left, top: pos.top } : { left: 0, top: 0, visibility: "hidden" }}
+      onContextMenu={(e) => e.preventDefault()}
+      onKeyDown={onKeyDown}
+    >
+      <button
+        className="context-menu-item"
+        disabled={!sel}
+        onClick={() => run(onCopy)}
+      >
+        {t.terminalCopy}
+      </button>
+      <button className="context-menu-item" onClick={() => run(onPaste)}>
+        {t.terminalPaste}
+      </button>
+    </div>,
+    document.body,
   )
 }
