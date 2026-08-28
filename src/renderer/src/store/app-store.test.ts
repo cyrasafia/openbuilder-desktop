@@ -2848,3 +2848,138 @@ describe("浏览器 Tab（design-browser-tab）", () => {
     expect(store.overlayCount).toBe(0)
   })
 })
+
+describe("worktree 同步（design-worktree-sync）", () => {
+  /** 直驱 handleEvent，带可选 meta（worktree.ready 需 project 字段） */
+  function dispatch(
+    directory: string,
+    ev: { type: string; properties: unknown },
+    meta?: { project?: string; workspace?: string },
+  ) {
+    ;(store as unknown as {
+      handleEvent: (dir: string, ev: unknown, meta?: unknown) => void
+    }).handleEvent(directory, ev, meta)
+  }
+
+  it("worktree.ready SSE：重拉项目列表，左栏多一行（他端创建刷新）", async () => {
+    // 初始 sandboxes = [WT1, WT2]；他端创建 WT3，server 广播 worktree.ready
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    let listCalls = 0
+    client.listProjects = async () => {
+      listCalls++
+      return listCalls === 1
+        ? [{ ...project(), sandboxes: [WT1, WT2, "/repo/.git/opencode-worktrees/wt3"] }]
+        : [project()]
+    }
+    dispatch(
+      "/repo/.git/opencode-worktrees/wt3",
+      { type: "worktree.ready", properties: { name: "wt3", branch: "main" } },
+      { project: "proj1" },
+    )
+    await vi.waitFor(() =>
+      expect(store.workspacesOfProject("proj1")).toHaveLength(3),
+    )
+  })
+
+  it("worktree.ready 闸门：项目未打开时忽略（不重拉）", async () => {
+    store.projectStates = {
+      default: { opened: ["proj2"], currentProjectId: "proj2", currentWorkspaceId: null },
+    }
+    store.projects = [project(), { id: "proj2", worktree: "/other", time: { created: 0, updated: 0 }, sandboxes: [] }]
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    let listCalls = 0
+    client.listProjects = async () => {
+      listCalls++
+      return [project()]
+    }
+    dispatch(
+      "/repo/.git/opencode-worktrees/wt3",
+      { type: "worktree.ready", properties: { name: "wt3" } },
+      { project: "proj1" },
+    )
+    // 未打开 proj1 → 不触发 listProjects（等一个微任务）
+    await new Promise((r) => setTimeout(r, 10))
+    expect(listCalls).toBe(0)
+  })
+
+  it("worktree.failed：忽略（无 busy UI 需复位，不崩溃）", () => {
+    dispatch(
+      "/repo/.git/opencode-worktrees/wt3",
+      { type: "worktree.failed", properties: { message: "boom" } },
+      { project: "proj1" },
+    )
+    // 不崩溃即通过；projects 不被修改
+    expect(store.workspacesOfProject("proj1")).toHaveLength(2)
+  })
+
+  it("syncWorktrees：检测他端删除——卸载消失目录的会话/Tab/记忆", async () => {
+    const s2 = session("s2", WT1, { created: 2, updated: 2 })
+    store.sessionsByProject.set("proj1", sessionsOf(s2))
+    store.tabMemory = { default: { [WT1]: { projectId: "proj1", tabs: ["s2"], active: "s2" } } }
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [s2])
+    snapshots.set(WT2, [])
+    // 切到 WT1 开 Tab（作用域记忆恢复 chat:s2）
+    await store.setCurrentWorkspace(WT1)
+    expect(store.tabs.some((t) => t.key === "chat:s2")).toBe(true)
+
+    // 他端删除 WT1：listProjects 返回不含 WT1
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    client.listProjects = async () => [{ ...project(), sandboxes: [WT2] }]
+
+    await store.syncWorktrees()
+    // sandboxes 已更新
+    expect(store.workspacesOfProject("proj1")).toHaveLength(1)
+    // Tab 关闭
+    expect(store.tabs.some((t) => t.directory === WT1)).toBe(false)
+    // 记忆清除
+    expect(store.tabMemory.default?.[WT1]).toBeUndefined()
+    // 会话卸载
+    expect(store.sessionsByProject.get("proj1")?.has("s2")).toBe(false)
+  })
+
+  it("syncWorktrees：无变化时幂等（不误删）", async () => {
+    const s2 = session("s2", WT1, { created: 2, updated: 2 })
+    store.sessionsByProject.set("proj1", sessionsOf(s2))
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [s2])
+    snapshots.set(WT2, [])
+    await store.setCurrentWorkspace(WT1)
+
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    // listProjects 返回不变的 sandboxes
+    client.listProjects = async () => [project()]
+
+    await store.syncWorktrees()
+    expect(store.workspacesOfProject("proj1")).toHaveLength(2)
+    expect(store.sessionsByProject.get("proj1")?.has("s2")).toBe(true)
+  })
+
+  it("syncWorktrees：未打开项目不检测（跳过）", async () => {
+    store.projectStates = {
+      default: { opened: ["proj2"], currentProjectId: "proj2", currentWorkspaceId: null },
+    }
+    store.projects = [
+      project(),
+      { id: "proj2", worktree: "/other", time: { created: 0, updated: 0 }, sandboxes: [] },
+    ]
+    snapshots.set("/other", [])
+    await store.setCurrentWorkspace(null)
+
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    let listCalled = false
+    client.listProjects = async () => {
+      listCalled = true
+      // proj1 的 WT1 被删，但 proj1 未打开
+      return [
+        { ...project(), sandboxes: [WT2] },
+        { id: "proj2", worktree: "/other", time: { created: 0, updated: 0 }, sandboxes: [] },
+      ]
+    }
+
+    await store.syncWorktrees()
+    expect(listCalled).toBe(true)
+    // proj1 仍保持原值（store.projects 被 fresh 覆盖，但 proj1 未打开不 unload）
+    // 关键：不报错、无 unload 副作用
+  })
+})

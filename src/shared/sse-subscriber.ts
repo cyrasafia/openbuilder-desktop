@@ -9,11 +9,23 @@ import type { GlobalEventEnvelope, OpencodeEvent } from "./api-types"
 
 export type SseStatus = "connecting" | "connected" | "reconnecting" | "stopped"
 
+/**
+ * onEvent 的可选信封元数据（design-worktree-sync）：worktree.ready/failed 事件
+ * 的目录闸门不能按 directory 判断（新 directory 尚未进本地 sandboxes），须按
+ * 信封的 project 字段（projectID）判断"该项目是否打开"。其余事件不读此参数。
+ */
+export interface SseEventMeta {
+  /** 信封 project 字段（projectID）；worktree.ready/failed 携带 */
+  project?: string
+  /** 信封 workspace 字段（wrk id 体系，实测对 worktree 无意义，仅透传） */
+  workspace?: string
+}
+
 export interface SseSubscriberOptions {
   baseUrl: string
   username?: string
   password?: string
-  onEvent: (directory: string, event: OpencodeEvent) => void
+  onEvent: (directory: string, event: OpencodeEvent, meta?: SseEventMeta) => void
   /** connecting->connected 或 reconnecting->connected 转换时触发（对账信号） */
   onReconnected?: () => void
   onStatus?: (status: SseStatus) => void
@@ -215,7 +227,11 @@ export class SseSubscriber {
           const payload = envelope?.payload as OpencodeEvent | undefined
           // durable 事件双发的 sync 包装，丢弃（实测契约）
           if (payload && typeof payload.type === "string" && payload.type !== "sync") {
-            this.opts.onEvent(directory, payload)
+            const meta: SseEventMeta | undefined =
+              envelope.project != null || envelope.workspace != null
+                ? { project: envelope.project, workspace: envelope.workspace }
+                : undefined
+            this.opts.onEvent(directory, payload, meta)
           }
         } catch {
           this.opts.log?.("sse parse error", ev.data.slice(0, 100))

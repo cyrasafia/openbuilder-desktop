@@ -455,6 +455,11 @@ export type OpencodeEvent =
       type: "file.watcher.updated"
       properties: { file: string; event: "add" | "change" | "unlink" }
     }
+  // ---- worktree 生命周期（design-worktree-sync）：create boot 结束时广播，
+  // 删除无 SSE 事件（靠刷新对账检测）。directory = 新 worktree 路径；project 字段
+  // 在信封里，由订阅层透传给 onEvent 的 meta 参数（事件闸门按 projectID 判断）。
+  | { id: string; type: "worktree.ready"; properties: { name: string; branch?: string } }
+  | { id: string; type: "worktree.failed"; properties: { message: string } }
   // ---- 待处理人机交互（授权/问题）。properties 防御式解析（pending-requests.ts 归一化）----
   | { id: string; type: "permission.asked" | "permission.v2.asked" | "permission.updated"; properties: Record<string, unknown> }
   | { id: string; type: "permission.replied" | "permission.v2.replied"; properties: Record<string, unknown> }

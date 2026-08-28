@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { SseSubscriber, type EventSourceLike } from "./sse-subscriber"
+import { SseSubscriber, type EventSourceLike, type SseEventMeta } from "./sse-subscriber"
 import type { OpencodeEvent } from "./api-types"
 
 /** 可控的 EventSource 替身：手动触发 open/error/message */
@@ -44,12 +44,12 @@ function sessionCreatedFrame(directory: string): { directory: string; payload: O
 
 function makeSubscriber(opts: Partial<ConstructorParameters<typeof SseSubscriber>[0]> = {}) {
   const sources: FakeEventSource[] = []
-  const events: { directory: string; event: OpencodeEvent }[] = []
+  const events: { directory: string; event: OpencodeEvent; meta?: SseEventMeta }[] = []
   const statuses: string[] = []
   const reconnected = vi.fn()
   const sub = new SseSubscriber({
     baseUrl: "http://x",
-    onEvent: (directory, event) => events.push({ directory, event }),
+    onEvent: (directory, event, meta) => events.push({ directory, event, meta }),
     onReconnected: reconnected,
     onStatus: (s) => statuses.push(s),
     eventSourceFactory: (url) => {
@@ -92,6 +92,39 @@ describe("SseSubscriber", () => {
     sources[0].send({ payload: { id: "evt_c", type: "server.connected", properties: {} } })
     expect(events).toHaveLength(1)
     expect(events[0].directory).toBe("global")
+    sub.stop()
+  })
+
+  it("信封 project/workspace 字段透传到 onEvent 的 meta（worktree.ready）", async () => {
+    const { sub, sources, events } = makeSubscriber()
+    sub.start()
+    await vi.waitFor(() => expect(sources[0]).toBeTruthy())
+    sources[0].open()
+    sources[0].send({
+      directory: "/repo/.git/opencode-worktrees/new-wt",
+      project: "proj_abc",
+      workspace: "wrk_123",
+      payload: {
+        id: "evt_wt",
+        type: "worktree.ready",
+        properties: { name: "new-wt", branch: "main" },
+      },
+    })
+    expect(events).toHaveLength(1)
+    expect(events[0].meta?.project).toBe("proj_abc")
+    expect(events[0].meta?.workspace).toBe("wrk_123")
+    expect(events[0].directory).toBe("/repo/.git/opencode-worktrees/new-wt")
+    sub.stop()
+  })
+
+  it("无 project/workspace 的帧 meta 为 undefined（不创建空对象）", async () => {
+    const { sub, sources, events } = makeSubscriber()
+    sub.start()
+    await vi.waitFor(() => expect(sources[0]).toBeTruthy())
+    sources[0].open()
+    sources[0].send(sessionCreatedFrame("/proj"))
+    expect(events).toHaveLength(1)
+    expect(events[0].meta).toBeUndefined()
     sub.stop()
   })
 
