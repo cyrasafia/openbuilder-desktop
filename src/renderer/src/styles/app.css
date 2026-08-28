@@ -1328,6 +1328,75 @@
   margin: 0;
 }
 
+/* ---------- subagent 面板（design-subagent-status） ----------
+ * 收起态同 chip 骨架（fit-content）；展开态与消息区同宽（面板已在
+ * .message-list-inner 限宽层内，width:100% 即消息区内容宽），body 为
+ * 独立滚动容器，滚动条隐藏（同 .message-list），滚轮事件 stopPropagation
+ * 不冒泡到主消息流。 */
+.subagent-panel {
+  border-radius: var(--radius-chip);
+  background: var(--surface-container-highest);
+  overflow: hidden;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.subagent-panel.open {
+  width: 100%;
+}
+
+.subagent-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: var(--row-tree);
+  padding: 0 10px;
+  text-align: left;
+}
+
+.subagent-header:hover {
+  background: var(--surface-container-high);
+}
+
+.subagent-status-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--outline);
+}
+
+.subagent-status-icon .spin {
+  animation: typing-spin 1s linear infinite;
+}
+
+.subagent-agent-label {
+  font-size: var(--text-sm);
+  color: var(--on-surface-variant);
+  font-weight: 500;
+}
+
+.subagent-body {
+  padding: 4px 8px 8px;
+  overflow-y: auto;
+  max-height: 400px;
+  /* 独立滚动但隐藏滚动条（同 .message-list） */
+  scrollbar-width: none;
+}
+.subagent-body::-webkit-scrollbar {
+  display: none;
+}
+
+.subagent-body .msg {
+  margin-bottom: 4px;
+}
+
+.subagent-empty {
+  font-size: var(--text-sm);
+  color: var(--outline);
+  padding: 8px 4px;
+}
+
 /* ---------- 输入区 ---------- */
 .composer {
   position: relative; /* 斜杠命令菜单槽位的定位锚点 */

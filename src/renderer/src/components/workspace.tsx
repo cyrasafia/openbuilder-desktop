@@ -1453,6 +1453,8 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
   const fileRefParts = info.role === "user" ? parts.filter(isFileRefPart) : []
   // chip 跳转绝对路径 = 会话目录 + source.path（禁用 part.url——二进制回灌变 data:，4R-B）
   const sessionDir = store.findSession(info.sessionID)?.directory
+  // 子会话（subagent）内禁用回滚（design-subagent-status §D2）
+  const isChildSession = !!store.findSession(info.sessionID)?.parentID
   const refChipItems: RefChipItem[] = fileRefParts.map((p) => {
     const rel = p.source?.path ?? p.filename ?? ""
     const abs = sessionDir && rel && !rel.startsWith("/")
@@ -1480,7 +1482,7 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
       <div className="msg user">
         {/* 动作行先于气泡（flex 顺序）：紧贴气泡左侧、纵向居中；常驻占位 hover 显形。
             无 text part（纯附件/命令回显）不显示——草稿回填无文本可取（设计 §3.4） */}
-        {texts.length > 0 && (
+        {texts.length > 0 && !isChildSession && (
           <div className="msg-actions">
             <button
               className="icon-btn msg-action"
@@ -1524,7 +1526,11 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
         <ReasoningChip key={p.id} part={p} />
       ))}
       {tools.map((p) => (
-        <ToolChip key={p.id} part={p} />
+        p.tool === "task" ? (
+          <SubagentPanel key={p.id} part={p} parentSessionID={info.sessionID} />
+        ) : (
+          <ToolChip key={p.id} part={p} />
+        )
       ))}
       {texts.map((p) => (
         <div key={p.id} className="assistant-text">
@@ -1588,6 +1594,117 @@ function ToolChip({ part }: { part: ToolPart }) {
           <pre className="code-block" tabIndex={-1}>
             {status === "completed" ? state.output : status === "error" ? state.error : "…"}
           </pre>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * subagent 工作状态面板（design-subagent-status）：
+ * task 工具的专用渲染——替代 ToolChip，在主消息流中内嵌子会话消息流。
+ * 收起态 = agent 名 + 状态图标 + 描述摘要；展开态 = 独立滚动（滚动条隐藏）的
+ * 子会话消息列表，宽度与消息区一致。子会话内回滚已屏蔽（MessageBlock isChildSession）。
+ */
+function SubagentPanel({ part, parentSessionID }: { part: ToolPart; parentSessionID: string }) {
+  const { t } = useI18n()
+  const store = useStore()
+  const [open, setOpen] = useState(false)
+  const state = part.state
+  const status = state.status
+
+  // 子会话 ID 来源（design-subagent-status §D3）：
+  // 1. tool.state.metadata.sessionId（running/completed 后 server 写入）
+  // 2. 降级：findChildSession 按 parentID + description 匹配
+  const metadata = "metadata" in state ? (state as { metadata?: Record<string, unknown> }).metadata : undefined
+  const metadataSessionId = typeof metadata?.sessionId === "string" ? metadata.sessionId : undefined
+  const description = typeof (state as { input?: { description?: string } }).input?.description === "string"
+    ? (state as { input?: { description?: string } }).input!.description!
+    : ""
+  const subagentType = typeof (state as { input?: { subagent_type?: string } }).input?.subagent_type === "string"
+    ? (state as { input?: { subagent_type?: string } }).input!.subagent_type!
+    : ""
+
+  // 启发式降级：metadata 无 sessionId 时从 sessionsByProject 查找
+  const childSession = metadataSessionId
+    ? store.findSession(metadataSessionId)
+    : store.findChildSession(parentSessionID, description || undefined)
+  const childSessionId = metadataSessionId ?? childSession?.id
+
+  // 状态图标 + 摘要
+  const running = status === "pending" || status === "running"
+  const agentLabel = subagentType
+    ? subagentType.charAt(0).toUpperCase() + subagentType.slice(1)
+    : t.assistant
+  const summary =
+    status === "completed"
+      ? (("title" in state ? state.title : "") || description || "")
+      : status === "error"
+        ? ("error" in state ? state.error.slice(0, 120) : "")
+        : description || ""
+
+  // 首次展开加载子会话消息：SSE 增量已累积时跳过 REST（避免冗余拉取 +
+  // loadSessionMessages 的 idle 副作用对运行中子会话的误判，review #1）。
+  // 记录已加载 id 而非布尔（review R2-#1）：childSessionId 漂移（启发式命中
+  // 在先 → metadata.sessionId 到达切换）时对新 id 重新触发 REST；收起即重置——
+  // 面板无错误态渲染，再展开是 REST 失败后的唯一重试入口
+  const loadedIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!open) {
+      loadedIdRef.current = null
+      return
+    }
+    if (!childSessionId || loadedIdRef.current === childSessionId) return
+    loadedIdRef.current = childSessionId
+    if (store.chatEntries(childSessionId).length > 0) return
+    const dir = childSession?.directory
+      ?? store.findSession(parentSessionID)?.directory
+      ?? ""
+    if (dir) void store.loadSessionMessages(childSessionId, dir)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, childSessionId])
+
+  // 子会话消息列表
+  const childEntries = childSessionId ? store.chatEntries(childSessionId) : []
+
+  return (
+    <div className={"subagent-panel" + (open ? " open" : "")}>
+      <button
+        className="subagent-header"
+        tabIndex={-1}
+        onClick={() => setOpen(!open)}
+        title={open ? t.subagentCollapse : t.subagentExpand}
+      >
+        <span className="chevron">{open ? "▾" : "▸"}</span>
+        <span
+          className="subagent-status-icon"
+          aria-label={running ? t.subagentRunning : status === "error" ? t.subagentError : t.subagentCompleted}
+        >
+          {running ? (
+            <LoaderCircle size={14} className="spin" aria-hidden />
+          ) : status === "error" ? (
+            <CircleX size={14} aria-hidden />
+          ) : (
+            <CircleCheck size={14} aria-hidden />
+          )}
+        </span>
+        <span className="subagent-agent-label">{agentLabel}</span>
+        {summary && <span className="chip-summary">{summary}</span>}
+      </button>
+      {open && (
+        <div
+          className="subagent-body"
+          onWheel={(e) => e.stopPropagation()}
+        >
+          {!childSessionId ? (
+            <div className="subagent-empty">{t.subagentNoSession}</div>
+          ) : childEntries.length === 0 ? (
+            <div className="subagent-empty">{t.subagentLoading}</div>
+          ) : (
+            childEntries.map((entry) => (
+              <MessageBlock key={entry.kind === "optimistic" ? entry.data.localId : entry.data.info.id} entry={entry} />
+            ))
+          )}
         </div>
       )}
     </div>

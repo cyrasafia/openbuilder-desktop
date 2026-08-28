@@ -65,6 +65,8 @@ export interface Session {
   revert?: SessionRevert | null
   /** 会话改动汇总（staging 时 = 被回滚区间的改动；契约 Session.summary） */
   summary?: { additions: number; deletions: number; files: number }
+  /** 父会话 ID（subagent 子会话非空，指向发起 task 工具的父会话） */
+  parentID?: string
   [k: string]: unknown
 }
 
