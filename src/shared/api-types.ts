@@ -103,6 +103,18 @@ export interface AssistantMessage {
 
 export type Message = UserMessage | AssistantMessage
 
+/**
+ * 会话任务（`GET /session/{id}/todo` 与 SSE `todo.updated` 载荷；openapi Todo）。
+ * 无 id 字段（additionalProperties:false）；status/priority 语义见 session-todos.ts。
+ */
+export interface Todo {
+  content: string
+  /** pending | in_progress | completed | cancelled */
+  status: string
+  /** high | medium | low */
+  priority: string
+}
+
 export type PartType =
   | "text"
   | "reasoning"
@@ -448,6 +460,8 @@ export type OpencodeEvent =
   | { id: string; type: "permission.replied" | "permission.v2.replied"; properties: Record<string, unknown> }
   | { id: string; type: "question.asked" | "question.v2.asked"; properties: Record<string, unknown> }
   | { id: string; type: "question.replied" | "question.v2.replied" | "question.rejected" | "question.v2.rejected"; properties: Record<string, unknown> }
+  // ---- 会话任务列表（design-task-list）。properties 防御式解析（session-todos.ts 归一化）----
+  | { id: string; type: "todo.updated"; properties: Record<string, unknown> }
   | { id: string; type: string; properties: Record<string, unknown> }
 
 /**

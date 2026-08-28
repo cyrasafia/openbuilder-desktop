@@ -45,6 +45,7 @@ import {
   type PendingQuestion,
   type SessionDotState,
 } from "@shared/pending-requests"
+import { normalizeTodoList } from "@shared/session-todos"
 import {
   GLOBAL_PROJECT_ID,
   globalDirectoryName,
@@ -82,6 +83,7 @@ import type {
   Session,
   SessionStatusValue,
   TextPart,
+  Todo,
   Workspace,
 } from "@shared/api-types"
 
@@ -277,6 +279,12 @@ export class AppStore {
    */
   pendingPermissions = new Map<string, PendingPermission>()
   pendingQuestions = new Map<string, PendingQuestion>()
+  /**
+   * 会话任务列表（design-task-list，纯展示）：sessionID → 全量列表（todo.updated
+   * 与 REST 快照均整表替换，无合并）。生命周期随会话运行时（关 Tab/删会话经
+   * cleanupSessionState 卸载，teardown 全清）——重开 Tab 由激活回填补齐。
+   */
+  sessionTodos = new Map<string, Todo[]>()
 
   // ---- UI 状态 ----
   tabs: TabEntity[] = []
@@ -584,6 +592,7 @@ export class AppStore {
     this.retryHold.clear()
     this.pendingPermissions.clear()
     this.pendingQuestions.clear()
+    this.sessionTodos.clear()
     this.revertDrafts.clear()
     this.revertDraftConsumed.clear()
     this.chatDrafts.clear()
@@ -819,6 +828,15 @@ export class AppStore {
       case "question.rejected":
       case "question.v2.rejected": {
         this.pendingQuestions.delete(String((ev.properties as { requestID?: unknown }).requestID ?? ""))
+        break
+      }
+      case "todo.updated": {
+        // 全量替换（design-task-list）：防御式归一化后整表 set；空表 = server 侧清空。
+        // 非数组 todos = 畸形载荷（openapi 必填），忽略保留本地——与 REST 失败路径
+        // 的「失败不清」对称（review 2026-08-28 #2），显式 [] 才是权威清空
+        const { sessionID, todos } = ev.properties as { sessionID?: string; todos?: unknown }
+        if (!sessionID || !Array.isArray(todos)) return
+        this.sessionTodos.set(sessionID, normalizeTodoList(todos))
         break
       }
       case "session.status": {
@@ -1767,6 +1785,8 @@ export class AppStore {
     this.chatDrafts.delete(sessionID)
     // 引用同随会话卸载（design-file-reference §2 清理挂点）
     this.fileRefs.delete(sessionID)
+    // 任务列表同随会话卸载（design-task-list：纯展示，重开 Tab 由激活回填补齐）
+    this.sessionTodos.delete(sessionID)
     // 消息流滚动位置同随会话卸载（design-tab-state-memory §3）
     this.chatScrollTops.delete(sessionID)
   }
@@ -2526,6 +2546,26 @@ export class AppStore {
   /** 会话待处理数（权限 ≤1 + 问题 N），指示器投影输入 */
   pendingCountFor(sessionID: string): number {
     return (this.pendingPermissions.has(sessionID) ? 1 : 0) + this.questionsForSession(sessionID).length
+  }
+
+  /** 会话任务列表（design-task-list；空数组 = 无/已全完成） */
+  todosForSession(sessionID: string): Todo[] {
+    return this.sessionTodos.get(sessionID) ?? []
+  }
+
+  /**
+   * 会话任务快照（ChatView 激活时与 loadSessionMessages 同挂点调用，补 SSE
+   * 断线窗口）。全量替换：200（含空数组）权威覆盖本地；失败静默保留（下一次
+   * todo.updated 自愈）；client 同一性守卫丢弃跨 teardown 的迟到结果。
+   */
+  async loadSessionTodos(sessionID: string, directory: string) {
+    const client = this.client
+    if (!client) return
+    const todos = await client.listSessionTodos(sessionID, directory).catch(() => null)
+    if (this.client !== client) return
+    if (todos === null) return
+    this.sessionTodos.set(sessionID, normalizeTodoList(todos))
+    this.emit()
   }
 
   /**
