@@ -294,6 +294,12 @@ export class AppStore {
    * （pushClosed 选项），上限 20 弃最旧；纯内存不持久化（重启场景由 Tab 记忆覆盖）
    */
   closedTabs: ClosedTabEntry[] = []
+  /**
+   * 删除中的 worktree（非阻塞删除，design-layout §工作区行）：key = `projectId\0directory`。
+   * removeWorkspace 全程置位（确认弹窗即关，左栏行进禁用/loading 态），finally 清除——
+   * 成功行随 sandboxes 移除消失，失败复位行可重试。纯内存（重启后行随快照恢复真实态）。
+   */
+  deletingWorkspaces = new Set<string>()
   settingsOpen = false
   fileTreeExpanded = new Map<string, boolean>()
   fileTreeNodes = new Map<string, FileNode[]>()
@@ -1919,14 +1925,34 @@ export class AppStore {
   }
 
   /** projectId 省略 = 当前项目。指定非当前项目时删除其下 worktree 并清理该项目的
-   *  会话/Tab/记忆/状态，但不扰动当前作用域（文件树/作用域 Tab 恢复仅对当前项目生效）。 */
+   *  会话/Tab/记忆/状态，但不扰动当前作用域（文件树/作用域 Tab 恢复仅对当前项目生效）。
+   *  非阻塞（design-layout §工作区行）：调用即返回删除态（deletingWorkspaces），左栏行
+   *  禁用/loading，清理完成后行随 sandboxes 移除消失；失败 finally 复位可重试。 */
   async removeWorkspace(
     directory: string,
     projectId: string = this.currentProject?.id ?? "",
   ): Promise<{ ok: boolean; error?: string }> {
     const project = this.projects.find((p) => p.id === projectId)
     if (!this.client || !project) return { ok: false, error: "no project" }
+    const deleteKey = `${project.id}\u0000${directory}`
+    // 重入防御：同行删除在途时再触发（UI 已禁用，兜底）
+    if (this.deletingWorkspaces.has(deleteKey)) return { ok: false, error: "deleting" }
     const isCurrent = project.id === this.currentProject?.id
+    this.deletingWorkspaces.add(deleteKey)
+    // 删的是当前作用域：同步段立即跳回项目根（先切换后加载，同 setCurrentWorkspace(null)
+    // 同步段）——左栏高亮/中栏标题/文件树/根 Tab 即时跟手，服务端清理在后台继续；
+    // 持久化后台执行（清理失败作用域仍停在根，与现状一致：worktree 已不可信）。
+    // 复位后 unloadWorktreeDirectory 的 restored 必为 false，不会二次恢复根 Tab
+    const ps = this.projectStateFor()
+    if (isCurrent && ps.currentWorkspaceId === directory) {
+      ps.currentWorkspaceId = null
+      this.projectStates[this.profileKey()] = ps
+      void this.persistProjectState()
+      this.resetFileTree()
+      this.restoreScopeTabs(project.worktree, true, true)
+      void this.backfillPending()
+    }
+    this.emit()
     try {
       // 删除 worktree 前，先级联删除该目录全部会话（服务器 DELETE /experimental/worktree
       // 不级联删会话，同名 worktree 重建后会继承旧会话——服务器以 directory 路径关联，
@@ -1948,11 +1974,18 @@ export class AppStore {
       await this.refreshWorkspacesForProject(project)
       const restored = await this.unloadWorktreeDirectory(directory, project.id, isCurrent)
       if (restored) this.restoreScopeTabs(project.worktree, true)
-      this.emit()
       return { ok: true }
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    } finally {
+      this.deletingWorkspaces.delete(deleteKey)
+      this.emit()
     }
+  }
+
+  /** 该 worktree 是否删除中（左栏行禁用态数据源，design-layout §工作区行） */
+  isWorkspaceDeleting(projectId: string, directory: string): boolean {
+    return this.deletingWorkspaces.has(`${projectId}\u0000${directory}`)
   }
 
   /**

@@ -398,6 +398,46 @@ describe("非聊天 Tab 作用域化（design-tab-memory §18）", () => {
     expect(store.tabs.some((t) => t.directory === WT1)).toBe(false)
   })
 
+  it("removeWorkspace 非阻塞删除态：在途 isWorkspaceDeleting 置位（左栏行禁用/loading），成功后复位、行随 sandboxes 消失", async () => {
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    snapshots.set(ROOT, [])
+    snapshots.set(WT2, [])
+    let resolveRemove!: () => void
+    client.removeWorktree = () => new Promise<void>((r) => (resolveRemove = r))
+    client.deleteSession = async () => {}
+    client.listProjects = async () => [{ ...project(), sandboxes: [WT2] }]
+    store.projectStates.default.currentWorkspaceId = WT1
+
+    const pending = store.removeWorkspace(WT1)
+    // 同步段（未 await）：删除态已置位、重入被拒；删当前 worktree 作用域立即跳回项目根
+    // （先切换后加载，不等服务端清理完成）
+    expect(store.isWorkspaceDeleting("proj1", WT1)).toBe(true)
+    expect(await store.removeWorkspace(WT1)).toEqual({ ok: false, error: "deleting" })
+    expect(store.isWorkspaceDeleting("proj1", WT1)).toBe(true)
+    expect(store.projectStates.default.currentWorkspaceId).toBeNull()
+    expect(store.scopeQuery.directory).toBe(ROOT)
+
+    resolveRemove()
+    const res = await pending
+    expect(res.ok).toBe(true)
+    expect(store.isWorkspaceDeleting("proj1", WT1)).toBe(false)
+    expect(store.workspacesOfProject("proj1").some((w) => w.directory === WT1)).toBe(false)
+    expect(store.projectStates.default.currentWorkspaceId).toBeNull()
+  })
+
+  it("removeWorkspace 删除失败：删除态复位（行恢复可点），worktree 仍在列表", async () => {
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    client.removeWorktree = async () => {
+      throw new Error("git worktree remove failed")
+    }
+    client.deleteSession = async () => {}
+
+    const res = await store.removeWorkspace(WT1)
+    expect(res.ok).toBe(false)
+    expect(store.isWorkspaceDeleting("proj1", WT1)).toBe(false)
+    expect(store.workspacesOfProject("proj1").some((w) => w.directory === WT1)).toBe(true)
+  })
+
   it("openFileTab revealLine：携带时设置，无锚点调用时清除残留", () => {
     snapshots.set(ROOT, [])
     store.openFileTab(ROOT + "/a.md", 42)

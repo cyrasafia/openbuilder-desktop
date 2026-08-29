@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties } from "react"
-import { FolderGit2, FolderPlus, Plus, Settings, Trash2, TriangleAlert, X } from "lucide-react"
+import { FolderGit2, FolderPlus, LoaderCircle, Plus, Settings, Trash2, TriangleAlert, X } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import { ConfirmDialog } from "./confirm-dialog"
 import { relativeTime } from "../i18n"
@@ -254,34 +254,49 @@ function ProjectTree() {
                 )}
               </div>
               {/* 工作区跟随项目，全部展示（仅当前项目可新增/删除；global 无子行） */}
-              {workspaces.map((w) => (
-                <div
-                  key={w.directory}
-                  className={
-                    "tree-row ws-row" +
-                    (isCurrentProject && store.currentWorkspace?.directory === w.directory ? " active" : "")
-                  }
-                  onClick={() => selectWorkspace(e.project.id, w.directory)}
-                >
-                  <FolderGit2 className="ws-icon" size={16} aria-hidden />
-                  <span className="tree-label" title={w.directory}>
-                    {w.name}
-                  </span>
-                  <SessionIndicator sessions={store.sessionsInDirectory(e.project.id, w.directory)} />
-                  {/* hover 全行显示；非当前项目点击不切当前项目、仅删除该 worktree
-                     并清理其项目会话/Tab/记忆（removeWorkspace 接 projectId） */}
-                  <button
-                    className="icon-btn row-action"
-                    title={t.deleteWorkspace}
-                    onClick={(ev) => {
-                      ev.stopPropagation()
-                      setPendingDelete({ directory: w.directory, projectId: e.project.id })
+              {workspaces.map((w) => {
+                // 删除中（非阻塞删除，design-layout §工作区行）：整行禁用样式、
+                // 不可点击，右缘 loading 常显（替代 hover 才显的删除钮/指示点）
+                const deleting = store.isWorkspaceDeleting(e.project.id, w.directory)
+                return (
+                  <div
+                    key={w.directory}
+                    className={
+                      "tree-row ws-row" +
+                      (deleting ? " deleting" : "") +
+                      (isCurrentProject && store.currentWorkspace?.directory === w.directory ? " active" : "")
+                    }
+                    onClick={() => {
+                      if (deleting) return
+                      selectWorkspace(e.project.id, w.directory)
                     }}
                   >
-                    <Trash2 size={16} aria-hidden />
-                  </button>
-                </div>
-              ))}
+                    <FolderGit2 className="ws-icon" size={16} aria-hidden />
+                    <span className="tree-label" title={w.directory}>
+                      {w.name}
+                    </span>
+                    {deleting ? (
+                      <LoaderCircle className="typing-spinner ws-deleting" size={14} aria-label={t.deletingWorkspace} />
+                    ) : (
+                      <>
+                        <SessionIndicator sessions={store.sessionsInDirectory(e.project.id, w.directory)} />
+                        {/* hover 全行显示；非当前项目点击不切当前项目、仅删除该 worktree
+                           并清理其项目会话/Tab/记忆（removeWorkspace 接 projectId） */}
+                        <button
+                          className="icon-btn row-action"
+                          title={t.deleteWorkspace}
+                          onClick={(ev) => {
+                            ev.stopPropagation()
+                            setPendingDelete({ directory: w.directory, projectId: e.project.id })
+                          }}
+                        >
+                          <Trash2 size={16} aria-hidden />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           )
         })}
@@ -295,10 +310,12 @@ function ProjectTree() {
           message={t.confirmDeleteWorkspaceMsg}
           confirmLabel={t.confirm}
           cancelLabel={t.cancel}
-          loadingLabel={t.deletingWorkspace}
           danger
-          onConfirm={async () => {
-            await store.removeWorkspace(pendingDelete.directory, pendingDelete.projectId)
+          onConfirm={() => {
+            // 非阻塞删除（design-layout §工作区行）：弹窗即关，删除态由
+            // store.deletingWorkspaces 驱动左栏行禁用/loading，完成或失败
+            // 复位由 removeWorkspace finally 兜底
+            void store.removeWorkspace(pendingDelete.directory, pendingDelete.projectId)
           }}
           onClose={() => setPendingDelete(null)}
         />

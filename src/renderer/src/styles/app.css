@@ -255,6 +255,18 @@
   color: var(--on-surface-variant);
 }
 
+/* worktree 删除进行中（非阻塞删除，design-layout §工作区行）：整行禁用样式、
+   不可点击（pointer-events 一并禁 hover 显隐），右缘 loading 指示器常显 */
+.ws-row.deleting {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.ws-row .ws-deleting {
+  flex-shrink: 0;
+  margin-right: 2px;
+}
+
 /* 项目行（一级）：头像 + 名称/路径两行，与单行 worktree 行明显区分 */
 .project-row {
   height: auto;
