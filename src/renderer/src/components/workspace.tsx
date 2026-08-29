@@ -19,12 +19,15 @@ import {
   CircleDot,
   CircleHelp,
   CircleX,
+  FileDiff,
+  Globe,
   ListChecks,
   ListTree,
   LoaderCircle,
   Plus,
   RotateCcw,
   ShieldAlert,
+  SquareTerminal,
   X,
 } from "lucide-react"
 import { useI18n, useStore } from "../app"
@@ -278,11 +281,14 @@ export function Workspace() {
   )
 }
 
+/** 存档期大小：初始加载与「加载更多」步长 */
+const ARCHIVE_PAGE_SIZE = 5
+
 /**
  * 新 Tab 引导页：无激活 Tab 时的默认视图（design-layout §4）。
  * 输入消息发送 = 新建会话 + 发送首条消息（Tab 自动打开激活，引导页退出）；
- * 下方列出当前作用域已归档会话，点击恢复（取消归档并开 Tab）；
- * 终端/网页 Tab 入口为禁用预留（v0.2/v0.3）。
+ * 输入区固定纵向居中（不受存档列表影响），下方依次为操作区与已归档会话
+ * （初始 5 条 + 加载更多），点击恢复（取消归档并开 Tab）。
  */
 function GuidePage() {
   const store = useStore()
@@ -300,7 +306,12 @@ function GuidePage() {
   }, [draft, directory])
   // 已创建待发送的会话：发送失败保留草稿，重试复用（不重复建会话、不产生空 Tab）
   const pendingSession = useRef<Session | null>(null)
-  const archived = store.archivedSessions
+  // 存档会话分页：初始 5 条、每次「加载更多」+5，全部加载后隐藏按钮。
+  // 挂载即重置（组件按作用域 key 隔离，切作用域回到初始页大小）
+  const [archivedLimit, setArchivedLimit] = useState(ARCHIVE_PAGE_SIZE)
+  const archivedAll = store.archivedSessions
+  const archived = archivedAll.slice(0, archivedLimit)
+  const hasMoreArchived = archivedAll.length > archivedLimit
   // global 拆分：作用域名 = 目录末段（根目录显示 "global"）——store 统一派生
   const scopeName = store.scopeDisplayName
   // 文件引用输入接线（design-file-reference §3）：引用按作用域目录键存（与草稿同构）
@@ -349,114 +360,129 @@ function GuidePage() {
 
   return (
     <div className="guide-view">
+      {/* 居中层 = 会话区 + 操作区（顶部 32vh 定值空白使其大致居中） */}
       <div className="guide-main">
-        <div className="hero">{scopeName}</div>
-        <div className="guide-hint">{t.guideHint}</div>
-        {/* Tab 入口（design-diff-view §4.4 / design-layout §4）：diff 单入口（页内
-            segment 切换三种来源）；终端/网页为禁用态预留（v0.2/v0.3） */}
+        <div className="guide-session">
+          <div className="hero">{scopeName}</div>
+          <div className="guide-hint">{t.guideHint}</div>
+          <div className={"guide-composer" + (refInput.dropActive ? " drop-active" : "")} {...refInput.dragProps}>
+            {refInput.chips}
+            <textarea
+              ref={guideTaRef}
+              value={draft}
+              placeholder={t.guidePlaceholder}
+              rows={1}
+              autoFocus
+              onFocus={(e) => {
+                // 默认聚焦（autoFocus）时光标置于末尾，而非开头（有草稿时）
+                const el = e.currentTarget
+                requestAnimationFrame(() => {
+                  const len = el.value.length
+                  el.setSelectionRange(len, len)
+                })
+              }}
+              onChange={(e) => {
+                setDraft(e.target.value)
+                refInput.onTextChange(e.target.value, e.target.selectionStart)
+              }}
+              onKeyUp={(e) => {
+                if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
+                if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
+                  refInput.onTextChange(e.currentTarget.value, e.currentTarget.selectionStart)
+                }
+              }}
+              onKeyDown={(e) => {
+                // IME 组合中（如 fcitx5 上屏）不触发发送
+                if (e.nativeEvent.isComposing) return
+                // @ 浮层键盘交互优先（消费则终止）
+                if (refInput.onKeyDown(e)) return
+                if (e.key === "Enter") {
+                  // 修饰键组合（Ctrl/Shift/Alt/Meta）= 换行；裸 Enter = 发送（与聊天输入区一致）
+                  if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return
+                  e.preventDefault()
+                  void send()
+                }
+              }}
+            />
+            {refInput.picker}
+            <div className="composer-actions">
+              {/* pendingSession 时切会话绑定；会话记录从 store 重读（乐观补丁是新对象，
+                  ref 持有的是创建时快照——AM-FIX-2：UI 不依赖父组件传参快照）。
+                  目录用该会话自身的：引导页已按作用域 key 隔离（design-compose-draft §2），
+                  挂载期内作用域不变、二者恒等，保留会话目录作防御（原 AM-IMPL3-3
+                  跨作用域存活场景随 key 隔离消失） */}
+              <ModelSwitcherBar
+                directory={pendingSession.current?.directory ?? store.scopeQuery.directory}
+                mode={pendingSession.current ? "session" : "defaults"}
+                session={
+                  pendingSession.current
+                    ? (store.findSession(pendingSession.current.id) ?? pendingSession.current)
+                    : undefined
+                }
+                disabled={sending}
+              />
+              <button
+                className="btn-primary"
+                disabled={(!draft.trim() && guideRefs.length === 0) || sending}
+                onClick={() => void send()}
+              >
+                {t.send}
+              </button>
+            </div>
+          </div>
+        </div>
+        {/* 操作区（design-diff-view §4.4 / design-layout §4）：diff 单入口（页内
+            segment 切换三种来源）；.btn-tile 磁贴等宽 96px、5:4，icon 在上、
+            名称在磁贴内 icon 下方（DESIGN.md §按钮） */}
         <div className="guide-actions">
-          <button type="button" className="guide-action" onClick={() => store.openDiffTab()}>
-            {t.diffTitle}
+          <button type="button" className="btn-tile" onClick={() => store.openDiffTab()}>
+            <FileDiff size={20} aria-hidden />
+            <span className="btn-tile-label">{t.diffTitle}</span>
           </button>
           <button
             type="button"
-            className="guide-action"
+            className="btn-tile"
             onClick={() => void store.openTerminalTab()}
             disabled={!store.activeProfile}
           >
-            {t.openTerminal}
+            <SquareTerminal size={20} aria-hidden />
+            <span className="btn-tile-label">{t.openTerminal}</span>
           </button>
           <button
             type="button"
-            className="guide-action"
+            className="btn-tile"
             disabled={!store.activeProfile || window.desktop.platform === "browser"}
             title={window.desktop.platform === "browser" ? t.comingSoon : undefined}
             onClick={() => void store.openBrowserTab("about:blank")}
           >
-            {t.openBrowser}
+            <Globe size={20} aria-hidden />
+            <span className="btn-tile-label">{t.openBrowser}</span>
           </button>
         </div>
-        <div className={"guide-composer" + (refInput.dropActive ? " drop-active" : "")} {...refInput.dragProps}>
-          {refInput.chips}
-          <textarea
-            ref={guideTaRef}
-            value={draft}
-            placeholder={t.guidePlaceholder}
-            rows={1}
-            autoFocus
-            onFocus={(e) => {
-              // 默认聚焦（autoFocus）时光标置于末尾，而非开头（有草稿时）
-              const el = e.currentTarget
-              requestAnimationFrame(() => {
-                const len = el.value.length
-                el.setSelectionRange(len, len)
-              })
-            }}
-            onChange={(e) => {
-              setDraft(e.target.value)
-              refInput.onTextChange(e.target.value, e.target.selectionStart)
-            }}
-            onKeyUp={(e) => {
-              if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
-              if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
-                refInput.onTextChange(e.currentTarget.value, e.currentTarget.selectionStart)
-              }
-            }}
-            onKeyDown={(e) => {
-              // IME 组合中（如 fcitx5 上屏）不触发发送
-              if (e.nativeEvent.isComposing) return
-              // @ 浮层键盘交互优先（消费则终止）
-              if (refInput.onKeyDown(e)) return
-              if (e.key === "Enter") {
-                // 修饰键组合（Ctrl/Shift/Alt/Meta）= 换行；裸 Enter = 发送（与聊天输入区一致）
-                if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return
-                e.preventDefault()
-                void send()
-              }
-            }}
-          />
-          {refInput.picker}
-          <div className="composer-actions">
-            {/* pendingSession 时切会话绑定；会话记录从 store 重读（乐观补丁是新对象，
-                ref 持有的是创建时快照——AM-FIX-2：UI 不依赖父组件传参快照）。
-                目录用该会话自身的：引导页已按作用域 key 隔离（design-compose-draft §2），
-                挂载期内作用域不变、二者恒等，保留会话目录作防御（原 AM-IMPL3-3
-                跨作用域存活场景随 key 隔离消失） */}
-            <ModelSwitcherBar
-              directory={pendingSession.current?.directory ?? store.scopeQuery.directory}
-              mode={pendingSession.current ? "session" : "defaults"}
-              session={
-                pendingSession.current
-                  ? (store.findSession(pendingSession.current.id) ?? pendingSession.current)
-                  : undefined
-              }
-              disabled={sending}
-            />
-            <button
-              className="btn-primary"
-              disabled={(!draft.trim() && guideRefs.length === 0) || sending}
-              onClick={() => void send()}
-            >
-              {t.send}
-            </button>
-          </div>
-        </div>
       </div>
+      {/* 存档区：随页面向下扩展，不挤占上方 */}
       {archived.length > 0 && (
         <div className="guide-archived">
           <div className="guide-archived-header">
             <span>{t.archivedSessions}</span>
-            <span className="guide-archived-hint">{t.restoreHint}</span>
           </div>
           {archived.map((s) => (
             <div key={s.id} className="guide-card" onClick={() => store.openChatTab(s)}>
               <div className="guide-card-title">{s.title || s.slug || t.untitled}</div>
-              <div className="guide-card-meta">
-                <span className="mono">{s.slug}</span>
-                <span>{relativeTime(locale, s.time.updated)}</span>
-              </div>
+                <div className="guide-card-meta">
+                  <span>{relativeTime(locale, s.time.archived ?? s.time.updated)}</span>
+                </div>
             </div>
           ))}
+          {hasMoreArchived && (
+            <button
+              type="button"
+              className="guide-load-more"
+              onClick={() => setArchivedLimit((n) => n + ARCHIVE_PAGE_SIZE)}
+            >
+              {t.loadMore}
+            </button>
+          )}
         </div>
       )}
     </div>

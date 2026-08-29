@@ -124,6 +124,25 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 | 设置弹窗 | 640×min(480, 80vh)，`rounded.dialog`，遮罩 rgba(0,0,0,.5)；表单标签 `ui-sm`，控件 32 |
 | 服务器状态行（左栏底部） | 高 30（22 控件 + 上下 4 padding），`ui-sm`（2026-08-29，原 `ui-xs` 比同排 12px 齿轮小、且与标题档位割裂）；状态点 8px：streaming=`status.running`、degraded=`status.pending`、offline=`status.error`、对账中=running 闪烁；连接错误为 `TriangleAlert` 12px `status.error`（2026-08-29，原 `⚠` 字符）；左状态右设置齿轮（lucide `Settings` 12px 同文字），置底常驻不随项目区变化；服务器版本不展示（2026-08-24 收编自原全宽状态栏） |
 
+### 按钮（五类可复用样式，2026-08-29）
+
+实现落点 `src/renderer/src/styles/app.css`「通用按钮族」区块，取值全部走 tokens.css（`--control-h` 28、`--radius-chip` 6、`--icon-toolbar` 20）。五类之外不新造按钮样式，变体通过在既有类上追加修饰类扩展：
+
+| 类型 | 类名 | 形态 | 用途（选型口径） |
+|---|---|---|---|
+| 主要 | `.btn-primary` | 实心强调面：`emphasis-bg`/`emphasis-fg` 底字对（2026-08-27 统一），28 高、chip 圆角、水平内边距 14、`ui-md`；hover 抬亮 1.08 | 一屏/一流程的唯一主动作（发送、确认、同意） |
+| 次要 | `.btn-tonal` | 浅绿容器：`primary-container`/`on-primary-container`（无描边，"次级"由明度对比表现），同骨架，hover 抬亮 1.08 | 次级/辅助动作（撤销、总是允许、diff 折叠切换） |
+| 危险 | `.btn-danger` | dark `error-container`/`on-error-container`（本即实心观感）；light 覆写实心红 `error`/`on-error`（2026-08-27）；hover 抬亮 1.1（略强一档） | 停止/拒绝/删除等破坏性动作 |
+| 图标钮 | `.icon-btn` | 透明底 22×22、4px 圆角、`onSurfaceVariant`；hover `surfaceContainerHighest` 底 + `onSurface` | 行内/工具栏图标操作（关 Tab、行删除、消息复制、TOC 开关）；尺寸/底色按场景加变体类覆写（tab-close/tabbar-new/msg-action/row-action 等） |
+| 磁贴 | `.btn-tile`（名称用 `.btn-tile-label`） | 96px 等宽、5:4 比例，`surfaceContainerLow` 底 + 1px `outlineVariant` 边；icon 20（`--icon-toolbar`）在上、名称 `ui-sm` 在磁贴内 icon 下方（间距 8）；hover `surfaceContainerHigh` | 大目标入口（引导页 Tab 入口），不用于 28 高行内场景 |
+
+通用规则：
+
+- 文本三兄弟（主要/次要/危险）骨架（高/圆角/内边距/字号）收敛在一条共享规则，改一处三钮同步；全局 button reset（tokens.css）已含字体继承、无边框、pointer 光标
+- 三钮统一禁用态：opacity 0.5 + not-allowed；「焦点即 hover」原则同样适用（`:focus-visible` 并列进 hover 规则）
+- 一次交互只放一个主要钮；授权卡同排多钮从左到右 = 危险｜次要｜主要（once/always/reject 语义序）
+- 弹窗内无类按钮沿用 `.dialog-actions button` 灰底兜底（quiet 档），主要钮覆写见 app.css 该区块注释（特异性修复，2026-08-27）
+
 ### Agent 行为的呈现原则（参考 Agentic Design Patterns）
 
 聊天组件设计以"忠实呈现 agent 行为模式"为准绳：
@@ -139,6 +158,7 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 ### Do
 
 - 新组件先查 tokens.css 语义色；状态色只用 `status.*`
+- 按钮从五类可复用样式（§按钮）选型，新场景先复用既有类再加修饰类，不写一次性按钮样式
 - 强调用 600 直跳；次级信息用 `ui-sm` + `outline` 降权，不加中间字重
 - 文案新增 key 时同步中英两份 catalog，并对照移动端 ARB 是否已有同场景 key
 - 长列表（会话、消息、文件树）一律虚拟化渲染

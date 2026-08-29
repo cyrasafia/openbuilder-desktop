@@ -2116,13 +2116,17 @@ export class AppStore {
     return this.sessionsInDirectory(project.id, this.scopeDirectory())
   }
 
+  /** 当前作用域的已归档 + 非 subagent 会话（存档时间降序——引导页列表排序依据） */
   get archivedSessions(): Session[] {
     const project = this.currentProject
     if (!project) return []
     const dir = this.scopeDirectory()
     return [...(this.sessionsByProject.get(project.id)?.values() ?? [])]
       .filter((s) => !s.parentID && s.time.archived && s.directory === dir)
-      .sort((a, b) => b.time.updated - a.time.updated)
+      .sort(
+        (a, b) =>
+          (b.time.archived ?? b.time.updated) - (a.time.archived ?? a.time.updated),
+      )
   }
 
   /**

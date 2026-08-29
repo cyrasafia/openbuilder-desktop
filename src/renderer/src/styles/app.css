@@ -585,15 +585,30 @@
   display: flex;
   flex-direction: column;
   align-items: center;
+  /* 三区等间距（40px，4px 网格）：会话区/操作区之间经 .guide-main 同值 gap，
+     大于区内间距（会话区 12px），保证相邻区有区分 */
   gap: 40px;
   padding: 24px;
 }
 
-/* margin auto 吸收上下剩余空间：标题+输入模块在归档列表之外的区域内纵向居中 */
+/* 三区布局（design-layout §4）：会话区（guide-session）+ 操作区为居中层，
+   顶部 32vh 定值空白（30%~40% 带内）使其大致居中于页面；定值 margin 不随
+   存档区内容收缩——「加载更多」只向下增加滚动高度，不挤占上方 */
 .guide-main {
   width: 100%;
   max-width: 640px;
-  margin: auto 0;
+  flex: none;
+  margin: 32vh 0 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* 会话区 ↔ 操作区间距 = 存档区间距（.guide-view gap 40px），三区等间距 */
+  gap: 40px;
+}
+
+/* 会话区：worktree 标题 + 提示 + 输入框（含模型选择/发送） */
+.guide-session {
+  width: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -640,32 +655,13 @@
 
 .guide-actions {
   display: flex;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-/* Tab 入口（design-diff-view §4.4）：diff 可用；终端/网页禁用态预留（v0.2/v0.3） */
-.guide-action {
-  background: var(--surface-container-low);
-  border: 1px solid var(--outline-variant);
-  border-radius: var(--radius-chip);
-  color: var(--on-surface);
-  padding: 6px 14px;
-  font-size: var(--text-sm);
-  cursor: pointer;
-  transition: background 150ms ease;
-}
-.guide-action:hover:not(:disabled) {
-  background: var(--surface-container-high);
-}
-.guide-action:disabled {
-  color: var(--outline);
-  cursor: default;
+  gap: 20px;
 }
 
 .guide-archived {
   width: 100%;
   max-width: 640px;
+  flex: none;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -678,12 +674,6 @@
   font-size: var(--text-sm);
   font-weight: var(--weight-semibold);
   color: var(--on-surface-variant);
-}
-
-.guide-archived-hint {
-  font-size: var(--text-xs);
-  font-weight: var(--weight-regular);
-  color: var(--outline);
 }
 
 .guide-card {
@@ -715,6 +705,22 @@
   gap: 12px;
   font-size: var(--text-xs);
   color: var(--outline);
+}
+
+/* 存档列表分页：全部加载后按钮随之隐藏（组件侧条件渲染） */
+.guide-load-more {
+  margin-top: 4px;
+  padding: 8px 16px;
+  border: 1px dashed var(--outline-variant);
+  border-radius: var(--radius-chip);
+  background: transparent;
+  color: var(--on-surface-variant);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: background 150ms ease;
+}
+.guide-load-more:hover {
+  background: var(--surface-container-low);
 }
 
 .hero {
@@ -2445,7 +2451,73 @@
   }
 }
 
-/* ---------- 通用控件 ---------- */
+/* ---------- 通用按钮族（五类可复用样式，规格见根目录 DESIGN.md §按钮：
+   主要 .btn-primary / 次要 .btn-tonal / 危险 .btn-danger / 图标 .icon-btn /
+   磁贴 .btn-tile）---------- */
+
+/* 文本按钮族（主要/次要/危险）共享骨架：28 高（--control-h）、chip 圆角、
+   14 水平内边距、ui-md 字号（font/border/cursor 继承 tokens.css 全局 button reset） */
+.btn-primary,
+.btn-tonal,
+.btn-danger {
+  border-radius: var(--radius-chip);
+  height: var(--control-h);
+  padding: 0 14px;
+  font-size: var(--text-md);
+}
+
+/* 主要：实心强调面（2026-08-27 统一）：与用户气泡、分段激活态同款深绿底+浅字
+   （原 --primary/--on-primary：暗色为浅绿底深字，与另两处反相） */
+.btn-primary {
+  background: var(--emphasis-bg);
+  color: var(--emphasis-fg);
+}
+
+/* 次级钮（2026-08-27 二次修订）：与 primary 同风格的无描边浅绿底+深绿字
+   （primary-container 对）——"次级"由明度对比表现（浅容器 vs 实心强调），
+   不引入描边（与实心强调面体系的按钮族保持一致）；hover 浮一档底色 */
+.btn-tonal {
+  background: var(--primary-container);
+  color: var(--on-primary-container);
+}
+
+/* 危险：破坏性/停止动作 */
+.btn-danger {
+  background: var(--error-container);
+  color: var(--on-error-container);
+}
+
+/* 浅色实心红（2026-08-27）：error-container 对（#ffdad6/#93000a）在浅色下呈
+   淡粉底深红字，与实心强调面（气泡/发送/分段）样式不协调；覆写为红底白字
+   （--error/--on-error）。暗色保持 error-container 深红底浅字（本即实心观感） */
+:root[data-theme="light"] .btn-danger {
+  background: var(--error);
+  color: var(--on-error);
+}
+
+/* hover 抬亮（焦点复用 hover 原则，:focus-visible 并列）；危险略强一档 */
+.btn-primary:hover:not(:disabled),
+.btn-primary:focus-visible:not(:disabled),
+.btn-tonal:hover:not(:disabled),
+.btn-tonal:focus-visible:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.btn-danger:hover:not(:disabled),
+.btn-danger:focus-visible:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+/* 文本按钮族统一禁用态 */
+.btn-primary:disabled,
+.btn-tonal:disabled,
+.btn-danger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 图标钮：透明底 22×22 方钮，行内/工具栏图标操作；变体（tab-close/tabbar-new/
+   msg-action/row-action/file-toolbar-toc 等）按需覆写尺寸或底色 */
 .icon-btn {
   width: 22px;
   height: 22px;
@@ -2464,68 +2536,34 @@
   color: var(--on-surface);
 }
 
-.btn-primary {
-  /* 实心强调面（2026-08-27 统一）：与用户气泡、分段激活态同款深绿底+浅字
-     （原 --primary/--on-primary：暗色为浅绿底深字，与另两处反相） */
-  background: var(--emphasis-bg);
-  color: var(--emphasis-fg);
+/* 磁贴钮：大目标入口（引导页 Tab 入口等）。等宽 96px、5:4 比例，icon（20 =
+   --icon-toolbar）在上、名称（ui-sm）在磁贴内 icon 下方；禁用态名称随色继承置灰 */
+.btn-tile {
+  width: 96px;
+  aspect-ratio: 5 / 4;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--surface-container-low);
+  border: 1px solid var(--outline-variant);
   border-radius: var(--radius-chip);
-  height: var(--control-h);
-  padding: 0 14px;
-  font-size: var(--text-md);
+  color: var(--on-surface);
+  transition: background 150ms ease;
 }
 
-.btn-primary:hover:not(:disabled),
-.btn-primary:focus-visible:not(:disabled) {
-  filter: brightness(1.08);
+.btn-tile:hover:not(:disabled) {
+  background: var(--surface-container-high);
 }
 
-.btn-primary:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.btn-tile:disabled {
+  color: var(--outline);
+  cursor: default;
 }
 
-.btn-danger {
-  background: var(--error-container);
-  color: var(--on-error-container);
-  border-radius: var(--radius-chip);
-  height: var(--control-h);
-  padding: 0 14px;
-}
-
-/* 浅色实心红（2026-08-27）：error-container 对（#ffdad6/#93000a）在浅色下呈
-   淡粉底深红字，与实心强调面（气泡/发送/分段）样式不协调；覆写为红底白字
-   （--error/--on-error）。暗色保持 error-container 深红底浅字（本即实心观感） */
-:root[data-theme="light"] .btn-danger {
-  background: var(--error);
-  color: var(--on-error);
-}
-
-/* 次级钮（2026-08-27 二次修订）：与 primary 同风格的无描边浅绿底+深绿字
-   （primary-container 对）——"次级"由明度对比表现（浅容器 vs 实心强调），
-   不引入描边（与实心强调面体系的按钮族保持一致）；hover 浮一档底色 */
-.btn-tonal {
-  background: var(--primary-container);
-  color: var(--on-primary-container);
-  border-radius: var(--radius-chip);
-  height: var(--control-h);
-  padding: 0 14px;
-}
-
-.btn-tonal:hover:not(:disabled),
-.btn-tonal:focus-visible:not(:disabled) {
-  filter: brightness(1.08);
-}
-
-.btn-danger:hover:not(:disabled),
-.btn-danger:focus-visible:not(:disabled) {
-  filter: brightness(1.1);
-}
-
-.btn-tonal:disabled,
-.btn-danger:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.btn-tile-label {
+  font-size: var(--text-sm);
 }
 
 /* ---------- 待处理卡片（授权/问题）---------- */
