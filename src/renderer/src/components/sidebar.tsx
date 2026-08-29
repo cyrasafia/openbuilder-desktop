@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from "react"
+import { useEffect, useRef, useState, type CSSProperties } from "react"
 import { FolderGit2, FolderPlus, LoaderCircle, Plus, Settings, Trash2, TriangleAlert, X } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import { ConfirmDialog } from "./confirm-dialog"
@@ -162,8 +162,9 @@ function ServerStatus() {
  * 项目/工作区两级树（有活跃 profile 时的左栏主体）。
  * global 项目按 directory 拆为 N 个顶级 entry 行（design-layout §3）：行视觉与
  * 普通项目行一致（头像 + 名称/路径两行），无子行（global 非 git 无 worktree）。
- * 项目行可拖拽排序（行序 = 打开序，store.moveEntry；worktree 行不入拖拽、
- * 随项目组移动；global 目录行与普通项目行平权参与）。
+ * 项目行可拖拽排序（行序 = 打开序，松手按预览 DOM 序调 store.applyEntryOrder
+ * 整体重排；实时预览式——拖动中列表即时重排、拖拽项在目标位渲染占位样式；
+ * worktree 行不入拖拽、随项目组移动；global 目录行与普通项目行平权参与）。
  */
 function ProjectTree() {
   const store = useStore()
@@ -173,17 +174,43 @@ function ProjectTree() {
     directory: string
     projectId: string
   } | null>(null)
-  // 项目行拖拽排序（design-layout §3，模式同 Tab 条拖拽）：dragKey = 拖拽中的
-  // entry 键，overKey = 悬停目标 + 命中半区（上半插入目标前、下半插入目标后）
+  // 项目行拖拽排序（design-layout §3）：实时预览式——dragKey = 拖拽中的 entry 键，
+  // dragSlot = 目标插入位（以"移除拖拽项后的数组"为坐标系，0..base.length）。
+  // 拖动中列表即时重排：拖拽项在目标位渲染占位样式，源位间隙闭合。提交挂
+  // dragend（源元素上恒触发——drop 只在松手于合法落区内才发，左栏外/快速
+  // 拖动越界松手时浏览器直接取消只发 dragend），按松手时预览 DOM 序整体重排。
+  // 注：原生拖拽期间页面收不到键盘事件（Chromium 嵌套拖拽循环吞掉输入），
+  // Esc 原生取消与栏外松手在 dragend 层不可区分，故取消语义同样提交预览序。
   const [dragKey, setDragKey] = useState<string | null>(null)
-  const [overKey, setOverKey] = useState<{ key: string; before: boolean } | null>(null)
+  const [dragSlot, setDragSlot] = useState<number | null>(null)
+  const treeRef = useRef<HTMLDivElement | null>(null)
   const endDrag = () => {
     setDragKey(null)
-    setOverKey(null)
+    setDragSlot(null)
+  }
+  /** dragend 提交：按松手时预览 DOM 序整体重排（所见即所得）——读 tree 容器
+   *  内 .project-group 的 data-entry-key 顺序调 applyEntryOrder，不经 slot 换算。 */
+  const handleDragEnd = () => {
+    if (treeRef.current) {
+      const keys = [...treeRef.current.querySelectorAll<HTMLElement>(".project-group")]
+        .map((el) => el.dataset.entryKey)
+        .filter((k): k is string => k != null)
+      if (keys.length > 0) store.applyEntryOrder(keys)
+    }
+    endDrag()
   }
 
   const entries = store.openedEntries
   const current = store.currentProject
+
+  // 预览序：base = 移除拖拽项；slot 缺省 = 原位（dragIdx 在 base 中即原位）
+  const dragIdx = dragKey ? entries.findIndex((e) => e.key === dragKey) : -1
+  const base = dragIdx >= 0 ? entries.filter((_, i) => i !== dragIdx) : entries
+  const slot = dragKey && dragSlot != null ? Math.max(0, Math.min(dragSlot, base.length)) : dragIdx
+  const previewEntries =
+    dragKey && dragIdx >= 0 && slot >= 0 && slot !== dragIdx
+      ? [...base.slice(0, slot), entries[dragIdx]!, ...base.slice(slot)]
+      : entries
 
   /** 选 entry 行（普通项目 = 主工作区入口，worktree 态点击 = 回主工作区——
    *  openProject 内含切回；global = 该目录作用域，openGlobalDirectory 先切换后加载） */
@@ -214,65 +241,79 @@ function ProjectTree() {
         </button>
       </div>
 
-      <div className="tree scroll">
-        {entries.map((e) => {
+      <div
+        ref={treeRef}
+        className="tree scroll"
+        onDragOver={(ev) => {
+          if (!dragKey) return
+          // 容器整体为合法落区（含 worktree 行/行间空隙/列表空白/占位行）：
+          // dragover preventDefault 让预览插入位在整个列表区域连续生效。
+          // 插入位按光标 Y 几何计算（边缘带判定）：光标落入某行的上/下 25%
+          // 区域 = 换位（插其前/后），中间 50% 滞回带保持当前插入位——
+          // 相比中线判定（50% 行程才翻转）换位行程减半，滞回带防抖。
+          // 光标不在任何行内（行间空隙）= 最近边界；末行以下全部区域 = 末位；
+          // 占位行跳过 = 悬停占位维持当前插入位。同值保留旧引用，React bail out
+          ev.preventDefault()
+          ev.dataTransfer.dropEffect = "move"
+          const EDGE_BAND = 0.25
+          const rows = ev.currentTarget.querySelectorAll<HTMLElement>(".tree-row.project-row")
+          // next = null 且命中过行（hit）= 中带/悬停占位：维持当前插入位不动；
+          // 未命中任何行 = 光标在末行以下全部区域：末位
+          let next: number | null = null
+          let hit = false
+          for (let i = 0; i < rows.length; i++) {
+            const rect = rows[i]!.getBoundingClientRect()
+            if (previewEntries[i]?.key === dragKey) {
+              // 悬停占位行 = 维持当前插入位
+              if (ev.clientY >= rect.top && ev.clientY <= rect.bottom) hit = true
+              continue
+            }
+            if (ev.clientY < rect.top) {
+              // 行间空隙/首行上方：最近边界 = 插到该行前
+              next = i < slot ? i : i - 1
+              hit = true
+              break
+            }
+            if (ev.clientY <= rect.bottom) {
+              hit = true
+              const baseIdx = i < slot ? i : i - 1
+              if (ev.clientY < rect.top + rect.height * EDGE_BAND) next = baseIdx
+              else if (ev.clientY > rect.bottom - rect.height * EDGE_BAND) next = baseIdx + 1
+              break
+            }
+          }
+          if (!hit) next = base.length
+          if (next != null) setDragSlot((prev) => (prev === next ? prev : next))
+        }}
+        onDrop={(ev) => {
+          // 提交统一在 dragend（恒触发，任何释放位置都按预览序提交）；
+          // 此处仅 preventDefault 屏蔽浏览器对拖拽数据的默认处理
+          ev.preventDefault()
+        }}
+      >
+        {previewEntries.map((e) => {
           // global 按目录拆行：作用域 = 该目录本身；普通项目行 = 主工作区入口
           const isActive = store.isEntryActive(e.key)
           const isCurrentProject = e.project.id === current?.id
           const workspaces = e.isGlobal ? [] : store.workspacesOfProject(e.project.id)
           return (
-            <div key={e.key} className="project-group">
+            <div key={e.key} className="project-group" data-entry-key={e.key}>
               <div
                 className={
                   "tree-row project-row" +
                   (isActive ? " active" : "") +
-                  (dragKey && overKey?.key === e.key && dragKey !== e.key
-                    ? overKey.before
-                      ? " drag-over"
-                      : " drag-over-after"
-                    : "")
+                  (e.key === dragKey ? " dragging" : "")
                 }
                 draggable
                 onClick={() => selectEntry(e.key)}
                 onDragStart={(ev) => {
                   setDragKey(e.key)
+                  setDragSlot(null)
                   // 自定义 MIME：内部键不以 text/plain 外泄（同 Tab 条拖拽约定）
                   ev.dataTransfer.setData("application/x-openbuilder-entry", e.key)
                   ev.dataTransfer.effectAllowed = "move"
                 }}
-                onDragOver={(ev) => {
-                  if (!dragKey || dragKey === e.key) return
-                  ev.preventDefault()
-                  ev.dataTransfer.dropEffect = "move"
-                  // 命中半区：上半插入目标前、下半插入目标后（末位可达）。
-                  // dragover 高频触发：同值保留旧引用，React bail out 避免
-                  // 整树按事件频率 reconcile（同 Tab 条）
-                  const rect = ev.currentTarget.getBoundingClientRect()
-                  const before = ev.clientY < rect.top + rect.height / 2
-                  setOverKey((prev) =>
-                    prev?.key === e.key && prev.before === before ? prev : { key: e.key, before },
-                  )
-                }}
-                onDragLeave={(ev) => {
-                  // 真正离开该行（非进出子元素）才清指示，防闪烁
-                  if (
-                    dragKey &&
-                    overKey?.key === e.key &&
-                    !ev.currentTarget.contains(ev.relatedTarget as Node | null)
-                  ) {
-                    setOverKey(null)
-                  }
-                }}
-                onDrop={(ev) => {
-                  ev.preventDefault()
-                  if (dragKey && dragKey !== e.key) {
-                    const rect = ev.currentTarget.getBoundingClientRect()
-                    const before = ev.clientY < rect.top + rect.height / 2
-                    store.moveEntry(dragKey, e.key, before ? "before" : "after")
-                  }
-                  endDrag()
-                }}
-                onDragEnd={endDrag}
+                onDragEnd={handleDragEnd}
               >
                 <ProjectAvatar name={e.name} icon={e.project.icon} />
                 <span className="project-main" title={e.directory}>

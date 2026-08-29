@@ -3067,18 +3067,18 @@ describe("左栏 entry 顺序与拖拽（design-layout §3 打开序）", () => 
     expect(store.openedEntries.map((e) => e.key)).toEqual(["p2", "p3", "p1"])
   })
 
-  it("moveEntry 前插/后插重排", async () => {
+  it("applyEntryOrder 前插/后插重排（预览序整体覆盖）", async () => {
     withProjects("p1", "p2", "p3")
     await store.openProject("p1")
     await store.openProject("p2")
     await store.openProject("p3")
-    store.moveEntry("p3", "p1", "before")
+    store.applyEntryOrder(["p3", "p1", "p2"])
     expect(store.openedEntries.map((e) => e.key)).toEqual(["p3", "p1", "p2"])
-    store.moveEntry("p3", "p1", "after")
+    store.applyEntryOrder(["p1", "p3", "p2"])
     expect(store.openedEntries.map((e) => e.key)).toEqual(["p1", "p3", "p2"])
   })
 
-  it("moveEntry 重排落盘 project.state；无位移早退不落盘", async () => {
+  it("applyEntryOrder 重排落盘 project.state；无位移早退不落盘", async () => {
     withProjects("p1", "p2")
     await store.openProject("p1")
     await store.openProject("p2")
@@ -3087,29 +3087,29 @@ describe("左栏 entry 顺序与拖拽（design-layout §3 打开序）", () => 
       .storeSet = async (key: string, value: unknown) => {
         sets.push({ key, value })
       }
-    store.moveEntry("p2", "p1")
+    store.applyEntryOrder(["p2", "p1"])
     await vi.waitFor(() => {
       const last = sets.at(-1)
       expect(last?.key).toBe("project.state")
       expect((last!.value as { default: { opened: string[] } }).default.opened).toEqual(["p2", "p1"])
     })
     sets.length = 0
-    store.moveEntry("p2", "p1", "before")
+    store.applyEntryOrder(["p2", "p1"])
     expect(sets).toHaveLength(0)
   })
 
-  it("moveEntry 键不存在（并发关闭）不动序", async () => {
+  it("applyEntryOrder 键去重；未知键不复活已关 entry（并发关闭防御）", () => {
     withProjects("p1", "p2")
     store.projectStates = {
       default: { opened: ["p1", "p2"], currentProjectId: "p1", currentWorkspaceId: null },
     }
-    store.moveEntry("p1", "ghost")
-    expect(store.openedEntries.map((e) => e.key)).toEqual(["p1", "p2"])
+    store.applyEntryOrder(["p2", "p2", "p1", "ghost"])
+    expect(store.openedEntries.map((e) => e.key)).toEqual(["p2", "p1"])
   })
 })
 
 describe("左栏 entry 顺序与拖拽（design-layout §3 打开序）——global 平权", () => {
-  it("global 目录行与普通项目混合参与打开序与 moveEntry", () => {
+  it("global 目录行与普通项目混合参与打开序与 applyEntryOrder 落位", () => {
     const gsession = { ...session("g1", "/docs", { created: 1, updated: 1 }), projectID: "global" }
     store.projects = [
       { id: "global", worktree: "/", time: { created: 0, updated: 0 } },
@@ -3121,8 +3121,38 @@ describe("左栏 entry 顺序与拖拽（design-layout §3 打开序）——glo
       default: { opened: ["p1", gkey], currentProjectId: "p1", currentWorkspaceId: null },
     }
     expect(store.openedEntries.map((e) => e.key)).toEqual(["p1", gkey])
-    store.moveEntry(gkey, "p1", "before")
+    store.applyEntryOrder([gkey, "p1"])
     expect(store.openedEntries.map((e) => e.key)).toEqual([gkey, "p1"])
     expect(store.projectStates.default.opened).toEqual([gkey, "p1"])
+  })
+})
+
+describe("左栏 entry 顺序与拖拽（design-layout §3 打开序）——applyEntryOrder 落位", () => {
+  it("按预览序整体重排并落盘；含 keys 未覆盖键的防御", async () => {
+    store.projects = [
+      { id: "p1", worktree: "/wt-p1", time: { created: 0, updated: 0 }, sandboxes: [] },
+      { id: "p2", worktree: "/wt-p2", time: { created: 0, updated: 0 }, sandboxes: [] },
+      { id: "p3", worktree: "/wt-p3", time: { created: 0, updated: 0 }, sandboxes: [] },
+    ]
+    store.projectStates = {
+      default: { opened: ["p1", "p2", "p3"], currentProjectId: "p1", currentWorkspaceId: null },
+    }
+    const sets: Array<{ key: string; value: unknown }> = []
+    ;(window as unknown as { desktop: { storeSet: (k: string, v: unknown) => Promise<void> } }).desktop
+      .storeSet = async (key: string, value: unknown) => {
+        sets.push({ key, value })
+      }
+    // 预览序 = 拖 p1 到末位；keys 缺 p2（拖拽中列表变化防御）→ 原相对顺序追加
+    store.applyEntryOrder(["p3", "p1"])
+    expect(store.openedEntries.map((e) => e.key)).toEqual(["p3", "p1", "p2"])
+    await vi.waitFor(() => {
+      const last = sets.at(-1)
+      expect(last?.key).toBe("project.state")
+      expect((last!.value as { default: { opened: string[] } }).default.opened).toEqual(["p3", "p1", "p2"])
+    })
+    // 顺序无变化 no-op 不落盘
+    sets.length = 0
+    store.applyEntryOrder(["p3", "p1", "p2"])
+    expect(sets).toHaveLength(0)
   })
 })

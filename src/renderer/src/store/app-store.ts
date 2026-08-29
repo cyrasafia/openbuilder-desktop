@@ -1217,7 +1217,7 @@ export class AppStore {
    * 左栏/选择器唯一数据源——不直接消费 openedProjects。
    * 行序 = `ProjectState.opened` 打开序（2026-08-29 修订，原 server projects
    * 快照序 = 创建序弃用）：新开 entry 追加末位（openProject/openGlobalDirectory
-   * push 语义），关闭移除键、重开落末位，拖拽重排直接重排该数组（moveEntry）。
+   * push 语义），关闭移除键、重开落末位，拖拽重排整体覆盖该数组（applyEntryOrder）。
    * 无法解析的键（项目快照未落地）跳过不占位。
    */
   get openedEntries(): ProjectEntry[] {
@@ -1381,23 +1381,33 @@ export class AppStore {
   }
 
   /**
-   * 左栏 entry 拖拽重排序（design-layout §3）：作用于 `ProjectState.opened`
-   * 打开序数组——取出拖拽键后按落位（目标前/后）插入。worktree 行随项目组
-   * 移动（子行不入序）；global 目录行与普通项目行平权参与。重排即落盘
-   * （persistProjectState → project.state），位置无变化时早退（同 moveTab）。
+   * 拖拽落位（design-layout §3）：按**松手时预览序**整体重排 opened 并落盘——
+   * 所见即所得，不经 slot→目标键换算（换算依赖最后一次 dragover 的状态提交，
+   * 与松手存在竞态窗口，会出现"预览已移到位、落点未生效"）。keys 去重；未覆盖
+   * 的键（拖拽中列表变化的防御）按原相对顺序追加；顺序无变化 no-op 不落盘。
    */
-  moveEntry(dragKey: string, targetKey: string, position: "before" | "after" = "before") {
-    if (dragKey === targetKey) return
+  applyEntryOrder(keys: string[]) {
     const ps = this.projectStateFor()
-    const from = ps.opened.indexOf(dragKey)
-    const targetIdx = ps.opened.indexOf(targetKey)
-    if (from < 0 || targetIdx < 0) return
-    const insertAt = position === "before" ? targetIdx : targetIdx + 1
-    // 移除拖拽项后落点换算：落点在其后则前移一位；结果不变即 no-op
-    const finalAt = insertAt > from ? insertAt - 1 : insertAt
-    if (finalAt === from) return
-    const [moved] = ps.opened.splice(from, 1)
-    ps.opened.splice(finalAt, 0, moved!)
+    const cur = ps.opened
+    const known = new Set(cur)
+    const seen = new Set<string>()
+    const next = keys.filter((k) => {
+      if (!known.has(k) || seen.has(k)) return false
+      seen.add(k)
+      return true
+    })
+    for (const k of cur) if (!seen.has(k)) next.push(k)
+    let changed = next.length !== cur.length
+    if (!changed) {
+      for (let i = 0; i < next.length; i++) {
+        if (next[i] !== cur[i]) {
+          changed = true
+          break
+        }
+      }
+    }
+    if (!changed) return
+    ps.opened = next
     this.projectStates[this.profileKey()] = ps
     this.emit()
     void this.persistProjectState()

@@ -358,26 +358,21 @@
   margin-bottom: 6px;
 }
 
-/* 项目行拖拽排序指示线（design-layout §3，模式同 .tab.drag-over）：悬停目标
-   上/下缘 2px 指示线——上半区命中亮上缘（插入目标前）、下半区亮下缘（插入目标后）。
-   worktree 行不入拖拽（随项目组整体移动），指示线仅 project-row 有 */
-.tree-row.project-row.drag-over::before,
-.tree-row.project-row.drag-over-after::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: var(--primary);
-  z-index: 1;
+/* 项目行拖拽实时预览（design-layout §3）：拖动中列表即时重排，拖拽项在目标
+   插入位渲染为占位样式——虚线框 + 降不透明度，源位间隙随之闭合；松手经
+   dragend 按 DOM 序提交 store.applyEntryOrder。占位行压过 hover/active 背景
+   三态（本块位于其后，同特异性胜出），行内操作钮隐藏，防预览态出现可点反馈 */
+.tree-row.project-row.dragging,
+.tree-row.project-row.dragging:hover,
+.tree-row.project-row.dragging.active:hover {
+  background: transparent;
+  opacity: 0.45;
+  outline: 1px dashed var(--outline);
+  outline-offset: -1px;
 }
 
-.tree-row.project-row.drag-over::before {
-  top: 0;
-}
-
-.tree-row.project-row.drag-over-after::before {
-  bottom: 0;
+.tree-row.project-row.dragging .row-action {
+  visibility: hidden;
 }
 
 .row-action {
