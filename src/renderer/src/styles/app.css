@@ -2580,7 +2580,6 @@
 
 /* ---------- 待处理卡片（授权/问题）---------- */
 .chat-footer {
-  border-top: 1px solid var(--outline-variant);
   padding: 8px 24px;
   flex-shrink: 0;
   background: var(--surface);
