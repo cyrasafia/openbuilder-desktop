@@ -8,6 +8,7 @@ import { useShortcuts } from "./shortcuts"
 
 const actions = {
   showGuidePage: vi.fn(),
+  openProjectPicker: vi.fn(),
   cycleTab: vi.fn(),
   cycleScopeEntry: vi.fn(),
   restoreClosedTab: vi.fn(),
@@ -60,6 +61,13 @@ describe("useShortcuts 分发", () => {
     const ev = press({ key: "t", ctrlKey: true })
     expect(ev.defaultPrevented).toBe(true)
     expect(actions.showGuidePage).toHaveBeenCalledTimes(1)
+  })
+
+  it("Ctrl+O → 打开项目选择器", () => {
+    render(<Harness />)
+    const ev = press({ key: "o", ctrlKey: true })
+    expect(ev.defaultPrevented).toBe(true)
+    expect(actions.openProjectPicker).toHaveBeenCalledTimes(1)
   })
 
   it("Ctrl+Shift+T → 恢复关闭 Tab，不误触新建", () => {

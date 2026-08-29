@@ -301,6 +301,8 @@ export class AppStore {
    */
   deletingWorkspaces = new Set<string>()
   settingsOpen = false
+  /** 打开项目选择器（左栏 "+" 与 Ctrl+O 同路径；overlay 计数协调浏览器视图显隐） */
+  pickerOpen = false
   fileTreeExpanded = new Map<string, boolean>()
   fileTreeNodes = new Map<string, FileNode[]>()
   /** binary/mimeType：图片预览分发依据（design-image-preview §2.1）；二进制非图占位用 */
@@ -4032,6 +4034,17 @@ export class AppStore {
 
   closeSettings() {
     this.settingsOpen = false
+    this.popOverlay()
+  }
+
+  openProjectPicker() {
+    if (this.pickerOpen) return
+    this.pickerOpen = true
+    this.pushOverlay()
+  }
+
+  closeProjectPicker() {
+    this.pickerOpen = false
     this.popOverlay()
   }
 

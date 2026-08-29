@@ -2905,6 +2905,23 @@
   width: 380px;
 }
 
+/* 项目选择器：固定尺寸（小于 max-height 80vh / max-width 90vw），不随列表/搜索结果增减跳变；
+   700×560 为 5:4；内容左右边距 20→28，标题/搜索/列表同一边缘 */
+.dialog-project {
+  width: 700px;
+  height: 560px;
+}
+.dialog-project .dialog-title {
+  padding: 16px 28px 8px;
+}
+.dialog-project .dialog-search {
+  margin: 0 28px;
+}
+.dialog-project .dialog-body {
+  flex: 1;
+  padding: 8px 28px;
+}
+
 .dialog-lg {
   width: 640px;
 }
@@ -2913,6 +2930,39 @@
   font-size: var(--text-title-md);
   font-weight: var(--weight-semibold);
   padding: 16px 20px 8px;
+}
+
+/* 打开项目选择器：标题行右侧关闭按钮 */
+.dialog-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* 打开项目选择器的搜索框（视觉语言对齐 .ms-search；
+   亮色用 container：dialog 底是 container-low，同色会糊成一块） */
+.dialog-search {
+  margin: 0 20px;
+  padding: 6px 10px;
+  height: var(--control-h);
+  border-radius: var(--radius-chip);
+  border: 1px solid var(--outline-variant);
+  background: var(--surface-container);
+  color: var(--on-surface);
+  font-size: var(--text-sm);
+}
+:root[data-theme="dark"] .dialog-search {
+  background: var(--surface-container-highest);
+}
+.dialog-search:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+/* 键盘 ↑↓ 选中行：与行 hover 同底（同一信号强度，open-with-dialog 同例）；
+   靠源码顺序压过 .tree-row:hover 同值声明，hover 进出无背景跳变 */
+.dialog-project .tree-row.selected {
+  background: var(--surface-container-high);
 }
 
 .dialog-body {

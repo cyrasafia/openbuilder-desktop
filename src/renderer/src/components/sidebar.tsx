@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from "react"
+import { useEffect, useRef, useState, type CSSProperties } from "react"
 import { FolderGit2, FolderPlus, LoaderCircle, Plus, Settings, Trash2, TriangleAlert, X } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import { ConfirmDialog } from "./confirm-dialog"
@@ -166,7 +166,6 @@ function ServerStatus() {
 function ProjectTree() {
   const store = useStore()
   const { t } = useI18n()
-  const [pickerOpen, setPickerOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<{
     directory: string
     projectId: string
@@ -198,7 +197,7 @@ function ProjectTree() {
         <button
           className="icon-btn"
           title={t.openProject}
-          onClick={() => setPickerOpen(true)}
+          onClick={() => store.openProjectPicker()}
         >
           <Plus size={12} aria-hidden />
         </button>
@@ -312,7 +311,7 @@ function ProjectTree() {
         })}
       </div>
 
-      {pickerOpen && <ProjectPicker onClose={() => setPickerOpen(false)} />}
+      {store.pickerOpen && <ProjectPicker onClose={() => store.closeProjectPicker()} />}
 
       {pendingDelete && (
         <ConfirmDialog
@@ -410,11 +409,16 @@ interface PickerCandidate {
 function ProjectPicker({ onClose }: { onClose: () => void }) {
   const store = useStore()
   const { t, locale } = useI18n()
+  const [query, setQuery] = useState("")
+  const [sel, setSel] = useState(0)
+  const searchRef = useRef<HTMLInputElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
 
   // 打开即刷新 global 发现快照：新 global 目录的首个会话事件被事件闸门丢弃
   // （entry 未打开），只能靠 scope=project 全量快照发现（openbuilder 同源结论）
   useEffect(() => {
     void store.refreshGlobalSessions()
+    searchRef.current?.focus()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -435,16 +439,75 @@ function ProjectPicker({ onClose }: { onClose: () => void }) {
       .map((r) => ({ key: globalEntryKey(r.directory), name: r.name, path: r.directory, updated: r.updated })),
   ].sort((a, b) => b.updated - a.updated)
 
+  const kw = query.trim().toLowerCase()
+  const visible = kw
+    ? candidates.filter((c) => c.name.toLowerCase().includes(kw) || c.path.toLowerCase().includes(kw))
+    : candidates
+  const selClamped = Math.min(sel, Math.max(0, visible.length - 1))
+
+  // 选中行可见（键盘 ↑↓）；scrollIntoView 在 jsdom 缺失——可选调用（open-with-dialog 同例）
+  useEffect(() => {
+    listRef.current?.querySelectorAll<HTMLElement>(".project-row")[selClamped]?.scrollIntoView?.({
+      block: "nearest",
+    })
+  }, [selClamped, visible.length])
+
   return (
     <div className="dialog-mask" onClick={onClose}>
-      <div className="dialog" onClick={(e) => e.stopPropagation()}>
-        <div className="dialog-title">{t.openProject}</div>
-        <div className="dialog-body scroll">
-          {candidates.length === 0 && <div className="tree-empty">{t.empty}</div>}
-          {candidates.map((c) => (
+      <div
+        className="dialog dialog-project"
+        tabIndex={-1}
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          // dialog 层 Escape（输入框 keydown 冒泡至此也覆盖）；
+          // IME 组合中的 Escape 是取消候选词，不能顺手关弹窗
+          if (e.nativeEvent.isComposing) return
+          if (e.key === "Escape") onClose()
+        }}
+      >
+        <div className="dialog-title dialog-title-row">
+          <span>{t.openProject}</span>
+          <button className="icon-btn" title={t.close} onClick={onClose}>
+            <X size={14} aria-hidden />
+          </button>
+        </div>
+        <input
+          ref={searchRef}
+          className="dialog-search"
+          placeholder={t.projectSearchPlaceholder}
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value)
+            setSel(0)
+          }}
+          onKeyDown={(e) => {
+            // IME 组合中的 Enter（fcitx5 确认候选词）不上屏误开项目，
+            // 守卫惯例对齐 workspace.tsx / shortcuts.ts；Escape 由 dialog 层处理
+            if (e.nativeEvent.isComposing) return
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+              e.preventDefault()
+              const len = visible.length
+              if (len === 0) return
+              setSel(e.key === "ArrowDown" ? (selClamped + 1) % len : (selClamped - 1 + len) % len)
+            } else if (e.key === "Enter") {
+              e.preventDefault()
+              const pick = visible[selClamped]
+              if (pick) {
+                void store.openEntry(pick.key)
+                onClose()
+              }
+            }
+          }}
+        />
+        <div className="dialog-body scroll" ref={listRef}>
+          {visible.length === 0 && (
+            <div className="tree-empty">{candidates.length === 0 ? t.empty : t.noProjectMatch}</div>
+          )}
+          {visible.map((c, i) => (
             <div
               key={c.key}
-              className="tree-row project-row"
+              className={"tree-row project-row" + (i === selClamped ? " selected" : "")}
+              onMouseEnter={() => setSel(i)}
               onClick={() => {
                 void store.openEntry(c.key)
                 onClose()

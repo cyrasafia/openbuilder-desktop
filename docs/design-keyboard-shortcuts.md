@@ -9,6 +9,7 @@
 | 键 | 动作 |
 |---|---|
 | Ctrl+T | 新建 Tab = `showGuidePage()`（与 Tab 栏 "+" 同路径） |
+| Ctrl+O | 打开项目选择器（与左栏 "+" 同路径 = `openProjectPicker()`；picker 开着时重复按下仅消费不动作，防 overlay 计数失衡） |
 | Ctrl+W | 关闭激活 Tab；**无激活 Tab 时仅消费不动作**（放行会命中默认菜单关窗，见 §1 修订）；chat Tab 流式中先 confirm（复用 `confirmCloseStreamingTab`），确认后 abort+归档——与 Tab 栏关闭按钮**同一代码路径**（§4 tab-actions） |
 | Ctrl+Shift+T | 恢复刚关闭的 Tab（§2 关闭栈） |
 | Ctrl+Tab / Ctrl+PageDown | 下一个可见 Tab（作用域内循环；Shift 反转方向） |

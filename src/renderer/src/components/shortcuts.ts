@@ -7,7 +7,7 @@ import { closeTabInteractive } from "./tab-actions"
  * 浏览器视图聚焦时原生 webContents 抢走键盘，经 main 的 before-input-event
  * 转发（onBrowserShortcut，design-browser-tab 评审 M5）走同一分发。
  * IME 组合中（fcitx5 上屏）不触发；已 preventDefault 的事件不重复处理。
- * Ctrl+T/W、Ctrl(+Shift)+Tab、Ctrl+PgUp/PgDn、Ctrl+Shift+T、Ctrl+Alt+↑/↓。
+ * Ctrl+O/T/W、Ctrl(+Shift)+Tab、Ctrl+PgUp/PgDn、Ctrl+Shift+T、Ctrl+Alt+↑/↓。
  */
 
 /** 键盘事件统一分发（window keydown 与 browser:shortcut 转发共用）；
@@ -43,6 +43,10 @@ function dispatch(
       return true
     }
     return false
+  }
+  if (key.toLowerCase() === "o") {
+    store.openProjectPicker()
+    return true
   }
   if (key.toLowerCase() === "t") {
     store.showGuidePage()
