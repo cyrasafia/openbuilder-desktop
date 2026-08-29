@@ -358,6 +358,28 @@
   margin-bottom: 6px;
 }
 
+/* 项目行拖拽排序指示线（design-layout §3，模式同 .tab.drag-over）：悬停目标
+   上/下缘 2px 指示线——上半区命中亮上缘（插入目标前）、下半区亮下缘（插入目标后）。
+   worktree 行不入拖拽（随项目组整体移动），指示线仅 project-row 有 */
+.tree-row.project-row.drag-over::before,
+.tree-row.project-row.drag-over-after::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--primary);
+  z-index: 1;
+}
+
+.tree-row.project-row.drag-over::before {
+  top: 0;
+}
+
+.tree-row.project-row.drag-over-after::before {
+  bottom: 0;
+}
+
 .row-action {
   visibility: hidden;
 }

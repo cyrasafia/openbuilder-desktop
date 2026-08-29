@@ -1213,29 +1213,34 @@ export class AppStore {
   }
 
   /**
-   * 左栏「项目行」（entry）：普通项目 1 行；global 按目录拆 N 行（活跃度降序）。
+   * 左栏「项目行」（entry）：普通项目 1 行；global 按目录拆 N 行。
    * 左栏/选择器唯一数据源——不直接消费 openedProjects。
+   * 行序 = `ProjectState.opened` 打开序（2026-08-29 修订，原 server projects
+   * 快照序 = 创建序弃用）：新开 entry 追加末位（openProject/openGlobalDirectory
+   * push 语义），关闭移除键、重开落末位，拖拽重排直接重排该数组（moveEntry）。
+   * 无法解析的键（项目快照未落地）跳过不占位。
    */
   get openedEntries(): ProjectEntry[] {
     const ps = this.projectStates[this.profileKey()]
     if (!ps) return []
-    const openedIds = new Set(ps.opened)
-    const openedGlobal = new Set(this.openedGlobalDirectories)
     const out: ProjectEntry[] = []
-    for (const p of this.projects) {
-      if (p.id === GLOBAL_PROJECT_ID) {
-        if (openedGlobal.size === 0) continue
-        for (const row of this.globalDirectoryRowsAll()) {
-          if (!openedGlobal.has(row.directory)) continue
-          out.push({
-            key: globalEntryKey(row.directory),
-            project: p,
-            directory: row.directory,
-            name: row.name,
-            isGlobal: true,
-          })
-        }
-      } else if (openedIds.has(p.id)) {
+    const gp = this.globalProject
+    const rowsByDir = new Map(this.globalDirectoryRowsAll().map((r) => [r.directory, r]))
+    for (const key of ps.opened) {
+      const dir = globalDirectoryOfKey(key)
+      if (dir != null) {
+        const row = rowsByDir.get(dir)
+        if (!gp || !row) continue
+        out.push({
+          key,
+          project: gp,
+          directory: row.directory,
+          name: row.name,
+          isGlobal: true,
+        })
+      } else {
+        const p = this.projects.find((x) => x.id === key)
+        if (!p || p.id === GLOBAL_PROJECT_ID) continue
         out.push({
           key: p.id,
           project: p,
@@ -1373,6 +1378,29 @@ export class AppStore {
     const dir = globalDirectoryOfKey(key)
     if (dir == null) return this.closeProject(key)
     return this.closeGlobalDirectory(dir)
+  }
+
+  /**
+   * 左栏 entry 拖拽重排序（design-layout §3）：作用于 `ProjectState.opened`
+   * 打开序数组——取出拖拽键后按落位（目标前/后）插入。worktree 行随项目组
+   * 移动（子行不入序）；global 目录行与普通项目行平权参与。重排即落盘
+   * （persistProjectState → project.state），位置无变化时早退（同 moveTab）。
+   */
+  moveEntry(dragKey: string, targetKey: string, position: "before" | "after" = "before") {
+    if (dragKey === targetKey) return
+    const ps = this.projectStateFor()
+    const from = ps.opened.indexOf(dragKey)
+    const targetIdx = ps.opened.indexOf(targetKey)
+    if (from < 0 || targetIdx < 0) return
+    const insertAt = position === "before" ? targetIdx : targetIdx + 1
+    // 移除拖拽项后落点换算：落点在其后则前移一位；结果不变即 no-op
+    const finalAt = insertAt > from ? insertAt - 1 : insertAt
+    if (finalAt === from) return
+    const [moved] = ps.opened.splice(from, 1)
+    ps.opened.splice(finalAt, 0, moved!)
+    this.projectStates[this.profileKey()] = ps
+    this.emit()
+    void this.persistProjectState()
   }
 
   /**

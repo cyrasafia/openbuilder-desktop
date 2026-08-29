@@ -162,6 +162,8 @@ function ServerStatus() {
  * 项目/工作区两级树（有活跃 profile 时的左栏主体）。
  * global 项目按 directory 拆为 N 个顶级 entry 行（design-layout §3）：行视觉与
  * 普通项目行一致（头像 + 名称/路径两行），无子行（global 非 git 无 worktree）。
+ * 项目行可拖拽排序（行序 = 打开序，store.moveEntry；worktree 行不入拖拽、
+ * 随项目组移动；global 目录行与普通项目行平权参与）。
  */
 function ProjectTree() {
   const store = useStore()
@@ -171,6 +173,14 @@ function ProjectTree() {
     directory: string
     projectId: string
   } | null>(null)
+  // 项目行拖拽排序（design-layout §3，模式同 Tab 条拖拽）：dragKey = 拖拽中的
+  // entry 键，overKey = 悬停目标 + 命中半区（上半插入目标前、下半插入目标后）
+  const [dragKey, setDragKey] = useState<string | null>(null)
+  const [overKey, setOverKey] = useState<{ key: string; before: boolean } | null>(null)
+  const endDrag = () => {
+    setDragKey(null)
+    setOverKey(null)
+  }
 
   const entries = store.openedEntries
   const current = store.currentProject
@@ -213,8 +223,56 @@ function ProjectTree() {
           return (
             <div key={e.key} className="project-group">
               <div
-                className={"tree-row project-row" + (isActive ? " active" : "")}
+                className={
+                  "tree-row project-row" +
+                  (isActive ? " active" : "") +
+                  (dragKey && overKey?.key === e.key && dragKey !== e.key
+                    ? overKey.before
+                      ? " drag-over"
+                      : " drag-over-after"
+                    : "")
+                }
+                draggable
                 onClick={() => selectEntry(e.key)}
+                onDragStart={(ev) => {
+                  setDragKey(e.key)
+                  // 自定义 MIME：内部键不以 text/plain 外泄（同 Tab 条拖拽约定）
+                  ev.dataTransfer.setData("application/x-openbuilder-entry", e.key)
+                  ev.dataTransfer.effectAllowed = "move"
+                }}
+                onDragOver={(ev) => {
+                  if (!dragKey || dragKey === e.key) return
+                  ev.preventDefault()
+                  ev.dataTransfer.dropEffect = "move"
+                  // 命中半区：上半插入目标前、下半插入目标后（末位可达）。
+                  // dragover 高频触发：同值保留旧引用，React bail out 避免
+                  // 整树按事件频率 reconcile（同 Tab 条）
+                  const rect = ev.currentTarget.getBoundingClientRect()
+                  const before = ev.clientY < rect.top + rect.height / 2
+                  setOverKey((prev) =>
+                    prev?.key === e.key && prev.before === before ? prev : { key: e.key, before },
+                  )
+                }}
+                onDragLeave={(ev) => {
+                  // 真正离开该行（非进出子元素）才清指示，防闪烁
+                  if (
+                    dragKey &&
+                    overKey?.key === e.key &&
+                    !ev.currentTarget.contains(ev.relatedTarget as Node | null)
+                  ) {
+                    setOverKey(null)
+                  }
+                }}
+                onDrop={(ev) => {
+                  ev.preventDefault()
+                  if (dragKey && dragKey !== e.key) {
+                    const rect = ev.currentTarget.getBoundingClientRect()
+                    const before = ev.clientY < rect.top + rect.height / 2
+                    store.moveEntry(dragKey, e.key, before ? "before" : "after")
+                  }
+                  endDrag()
+                }}
+                onDragEnd={endDrag}
               >
                 <ProjectAvatar name={e.name} icon={e.project.icon} />
                 <span className="project-main" title={e.directory}>

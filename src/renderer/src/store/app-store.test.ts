@@ -6,6 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AppStore, diffTabKey, FILE_WATCH_DEBOUNCE_MS } from "./app-store"
+import { globalEntryKey } from "@shared/project-entries"
 import { ApiError } from "@shared/rest-client"
 import { SseSubscriber } from "@shared/sse-subscriber"
 import type { ModelCatalog } from "@shared/model-catalog"
@@ -3022,5 +3023,106 @@ describe("worktree 同步（design-worktree-sync）", () => {
     expect(listCalled).toBe(true)
     // proj1 仍保持原值（store.projects 被 fresh 覆盖，但 proj1 未打开不 unload）
     // 关键：不报错、无 unload 副作用
+  })
+})
+
+describe("左栏 entry 顺序与拖拽（design-layout §3 打开序）", () => {
+  /** 注入 N 个互异项目（worktree 互异、无 sandboxes）并清空打开态 */
+  function withProjects(...ids: string[]) {
+    const list = ids.map((id) => ({
+      id,
+      worktree: `/wt-${id}`,
+      time: { created: 0, updated: 0 },
+      sandboxes: [],
+    }))
+    ;(store as unknown as { client: unknown }).client = {
+      listSessions: async () => [],
+      listSessionStatus: async () => ({}),
+      listProjects: async () => list,
+      listPendingPermissions: async () => [],
+      listPendingQuestions: async () => [],
+    }
+    store.projects = list
+    store.projectStates = {
+      default: { opened: [], currentProjectId: null, currentWorkspaceId: null },
+    }
+  }
+
+  it("行序 = 打开顺序（非 server 快照创建序）", async () => {
+    withProjects("p1", "p2", "p3")
+    await store.openProject("p3")
+    await store.openProject("p1")
+    await store.openProject("p2")
+    expect(store.openedEntries.map((e) => e.key)).toEqual(["p3", "p1", "p2"])
+  })
+
+  it("新打开项目追加末位；关闭后重开落末位", async () => {
+    withProjects("p1", "p2", "p3")
+    await store.openProject("p1")
+    await store.openProject("p2")
+    await store.openProject("p3")
+    expect(store.openedEntries.map((e) => e.key)).toEqual(["p1", "p2", "p3"])
+    await store.closeProject("p1")
+    await store.openProject("p1")
+    expect(store.openedEntries.map((e) => e.key)).toEqual(["p2", "p3", "p1"])
+  })
+
+  it("moveEntry 前插/后插重排", async () => {
+    withProjects("p1", "p2", "p3")
+    await store.openProject("p1")
+    await store.openProject("p2")
+    await store.openProject("p3")
+    store.moveEntry("p3", "p1", "before")
+    expect(store.openedEntries.map((e) => e.key)).toEqual(["p3", "p1", "p2"])
+    store.moveEntry("p3", "p1", "after")
+    expect(store.openedEntries.map((e) => e.key)).toEqual(["p1", "p3", "p2"])
+  })
+
+  it("moveEntry 重排落盘 project.state；无位移早退不落盘", async () => {
+    withProjects("p1", "p2")
+    await store.openProject("p1")
+    await store.openProject("p2")
+    const sets: Array<{ key: string; value: unknown }> = []
+    ;(window as unknown as { desktop: { storeSet: (k: string, v: unknown) => Promise<void> } }).desktop
+      .storeSet = async (key: string, value: unknown) => {
+        sets.push({ key, value })
+      }
+    store.moveEntry("p2", "p1")
+    await vi.waitFor(() => {
+      const last = sets.at(-1)
+      expect(last?.key).toBe("project.state")
+      expect((last!.value as { default: { opened: string[] } }).default.opened).toEqual(["p2", "p1"])
+    })
+    sets.length = 0
+    store.moveEntry("p2", "p1", "before")
+    expect(sets).toHaveLength(0)
+  })
+
+  it("moveEntry 键不存在（并发关闭）不动序", async () => {
+    withProjects("p1", "p2")
+    store.projectStates = {
+      default: { opened: ["p1", "p2"], currentProjectId: "p1", currentWorkspaceId: null },
+    }
+    store.moveEntry("p1", "ghost")
+    expect(store.openedEntries.map((e) => e.key)).toEqual(["p1", "p2"])
+  })
+})
+
+describe("左栏 entry 顺序与拖拽（design-layout §3 打开序）——global 平权", () => {
+  it("global 目录行与普通项目混合参与打开序与 moveEntry", () => {
+    const gsession = { ...session("g1", "/docs", { created: 1, updated: 1 }), projectID: "global" }
+    store.projects = [
+      { id: "global", worktree: "/", time: { created: 0, updated: 0 } },
+      { id: "p1", worktree: "/wt-p1", time: { created: 0, updated: 0 }, sandboxes: [] },
+    ]
+    store.sessionsByProject.set("global", sessionsOf(gsession))
+    const gkey = globalEntryKey("/docs")
+    store.projectStates = {
+      default: { opened: ["p1", gkey], currentProjectId: "p1", currentWorkspaceId: null },
+    }
+    expect(store.openedEntries.map((e) => e.key)).toEqual(["p1", gkey])
+    store.moveEntry(gkey, "p1", "before")
+    expect(store.openedEntries.map((e) => e.key)).toEqual([gkey, "p1"])
+    expect(store.projectStates.default.opened).toEqual([gkey, "p1"])
   })
 })
