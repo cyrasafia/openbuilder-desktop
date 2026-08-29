@@ -8,7 +8,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react"
-import { FileText, Folder } from "lucide-react"
+import { FileText, Folder, X } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import type { FileRef } from "@shared/api-types"
 
@@ -101,9 +101,9 @@ export function FileRefChips({
                   e.stopPropagation()
                   onRemove(r.key)
                 }}
-              >
-                ×
-              </button>
+                >
+                  <X size={12} aria-hidden />
+                </button>
             )}
           </span>
         )

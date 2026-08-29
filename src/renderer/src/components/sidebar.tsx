@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties } from "react"
-import { FolderGit2, FolderPlus, Trash2 } from "lucide-react"
+import { FolderGit2, FolderPlus, Plus, Settings, Trash2, TriangleAlert, X } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import { ConfirmDialog } from "./confirm-dialog"
 import { relativeTime } from "../i18n"
@@ -102,7 +102,7 @@ export function Sidebar() {
       <div className="sidebar-footer">
         <ServerStatus />
         <button className="icon-btn" title={t.settings} onClick={() => store.openSettings()}>
-          ⚙
+          <Settings size={12} aria-hidden />
         </button>
       </div>
       {/* 内缘调宽手柄（折叠时随面板 display:none 一并消失） */}
@@ -113,7 +113,7 @@ export function Sidebar() {
 
 /**
  * 服务器连接状态（左栏底部，与设置同行）：SSE/对账状态点 + 文案，点击打开设置；
- * connectionError 以 ⚠ 内联 + 悬浮提示可见。服务器版本不再展示。
+ * connectionError 以 TriangleAlert 内联 + 悬浮提示可见。服务器版本不再展示。
  */
 function ServerStatus() {
   const store = useStore()
@@ -153,7 +153,7 @@ function ServerStatus() {
     <button className="status-cluster" title={title} onClick={() => store.openSettings()}>
       <span className={"status-dot " + dotClass + (state === "reconciling" ? " blink" : "")} />
       <span>{label}</span>
-      {store.connectionError && <span className="status-error">⚠</span>}
+      {store.connectionError && <TriangleAlert className="status-error" size={12} aria-hidden />}
     </button>
   )
 }
@@ -200,7 +200,7 @@ function ProjectTree() {
           title={t.openProject}
           onClick={() => setPickerOpen(true)}
         >
-          +
+          <Plus size={12} aria-hidden />
         </button>
       </div>
 
@@ -249,7 +249,7 @@ function ProjectTree() {
                       void store.closeEntry(e.key)
                     }}
                   >
-                    ×
+                    <X size={16} aria-hidden />
                   </button>
                 )}
               </div>

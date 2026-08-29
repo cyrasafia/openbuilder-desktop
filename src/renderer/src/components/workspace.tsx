@@ -22,8 +22,10 @@ import {
   ListChecks,
   ListTree,
   LoaderCircle,
+  Plus,
   RotateCcw,
   ShieldAlert,
+  X,
 } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import { format, relativeTime } from "../i18n"
@@ -228,7 +230,7 @@ export function Workspace() {
                 closeTabInteractive(store, tab, t)
               }}
             >
-              ×
+              <X size={14} aria-hidden />
             </button>
           </div>
           )
@@ -238,7 +240,7 @@ export function Workspace() {
           title={t.newTab}
           onClick={() => store.showGuidePage()}
         >
-          +
+          <Plus size={14} aria-hidden />
         </button>
       </div>
 

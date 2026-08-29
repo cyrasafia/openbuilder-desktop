@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { Pencil, X } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import type { ConnectionProfile } from "@shared/ipc"
 import { ApiError, RestClient } from "@shared/rest-client"
@@ -126,9 +127,11 @@ function ConnectionSettings() {
             <button disabled={p.id === activeId} onClick={() => void activate(p.id)}>
               {p.id === activeId ? t.activeProfile : t.activateProfile}
             </button>
-            <button onClick={() => setEditing(p)}>✎</button>
+            <button onClick={() => setEditing(p)}>
+              <Pencil size={12} aria-hidden />
+            </button>
             <button className="danger" onClick={() => void remove(p)}>
-              ✕
+              <X size={12} aria-hidden />
             </button>
           </div>
         ))}

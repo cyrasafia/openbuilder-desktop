@@ -62,14 +62,10 @@
   color: var(--on-error);
 }
 
-/* 面板收起/展开开关（design-layout-collapse）：应用级控件，窄于窗口控制钮，
-   与窗口控制组间以分隔线区隔 */
+/* 面板收起/展开开关（design-layout-collapse）：应用级控件，窄于窗口控制钮
+   （2026-08-29：与窗口控制组间的分隔线弃用——两组视觉密度一致，无需区隔） */
 .title-bar-btn.panel-toggle {
   width: 34px;
-}
-
-.title-bar-btn.panel-toggle + .title-bar-btn:not(.panel-toggle) {
-  border-left: 1px solid var(--outline-variant);
 }
 
 /* 折叠 = 完全不展示（栅格列宽同步为 0，app.tsx 内联计算） */
@@ -157,6 +153,8 @@
   overflow: hidden;
 }
 
+/* 左栏/右栏标题：12px 低于行文本 13px（标题从属内容）；on-surface-variant 与
+   同排 16px Plus 图标钮（.icon-btn）同明度——原 outline 比图标暗一档，明度倒挂 */
 .sidebar-heading {
   display: flex;
   align-items: center;
@@ -164,7 +162,7 @@
   height: 30px;
   padding: 0 8px;
   font-size: var(--text-sm);
-  color: var(--outline);
+  color: var(--on-surface-variant);
   flex-shrink: 0;
 }
 
@@ -356,12 +354,16 @@
   visibility: visible;
 }
 
-/* 行内最右操作钮与最右指示点同中心线：指示器 right:6px、点盒 12px → 中心在
-   右缘 12px；22px 按钮图标居中本来落在 17px，margin-right -5px（(22-12)/2）
-   拉回 12px，hover 显隐切换不横跳。:last-of-type 自动覆盖实际最右钮——
-   worktree 行 = 删除、项目行 = 关闭（单项目时为新建工作区 +） */
+/* 行内最右操作钮不贴行右缘：行 padding 6px + 本 margin 2px = 右缘距 8px。
+   2026-08-29 修订：原 -5px 与指示点中心线对齐（减少 hover 显隐横跳），但视觉贴边，
+   用户反馈后弃用——显隐切换本身已隐藏指示点，横跳可接受 */
 .tree-row .row-action:last-of-type {
-  margin-right: -5px;
+  margin-right: 2px;
+}
+
+/* 相邻两个操作钮（新建工作区↔关闭 / 新建工作区↔删除）间距收紧：行 gap 6px − 3px = 3px */
+.tree-row .row-action + .row-action {
+  margin-left: -3px;
 }
 
 /* 会话状态指示器：靠右浮层，默认覆盖行内操作按钮；hover 行时隐藏让位给操作按钮 */
@@ -427,7 +429,8 @@
   text-align: center;
 }
 
-/* 服务器状态行：置底常驻（margin-top:auto 吸收剩余空间），与设置齿轮同行 */
+/* 服务器状态行：置底常驻（margin-top:auto 吸收剩余空间），与设置齿轮同行。
+   12px 与标题同档（面板 chrome 文字统一 sm），不再比齿轮图标（14px）小两档 */
 .sidebar-footer {
   display: flex;
   align-items: center;
@@ -436,7 +439,7 @@
   margin-top: auto;
   padding: 4px 8px;
   border-top: 1px solid var(--outline-variant);
-  font-size: var(--text-xs);
+  font-size: var(--text-sm);
   color: var(--on-surface-variant);
   flex-shrink: 0;
 }
@@ -550,6 +553,8 @@
 .icon-btn.tabbar-new {
   width: 32px;
   flex-shrink: 0;
+  /* 与最后一个 Tab 的分隔线留 4px 空隙，不贴边 */
+  margin-left: 4px;
   /* tabbar 是 align-items:stretch（Tab 撑满整高）；固定高的按钮 stretch 退化为
      顶对齐，需显式居中 */
   align-self: center;

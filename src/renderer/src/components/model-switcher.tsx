@@ -15,6 +15,7 @@
  */
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react"
 import { createPortal } from "react-dom"
+import { Check } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import {
   carriedVariant,
@@ -431,7 +432,7 @@ function AgentControl({
               }}
             >
               <span>{a.name}</span>
-              {a.name === current && <span className="ms-check">✓</span>}
+              {a.name === current && <Check className="ms-check" size={14} aria-hidden />}
             </button>
           ))}
         </div>
@@ -582,7 +583,7 @@ function ModelControl({
                         <span className="ms-row-name">{m.name}</span>
                         <span className="ms-row-id mono">{m.id}</span>
                       </span>
-                      {isCurrent && <span className="ms-check">✓</span>}
+                      {isCurrent && <Check className="ms-check" size={14} aria-hidden />}
                     </button>
                   )
                 })}
@@ -678,7 +679,7 @@ function ThinkingControl({
             }}
           >
             <span>{t.thinkingDefault}</span>
-            {!current && <span className="ms-check">✓</span>}
+            {!current && <Check className="ms-check" size={14} aria-hidden />}
           </button>
           {variants.map((v, i) => (
             <button
@@ -694,7 +695,7 @@ function ThinkingControl({
               }}
             >
               <span>{v}</span>
-              {v === current && <span className="ms-check">✓</span>}
+              {v === current && <Check className="ms-check" size={14} aria-hidden />}
             </button>
           ))}
         </div>

@@ -30,8 +30,11 @@
   --file-toolbar-h: calc(var(--control-h) + 12px);
   --toc-w: 240px;
   --toc-gap: 16px;
-  --icon-inline: 16px;
-  --icon-toolbar: 20px;
+  /* 图标三档（DESIGN.md「图标」节）：chrome=与 12px 同排文字同尺寸；
+     compact=Tab 条/标题栏等紧凑功能区；main=树行/主功能区 */
+  --icon-chrome: 12px;
+  --icon-compact: 14px;
+  --icon-main: 16px;
 
   /* rounded */
   --radius-chip: 6px;

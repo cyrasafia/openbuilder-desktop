@@ -20,8 +20,8 @@ typography:
     sans: "system-ui"          # GNOME: Adwaita Sans/Cantarell → mac: SF → Win: Segoe
     mono: "ui-monospace, monospace"  # GNOME: Source Code Pro/Adwaita Mono 优先
   scale:
-    ui-xs:    { size: 11, weight: 400, usage: 左栏状态行、Tab 徽标、时间戳 }
-    ui-sm:    { size: 12, weight: 400, usage: 次级标签、chip 标签、面包屑 }
+    ui-xs:    { size: 11, weight: 400, usage: Tab 徽标、时间戳、路径 meta }
+    ui-sm:    { size: 12, weight: 400, usage: 面板标题/底部状态行（chrome 文字）、次级标签、chip 标签、面包屑 }
     ui-md:    { size: 13, weight: 400, usage: 界面正文基准（列表、表单、菜单） }
     title-sm: { size: 14, weight: 600, usage: 面板标题、卡片标题 }
     title-md: { size: 16, weight: 600, usage: 弹窗标题、空态标题 }
@@ -37,8 +37,9 @@ density:
   tabbar: 36px
   input: 32px
   button: 28px
-  icon-inline: 16px
-  icon-toolbar: 20px
+  icon-chrome: 12px    # 与同排文字（ui-sm）同尺寸：面板标题/底部状态行/行内 chip
+  icon-compact: 14px   # 紧凑功能区：Tab 条、标题栏窗口控制
+  icon-main: 16px      # 树行/主功能区（列表行、工具条、卡片头）
 
 rounded:
   chip: 6px
@@ -91,7 +92,17 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 | 字体 | MiSans（小米） | `system-ui`（各平台原生 UI 字体） |
 
 - 间距 4px 网格：4/8/12/16/24；面板内边距 12，弹窗 16/24
-- 图标：线性图标（lucide），内联 16px、工具栏 20px；状态点 8px（`status` 色）
+- 图标：单一 lucide 体系，尺寸三档 12/14/16（详见下节，2026-08-29 收敛，原「内联 16/工具栏 20」废弃——20px 无实际落点）；状态点 8px（`status` 色）
+
+### 图标（lucide 单一体系）
+
+- **来源唯一**：全部图标来自 `lucide-react`，线性 outline 风格，`strokeWidth` 一律默认 2 不自定义。**禁用 Unicode 字符/emoji 充当图标**（✕ ✓ ⚙ ⚠ ✎ + × 等）——字形随系统字体漂移（粗细/基线跨平台不一致）、笔触与线性体系不协调（2026-08-29 已全量替换清零，后续新增图标不得回退）
+- **尺寸三档**（token `--icon-chrome/compact/main`，落点 tokens.css）：
+  - **12**：与同排 `ui-sm` 文字同尺寸——面板标题（左栏/右栏）、底部状态行、chip 行内（如 file-ref 移除钮）
+  - **14**：紧凑功能区——Tab 条（关闭/新建）、标题栏窗口控制、diff/浏览器工具条
+  - **16**：树行与主功能区——项目/worktree 行操作钮、卡片头、列表行
+- **明度与颜色**：图标颜色一律继承所在文字的语义色（`currentColor`），与同排文字同明度，不单独设色；语义强调例外（如连接错误 `TriangleAlert` 套 `--status-error`）。面板 chrome 区（标题/底部）文字与图标统一 `onSurfaceVariant`——曾出现文字 `outline` 比同排图标暗一档的明度倒挂，已修订
+- **可访问性**：装饰性图标一律 `aria-hidden`；纯图标按钮必须带 i18n 词条的 `title` + `aria-label`
 
 ### 组件（全新设计，v0.1 首批）
 
@@ -99,7 +110,7 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 
 | 组件 | 规格 |
 |---|---|
-| 三栏容器 | 面板分隔线 1px `outlineVariant`；栏标题 `ui-sm` + `outline` 色 |
+| 三栏容器 | 面板分隔线 1px `outlineVariant`；栏标题 `ui-sm` + `onSurfaceVariant` 色（2026-08-29，原 `outline` 与同排 Plus 图标钮明度倒挂） |
 | 标题栏（Linux） | 高 36，`surfaceContainerLow` 底 + 1px `outlineVariant` 下边、标题「OpenBuilder」`ui-sm` 整栏水平居中（2026-08-26，绝对定位铺满 + `pointer-events:none`）；整体拖拽区，右侧控制钮 44×36（lucide 14px `onSurfaceVariant`，hover `surfaceContainerHigh`，关闭钮 hover `error` 底 + `onError` 图标）；仅 Linux frameless 渲染，深/浅主题随 token 切换 |
 | Tab 条 | 高 36；Tab：图标 16 + 标题 `ui-md`，激活态底部 2px `primary` 指示线 + `surfaceContainerLow` 底；流式中 Tab 标题前置 8px running 状态点 |
 | 项目/工作区树（左栏） | 项目行自适应高（≥30，常态 ~40）：26px 圆角头像（`icon.override` > `icon.url` 图片（data:/https:，失败回退）> 名称首字母；色 = `icon.color` 命名色 > 名称哈希，与 openbuilder ProjectAvatar 跨端同色，调色板 token `--avatar-*`；色框/淡染底仅字母瓷片有，自定义图片态裸图（2026-08-24，同移动端））+ 右侧两行——名称 `ui-md` 600 + 路径 `ui-xs` `outline`（行内截断，title 全量）；worktree 行 26（16px 线性 worktree 图标（lucide `folder-git-2`）+ `ui-md` 名称 + 分支，名称文本与项目名文本左对齐（2026-08-24，行 padding-left 16 = 项目行 6+26 头像+6 间距 − 22 图标占位））；行三态纯背景色（2026-08-24 修订，弃用原左侧 2px `primary` 竖线）：未选中透明（承左栏 `surfaceContainerLow` 底）、hover `surfaceContainerHigh`、选中 `surfaceContainerHighest` 叠 4% `onSurface` 微加深（浅色主题 high/highest 色差过小，背景是唯一选中信号）——选中底取中性 surface 而非 `primary` 淡染，避免与行内四色指示器（琥珀/绿/灰/红状态点及聚合 chip）争色，深/浅主题均适用 |
@@ -111,7 +122,7 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 | 输入区 | min-height 32 自增高，`surfaceContainerLow` 底 + 1px `outlineVariant` 边，focus 1px `primary`；发送按钮 28×28 |
 | 焦点环（全局，2026-08-24 二次修订） | 键盘焦点（`:focus-visible`）**复用各控件 hover 样式**（hover 规则以 `, :focus-visible` 并列扩展），不设独立焦点环——描边环在贴边控件（标题栏钮/Tab 条）被裁剪只剩竖线、在自带边框控件（ms-pill/ms-seg）上成双框；UA 默认环全局压制；文本输入类沿用 1px `primary` 边框；原生 checkbox 无 hover 可复用，保留 2px `primary` 环；原无 hover 的可聚焦控件（status-cluster/pending-card-header/settings-tabs 钮/profile-row 钮/settings-defaults 清除钮）按同层 idiom 补齐 hover |
 | 设置弹窗 | 640×min(480, 80vh)，`rounded.dialog`，遮罩 rgba(0,0,0,.5)；表单标签 `ui-sm`，控件 32 |
-| 服务器状态行（左栏底部） | 高 30（22 控件 + 上下 4 padding），`ui-xs`；状态点 8px：streaming=`status.running`、degraded=`status.pending`、offline=`status.error`、对账中=running 闪烁；左状态右设置齿轮，置底常驻不随项目区变化；服务器版本不展示（2026-08-24 收编自原全宽状态栏） |
+| 服务器状态行（左栏底部） | 高 30（22 控件 + 上下 4 padding），`ui-sm`（2026-08-29，原 `ui-xs` 比同排 12px 齿轮小、且与标题档位割裂）；状态点 8px：streaming=`status.running`、degraded=`status.pending`、offline=`status.error`、对账中=running 闪烁；连接错误为 `TriangleAlert` 12px `status.error`（2026-08-29，原 `⚠` 字符）；左状态右设置齿轮（lucide `Settings` 12px 同文字），置底常驻不随项目区变化；服务器版本不展示（2026-08-24 收编自原全宽状态栏） |
 
 ### Agent 行为的呈现原则（参考 Agentic Design Patterns）
 
@@ -131,6 +142,7 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 - 强调用 600 直跳；次级信息用 `ui-sm` + `outline` 降权，不加中间字重
 - 文案新增 key 时同步中英两份 catalog，并对照移动端 ARB 是否已有同场景 key
 - 长列表（会话、消息、文件树）一律虚拟化渲染
+- 新增图标从 lucide-react 现有集中选取，按三档落位（12 同文字 / 14 紧凑 / 16 主区），颜色继承所在文字语义色
 
 ### Don't
 
@@ -138,3 +150,4 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 - 不在标签/标题用 mono；不在代码块用 sans
 - 不引入 500/700 字重与第四档强调
 - 不硬编码 hex（status 四色与遮罩黑除外）
+- 不用 Unicode 字符/emoji 充当图标；不改 lucide 默认 strokeWidth；图标不脱离所在文字单独配色
