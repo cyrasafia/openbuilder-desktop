@@ -393,6 +393,23 @@
   );
 }
 
+/* 项目行拖拽实时预览（design-layout §3）：拖动中列表即时重排，拖拽项在目标
+   插入位渲染为占位样式——虚线框 + 降不透明度，源位间隙随之闭合；松手经
+   dragend 按 DOM 序提交 store.applyEntryOrder。占位行压过 hover/active 背景
+   三态（本块位于其后，同特异性胜出），操作 overlay 隐藏，防预览态出现可点反馈 */
+.tree-row.project-row.dragging,
+.tree-row.project-row.dragging:hover,
+.tree-row.project-row.dragging.active:hover {
+  background: transparent;
+  opacity: 0.45;
+  outline: 1px dashed var(--outline);
+  outline-offset: -1px;
+}
+
+.tree-row.project-row.dragging .row-actions {
+  visibility: hidden;
+}
+
 /* 会话状态指示器：行内流式元素（名称/路径行尾，flex-shrink:0），文本在其前
    省略，不再与浮层指示器重叠（2026-08-29 修订：原 absolute 靠右浮层，聚合 chip
    宽于操作钮区时压到路径文本）。行 hover 时隐藏让位给操作 overlay */

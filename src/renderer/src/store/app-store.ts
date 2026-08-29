@@ -1215,29 +1215,34 @@ export class AppStore {
   }
 
   /**
-   * 左栏「项目行」（entry）：普通项目 1 行；global 按目录拆 N 行（活跃度降序）。
+   * 左栏「项目行」（entry）：普通项目 1 行；global 按目录拆 N 行。
    * 左栏/选择器唯一数据源——不直接消费 openedProjects。
+   * 行序 = `ProjectState.opened` 打开序（2026-08-29 修订，原 server projects
+   * 快照序 = 创建序弃用）：新开 entry 追加末位（openProject/openGlobalDirectory
+   * push 语义），关闭移除键、重开落末位，拖拽重排整体覆盖该数组（applyEntryOrder）。
+   * 无法解析的键（项目快照未落地）跳过不占位。
    */
   get openedEntries(): ProjectEntry[] {
     const ps = this.projectStates[this.profileKey()]
     if (!ps) return []
-    const openedIds = new Set(ps.opened)
-    const openedGlobal = new Set(this.openedGlobalDirectories)
     const out: ProjectEntry[] = []
-    for (const p of this.projects) {
-      if (p.id === GLOBAL_PROJECT_ID) {
-        if (openedGlobal.size === 0) continue
-        for (const row of this.globalDirectoryRowsAll()) {
-          if (!openedGlobal.has(row.directory)) continue
-          out.push({
-            key: globalEntryKey(row.directory),
-            project: p,
-            directory: row.directory,
-            name: row.name,
-            isGlobal: true,
-          })
-        }
-      } else if (openedIds.has(p.id)) {
+    const gp = this.globalProject
+    const rowsByDir = new Map(this.globalDirectoryRowsAll().map((r) => [r.directory, r]))
+    for (const key of ps.opened) {
+      const dir = globalDirectoryOfKey(key)
+      if (dir != null) {
+        const row = rowsByDir.get(dir)
+        if (!gp || !row) continue
+        out.push({
+          key,
+          project: gp,
+          directory: row.directory,
+          name: row.name,
+          isGlobal: true,
+        })
+      } else {
+        const p = this.projects.find((x) => x.id === key)
+        if (!p || p.id === GLOBAL_PROJECT_ID) continue
         out.push({
           key: p.id,
           project: p,
@@ -1375,6 +1380,39 @@ export class AppStore {
     const dir = globalDirectoryOfKey(key)
     if (dir == null) return this.closeProject(key)
     return this.closeGlobalDirectory(dir)
+  }
+
+  /**
+   * 拖拽落位（design-layout §3）：按**松手时预览序**整体重排 opened 并落盘——
+   * 所见即所得，不经 slot→目标键换算（换算依赖最后一次 dragover 的状态提交，
+   * 与松手存在竞态窗口，会出现"预览已移到位、落点未生效"）。keys 去重；未覆盖
+   * 的键（拖拽中列表变化的防御）按原相对顺序追加；顺序无变化 no-op 不落盘。
+   */
+  applyEntryOrder(keys: string[]) {
+    const ps = this.projectStateFor()
+    const cur = ps.opened
+    const known = new Set(cur)
+    const seen = new Set<string>()
+    const next = keys.filter((k) => {
+      if (!known.has(k) || seen.has(k)) return false
+      seen.add(k)
+      return true
+    })
+    for (const k of cur) if (!seen.has(k)) next.push(k)
+    let changed = next.length !== cur.length
+    if (!changed) {
+      for (let i = 0; i < next.length; i++) {
+        if (next[i] !== cur[i]) {
+          changed = true
+          break
+        }
+      }
+    }
+    if (!changed) return
+    ps.opened = next
+    this.projectStates[this.profileKey()] = ps
+    this.emit()
+    void this.persistProjectState()
   }
 
   /**
