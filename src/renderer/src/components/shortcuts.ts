@@ -11,7 +11,8 @@ import { closeTabInteractive } from "./tab-actions"
  */
 
 /** 键盘事件统一分发（window keydown 与 browser:shortcut 转发共用）；
- *  返回是否消费（未消费不 preventDefault——无激活 Tab 的 Ctrl+W 等 no-op 放行） */
+ *  返回是否消费（未消费不 preventDefault；Ctrl+W 无激活 Tab 例外仍吞——
+ *  放行会命中 Electron 默认菜单 role:close 加速键，把窗口整个关掉） */
 function dispatch(
   store: ReturnType<typeof useStore>,
   t: ReturnType<typeof useI18n>["t"],
@@ -49,7 +50,8 @@ function dispatch(
   }
   if (key.toLowerCase() === "w") {
     const active = store.activeTab
-    if (!active) return false
+    // 无激活 Tab 也吞（禁用而非放行）：Electron 默认菜单的 close 加速键会关窗口
+    if (!active) return true
     closeTabInteractive(store, active, t)
     return true
   }
@@ -65,7 +67,7 @@ export function useShortcuts() {
       // Cmd 视同 Ctrl（macOS 开发态惯例；Linux 主环境无影响）
       const ctrl = e.ctrlKey || e.metaKey
       if (!ctrl) return
-      // 消费才吞（未映射组合/no-op 放行——Ctrl+S 浏览器保存、无激活 Tab 的 Ctrl+W）
+      // 消费才吞（未映射组合放行——Ctrl+S 浏览器保存；Ctrl+W 无激活 Tab 也吞，见 dispatch）
       if (dispatch(store, t, e.key, ctrl, e.shiftKey, e.altKey)) e.preventDefault()
     }
     window.addEventListener("keydown", onKey)

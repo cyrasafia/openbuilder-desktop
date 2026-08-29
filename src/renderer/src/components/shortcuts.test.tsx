@@ -70,10 +70,10 @@ describe("useShortcuts 分发", () => {
     expect(actions.showGuidePage).not.toHaveBeenCalled()
   })
 
-  it("Ctrl+W 无激活 Tab → no-op；有 file 激活 → 关闭并入关闭栈", () => {
+  it("Ctrl+W 无激活 Tab → 仅吞不动作（防默认菜单关窗）；有 file 激活 → 关闭并入关闭栈", () => {
     render(<Harness />)
     const ev0 = press({ key: "w", ctrlKey: true })
-    expect(ev0.defaultPrevented).toBe(false)
+    expect(ev0.defaultPrevented).toBe(true)
     expect(actions.closeTab).not.toHaveBeenCalled()
 
     actions.activeTab = { kind: "file", key: "file:/repo/a.md" }
