@@ -358,35 +358,49 @@
   margin-bottom: 6px;
 }
 
-.row-action {
-  visibility: hidden;
-}
-
-.tree-row:hover .row-action {
-  visibility: visible;
-}
-
-/* 行内最右操作钮不贴行右缘：行 padding 6px + 本 margin 2px = 右缘距 8px。
-   2026-08-29 修订：原 -5px 与指示点中心线对齐（减少 hover 显隐横跳），但视觉贴边，
-   用户反馈后弃用——显隐切换本身已隐藏指示点，横跳可接受 */
-.tree-row .row-action:last-of-type {
-  margin-right: 2px;
-}
-
-/* 相邻两个操作钮（新建工作区↔关闭 / 新建工作区↔删除）间距收紧：行 gap 6px − 3px = 3px */
-.tree-row .row-action + .row-action {
-  margin-left: -3px;
-}
-
-/* 会话状态指示器：靠右浮层，默认覆盖行内操作按钮；hover 行时隐藏让位给操作按钮 */
-.session-indicator {
+/* 行右缘操作 overlay（2026-08-29 修订）：绝对定位不占行内流式空间，名称/路径
+   不再被隐藏按钮截断。背景 = 渐变淡出区 + 实底胶囊：左起 40px 由透明渐入行底色，
+   行尾路径/指示器区渐隐而非硬切（下垫文本在半透段可读、靠钮侧全遮）——
+   padding-left 48 略大于渐变段，保证首个按钮前已完全实底。
+   显隐走 visibility（同指示器 idiom）；右缘 4px + 内衬 2px = 按钮距行右缘 6px，
+   与行 padding 对齐 */
+.row-actions {
   position: absolute;
-  right: 6px;
+  right: 4px;
   top: 50%;
   transform: translateY(-50%);
   display: flex;
   align-items: center;
+  gap: 2px;
+  padding: 2px 2px 2px 48px;
+  border-radius: var(--radius-chip);
+  background: linear-gradient(to right, transparent, var(--surface-container-high) 40px);
+  visibility: hidden;
+}
+
+/* overlay 仅行 hover 显示；渐变终点色取行当前 hover 底色与行融为一体：
+   非 active 行 = container-high（同 .tree-row:hover），active 行 = 选中底
+   （同 .tree-row.active 的 color-mix，防胶囊在选中行上发亮割裂） */
+.tree-row:hover:not(.disabled) .row-actions {
+  visibility: visible;
+}
+
+.tree-row.active .row-actions {
+  background: linear-gradient(
+    to right,
+    transparent,
+    color-mix(in srgb, var(--surface-container-highest) 96%, var(--on-surface)) 40px
+  );
+}
+
+/* 会话状态指示器：行内流式元素（名称/路径行尾，flex-shrink:0），文本在其前
+   省略，不再与浮层指示器重叠（2026-08-29 修订：原 absolute 靠右浮层，聚合 chip
+   宽于操作钮区时压到路径文本）。行 hover 时隐藏让位给操作 overlay */
+.session-indicator {
+  display: flex;
+  align-items: center;
   gap: 3px;
+  flex-shrink: 0;
 }
 
 .tree-row:hover .session-indicator {
@@ -396,7 +410,8 @@
 /* 会话指示器 idle 点走 session-idle 变体（2026-08-26 统一，原作用域特例
    .session-indicator .status-dot.idle 废弃——Tab 条常显后两处同规则，避免
    裸 idle 与 session-* 两套几何并存再引入抖动）。
-   12px 盒亦让最右点中心线稳定在右缘 12px——worktree 删除钮按此对齐 */
+   12px 盒与 Tab 条状态点同几何（原"最右点中心线定右缘 12px、删除钮对齐"依据
+   随按钮改 overlay 废弃——2026-08-29，指示器行内流式后最右点贴行 padding 右缘） */
 
 .session-count {
   min-width: 16px;

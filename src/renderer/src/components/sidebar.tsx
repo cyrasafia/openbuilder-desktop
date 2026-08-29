@@ -221,36 +221,42 @@ function ProjectTree() {
                   <span className="project-name">{e.name}</span>
                   <span className="project-path">{e.directory}</span>
                 </span>
+                {/* 指示器行内流式（名称/路径行尾），文本提前省略不与其重叠 */}
                 <SessionIndicator sessions={store.sessionsInDirectory(e.project.id, e.directory)} />
-                {/* 工作区新增仅普通项目（global 非 git，无 worktree）；hover 全行显示，
-                    非当前项目点击不切当前项目、仅在其下创建 worktree（createWorkspace 接 projectId） */}
-                {!e.isGlobal && (
-                  <button
-                    className="icon-btn row-action"
-                    title={t.newWorkspace}
-                    onClick={(ev) => {
-                      ev.stopPropagation()
-                      // 不弹窗：name 省略，由 server 生成随机 slug
-                      void store.createWorkspace(e.project.id)
-                    }}
-                  >
-                    <FolderPlus size={16} aria-hidden />
-                  </button>
-                )}
-                {/* 关闭按钮：任意已打开项目/global 目录均可关闭（closeEntry 按 key 工作，
-                    纯客户端状态，无副作用）；单项目时无意义隐藏。2026-08-25 修订：
-                    原 global 仅激活态、普通项目仅当前项目可关，hover 不一致 */}
-                {entries.length > 1 && (
-                  <button
-                    className="icon-btn row-action"
-                    title={t.closeProject}
-                    onClick={(ev) => {
-                      ev.stopPropagation()
-                      void store.closeEntry(e.key)
-                    }}
-                  >
-                    <X size={16} aria-hidden />
-                  </button>
+                {/* 操作按钮 = 单个绝对定位带背景 overlay（hover 全行显示），不占行内流式空间，
+                    名称/路径不再被隐藏按钮截断。工作区新增仅普通项目（global 非 git，无
+                    worktree），非当前项目点击不切当前项目、仅在其下创建 worktree
+                    （createWorkspace 接 projectId）；关闭按钮任意已打开项目/global 目录均可
+                    （closeEntry 按 key 工作，纯客户端状态，无副作用），单项目时无意义隐藏。
+                    2026-08-25 修订：原 global 仅激活态、普通项目仅当前项目可关，hover 不一致 */}
+                {(!e.isGlobal || entries.length > 1) && (
+                  <div className="row-actions">
+                    {!e.isGlobal && (
+                      <button
+                        className="icon-btn row-action"
+                        title={t.newWorkspace}
+                        onClick={(ev) => {
+                          ev.stopPropagation()
+                          // 不弹窗：name 省略，由 server 生成随机 slug
+                          void store.createWorkspace(e.project.id)
+                        }}
+                      >
+                        <FolderPlus size={16} aria-hidden />
+                      </button>
+                    )}
+                    {entries.length > 1 && (
+                      <button
+                        className="icon-btn row-action"
+                        title={t.closeProject}
+                        onClick={(ev) => {
+                          ev.stopPropagation()
+                          void store.closeEntry(e.key)
+                        }}
+                      >
+                        <X size={16} aria-hidden />
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
               {/* 工作区跟随项目，全部展示（仅当前项目可新增/删除；global 无子行） */}
@@ -279,19 +285,23 @@ function ProjectTree() {
                       <LoaderCircle className="typing-spinner ws-deleting" size={14} aria-label={t.deletingWorkspace} />
                     ) : (
                       <>
+                        {/* 指示器行内流式（label 行尾），文本提前省略不与其重叠 */}
                         <SessionIndicator sessions={store.sessionsInDirectory(e.project.id, w.directory)} />
-                        {/* hover 全行显示；非当前项目点击不切当前项目、仅删除该 worktree
-                           并清理其项目会话/Tab/记忆（removeWorkspace 接 projectId） */}
-                        <button
-                          className="icon-btn row-action"
-                          title={t.deleteWorkspace}
-                          onClick={(ev) => {
-                            ev.stopPropagation()
-                            setPendingDelete({ directory: w.directory, projectId: e.project.id })
-                          }}
-                        >
-                          <Trash2 size={16} aria-hidden />
-                        </button>
+                        {/* 删除按钮 = 绝对定位带背景 overlay（hover 全行显示），不占行内流式
+                            空间；非当前项目点击不切当前项目、仅删除该 worktree 并清理其
+                            项目会话/Tab/记忆（removeWorkspace 接 projectId） */}
+                        <div className="row-actions">
+                          <button
+                            className="icon-btn row-action"
+                            title={t.deleteWorkspace}
+                            onClick={(ev) => {
+                              ev.stopPropagation()
+                              setPendingDelete({ directory: w.directory, projectId: e.project.id })
+                            }}
+                          >
+                            <Trash2 size={16} aria-hidden />
+                          </button>
+                        </div>
                       </>
                     )}
                   </div>
@@ -331,7 +341,8 @@ function ProjectTree() {
  * running（busy 运行绿光晕呼吸）——消费 dotStateFor，sessionStatus 单一事实源；
  * 会话点统一 session-* 变体类（12px 盒几何与其他指示对齐）。
  * ≤4 个逐会话状态点；>4 个按状态聚合为数字 chip（待输入琥珀、重试红、运行绿、
- * 空闲灰 chip，各自为 0 时省略）。靠右浮层覆盖操作按钮，行 hover 时隐藏。
+ * 空闲灰 chip，各自为 0 时省略）。行内流式元素（名称/路径行尾，flex-shrink:0），
+ * 文本在其前省略不重叠；行 hover 时隐藏（visibility 保占位）让位给操作 overlay。
  */
 function SessionIndicator({ sessions }: { sessions: Session[] }) {
   const store = useStore()
