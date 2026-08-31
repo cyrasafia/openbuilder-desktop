@@ -53,10 +53,10 @@ export interface FileRef {
 > 初版为"drag-over 高亮 + drop 落位"。左栏项目行拖拽
 > （[design-project-drag-reorder.md](./design-project-drag-reorder.md)）确立
 > **实时预览 + 所见即所得**模式后同日迁移：拖拽引用悬停 composer 即见将落位的
-> 占位 chip，松手落位与预览一致。高亮保留（drop 区指示），落位判定从"松手才知道"
-> 变为"悬停即所见"。
+> 占位 chip，松手落位与预览一致。初版整框 drop-active 高亮废弃（2026-08-31，
+> 占位 chip 已是落位指示，整框虚线冗余），落位判定从"松手才知道"变为"悬停即所见"。
 
-- FileRow `draggable`：dragstart `setData("application/x-openbuilder-fileref", JSON.stringify(FileRef))`（自定义 MIME，与 Tab 拖拽同约定，避免文本默认插入）+ **带外登记拖拽负载**（模块级 `setDraggingFileRef(ref)`，dragend 清除）——dragover 阶段浏览器禁读 `dataTransfer.getData`，悬停预览只能取 dragstart 登记的同页副本。跨窗口拖拽（多窗口实例）带外副本不跨 renderer：目标窗口无占位 chip（仅 drop-active 高亮），drop 仍正常提交——优雅降级（review 发现）
+- FileRow `draggable`：dragstart `setData("application/x-openbuilder-fileref", JSON.stringify(FileRef))`（自定义 MIME，与 Tab 拖拽同约定，避免文本默认插入）+ **带外登记拖拽负载**（模块级 `setDraggingFileRef(ref)`，dragend 清除）——dragover 阶段浏览器禁读 `dataTransfer.getData`，悬停预览只能取 dragstart 登记的同页副本。跨窗口拖拽（多窗口实例）带外副本不跨 renderer：目标窗口无占位 chip（无任何预览指示），drop 仍正常提交——优雅降级（review 发现）
 - composer（chat + 引导页）dragover（识别自定义 MIME 才 preventDefault）+ **实时预览**：拖拽引用悬停即在引用条**末位**渲染**占位 chip**（`.ref-chip.pending`：虚线框 + 降不透明度，无 × 按钮——尚未是真实引用）——所见即所得，drop 落位与预览一致；absolute **已引用时不出占位**（`addFileRef` 按 absolute 去重，提交将是 no-op，占位如实反映"无变化"）；dragover 高频触发：同 absolute 保留旧引用 bail out
 - **提交仍挂 `drop`（与重排序"dragend 恒提交"取舍相反）**：引用是复制语义——松手在 composer 外/原生取消 = 用户取消，不应落位；drop 解析 dataTransfer（**权威负载**，字段校验同初版：缺字段/坏 JSON → 丢弃，不产出 file://undefined，带外副本仅用于预览不用于提交）→ `addFileRef`。占位清理：dragleave（真正离开 composer）+ drop + **dragend 兜底**（源元素 dragend 恒触发且冒泡，window 一次性监听）——Esc 原生取消等 dragleave 不可靠路径不残留幽灵 chip
 

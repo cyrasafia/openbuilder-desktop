@@ -153,7 +153,6 @@ export function useFileRefInput(opts: {
     onDrop: (e: ReactDragEvent<HTMLElement>) => void
     onDragLeave: (e: ReactDragEvent<HTMLElement>) => void
   }
-  dropActive: boolean
 } {
   const store = useStore()
   const { t } = useI18n()
@@ -255,9 +254,9 @@ export function useFileRefInput(opts: {
     [close, pick, state],
   )
 
-  const [dropActive, setDropActive] = useState(false)
   // 实时预览（design-file-reference §3.3 修订）：拖拽引用悬停 composer 期间，
-  // 引用条末位渲染占位 chip——所见即所得，drop 落位与预览一致
+  // 引用条末位渲染占位 chip——所见即所得，drop 落位与预览一致（占位 chip 即
+  // 落位指示，不再叠加 drop-active 虚线框高亮）
   const [pending, setPending] = useState<FileRef | null>(null)
   const dragProps = useMemo(
     () => ({
@@ -265,7 +264,6 @@ export function useFileRefInput(opts: {
         if (!e.dataTransfer.types.includes(FILEREF_MIME)) return
         e.preventDefault()
         e.dataTransfer.dropEffect = "copy"
-        setDropActive(true)
         // dragover 阶段 getData 禁读，负载取 dragstart 登记的带外副本；
         // absolute 已引用时不出占位（addFileRef 按 absolute 去重，提交将是
         // no-op——占位如实反映"无变化"）。同值保留旧引用 bail out
@@ -283,14 +281,10 @@ export function useFileRefInput(opts: {
         // 松手在 composer 外/原生取消不经此路径——引用是复制语义，落位只认 drop
         const ref = fileRefFromDataTransfer(e.dataTransfer)
         if (ref) store.addFileRef(refKey, ref)
-        setDropActive(false)
         setPending(null)
       },
       onDragLeave: (e: ReactDragEvent<HTMLElement>) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
-          setDropActive(false)
-          setPending(null)
-        }
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setPending(null)
       },
     }),
     [refKey, store],
@@ -300,10 +294,7 @@ export function useFileRefInput(opts: {
   // 靠）时清占位防幽灵 chip：dragend 在源元素上恒触发且冒泡，window 一次性监听
   useEffect(() => {
     if (!pending) return
-    const clear = () => {
-      setDropActive(false)
-      setPending(null)
-    }
+    const clear = () => setPending(null)
     window.addEventListener("dragend", clear, { once: true })
     return () => window.removeEventListener("dragend", clear)
   }, [pending])
@@ -359,5 +350,5 @@ export function useFileRefInput(opts: {
     </div>
   ) : null
 
-  return { chips, picker, onTextChange, onKeyDown, dragProps, dropActive }
+  return { chips, picker, onTextChange, onKeyDown, dragProps }
 }

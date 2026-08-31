@@ -1855,16 +1855,10 @@
   color: var(--on-surface);
 }
 
-/* 拖拽悬停高亮：composer/guide-composer 接收文件引用 drop 时 */
-.composer.drop-active,
-.guide-composer.drop-active {
-  outline: 2px dashed var(--primary);
-  outline-offset: -4px;
-}
-
 /* 拖拽引用悬停 composer 的实时预览（design-file-reference §3.3 修订，参考
    design-project-drag-reorder）：占位 chip 虚线框 + 降不透明度，drop 落位与
-   预览一致；无 × 按钮（尚未是真实引用，提交只认 drop） */
+   预览一致；无 × 按钮（尚未是真实引用，提交只认 drop）。占位 chip 已是落位
+   指示，不再叠加整框 drop-active 高亮（2026-08-31 去除，初版高亮废弃） */
 .ref-chip.pending {
   border-style: dashed;
   opacity: 0.55;

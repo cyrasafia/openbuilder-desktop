@@ -420,7 +420,7 @@ function GuidePage() {
         <div className="guide-session">
           <div className="hero">{scopeName}</div>
           <div className="guide-hint">{t.guideHint}</div>
-          <div className={"guide-composer" + (refInput.dropActive ? " drop-active" : "")} {...refInput.dragProps}>
+          <div className="guide-composer" {...refInput.dragProps}>
             {refInput.chips}
             <textarea
               ref={guideTaRef}
@@ -871,7 +871,7 @@ function ChatView({ sessionID }: { sessionID: string }) {
         </div>
       </div>
       <ChatFooter sessionID={sessionID} />
-      <div className={"composer" + (refInput.dropActive ? " drop-active" : "")} {...refInput.dragProps}>
+      <div className="composer" {...refInput.dragProps}>
         {/* 回滚暂存条（design-message-revert §3.4）：composer 内常驻一行，撤销入口 */}
         {revertMessageID && <RevertBar sessionID={sessionID} count={revertedCount} busy={busy} />}
         {/* 覆盖层：锚在 composer 上沿悬浮于消息流（不占布局、不顶起消息） */}
