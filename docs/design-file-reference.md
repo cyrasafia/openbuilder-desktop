@@ -48,10 +48,17 @@ export interface FileRef {
 - `FileContextMenu` 加项（文件/目录均可）：目标路由 = **激活 chat Tab 的 composer 优先**（sessionID 键），否则**引导页 composer**（作用域目录键）——当前激活为非 chat Tab 时引用落在引导页，用户经 Ctrl+T/关 Tab 回引导页可见 chip
 - FileNode → FileRef 直映射（path/absolute/name/type）
 
-### 3.3 文件树拖拽进输入框
+### 3.3 文件树拖拽进输入框（2026-08-29 修订：实时预览 + 所见即所得）
 
-- FileRow `draggable`：dragstart `setData("application/x-openbuilder-fileref", JSON.stringify(FileRef))`（自定义 MIME，与 Tab 拖拽同约定，避免文本默认插入）；drop 侧解析对 path/absolute 字段类型校验（缺字段/坏 JSON → 丢弃，不产出 file://undefined）
-- composer textarea（chat + 引导页）dragover（识别自定义 MIME 才 preventDefault）+ drop 解析 → `addFileRef`；drag-over 高亮
+> 初版为"drag-over 高亮 + drop 落位"。左栏项目行拖拽
+> （[design-project-drag-reorder.md](./design-project-drag-reorder.md)）确立
+> **实时预览 + 所见即所得**模式后同日迁移：拖拽引用悬停 composer 即见将落位的
+> 占位 chip，松手落位与预览一致。初版整框 drop-active 高亮废弃（2026-08-31，
+> 占位 chip 已是落位指示，整框虚线冗余），落位判定从"松手才知道"变为"悬停即所见"。
+
+- FileRow `draggable`：dragstart `setData("application/x-openbuilder-fileref", JSON.stringify(FileRef))`（自定义 MIME，与 Tab 拖拽同约定，避免文本默认插入）+ **带外登记拖拽负载**（模块级 `setDraggingFileRef(ref)`，dragend 清除）——dragover 阶段浏览器禁读 `dataTransfer.getData`，悬停预览只能取 dragstart 登记的同页副本。跨窗口拖拽（多窗口实例）带外副本不跨 renderer：目标窗口无占位 chip（无任何预览指示），drop 仍正常提交——优雅降级（review 发现）
+- composer（chat + 引导页）dragover（识别自定义 MIME 才 preventDefault）+ **实时预览**：拖拽引用悬停即在引用条**末位**渲染**占位 chip**（`.ref-chip.pending`：虚线框 + 降不透明度，无 × 按钮——尚未是真实引用）——所见即所得，drop 落位与预览一致；absolute **已引用时不出占位**（`addFileRef` 按 absolute 去重，提交将是 no-op，占位如实反映"无变化"）；dragover 高频触发：同 absolute 保留旧引用 bail out
+- **提交仍挂 `drop`（与重排序"dragend 恒提交"取舍相反）**：引用是复制语义——松手在 composer 外/原生取消 = 用户取消，不应落位；drop 解析 dataTransfer（**权威负载**，字段校验同初版：缺字段/坏 JSON → 丢弃，不产出 file://undefined，带外副本仅用于预览不用于提交）→ `addFileRef`。占位清理：dragleave（真正离开 composer）+ drop + **dragend 兜底**（源元素 dragend 恒触发且冒泡，window 一次性监听）——Esc 原生取消等 dragleave 不可靠路径不残留幽灵 chip
 
 ## 4. 发送构造（守卫三处扩展，移植移动端 3R-A/6R-C/6R-D）
 
@@ -81,16 +88,17 @@ export interface FileRef {
 | `src/shared/api-types.ts` | `FilePartInput`（发送）+ `FileDisplayPart`（回灌消费 type guard 依据） |
 | `src/shared/rest-client.ts` | `promptAsync` parts 类型放宽；`findFiles(query, directory)`；`sendCommand` 携带 parts |
 | `src/renderer/src/store/app-store.ts` | `FileRef` + `fileRefToFilePart` + `fileRefs` Map 及读写清理；`sendPrompt` refs 参数与 parts 构造；乐观消息扩 refs |
-| `src/renderer/src/components/file-ref.tsx` | 新：`FileRefChips` + `useFileRefInput`（@ 浮层 hook，返回 picker/chips/onTextChange/onKeyDown/dragProps）+ `atMentionQuery` 纯函数 + drop 处理 helper |
+| `src/renderer/src/components/file-ref.tsx` | 新：`FileRefChips`（含 `pending` 占位渲染）+ `useFileRefInput`（@ 浮层 hook，返回 picker/chips/onTextChange/onKeyDown/dragProps）+ `atMentionQuery` 纯函数 + drop 处理 helper + 拖拽负载带外登记 `setDraggingFileRef`；2026-08-29 修订：dragover 实时占位 chip 预览 + dragend 兜底清理 |
 | `src/renderer/src/components/workspace.tsx` | composer 接线（chip 条、@ 触发、drop）；send() 守卫与 parts 扩展；user 气泡 chip 渲染 |
-| `src/renderer/src/components/file-panel.tsx` | 右键菜单项 + FileRow draggable |
+| `src/renderer/src/components/file-panel.tsx` | 右键菜单项 + FileRow draggable（dragstart 带外登记负载、dragend 清除） |
 | `src/renderer/src/i18n/index.ts` | `fileRefToSession` / `fileRefNoMatch` 等 |
-| `src/renderer/src/styles/app.css` | `.ref-chips` / `.ref-chip` / `.file-ref-picker` |
+| `src/renderer/src/styles/app.css` | `.ref-chips` / `.ref-chip` / `.ref-chip.pending` 占位 / `.file-ref-picker` |
 | 测试 | `atMentionQuery` 纯函数；`fileRefToFilePart`；store（增删去重/清理挂点/sendPrompt parts/纯引用守卫）；组件（chips 渲染删除、picker 键盘交互） |
 
 ## 8. 验收（对齐 spec #4）
 
 - 三入口各添加一个文件 + 一个目录（@ 仅文件），chip 正确、× 可删
+- 文件树拖拽悬停 composer 即见引用条末位占位 chip（虚线降透明），松手落位与预览一致；已引用文件悬停不出占位；拖离/Esc 取消不残留占位
 - 纯引用可发送；server 端 AI 收到文件/目录内容（Read tool 注入）
 - 引用 + 文本混合发送 parts 序列正确；斜杠命令携带引用
 - user 气泡（乐观 + 回灌）渲染引用 chip；文本文件 chip 点击开文件 Tab；目录/data: chip 不可点

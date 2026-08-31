@@ -3665,23 +3665,45 @@ export class AppStore {
   }
 
   /**
-   * Tab 条内拖拽重排序（design-tab-drag-rename §1）：作用于全局 tabs 数组
-   * （作用域视图是投影）——取出拖拽项后按落位（目标前/后）插入。chat Tab
-   * 顺序经记忆派生落盘（design-tab-memory §3.2 预留的顺序语义兑现）。
-   * 位置无变化时早退（不发 emit，指示线残留由 UI 侧清理）。
+   * Tab 条内拖拽重排序（design-tab-drag-rename §1，2026-08-29 修订为实时预览 +
+   * 所见即所得，参考 design-project-drag-reorder）：按**松手时预览 DOM 序**整体
+   * 重排——keys = 当前作用域可见 Tab 的目标顺序。作用于全局 tabs 数组（作用域
+   * 视图是投影）：可见 Tab 的槽位按 keys 序**逐槽回填**，非可见 Tab 槽位与跨
+   * 作用域 Tab 的相对顺序不受影响；不经 slot→目标键换算（换算依赖最后一次
+   * dragover 的状态提交，与松手存在竞态窗口——项目行实测同坑）。keys 去重、
+   * 未知键忽略（拖拽中列表变化的防御）；顺序无变化早退（不发 emit）。
+   * chat 顺序经记忆派生落盘（design-tab-memory §3.2 预留的顺序语义兑现，
+   * 仅重排含 chat Tab 时同步——纯 file/diff 重排派生结果不变）：可见 Tab
+   * 同属一个作用域目录，一次 syncScopeMemory 覆盖该作用域 chat 序。
    */
-  moveTab(dragKey: string, targetKey: string, position: "before" | "after" = "before") {
-    if (dragKey === targetKey) return
-    const from = this.tabs.findIndex((t) => t.key === dragKey)
-    const targetIdx = this.tabs.findIndex((t) => t.key === targetKey)
-    if (from < 0 || targetIdx < 0) return
-    const insertAt = position === "before" ? targetIdx : targetIdx + 1
-    // 移除拖拽项后落点换算：落点在其后则前移一位；结果不变即 no-op
-    const finalAt = insertAt > from ? insertAt - 1 : insertAt
-    if (finalAt === from) return
-    const [moved] = this.tabs.splice(from, 1)
-    this.tabs.splice(finalAt, 0, moved!)
-    if (moved!.kind === "chat" && moved!.directory) this.syncScopeMemory(moved!.directory)
+  applyTabOrder(keys: string[]) {
+    const known = new Map(this.tabs.map((t) => [t.key, t] as const))
+    const seen = new Set<string>()
+    const desired: TabEntity[] = []
+    for (const k of keys) {
+      if (seen.has(k)) continue
+      seen.add(k)
+      const tab = known.get(k)
+      if (tab) desired.push(tab)
+    }
+    if (desired.length === 0) return
+    let i = 0
+    const next = this.tabs.map((t) => (seen.has(t.key) ? desired[i++]! : t))
+    let changed = false
+    for (let j = 0; j < next.length; j++) {
+      if (next[j] !== this.tabs[j]) {
+        changed = true
+        break
+      }
+    }
+    if (!changed) return
+    this.tabs = next
+    // chat 顺序经记忆派生落盘（design-tab-memory §3.2 预留的顺序语义兑现）：
+    // 仅重排含 chat Tab 时同步（write discipline 同旧 moveTab——纯 file/diff
+    // 重排的派生结果不变，不产生冗余落盘）；可见 Tab 同属一个作用域目录，
+    // 一次 syncScopeMemory 覆盖该作用域 chat 序
+    const chatTab = desired.find((t) => t.kind === "chat")
+    if (chatTab?.directory) this.syncScopeMemory(chatTab.directory)
     this.emit()
   }
 

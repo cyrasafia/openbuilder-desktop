@@ -2463,37 +2463,30 @@ describe("关闭栈跨作用域恢复（design-keyboard-shortcuts §2.1 修订�
 })
 
 describe("Tab 拖拽重排与重命名（design-tab-drag-rename）", () => {
-  it("moveTab 前插目标位：拖拽项落在目标之前", () => {
+  it("applyTabOrder 按预览 DOM 序整体重排（所见即所得）", () => {
     store.tabs = [
       { kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT },
       { kind: "chat", key: "chat:s2", projectId: "proj1", title: "s2", directory: ROOT },
       { kind: "file", key: `file:${ROOT}/a.md`, projectId: "proj1", title: "a.md", directory: ROOT },
     ]
-    store.moveTab("chat:s2", "chat:s1")
-    expect(store.tabs.map((t) => t.key)).toEqual(["chat:s2", "chat:s1", `file:${ROOT}/a.md`])
+    store.applyTabOrder(["chat:s2", `file:${ROOT}/a.md`, "chat:s1"])
+    expect(store.tabs.map((t) => t.key)).toEqual(["chat:s2", `file:${ROOT}/a.md`, "chat:s1"])
   })
 
-  it("moveTab chat 顺序经记忆派生落盘；跨作用域 Tab 相对顺序不受扰", () => {
+  it("applyTabOrder chat 顺序经记忆派生落盘；跨作用域 Tab 槽位与相对顺序不受扰", () => {
     store.tabs = [
       { kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT },
       { kind: "chat", key: "chat:wt", projectId: "proj1", title: "wt", directory: WT1 },
       { kind: "chat", key: "chat:s2", projectId: "proj1", title: "s2", directory: ROOT },
     ]
     store.activeTabKey = "chat:s1"
-    store.moveTab("chat:s2", "chat:s1")
-    expect(store.tabs.map((t) => t.key)).toEqual(["chat:s2", "chat:s1", "chat:wt"])
+    // keys 仅覆盖 ROOT 作用域可见 Tab（松手时 Tab 条 DOM 序）
+    store.applyTabOrder(["chat:s2", "chat:s1"])
+    // 逐槽回填：wt 槽位不动，ROOT 作用域投影 = [s2, s1]
+    expect(store.tabs.map((t) => t.key)).toEqual(["chat:s2", "chat:wt", "chat:s1"])
     // ROOT 作用域记忆 = [s2, s1]（wt 不参与）
     const mem = store.tabMemory.default?.[ROOT]
     expect(mem?.tabs).toEqual(["s2", "s1"])
-  })
-
-  it("moveTab 目标消失回插原位（并发防御）", () => {
-    store.tabs = [
-      { kind: "file", key: `file:${ROOT}/a.md`, projectId: "proj1", title: "a.md", directory: ROOT },
-      { kind: "file", key: `file:${ROOT}/b.md`, projectId: "proj1", title: "b.md", directory: ROOT },
-    ]
-    store.moveTab(`file:${ROOT}/b.md`, "file:/ghost/c.md")
-    expect(store.tabs.map((t) => t.key)).toEqual([`file:${ROOT}/a.md`, `file:${ROOT}/b.md`])
   })
 
   it("renameSession：成功合并会话 + Tab 标题即时同步", async () => {
@@ -2533,25 +2526,35 @@ describe("Tab 拖拽重排与重命名（design-tab-drag-rename）", () => {
   })
 })
 
-describe("moveTab 落位分区（design-tab-drag-rename §1 修订）", () => {
-  it("after 落位可达末位：拖首项到末项右半区", () => {
+describe("applyTabOrder 防御（design-tab-drag-rename §1 修订）", () => {
+  it("未知键忽略 + 重复键去重：其余键仍按预览序重排（拖拽中列表变化的防御）", () => {
     store.tabs = [
       { kind: "file", key: "file:/1", projectId: "proj1", title: "1", directory: ROOT },
       { kind: "file", key: "file:/2", projectId: "proj1", title: "2", directory: ROOT },
       { kind: "file", key: "file:/3", projectId: "proj1", title: "3", directory: ROOT },
     ]
-    store.moveTab("file:/1", "file:/3", "after")
-    expect(store.tabs.map((t) => t.key)).toEqual(["file:/2", "file:/3", "file:/1"])
+    store.applyTabOrder(["file:/3", "file:/ghost", "file:/1", "file:/1"])
+    expect(store.tabs.map((t) => t.key)).toEqual(["file:/3", "file:/2", "file:/1"])
   })
 
-  it("位置无变化早退：相邻前插 no-op 不动顺序、不发通知", () => {
+  it("纯 file Tab 重排不写记忆（write discipline 同旧 moveTab：仅含 chat 才同步）", () => {
+    store.tabs = [
+      { kind: "file", key: "file:/1", projectId: "proj1", title: "1", directory: ROOT },
+      { kind: "file", key: "file:/2", projectId: "proj1", title: "2", directory: ROOT },
+    ]
+    store.applyTabOrder(["file:/2", "file:/1"])
+    expect(store.tabs.map((t) => t.key)).toEqual(["file:/2", "file:/1"])
+    expect(store.tabMemory.default?.[ROOT]).toBeUndefined()
+  })
+
+  it("顺序无变化早退：同序提交 no-op 不动顺序、不发通知", () => {
     store.tabs = [
       { kind: "file", key: "file:/1", projectId: "proj1", title: "1", directory: ROOT },
       { kind: "file", key: "file:/2", projectId: "proj1", title: "2", directory: ROOT },
     ]
     let notified = 0
     const unsub = store.subscribe(() => notified++)
-    store.moveTab("file:/1", "file:/2", "before")
+    store.applyTabOrder(["file:/1", "file:/2"])
     unsub()
     expect(store.tabs.map((t) => t.key)).toEqual(["file:/1", "file:/2"])
     // 早退的可观测差异：零 emit（顺序断言在无早退实现下同样通过，无判别力）

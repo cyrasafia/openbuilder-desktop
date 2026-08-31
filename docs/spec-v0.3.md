@@ -8,8 +8,8 @@
 |---|------|------|
 | 1 | 栏收起/展开 | 左/右栏收起后**完全不展示**（无残留窄条）；收起/展开按钮放在标题栏（导航条）右侧、最小化按钮左边，左右栏各一个。折叠态与各栏宽度持久化（`layout.state` IPC 键），重启还原；补齐拖拽调宽 |
 | 2 | 快捷键体系 | Ctrl+T 新建 Tab、Ctrl+W 关闭激活 Tab（chat 沿用流式确认+归档语义）、Ctrl+Tab / Ctrl+Shift+Tab / Ctrl+PgUp / Ctrl+PgDn 切换。**Ctrl+Shift+T 恢复刚关闭的 Tab**：关闭栈记录已关 Tab，chat 恢复=重开（取消归档）、file/diff/browser 按标识重开、**终端恢复=在原 cwd 新建一个终端**（原 pty 已随关 Tab 销毁）；会话已被删除则跳过该项。**Ctrl+Alt+↑/↓ 在左栏项目/工作区间切换**：按左栏显示顺序（项目行 → 其下工作区行，自上而下）移动当前作用域，等价于点击对应行（先切换后加载），到边界循环。不做 Ctrl+数字跳转（与系统/输入法快捷键易冲突） |
-| 3 | Tab 拖动与重命名 | Tab 条内 HTML5 拖拽重排序（仅当前作用域可见 Tab 间），顺序写入 Tab 记忆。**重命名仅限 chat Tab**（= 会话重命名，`PATCH /session/{id}` title），双击标签行内编辑，Enter 提交 / Esc 取消 |
-| 4 | 文件引用 | 把当前作用域文件/目录引用进消息（`FilePartInput.source`，零字节、服务端注入内容，契约移植移动端 `design-file-reference`）。三种入口：输入框打 `@` 弹文件搜索浮层选中；文件树右键「引用到会话」；文件树拖拽进输入框。引用以 chip 呈现于输入区（可删），支持纯引用发送；用户气泡渲染引用回灌 |
+| 3 | Tab 拖动与重命名 | Tab 条内 HTML5 拖拽重排序（仅当前作用域可见 Tab 间；2026-08-29 修订为**实时预览 + 所见即所得**落位，与左栏项目行拖拽同模式），顺序写入 Tab 记忆。**重命名仅限 chat Tab**（= 会话重命名，`PATCH /session/{id}` title），双击标签行内编辑，Enter 提交 / Esc 取消 |
+| 4 | 文件引用 | 把当前作用域文件/目录引用进消息（`FilePartInput.source`，零字节、服务端注入内容，契约移植移动端 `design-file-reference`）。三种入口：输入框打 `@` 弹文件搜索浮层选中；文件树右键「引用到会话」；文件树拖拽进输入框（2026-08-29 修订：悬停即见引用条末位**占位 chip 实时预览**，drop 落位与预览一致）。引用以 chip 呈现于输入区（可删），支持纯引用发送；用户气泡渲染引用回灌 |
 | 5 | 终端 Tab | 内嵌终端（xterm.js + server pty API：`POST /pty` 创建、connect-token + WebSocket 连接、`?cursor=` 断线续传回放、`PUT` resize、`DELETE` 销毁）。新建终端 cwd = 当前作用域目录，Tab 归作用域；**关闭 Tab = 杀掉 pty**（运行中二次确认）；**终端恒深色渲染，不随主题切换** |
 | 6 | 浏览器 Tab | WebContentsView 内嵌浏览器（地址栏 + 前进/后退/刷新 + 打开本地文件），Tab 归作用域。**文件树点击 `.html/.htm` 默认在浏览器 Tab 打开（`file://` URL）**；右键菜单提供「查看源码」，在文件 Tab 打开 HTML 源码（文件 Tab 仅源码、无预览，原 iframe 预览方案废弃）。导航安全：远端页面禁跳 `file://`，外链走系统浏览器 |
 | 7 | PDF 预览 | 文件 Tab 内预览 PDF：文件 Tab 内嵌专用 WebContentsView + 顶层 `file://` 导航（Chromium 内置 PDFium 查看器渲染；iframe/embed/pdfjs 路线实测不可行，见 design-pdf-preview §0）。仅预览态；非二进制/错误走占位（随文件监听刷新），内容变更重开 Tab 即见 |
