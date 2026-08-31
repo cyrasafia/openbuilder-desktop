@@ -2932,11 +2932,11 @@
   padding: 16px 28px 8px;
 }
 .dialog-project .dialog-search {
-  margin: 8px 28px 0;
+  margin: 8px 28px 6px;
 }
 .dialog-project .dialog-body {
   flex: 1;
-  padding: 10px 28px 8px;
+  padding: 2px 28px 8px;
 }
 
 /* 项目选择器底部动作行（design-new-project §4.3）：错误左对齐内联（省略号截断，
