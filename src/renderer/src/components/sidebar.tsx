@@ -512,6 +512,13 @@ function ProjectPicker({ onClose }: { onClose: () => void }) {
   const [sel, setSel] = useState(0)
   const searchRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  // 新建项目流（design-new-project）：系统目录选择器 busy/错误态——错误内联不关弹窗可重试
+  const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
+  // 在途创建的中止器（评审 R3）：弹窗被 Escape/遮罩关闭（卸载）即 abort，
+  // 在途 resolve 完成后不再打开/切换作用域
+  const createAbortRef = useRef<AbortController | null>(null)
+  useEffect(() => () => createAbortRef.current?.abort(), [])
 
   // 打开即刷新 global 发现快照：新 global 目录的首个会话事件被事件闸门丢弃
   // （entry 未打开），只能靠 scope=project 全量快照发现（openbuilder 同源结论）
@@ -550,6 +557,28 @@ function ProjectPicker({ onClose }: { onClose: () => void }) {
       block: "nearest",
     })
   }, [selClamped, visible.length])
+
+  /** 新建项目（design-new-project §4.3）：系统文件管理器选文件夹 → 注册/解析 → 直接打开。
+   *  取消（null）= 无操作留在选择器；失败错误内联，弹窗不关可重试；成功关弹窗。
+   *  弹窗在途被关闭 → abort，各 await 之间检查后静默返回（评审 R3） */
+  const createProject = async () => {
+    if (creating) return
+    setCreating(true)
+    setCreateError(null)
+    const ac = new AbortController()
+    createAbortRef.current = ac
+    try {
+      const dir = await window.desktop.openPathPicker()
+      if (!dir || ac.signal.aborted) return
+      await store.createProjectFromDirectory(dir, ac.signal)
+      if (!ac.signal.aborted) onClose()
+    } catch (e) {
+      setCreateError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setCreating(false)
+      if (createAbortRef.current === ac) createAbortRef.current = null
+    }
+  }
 
   return (
     <div className="dialog-mask" onClick={onClose}>
@@ -620,6 +649,24 @@ function ProjectPicker({ onClose }: { onClose: () => void }) {
               <span className="tree-meta">{relativeTime(locale, c.updated)}</span>
             </div>
           ))}
+        </div>
+
+        {/* 新建项目动作行（design-new-project §4.3）：错误左对齐内联，右侧动作钮。
+            不进搜索框键盘流（↑↓/Enter 只作用于候选列表），Tab 可达 */}
+        <div className="dialog-footer">
+          {createError && (
+            <span className="dialog-footer-error" title={createError}>
+              {createError}
+            </span>
+          )}
+          <button className="btn-tonal btn-new-project" disabled={creating} onClick={() => void createProject()}>
+            {creating ? (
+              <LoaderCircle className="typing-spinner" size={14} aria-hidden />
+            ) : (
+              <FolderPlus size={14} aria-hidden />
+            )}
+            <span>{creating ? t.newProjectCreating : t.newProject}</span>
+          </button>
         </div>
       </div>
     </div>

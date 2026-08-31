@@ -9,6 +9,8 @@ const zh = {
   // 左栏
   projectsTitle: "项目",
   openProject: "打开项目…",
+  newProject: "新建项目…",
+  newProjectCreating: "正在打开…",
   close: "关闭",
   projectSearchPlaceholder: "搜索项目…",
   noProjectMatch: "无匹配项目",
@@ -213,6 +215,8 @@ const en: typeof zh = {
   appTitle: "OpenBuilder",
   projectsTitle: "Projects",
   openProject: "Open project…",
+  newProject: "New project…",
+  newProjectCreating: "Opening…",
   close: "Close",
   projectSearchPlaceholder: "Search projects…",
   noProjectMatch: "No matching projects",

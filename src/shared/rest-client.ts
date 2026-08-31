@@ -154,6 +154,22 @@ export class RestClient {
     return this.request<Project>("/project/current")
   }
 
+  /**
+   * 目录解析/注册项目（`GET /project/current?directory=X`，server 源码核实）：
+   * instance 路由中间件按 directory 引导实例时走 Project.fromDirectory——目录尚未
+   * 注册时 **upsert 项目行**（git 仓库 → 独立项目；非 git → 归入 global 项目），
+   * handler 返回的即该目录所属项目。新建项目（设计 design-new-project §2.2）即用
+   * 此端点：注册 + 解析二合一，无会话等副产物。不做降级：契约源 opencode_openapi.json
+   * 已含该 directory 参数（与移动端同源）。
+   * 超时放宽 30s（默认 15s）：全新目录首次引导初始化 LSP/插件/format 等实例服务
+   * （project/bootstrap.ts），冷启动可能超 15s。
+   */
+  resolveProject(directory: string): Promise<Project> {
+    return this.request<Project>(`/project/current${RestClient.dirQuery(directory)}`, {
+      timeoutMs: 30000,
+    })
+  }
+
   listSessions(directory: string, workspace?: string): Promise<Session[]> {
     return this.request<Session[]>(`/session${RestClient.dirQuery(directory, { workspace })}`)
   }
