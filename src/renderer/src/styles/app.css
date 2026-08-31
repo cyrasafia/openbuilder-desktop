@@ -561,24 +561,25 @@
   background: var(--surface-container-highest);
 }
 
-/* 拖拽重排序（design-tab-drag-rename §1）：悬停目标缘 2px 指示线——
-   左半区命中亮左缘（插入目标前）、右半区亮右缘（插入目标后） */
-.tab.drag-over::before,
-.tab.drag-over-after::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  background: var(--primary);
+/* 拖拽实时预览（design-tab-drag-rename §1，2026-08-29 修订，参考
+   design-project-drag-reorder）：拖动中 Tab 条即时重排，拖拽项在目标插入位
+   渲染为占位样式——虚线框 + 降不透明度，源位间隙随之闭合；松手经 dragend 按
+   DOM 序提交 store.applyTabOrder。占位压过 active 底色与下划线、藏关闭钮，
+   防预览态出现可点反馈（原 .tab.drag-over 指示线式废弃） */
+.tab.dragging,
+.tab.dragging.active {
+  background: transparent;
+  opacity: 0.45;
+  outline: 1px dashed var(--outline);
+  outline-offset: -1px;
 }
 
-.tab.drag-over::before {
-  left: 0;
+.tab.dragging::after {
+  content: none;
 }
 
-.tab.drag-over-after::before {
-  right: 0;
+.tab.dragging .tab-close {
+  visibility: hidden;
 }
 
 /* 行内重命名输入框（design-tab-drag-rename §2）：占位原标签位，填满 Tab 宽 */
@@ -1859,6 +1860,14 @@
 .guide-composer.drop-active {
   outline: 2px dashed var(--primary);
   outline-offset: -4px;
+}
+
+/* 拖拽引用悬停 composer 的实时预览（design-file-reference §3.3 修订，参考
+   design-project-drag-reorder）：占位 chip 虚线框 + 降不透明度，drop 落位与
+   预览一致；无 × 按钮（尚未是真实引用，提交只认 drop） */
+.ref-chip.pending {
+  border-style: dashed;
+  opacity: 0.55;
 }
 
 /* @ 引用浮层条目：command-row 基底 + 文件图标对齐 */

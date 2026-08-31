@@ -11,7 +11,7 @@ import { useI18n, useStore } from "../app"
 import type { FileNode } from "@shared/api-types"
 import { PanelResizeHandle } from "./panel-resize"
 import { OpenWithDialog } from "./open-with-dialog"
-import { FILEREF_MIME } from "./file-ref"
+import { FILEREF_MIME, setDraggingFileRef } from "./file-ref"
 import { fileUrlOf } from "@shared/file-url"
 import type { FileRef } from "@shared/api-types"
 
@@ -179,10 +179,13 @@ function FileRow({
           }
           draggable
           onDragStart={(e) => {
-            // 拖拽引用（design-file-reference §3.3）：自定义 MIME 携带 FileRef
+            // 拖拽引用（design-file-reference §3.3）：自定义 MIME 携带 FileRef；
+            // 带外登记负载供 composer 悬停实时预览（dragover 阶段 getData 禁读）
+            setDraggingFileRef(fileRefOfNode(node))
             e.dataTransfer.setData(FILEREF_MIME, JSON.stringify(fileRefOfNode(node)))
             e.dataTransfer.effectAllowed = "copy"
           }}
+          onDragEnd={() => setDraggingFileRef(null)}
         >
           <span className="chevron">{expanded ? "▾" : "▸"}</span>
           <span className="tree-label">{node.name}</span>
@@ -219,10 +222,13 @@ function FileRow({
       onContextMenu={(e) => onContextMenu(e, ctxTargetOf(node))}
       draggable
       onDragStart={(e) => {
-        // 拖拽引用（design-file-reference §3.3）：自定义 MIME 携带 FileRef
+        // 拖拽引用（design-file-reference §3.3）：自定义 MIME 携带 FileRef；
+        // 带外登记负载供 composer 悬停实时预览（dragover 阶段 getData 禁读）
+        setDraggingFileRef(fileRefOfNode(node))
         e.dataTransfer.setData(FILEREF_MIME, JSON.stringify(fileRefOfNode(node)))
         e.dataTransfer.effectAllowed = "copy"
       }}
+      onDragEnd={() => setDraggingFileRef(null)}
     >
       <span className="tree-label">{node.name}</span>
     </div>

@@ -6,7 +6,7 @@
 import { act, cleanup, createEvent, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { useState } from "react"
-import { atMentionQuery, fileRefFromSearch, FileRefChips, useFileRefInput, FILEREF_MIME } from "./file-ref"
+import { atMentionQuery, fileRefFromSearch, FileRefChips, useFileRefInput, FILEREF_MIME, setDraggingFileRef } from "./file-ref"
 
 vi.mock("../app", () => ({
   useI18n: () => ({
@@ -93,6 +93,22 @@ describe("FileRefChips", () => {
   it("空列表不渲染", () => {
     const { container } = render(<FileRefChips items={[]} />)
     expect(container.querySelector(".ref-chips")).toBeNull()
+  })
+
+  it("pending 占位 chip：预览样式类、无 × 按钮、不可点", () => {
+    const onRemove = vi.fn()
+    const onOpen = vi.fn()
+    const { container } = render(
+      <FileRefChips
+        items={[{ key: "/repo/a.ts", path: "src/a.ts", absolute: "/repo/a.ts", isDir: false, pending: true }]}
+        onRemove={onRemove}
+        onOpen={onOpen}
+      />,
+    )
+    const chip = container.querySelector(".ref-chip")!
+    expect(chip.className).toContain("pending")
+    expect(chip.className).not.toContain("clickable")
+    expect(container.querySelector(".ref-chip-x")).toBeNull()
   })
 
   it("FILEREF_MIME 自定义类型（非 text/plain）", () => {
@@ -227,5 +243,59 @@ describe("useFileRefInput 交互（@ 触发 → 防抖搜索 → 键盘选中 �
     expect(rows[2]!.className).toContain("selected")
     fireEvent.keyDown(ta, { key: "Enter" })
     expect(addFileRef).toHaveBeenCalledWith("s1", expect.objectContaining({ path: "c.ts" }))
+  })
+})
+
+describe("文件拖拽引用实时预览（design-file-reference §3.3 修订）", () => {
+  const ref = { path: "src/a.ts", absolute: "/repo/src/a.ts", filename: "a.ts", isDir: false }
+  const addFileRef = vi.fn()
+
+  function Harness() {
+    const refInput = useFileRefInput({ refKey: "s1", directory: "/repo", onRemoveAtToken: () => {} })
+    return (
+      <div data-testid="zone" {...refInput.dragProps}>
+        <div data-testid="chips-slot">{refInput.chips}</div>
+      </div>
+    )
+  }
+
+  beforeEach(() => {
+    addFileRef.mockClear()
+    storeStub = { addFileRef, removeFileRef: vi.fn(), fileRefsFor: vi.fn(() => []) }
+    setDraggingFileRef(ref)
+  })
+  afterEach(() => setDraggingFileRef(null))
+
+  const dt = () => ({ types: [FILEREF_MIME], getData: () => JSON.stringify(ref) })
+
+  it("dragover 即渲染末位占位 chip（所见即所得），drop 落位与预览一致", () => {
+    render(<Harness />)
+    const zone = screen.getByTestId("zone")
+    fireEvent.dragOver(zone, { dataTransfer: dt() })
+    const chip = screen.getByTestId("chips-slot").querySelector(".ref-chip")
+    expect(chip?.className).toContain("pending")
+    expect(chip?.textContent).toContain("src/a.ts")
+    fireEvent.drop(zone, { dataTransfer: dt() })
+    expect(addFileRef).toHaveBeenCalledWith("s1", ref)
+    expect(screen.getByTestId("chips-slot").querySelector(".ref-chip")).toBeNull()
+  })
+
+  it("dragleave 清占位；已引用的 absolute 不出占位（提交将是 no-op）", () => {
+    render(<Harness />)
+    const zone = screen.getByTestId("zone")
+    fireEvent.dragOver(zone, { dataTransfer: dt() })
+    fireEvent.dragLeave(zone, { dataTransfer: dt() })
+    expect(screen.getByTestId("chips-slot").querySelector(".ref-chip")).toBeNull()
+    ;(storeStub.fileRefsFor as ReturnType<typeof vi.fn>).mockReturnValue([ref])
+    fireEvent.dragOver(zone, { dataTransfer: dt() })
+    // 不出"占位"chip（真实 chip 出现 = 引用已在条内，提交将是 no-op）
+    expect(screen.getByTestId("chips-slot").querySelector(".ref-chip.pending")).toBeNull()
+  })
+
+  it("非自定义 MIME 的 dragover 不出占位", () => {
+    render(<Harness />)
+    const zone = screen.getByTestId("zone")
+    fireEvent.dragOver(zone, { dataTransfer: { types: ["text/plain"], getData: () => "" } })
+    expect(screen.getByTestId("chips-slot").querySelector(".ref-chip")).toBeNull()
   })
 })

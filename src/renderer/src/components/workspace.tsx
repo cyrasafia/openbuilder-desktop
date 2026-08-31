@@ -75,18 +75,45 @@ export function Workspace() {
   useEffect(() => {
     store.syncBrowserViewVisibility()
   }, [store.activeTabKey, store.overlayCount, scopeDir, store])
-  // 拖拽重排序（design-tab-drag-rename §1）：dragKey = 拖拽中 Tab；overKey =
-  // 悬停目标 + 命中半区（左半 = 插入目标前、右半 = 插入目标后），指示线随半区
-  // 亮在目标左/右缘
+  // 拖拽重排序（design-tab-drag-rename §1，2026-08-29 修订为实时预览式，参考
+  // design-project-drag-reorder）：dragKey = 拖拽中 Tab；dragSlot = 目标插入位
+  // （以"移除拖拽项后的作用域数组"为坐标系，0..base.length）。拖动中 Tab 条
+  // 即时重排：拖拽项在目标位渲染占位样式，源位间隙闭合。提交挂 dragend（源
+  // 元素上恒触发——drop 只在松手于合法落区内才发，Tab 条外/快速拖动越界松手
+  // 时浏览器直接取消只发 dragend），按松手时预览 DOM 序整体重排（所见即所得，
+  // 不经 slot 换算——换算与最后一次 dragover 的 setState 有竞态窗口）。
+  // 注：原生拖拽期间页面收不到键盘事件，无 Esc 取消路径（同左栏项目行取舍）
   const [dragKey, setDragKey] = useState<string | null>(null)
-  const [overKey, setOverKey] = useState<{ key: string; before: boolean } | null>(null)
+  const [dragSlot, setDragSlot] = useState<number | null>(null)
+  const tabbarRef = useRef<HTMLDivElement | null>(null)
   // 行内重命名（design-tab-drag-rename §2）：仅 chat Tab，双击进入
   const [renaming, setRenaming] = useState<{ key: string; value: string } | null>(null)
 
   const endDrag = () => {
     setDragKey(null)
-    setOverKey(null)
+    setDragSlot(null)
   }
+  /** dragend 提交：按松手时预览 DOM 序整体重排（所见即所得）——读 tabbar 容器
+   *  内 .tab 的 data-tab-key 顺序调 applyTabOrder，不经 slot 换算。 */
+  const handleDragEnd = () => {
+    if (tabbarRef.current) {
+      const keys = [...tabbarRef.current.querySelectorAll<HTMLElement>(".tab")]
+        .map((el) => el.dataset.tabKey)
+        .filter((k): k is string => k != null)
+      if (keys.length > 0) store.applyTabOrder(keys)
+    }
+    endDrag()
+  }
+  // 拖拽中 Tab 被移除的兜底（review 发现）：他端删会话经 SSE closeTab 卸载源
+  // .tab 节点后 dragend 不再派发，残留 dragKey 会让容器 dragover 对后续无关
+  // 拖拽误 preventDefault（显示 move 落点光标）——dragKey 失效即清拖拽态；
+  // 预览侧另有 dragIdx 守卫（拖拽中回原序），两道防线互不依赖
+  useEffect(() => {
+    if (dragKey && !tabs.some((tb) => tb.key === dragKey)) {
+      setDragKey(null)
+      setDragSlot(null)
+    }
+  }, [dragKey, tabs])
 
   const commitRename = (tab: { kind: string; key: string; title: string }) => {
     if (!renaming || renaming.key !== tab.key) return
@@ -103,10 +130,69 @@ export function Workspace() {
     store.syncBrowserViewVisibility()
   }, [store.activeTabKey, store.overlayCount, scopeDir, store])
 
+  // 预览序：base = 移除拖拽项的作用域数组；slot 缺省 = 原位（dragIdx 在 base
+  // 中即原位）。dragIdx 守卫：拖拽中 Tab 被关（快照/会话删除）不崩溃回原序
+  const dragIdx = dragKey ? tabs.findIndex((tb) => tb.key === dragKey) : -1
+  const base = dragIdx >= 0 ? tabs.filter((_, i) => i !== dragIdx) : tabs
+  const slot = dragKey && dragSlot != null ? Math.max(0, Math.min(dragSlot, base.length)) : dragIdx
+  const previewTabs =
+    dragKey && dragIdx >= 0 && slot !== dragIdx
+      ? [...base.slice(0, slot), tabs[dragIdx]!, ...base.slice(slot)]
+      : tabs
+
   return (
     <main className="workspace">
-      <div className="tabbar">
-        {tabs.map((tab) => {
+      <div
+        ref={tabbarRef}
+        className="tabbar"
+        onDragOver={(ev) => {
+          if (!dragKey) return
+          // 容器整体为合法落区（含 Tab 间空隙、条尾空白/"+"按钮、占位 Tab）：
+          // dragover preventDefault 让预览插入位在整条区域连续生效。插入位按
+          // 光标 X 几何计算（边缘带判定，项目行判定水平化）：光标落入某 Tab
+          // 左/右 25% 区域 = 换位（插其前/后），中间 50% 滞回带保持当前插入位
+          // ——预览换位后 Tab 移位，滞回带吸收移位量防抖。光标不在任何 Tab 内
+          // （Tab 间空隙）= 最近边界；末位 Tab 右半以远全部区域（含条尾）= 末位；
+          // 占位 Tab 跳过 = 悬停占位维持当前插入位。同值保留旧引用 bail out
+          ev.preventDefault()
+          ev.dataTransfer.dropEffect = "move"
+          const EDGE_BAND = 0.25
+          const els = ev.currentTarget.querySelectorAll<HTMLElement>(".tab")
+          // next = null 且命中过 Tab（hit）= 中带/悬停占位：维持当前插入位不动；
+          // 未命中任何 Tab = 条尾区域：末位（两态共用 null 会把中带误判成末位）
+          let next: number | null = null
+          let hit = false
+          for (let i = 0; i < els.length; i++) {
+            const rect = els[i]!.getBoundingClientRect()
+            if (els[i]!.dataset.tabKey === dragKey) {
+              // 悬停占位 Tab = 维持当前插入位
+              if (ev.clientX >= rect.left && ev.clientX <= rect.right) hit = true
+              continue
+            }
+            if (ev.clientX < rect.left) {
+              // Tab 间空隙/首 Tab 左侧：最近边界 = 插到该 Tab 前
+              next = i < slot ? i : i - 1
+              hit = true
+              break
+            }
+            if (ev.clientX <= rect.right) {
+              hit = true
+              const baseIdx = i < slot ? i : i - 1
+              if (ev.clientX < rect.left + rect.width * EDGE_BAND) next = baseIdx
+              else if (ev.clientX > rect.right - rect.width * EDGE_BAND) next = baseIdx + 1
+              break
+            }
+          }
+          if (!hit) next = base.length
+          if (next != null) setDragSlot((prev) => (prev === next ? prev : next))
+        }}
+        onDrop={(ev) => {
+          // 提交统一在 dragend（恒触发，任何释放位置都按预览序提交）；
+          // 此处仅 preventDefault 屏蔽浏览器对拖拽数据的默认处理
+          ev.preventDefault()
+        }}
+      >
+        {previewTabs.map((tab) => {
           // 会话状态点常显（含 idle，design-error-message §3.3 修订）：
           // running/error 呼吸光晕、waiting/failed/idle 静态，统一 12px 盒几何
           // （session-* 变体类）与其他指示纵向对齐；非 chat Tab 无会话语义不显示
@@ -125,14 +211,14 @@ export function Workspace() {
                     ? "session-failed"
                     : "session-idle"
           const isRenamingThis = renaming?.key === tab.key
-          const isOverThis = dragKey && overKey?.key === tab.key && dragKey !== tab.key
           return (
           <div
             key={tab.key}
+            data-tab-key={tab.key}
             className={
               "tab" +
               (tab.key === store.activeTabKey ? " active" : "") +
-              (isOverThis ? (overKey!.before ? " drag-over" : " drag-over-after") : "")
+              (tab.key === dragKey ? " dragging" : "")
             }
             draggable={!isRenamingThis}
             onClick={() => store.setActiveTab(tab.key)}
@@ -151,43 +237,12 @@ export function Workspace() {
             }}
             onDragStart={(e) => {
               setDragKey(tab.key)
+              setDragSlot(null)
               // 自定义 MIME：避免内部 key 以 text/plain 拖入可编辑区被默认插入
               e.dataTransfer.setData("application/x-openbuilder-tab", tab.key)
               e.dataTransfer.effectAllowed = "move"
             }}
-            onDragOver={(e) => {
-              if (!dragKey || dragKey === tab.key) return
-              e.preventDefault()
-              e.dataTransfer.dropEffect = "move"
-              // 命中半区：左半插入目标前、右半插入目标后（末位可达）。
-              // dragover 以 mousemove 频率触发：同值保留旧引用，React bail out
-              // 避免整树按事件频率 reconcile
-              const rect = e.currentTarget.getBoundingClientRect()
-              const before = e.clientX < rect.left + rect.width / 2
-              setOverKey((prev) =>
-                prev?.key === tab.key && prev.before === before ? prev : { key: tab.key, before },
-              )
-            }}
-            onDragLeave={(e) => {
-              // 真正离开该 Tab（非进出子元素）才清指示，防闪烁
-              if (
-                dragKey &&
-                overKey?.key === tab.key &&
-                !e.currentTarget.contains(e.relatedTarget as Node | null)
-              ) {
-                setOverKey(null)
-              }
-            }}
-            onDrop={(e) => {
-              e.preventDefault()
-              if (dragKey && dragKey !== tab.key) {
-                const rect = e.currentTarget.getBoundingClientRect()
-                const before = e.clientX < rect.left + rect.width / 2
-                store.moveTab(dragKey, tab.key, before ? "before" : "after")
-              }
-              endDrag()
-            }}
-            onDragEnd={endDrag}
+            onDragEnd={handleDragEnd}
           >
             {dot && <span className={"status-dot " + dotClass} />}
             {isRenamingThis ? (

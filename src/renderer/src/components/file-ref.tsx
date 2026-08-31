@@ -16,6 +16,18 @@ import type { FileRef } from "@shared/api-types"
 export const FILEREF_MIME = "application/x-openbuilder-fileref"
 
 /**
+ * 拖拽中引用的带外登记（design-file-reference §3.3 修订）：dragover 阶段浏览器
+ * 禁读 `dataTransfer.getData`，composer 悬停实时预览只能取 dragstart 登记的
+ * 同页副本；dragend 由 FileRow 清除（drop 提交仍以 dataTransfer 解析为权威）。
+ */
+let draggingFileRef: FileRef | null = null
+
+/** FileRow dragstart 登记拖拽负载 / dragend 传 null 清除（file-panel 调用） */
+export function setDraggingFileRef(ref: FileRef | null) {
+  draggingFileRef = ref
+}
+
+/**
  * 光标所在 `@词` 提取（design-file-reference §3.1）：从光标向前找最近空白后的
  * token，以半角 `@` 开头 → 返回 query 与文本区间（选中时删除该区间）。
  * 仅认光标前缀（光标落在 token 中间时取前半）；`\@` 转义不触发。
@@ -55,13 +67,14 @@ export function fileRefFromDataTransfer(dt: DataTransfer): FileRef | null {
   }
 }
 
-/** 引用 chip 条目（composer 与消息气泡共用形态） */
+/** 引用 chip 条目（composer 与消息气泡共用形态）；pending = 拖拽悬停占位预览 */
 export interface RefChipItem {
   key: string
   path: string
   absolute?: string
   isDir: boolean
   title?: string
+  pending?: boolean
 }
 
 /**
@@ -82,17 +95,19 @@ export function FileRefChips({
   return (
     <div className="ref-chips">
       {items.map((r) => {
-        const clickable = !!onOpen && !r.isDir && !!r.absolute
+        const clickable = !!onOpen && !r.isDir && !!r.absolute && !r.pending
         return (
           <span
             key={r.key}
-            className={"ref-chip" + (r.isDir ? " dir" : "") + (clickable ? " clickable" : "")}
+            className={
+              "ref-chip" + (r.isDir ? " dir" : "") + (clickable ? " clickable" : "") + (r.pending ? " pending" : "")
+            }
             title={r.title ?? r.path}
             onClick={clickable ? () => onOpen!(r) : undefined}
           >
             {r.isDir ? <Folder size={12} aria-hidden /> : <FileText size={12} aria-hidden />}
             <span className="ref-chip-path mono">{r.path}</span>
-            {onRemove && (
+            {onRemove && !r.pending && (
               <button
                 className="ref-chip-x"
                 aria-label={t.fileRefRemove}
@@ -241,6 +256,9 @@ export function useFileRefInput(opts: {
   )
 
   const [dropActive, setDropActive] = useState(false)
+  // 实时预览（design-file-reference §3.3 修订）：拖拽引用悬停 composer 期间，
+  // 引用条末位渲染占位 chip——所见即所得，drop 落位与预览一致
+  const [pending, setPending] = useState<FileRef | null>(null)
   const dragProps = useMemo(
     () => ({
       onDragOver: (e: ReactDragEvent<HTMLElement>) => {
@@ -248,31 +266,73 @@ export function useFileRefInput(opts: {
         e.preventDefault()
         e.dataTransfer.dropEffect = "copy"
         setDropActive(true)
+        // dragover 阶段 getData 禁读，负载取 dragstart 登记的带外副本；
+        // absolute 已引用时不出占位（addFileRef 按 absolute 去重，提交将是
+        // no-op——占位如实反映"无变化"）。同值保留旧引用 bail out
+        const drag = draggingFileRef
+        if (!drag || store.fileRefsFor(refKey).some((r) => r.absolute === drag.absolute)) {
+          setPending(null)
+          return
+        }
+        setPending((prev) => (prev?.absolute === drag.absolute ? prev : drag))
       },
       onDrop: (e: ReactDragEvent<HTMLElement>) => {
         if (!e.dataTransfer.types.includes(FILEREF_MIME)) return
         e.preventDefault()
+        // 提交以 dataTransfer 解析为权威（字段校验：缺字段/坏 JSON 丢弃）；
+        // 松手在 composer 外/原生取消不经此路径——引用是复制语义，落位只认 drop
         const ref = fileRefFromDataTransfer(e.dataTransfer)
         if (ref) store.addFileRef(refKey, ref)
         setDropActive(false)
+        setPending(null)
       },
       onDragLeave: (e: ReactDragEvent<HTMLElement>) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropActive(false)
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+          setDropActive(false)
+          setPending(null)
+        }
       },
     }),
     [refKey, store],
   )
 
+  // 拖拽以任何方式结束（松手在 composer 外/Esc 原生取消——后者 dragleave 不可
+  // 靠）时清占位防幽灵 chip：dragend 在源元素上恒触发且冒泡，window 一次性监听
+  useEffect(() => {
+    if (!pending) return
+    const clear = () => {
+      setDropActive(false)
+      setPending(null)
+    }
+    window.addEventListener("dragend", clear, { once: true })
+    return () => window.removeEventListener("dragend", clear)
+  }, [pending])
+
   const refs = store.fileRefsFor(refKey)
   const chips = (
     <FileRefChips
-      items={refs.map((r) => ({
-        key: r.absolute,
-        path: r.path,
-        absolute: r.absolute,
-        isDir: r.isDir,
-        title: r.absolute,
-      }))}
+      items={[
+        ...refs.map((r) => ({
+          key: r.absolute,
+          path: r.path,
+          absolute: r.absolute,
+          isDir: r.isDir,
+          title: r.absolute,
+        })),
+        // 悬停占位 chip（实时预览）：挂引用条末位 = addFileRef 追加语义的预演
+        ...(pending
+          ? [
+              {
+                key: pending.absolute,
+                path: pending.path,
+                absolute: pending.absolute,
+                isDir: pending.isDir,
+                title: pending.absolute,
+                pending: true,
+              },
+            ]
+          : []),
+      ]}
       onRemove={(key) => store.removeFileRef(refKey, key)}
     />
   )
