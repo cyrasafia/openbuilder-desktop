@@ -542,9 +542,13 @@
 }
 
 .tab-label {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* 撑满剩余宽度，使关闭钮始终靠右（不随标题长度收缩） */
+  text-align: left;
 }
 
 /* 提特异性（0,2,0）压过后方通用 .icon-btn（0,1,0），宽度/高度声明才生效 */
