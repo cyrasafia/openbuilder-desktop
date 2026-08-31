@@ -3445,13 +3445,15 @@
   height: 100%;
 }
 
-/* IME 组字预览层（中文上屏前）：xterm.css 写死黑底白字，覆盖为终端
-   恒深色配色（surface 背景 + 前景色 + outline 描边），3 类选择器胜出其 2 类 */
+/* IME 组字预览层（中文上屏前）：xterm.css 写死黑底白字（遗留 TODO），覆盖为
+   全透明无边框，预编辑文字浮在终端背景上；光标块的隐藏由 TS 侧在组字期间
+   把 theme.cursor 切透明实现（光标画在 canvas 上，CSS 不可达） */
 .terminal-host .xterm .composition-view {
-  background: #161b16;
+  background: transparent;
+  border: 0;
   color: #c8d0c4;
-  border: 1px solid #414941;
-  border-radius: 3px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .terminal-exited-overlay {

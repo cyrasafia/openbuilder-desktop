@@ -102,6 +102,22 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
       }
       return true
     })
+    // IME 组字期间隐藏光标块（画布绘制，CSS 不可达；transparent 不被 xterm
+    // 颜色解析接受会回退白色）：光标色画成背景色即隐身，cursorAccent 对齐
+    // 前景色保证光标下字符仍正常显示，避免预编辑首字符被光标遮挡
+    const imeTextarea = host.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")
+    const onCompositionStart = () => {
+      term.options.theme = {
+        ...DARK_THEME,
+        cursor: DARK_THEME.background,
+        cursorAccent: DARK_THEME.foreground,
+      }
+    }
+    const onCompositionEnd = () => {
+      term.options.theme = DARK_THEME
+    }
+    imeTextarea?.addEventListener("compositionstart", onCompositionStart)
+    imeTextarea?.addEventListener("compositionend", onCompositionEnd)
     // 打开/切换至 terminal Tab 时自动聚焦（key 隔离重挂载，mount 即获焦）
     term.focus()
     try {
@@ -190,6 +206,8 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
 
     return () => {
       disposed = true
+      imeTextarea?.removeEventListener("compositionstart", onCompositionStart)
+      imeTextarea?.removeEventListener("compositionend", onCompositionEnd)
       if (resizeTimer != null) window.clearTimeout(resizeTimer)
       observer.disconnect()
       wsRef.current?.close()
