@@ -3445,6 +3445,15 @@
   height: 100%;
 }
 
+/* IME 组字预览层（中文上屏前）：xterm.css 写死黑底白字，覆盖为终端
+   恒深色配色（surface 背景 + 前景色 + outline 描边），3 类选择器胜出其 2 类 */
+.terminal-host .xterm .composition-view {
+  background: #161b16;
+  color: #c8d0c4;
+  border: 1px solid #414941;
+  border-radius: 3px;
+}
+
 .terminal-exited-overlay {
   position: absolute;
   top: 0;
