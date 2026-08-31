@@ -252,13 +252,14 @@ function FileContextMenu({
   const onCloseRef = useRef(onClose)
   onCloseRef.current = onClose
 
-  // 目录无打开方式语义；win32/darwin 走系统对话框；linux 走自建选择器弹窗
+  // 目录（含空白处根目录）同样提供（2026-08-31 修订，design-file-panel-context-menu §2.3）：
+  // xdg-mime 对目录返回 inode/directory，枚举天然命中文件管理器等应用；win32/darwin
+  // 系统对话框同样接受目录路径。win32/darwin 走系统对话框；linux 走自建选择器弹窗
   // （design-linux-open-with，修订 §2.4 原"Linux 不显示"决策）
   const showOpenWith =
-    !menu.isDirectory &&
-    (window.desktop.platform === "win32" ||
-      window.desktop.platform === "darwin" ||
-      window.desktop.platform === "linux")
+    window.desktop.platform === "win32" ||
+    window.desktop.platform === "darwin" ||
+    window.desktop.platform === "linux"
 
   // 首帧隐藏渲染供测量，再钳制到视口内定位（同 Popover 无闪烁模式）
   useLayoutEffect(() => {

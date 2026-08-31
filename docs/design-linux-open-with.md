@@ -23,8 +23,8 @@
 
 ### 1.3 UI（渲染层）
 
-- 右键菜单「打开方式…」：Linux 恢复显示（win32/darwin 走原系统对话框 IPC 不变；目录行仍不显示）
-- 点击 → `shell:listOpenWithApps` → **应用内选择器弹窗**（复用 `.dialog-mask`/`.dialog` 模式：列表行 = 图标占位（v0.3 文本首字母瓷片，同 ProjectAvatar 模式）+ 名称；键盘 ↑↓ + Enter、Esc 关闭、点击行启动并关闭）
+- 右键菜单「打开方式…」：Linux 恢复显示（win32/darwin 走原系统对话框 IPC 不变）。**2026-08-31 修订**：目录行/空白处根目录同样显示（原「目录仍不显示」废止）——`xdg-mime query filetype` 对目录返回 `inode/directory`（真机验证），枚举按 MimeType 命中文件管理器类应用，枚举/启动链路零改动
+- 点击 → `shell:listOpenWithApps` → **应用内选择器弹窗**（复用 `.dialog-mask`/`.dialog` 模式：列表行 = 图标占位（v0.3 文本首字母瓷片，同 ProjectAvatar 模式）+ 名称；键盘 ↑↓ + Enter、Esc 关闭、点击行启动并关闭；目录与文件同一弹窗）
 - 加载中/空态（无匹配应用）文案
 
 ## 2. 不做的事
@@ -51,5 +51,5 @@
 ## 4. 验收（对齐 spec #8）
 
 - Linux 右键 .json 文件 →「打开方式…」列出支持 application/json 的应用（如文本编辑器/VS Code），选择后对应应用打开该文件
-- 目录行/纯浏览器 shim 不显示；win32/darwin 行为不变
+- 目录行/空白处（作用域根目录）→ 列出支持 `inode/directory` 的应用（文件管理器等），选择后对应应用打开该目录（2026-08-31 修订）；纯浏览器 shim 不显示；win32/darwin 行为不变（含目录）
 - `npm run test` / `typecheck` / `build` 全绿；真机 gio launch 实测一次
