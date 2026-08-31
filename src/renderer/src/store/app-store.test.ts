@@ -6,9 +6,9 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AppStore, diffTabKey, FILE_WATCH_DEBOUNCE_MS } from "./app-store"
-import { globalEntryKey } from "@shared/project-entries"
 import { ApiError } from "@shared/rest-client"
 import { SseSubscriber } from "@shared/sse-subscriber"
+import { globalEntryKey } from "@shared/project-entries"
 import type { ModelCatalog } from "@shared/model-catalog"
 import type { MessageWithParts, ModelRef, Part, Project, Session } from "@shared/api-types"
 
@@ -3154,5 +3154,106 @@ describe("左栏 entry 顺序与拖拽（design-layout §3 打开序）——app
     sets.length = 0
     store.applyEntryOrder(["p3", "p1", "p2"])
     expect(sets).toHaveLength(0)
+  })
+})
+
+describe("createProjectFromDirectory（design-new-project）", () => {
+  const clientOf = () => (store as unknown as { client: Record<string, unknown> }).client
+
+  it("git 文件夹：resolveProject 注册后刷新 projects 并直接 openProject", async () => {
+    const fresh: Project = { id: "newproj", worktree: "/fresh", time: { created: 9, updated: 9 }, sandboxes: [] }
+    let resolvedDir = ""
+    clientOf().resolveProject = async (dir: string) => {
+      resolvedDir = dir
+      return fresh
+    }
+    let listCalls = 0
+    clientOf().listProjects = async () => {
+      listCalls++
+      return [project(), fresh]
+    }
+    snapshots.set("/fresh", [])
+
+    await store.createProjectFromDirectory("/fresh")
+    expect(resolvedDir).toBe("/fresh")
+    // projects 先刷新（左栏/打开流数据源必须含新项目）
+    expect(listCalls).toBe(1)
+    expect(store.projects.some((p) => p.id === "newproj")).toBe(true)
+    const ps = store.projectStateFor()
+    expect(ps.opened).toContain("newproj")
+    expect(ps.currentProjectId).toBe("newproj")
+    expect(store.currentProject?.id).toBe("newproj")
+  })
+
+  it("非 git 文件夹（解析为 global）：以 global 目录 entry 打开（D1，不动文件系统）", async () => {
+    const globalProj: Project = { id: "global", worktree: "/", time: { created: 0, updated: 0 }, sandboxes: [] }
+    clientOf().resolveProject = async () => globalProj
+    clientOf().listProjects = async () => [project(), globalProj]
+    snapshots.set("/plain", [])
+
+    await store.createProjectFromDirectory("/plain")
+    const ps = store.projectStateFor()
+    expect(ps.opened).toContain(globalEntryKey("/plain"))
+    expect(ps.currentProjectId).toBe("global")
+    expect(store.currentWorkspace?.directory).toBe("/plain")
+    // 左栏出现该 global 目录行（零会话兜底行的 opened 闸门已放行）
+    expect(store.openedEntries.some((e) => e.key === globalEntryKey("/plain"))).toBe(true)
+  })
+
+  it("解析失败：异常上抛，打开状态不变（弹窗不关可重试的前提）", async () => {
+    clientOf().resolveProject = async () => {
+      throw new Error("目录不存在")
+    }
+    await expect(store.createProjectFromDirectory("/nope")).rejects.toThrow("目录不存在")
+    const ps = store.projectStateFor()
+    expect(ps.opened).toEqual(["proj1"])
+    expect(ps.currentProjectId).toBe("proj1")
+  })
+
+  it("在途闸门：注册期间断连（client 置 null）→ 抛错不打开（评审 R2：弹窗不按成功关闭）", async () => {
+    const fresh: Project = { id: "newproj2", worktree: "/fresh2", time: { created: 9, updated: 9 }, sandboxes: [] }
+    clientOf().resolveProject = async () => {
+      ;(store as unknown as { client: unknown }).client = null
+      return fresh
+    }
+    let listCalled = false
+    clientOf().listProjects = async () => {
+      listCalled = true
+      return [project(), fresh]
+    }
+
+    await expect(store.createProjectFromDirectory("/fresh2")).rejects.toThrow("连接已断开")
+    expect(listCalled).toBe(false)
+    expect(store.projectStateFor().opened).toEqual(["proj1"])
+  })
+
+  it("listProjects 失败：异常上抛不打开（评审 R1：projects 不含新项目时打开 = 不一致态）", async () => {
+    const fresh: Project = { id: "newproj3", worktree: "/fresh3", time: { created: 9, updated: 9 }, sandboxes: [] }
+    clientOf().resolveProject = async () => fresh
+    clientOf().listProjects = async () => {
+      throw new ApiError(0, "network", "无法连接服务器")
+    }
+
+    await expect(store.createProjectFromDirectory("/fresh3")).rejects.toThrow("无法连接服务器")
+    const ps = store.projectStateFor()
+    expect(ps.opened).toEqual(["proj1"])
+    expect(ps.currentProjectId).toBe("proj1")
+  })
+
+  it("signal 中止：resolve 完成后已取消 → 不刷新不打开（评审 R3：弹窗关闭即取消）", async () => {
+    const fresh: Project = { id: "newproj4", worktree: "/fresh4", time: { created: 9, updated: 9 }, sandboxes: [] }
+    clientOf().resolveProject = async () => fresh
+    let listCalled = false
+    clientOf().listProjects = async () => {
+      listCalled = true
+      return [project(), fresh]
+    }
+    const ac = new AbortController()
+
+    const p = store.createProjectFromDirectory("/fresh4", ac.signal)
+    ac.abort()
+    await p
+    expect(listCalled).toBe(false)
+    expect(store.projectStateFor().opened).toEqual(["proj1"])
   })
 })

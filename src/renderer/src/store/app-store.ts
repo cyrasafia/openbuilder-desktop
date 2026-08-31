@@ -1440,6 +1440,35 @@ export class AppStore {
     void this.backfillPending()
   }
 
+  /**
+   * 新建项目（design-new-project）：系统目录选择器选中的文件夹 → `GET
+   * /project/current?directory=` 让 server 注册/解析（Project.fromDirectory upsert：
+   * git 仓库 → 独立项目；非 git → 归入 global），刷新项目全集后**直接打开**——
+   * git 项目走 openProject（独立项目行）；非 git 走 openGlobalDirectory（global
+   * 目录 entry，不动文件系统，D1）。失败向上抛（选择器内联呈现，弹窗不关可重试）。
+   * 重复创建幂等（server upsert + opened 已含 key 仅切换）。
+   * signal：选择器弹窗被关闭（Escape/遮罩）时中止——各 await 之间检查，中止后
+   * 不再打开（静默返回，弹窗已卸载无错误呈现方）。
+   */
+  async createProjectFromDirectory(directory: string, signal?: AbortSignal): Promise<void> {
+    const client = this.client
+    if (!client) throw new Error("未连接服务器")
+    const project = await client.resolveProject(directory)
+    if (signal?.aborted) return
+    // 在途闸门：注册期间可能已断连/切 profile——不打开过期解析结果（抛错让选择器呈现，不静默）
+    if (this.client !== client) throw new Error("连接已断开，请重试")
+    // 失败必须上抛：projects 仍是旧列表（不含新项目）时继续打开会落进
+    // "opened 指向不存在项目"的不一致态（currentProject 为 null、左栏无行，
+    // 要等 60s syncWorktrees 才自愈）——评审 2026-08-30 R1
+    const fresh = await client.listProjects()
+    if (signal?.aborted) return
+    // projects 是左栏/打开流数据源，必须先含新项目再 openProject
+    this.projects = fresh
+    this.emit()
+    if (project.id === GLOBAL_PROJECT_ID) return this.openGlobalDirectory(directory)
+    return this.openProject(project.id)
+  }
+
   /** 关闭单个 global 目录 entry（其余 global 目录不受影响） */
   private async closeGlobalDirectory(directory: string) {
     const key = globalEntryKey(directory)

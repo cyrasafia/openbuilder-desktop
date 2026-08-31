@@ -2932,11 +2932,38 @@
   padding: 16px 28px 8px;
 }
 .dialog-project .dialog-search {
-  margin: 0 28px;
+  margin: 8px 28px 6px;
 }
 .dialog-project .dialog-body {
   flex: 1;
-  padding: 8px 28px;
+  padding: 2px 28px 8px;
+}
+
+/* 项目选择器底部动作行（design-new-project §4.3）：错误左对齐内联（省略号截断，
+   全文看 title），右侧「新建项目」动作钮；边距与标题/搜索/列表同缘（28px），
+   顶部加大与列表的间隔（评审后视觉微调 8→14） */
+.dialog-project .dialog-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 28px 16px;
+}
+
+.dialog-footer-error {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  color: var(--error);
+}
+
+.btn-new-project {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 .dialog-lg {
