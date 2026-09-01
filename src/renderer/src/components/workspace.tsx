@@ -1502,7 +1502,7 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
         <div className="bubble">
           {/* 引用 chip（design-file-reference §5）：乐观消息携带 refs，SSE 真实
               user 消息到达后经 file part 渲染同款（乐观→真实替换不闪烁） */}
-          {entry.data.text && <Markdown>{entry.data.text}</Markdown>}
+          {entry.data.text && <Markdown softLineBreak>{entry.data.text}</Markdown>}
           {entry.data.refs && entry.data.refs.length > 0 && (
             <FileRefChips
               items={entry.data.refs.map((r) => ({
@@ -1580,7 +1580,9 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
         )}
         <UserBubble>
           {texts.map((p) => (
-            <Markdown key={p.id}>{p.text}</Markdown>
+            <Markdown key={p.id} softLineBreak>
+              {p.text}
+            </Markdown>
           ))}
           {refChipItems.length > 0 && (
             <FileRefChips
@@ -1594,7 +1596,9 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
             const body = p.prompt || p.text || p.description || ""
             return (
               <div key={p.id} className="bubble-subtask">
-                <Markdown>{body ? `**subtask: ${p.command}**\n\n${body}` : `**subtask: ${p.command}**`}</Markdown>
+                <Markdown softLineBreak>
+                  {body ? `**subtask: ${p.command}**\n\n${body}` : `**subtask: ${p.command}**`}
+                </Markdown>
               </div>
             )
           })}
