@@ -1,7 +1,7 @@
 /**
  * 文件栏右键菜单测试（design-file-panel-context-menu）：
  * 对象解析（行 = 节点绝对路径；空白/标题栏 = 作用域根目录）、
- * 「打开方式」可见性（仅文件行 + win32/darwin）、动作走 IPC/clipboard。
+ * 「打开方式」可见性（win32/darwin/linux，目录/空白处根目录同文件行）、动作走 IPC/clipboard。
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
@@ -117,11 +117,11 @@ describe("FilePanel 右键菜单", () => {
     expect(screen.queryByText("复制路径")).toBeNull()
   })
 
-  it("目录行右键：打开对象 = 目录绝对路径；无「打开方式」（目录无语义）", () => {
+  it("目录行右键：打开对象 = 目录绝对路径；「打开方式」同样提供（2026-08-31 修订）", () => {
     platform = "win32"
     render(<FilePanel />)
     fireEvent.contextMenu(screen.getByText("src"))
-    expect(screen.queryByText("打开方式…")).toBeNull()
+    expect(screen.getByText("打开方式…")).toBeTruthy()
     fireEvent.click(screen.getByText("打开"))
     expect(shellOpenPath).toHaveBeenCalledWith("/repo/src")
   })
@@ -137,7 +137,7 @@ describe("FilePanel 右键菜单", () => {
     expect(shellOpenPath).toHaveBeenCalledWith(ROOT)
   })
 
-  it("「打开方式」linux 可见且开自建选择器（design-linux-open-with）；目录行不显示", async () => {
+  it("「打开方式」linux 可见且开自建选择器（design-linux-open-with）；目录/空白处同提供", async () => {
     const listApps = vi.fn(async () => [{ id: "editor.desktop", name: "文本编辑器" }])
     Object.defineProperty(window, "desktop", {
       configurable: true,
@@ -156,10 +156,19 @@ describe("FilePanel 右键菜单", () => {
     // 枚举落地 → 弹窗列出应用（弹窗交互细节见 open-with-dialog.test）
     expect(await screen.findByText("文本编辑器")).toBeTruthy()
     cleanup()
-    // 目录行不显示
+    // 目录行：同显示并走选择器（inode/directory 命中文件管理器）
     render(<FilePanel />)
     fireEvent.contextMenu(screen.getByText("src"))
-    expect(screen.queryByText("打开方式…")).toBeNull()
+    fireEvent.click(screen.getByText("打开方式…"))
+    expect(listApps).toHaveBeenCalledWith("/repo/src")
+    expect(await screen.findByText("文本编辑器")).toBeTruthy()
+    cleanup()
+    // 空白处（作用域根目录）：同显示并走选择器
+    render(<FilePanel />)
+    fireEvent.contextMenu(document.querySelector(".tree") as Element)
+    fireEvent.click(screen.getByText("打开方式…"))
+    expect(listApps).toHaveBeenCalledWith(ROOT)
+    expect(await screen.findByText("文本编辑器")).toBeTruthy()
   })
 
   it("「打开方式」win32/darwin 走系统对话框 shellOpenWith", () => {
@@ -179,6 +188,14 @@ describe("FilePanel 右键菜单", () => {
     render(<FilePanel />)
     fireEvent.contextMenu(screen.getByText("README.md"))
     expect(screen.getByText("打开方式…")).toBeTruthy()
+    // 目录行 win32/darwin 同提供（系统对话框接受目录）
+    cleanup()
+    shellOpenWith.mockClear()
+    platform = "darwin"
+    render(<FilePanel />)
+    fireEvent.contextMenu(screen.getByText("src"))
+    expect(screen.getByText("打开方式…")).toBeTruthy()
+    expect(shellOpenWith).not.toHaveBeenCalled()
   })
 
   it("打开后初始焦点在首项（键盘导航前提；autoFocus 在隐藏帧落空，rAF 补齐）", async () => {

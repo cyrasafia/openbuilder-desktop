@@ -33,6 +33,9 @@ export interface StoreShape {
   >
   /** 消息流思考（reasoning）显隐，默认隐藏（同移动端 showThinking） */
   "chat.showThinking": boolean
+  /** Open With 上次使用记忆（design-linux-open-with §1.4，2026-08-31）：MIME →
+   *  最近一次选择的 appId（全局生效；未用过的 MIME 无键 = 无「上次使用」段） */
+  "openWith.lastUsed": Record<string, string>
 }
 
 export interface ConnectionProfile {
@@ -106,8 +109,14 @@ export interface DesktopApi {
   onBrowserViewState(cb: (state: BrowserViewState) => void): () => void
   /** 浏览器视图内快捷键转发（main → renderer；页面聚焦时 window keydown 不可达，评审 M5） */
   onBrowserShortcut(cb: (input: { key: string; control: boolean; meta: boolean; shift: boolean; alt: boolean }) => void): () => void
-  /** Linux「打开方式」应用枚举（design-linux-open-with §1.1；仅 linux 有意义） */
-  shellListOpenWithApps(path: string): Promise<{ id: string; name: string }[]>
+  /** Linux「打开方式」应用枚举（design-linux-open-with §1.1；仅 linux 有意义）。
+   *  **全量应用**（2026-08-31 修订，不再按 MIME 过滤）：matches = MimeType 命中
+   *  目标 MIME（祖先闭包）；已按「匹配组在前、其余组后，组内字母序」排序。
+   *  lastUsed = 用户对该 MIME 的上次选择标记（§1.4 记忆；至多一个 true）。
+   *  icon = 图标 data URL（png/svg；null = 渲染层首字母瓷片兜底） */
+  shellListOpenWithApps(path: string): Promise<
+    { id: string; name: string; icon: string | null; matches: boolean; lastUsed?: boolean }[]
+  >
   /** Linux 按枚举结果中的应用启动（design-linux-open-with §1.2；appId 须来自
    *  最近一次枚举——main 侧白名单校验）。返回错误信息（""=成功） */
   shellOpenWithApp(path: string, appId: string): Promise<string>

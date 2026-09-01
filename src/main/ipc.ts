@@ -6,6 +6,7 @@ import type { StoreShape } from "../shared/ipc"
 import { startManagedServer, stopManagedServer, killManagedSync } from "./managed-server"
 import {
   listOpenWithApps,
+  mimeOf,
   openWithApp,
   sanitizedChildEnv,
   spawnSessionApp,
@@ -146,18 +147,31 @@ export function registerIpc() {
   })
 
   // Linux「打开方式」自建选择器（design-linux-open-with）：枚举 + 白名单启动
-  ipcMain.handle("shell:listOpenWithApps", (_e, path: string) => {
+  ipcMain.handle("shell:listOpenWithApps", async (_e, path: string) => {
     if (process.platform !== "linux" || typeof path !== "string" || !path) return []
     // app.getLocale() 是 BCP47 连字符（zh-CN）；desktop 本地化键是下划线（zh_CN）
     const locale = (app.getLocale() || "en").replace("-", "_")
-    return listOpenWithApps(path, locale)
+    // 上次使用记忆（§1.4）：先查 MIME（列表与启动同一来源），再查记忆表
+    const mime = await mimeOf(path)
+    const lastUsed = (await loadStore())["openWith.lastUsed"]?.[mime]
+    return listOpenWithApps(path, locale, lastUsed)
   })
-  ipcMain.handle("shell:openWithApp", (_e, path: string, appId: string): Promise<string> => {
+  ipcMain.handle("shell:openWithApp", async (_e, path: string, appId: string): Promise<string> => {
     if (process.platform !== "linux") return Promise.resolve("unsupported platform")
     if (typeof path !== "string" || !path || typeof appId !== "string") {
       return Promise.resolve("invalid path")
     }
-    return openWithApp(path, appId)
+    const result = await openWithApp(path, appId)
+    // 启动成功才记忆（失败下次仍无「上次使用」段）；MIME 与列表枚举同源缓存
+    if (result === "") {
+      const mime = await mimeOf(path)
+      if (mime) {
+        const store = await loadStore()
+        store["openWith.lastUsed"] = { ...store["openWith.lastUsed"], [mime]: appId }
+        await persistStore()
+      }
+    }
+    return result
   })
 
   // Linux 自定义头部窗口控制（renderer title-bar.tsx）

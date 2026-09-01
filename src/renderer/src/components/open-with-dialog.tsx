@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react"
+import { X } from "lucide-react"
 import { useI18n } from "../app"
 
 /**
- * Linux「打开方式」选择器弹窗（design-linux-open-with §1.3）：枚举结果列表，
- * 键盘 ↑↓ + Enter、Esc 关闭、点击行启动并关闭。复用 dialog 模式；
- * 图标 = 名称首字母瓷片（同 ProjectAvatar 模式，v0.3 无 icon theme 解析）。
+ * Linux「打开方式」选择器弹窗（design-linux-open-with §1.3）：全量应用列表
+ * （2026-08-31 修订）+ 搜索框 + 上次使用段（§1.4 记忆，推荐组上方独占段）；
+ * 分段由 main 侧 matches/lastUsed 标记排定，渲染层切段展示，键盘 ↑↓ + Enter、
+ * Esc 关闭、点击行启动并关闭。图标 = data URL 或首字母瓷片兜底（同 ProjectAvatar）。
  */
 export function OpenWithDialog({
   path,
@@ -16,9 +18,11 @@ export function OpenWithDialog({
   onClose: () => void
 }) {
   const { t } = useI18n()
-  const [apps, setApps] = useState<{ id: string; name: string }[] | null>(null)
+  const [apps, setApps] = useState<{ id: string; name: string; icon: string | null; matches: boolean; lastUsed?: boolean }[] | null>(null)
+  const [query, setQuery] = useState("")
   const [sel, setSel] = useState(0)
   const listRef = useRef<HTMLDivElement>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     let alive = true
@@ -40,67 +44,129 @@ export function OpenWithDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path])
 
+  // 搜索过滤（名称大小写不敏感子串）；过滤后仍保持 main 侧的分组次序
+  const filtered = useMemo(() => {
+    if (!apps) return null
+    const q = query.trim().toLowerCase()
+    if (!q) return apps
+    return apps.filter((a) => a.name.toLowerCase().includes(q))
+  }, [apps, query])
+
+  // 分段（filtered 已是 main 排定序）：lastUsed（至多 1）→ matches → 其他
+  const lastUsedApp = useMemo(() => filtered?.find((a) => a.lastUsed), [filtered])
+  const matched = useMemo(() => filtered?.filter((a) => a.matches && !a.lastUsed) ?? [], [filtered])
+  const other = useMemo(() => filtered?.filter((a) => !a.matches && !a.lastUsed) ?? [], [filtered])
+  const flat = useMemo(
+    () => [...(lastUsedApp ? [lastUsedApp] : []), ...matched, ...other],
+    [lastUsedApp, matched, other],
+  )
+
+  // 查询变化后选中项越界 → 归零（保留在有效范围内）
+  useEffect(() => {
+    setSel((s) => (s < flat.length ? s : 0))
+  }, [flat.length])
+
   const pick = (id: string) => {
     onLaunch(id)
     onClose()
   }
 
   const onKeyDown = (e: ReactKeyboardEvent) => {
-    if (!apps || apps.length === 0) {
-      if (e.key === "Escape") onClose()
+    // IME 组合中（fcitx5 等，key="Process"/keyCode 229）：Enter/Escape 是确认/取消
+    // 组合而非对话框操作，忽略（2026-08-31 code review 加固）
+    if (e.nativeEvent.isComposing) return
+    const inSearch = document.activeElement === searchRef.current
+    if (e.key === "Escape") {
+      // 搜索框有内容先清空（同常见 command palette 语义），再 Esc 关闭
+      if (inSearch && query) {
+        e.preventDefault()
+        setQuery("")
+        setSel(0)
+        return
+      }
+      onClose()
       return
     }
+    if (!flat || flat.length === 0) return
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault()
-      const len = apps.length
+      const len = flat.length
       setSel((s) => (e.key === "ArrowDown" ? (s + 1) % len : (s - 1 + len) % len))
     } else if (e.key === "Enter") {
       e.preventDefault()
-      pick(apps[sel]!.id)
-    } else if (e.key === "Escape") {
-      onClose()
+      pick(flat[sel]!.id)
     }
   }
 
-  // 打开即聚焦列表容器（tabIndex=-1）：键盘 ↑↓/Enter/Esc 从第一刻起可达
-  // （否则焦点在 body，keydown 不冒泡到 dialog）
+  // 打开即聚焦搜索框：输入即过滤；↑↓/Enter 从第一刻可达（keydown 冒泡到 dialog）
   useEffect(() => {
-    listRef.current?.focus()
+    searchRef.current?.focus()
   }, [])
 
   // 选中行可见（键盘导航）；scrollIntoView 在 jsdom 缺失——可选调用
   useEffect(() => {
-    listRef.current?.querySelectorAll<HTMLButtonElement>(".open-with-row")[sel]?.scrollIntoView?.({
-      block: "nearest",
-    })
-  }, [sel, apps])
+    const el = listRef.current?.querySelectorAll<HTMLButtonElement>(".open-with-row")[sel]
+    // 选中态按 flat 内序号对应 DOM 全列表行序（matched 在前 other 在后，与 flat 一致）
+    el?.scrollIntoView?.({ block: "nearest" })
+  }, [sel, flat])
 
   const initials = useMemo(
-    () => (apps ?? []).map((a) => (Array.from(a.name.trim())[0] ?? "?").toUpperCase()),
-    [apps],
+    () => (flat ?? []).map((a) => (Array.from(a.name.trim())[0] ?? "?").toUpperCase()),
+    [flat],
+  )
+
+  const row = (a: (typeof flat)[number], i: number) => (
+    <button
+      key={a.id}
+      className={"open-with-row" + (i === sel ? " selected" : "")}
+      onMouseEnter={() => setSel(i)}
+      onClick={() => pick(a.id)}
+    >
+      <span className="open-with-avatar" aria-hidden>
+        {a.icon ? (
+          <img className="open-with-icon" src={a.icon} alt="" draggable={false} />
+        ) : (
+          initials[i]
+        )}
+      </span>
+      <span className="open-with-name">{a.name}</span>
+    </button>
   )
 
   return (
     <div className="dialog-mask" onClick={onClose}>
       <div className="dialog open-with-dialog" onClick={(e) => e.stopPropagation()} onKeyDown={onKeyDown}>
-        <div className="dialog-title">{t.fileOpenWith}</div>
+        <div className="dialog-title dialog-title-row">
+          <span>{t.fileOpenWith}</span>
+          {/* 关闭按钮：对齐打开项目弹窗（dialog-title-row + icon-btn X） */}
+          <button className="icon-btn" title={t.close} onClick={onClose}>
+            <X size={14} aria-hidden />
+          </button>
+        </div>
+        <input
+          ref={searchRef}
+          className="dialog-search"
+          type="text"
+          placeholder={t.openWithSearch}
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value)
+            setSel(0)
+          }}
+          spellCheck={false}
+        />
         <div className="dialog-body scroll" ref={listRef} tabIndex={-1}>
           {apps == null && <div className="tree-empty">{t.openWithLoading}</div>}
           {apps != null && apps.length === 0 && <div className="tree-empty">{t.openWithEmpty}</div>}
-          {apps?.map((a, i) => (
-            <button
-              key={a.id}
-              className={"open-with-row" + (i === sel ? " selected" : "")}
-              onMouseEnter={() => setSel(i)}
-              onClick={() => pick(a.id)}
-            >
-              <span className="open-with-avatar" aria-hidden>
-                {initials[i]}
-              </span>
-              <span className="open-with-name">{a.name}</span>
-              <span className="mono open-with-id">{a.id}</span>
-            </button>
-          ))}
+          {apps != null && apps.length > 0 && flat.length === 0 && (
+            <div className="tree-empty">{t.openWithNoResult}</div>
+          )}
+          {lastUsedApp && <div className="open-with-group">{t.openWithLastUsed}</div>}
+          {lastUsedApp && row(lastUsedApp, 0)}
+          {matched.length > 0 && <div className="open-with-group">{t.openWithMatched}</div>}
+          {matched.map((a, i) => row(a, (lastUsedApp ? 1 : 0) + i))}
+          {other.length > 0 && <div className="open-with-group">{t.openWithOther}</div>}
+          {other.map((a, i) => row(a, (lastUsedApp ? 1 : 0) + matched.length + i))}
         </div>
       </div>
     </div>

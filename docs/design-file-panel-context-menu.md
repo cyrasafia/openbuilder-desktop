@@ -30,7 +30,7 @@
 | 项 | 行为 | 可见性 |
 |---|---|---|
 | 打开 | `shell.openPath`（文件 → 默认应用；目录 → 文件管理器） | 恒显示 |
-| 打开方式… | 系统「打开方式」机制（§2.4，分平台） | 仅文件行 + 平台支持时（目录无系统级打开方式语义） |
+| 打开方式… | 系统「打开方式」机制（§2.4，分平台） | 恒显示（**2026-08-31 修订**：目录行/空白处根目录同样提供——`xdg-mime` 对目录返回 `inode/directory`，Linux 枚举天然命中文件管理器；win32/darwin 系统对话框同样接受目录路径。原「目录无系统级打开方式语义」判断不成立） |
 | 复制路径 | `navigator.clipboard.writeText(absolute)`（沿用 markdown.tsx 复制模式） | 恒显示 |
 
 ### 2.4 「打开方式」跨平台策略（D-2）
@@ -43,7 +43,13 @@
 | darwin | 无系统对话框；`osascript` 调系统应用选择器（`choose application`）取 bundle id 后 `open -b <id> <path>`；用户取消选择器 = 静默无操作 |
 | linux | ~~不显示该项~~（**2026-08-27 修订**：显示该项，走**应用内自建选择器**——xdg-mime 查 MIME → 枚举 .desktop → 弹窗选择 → gio launch，见 [design-linux-open-with.md](design-linux-open-with.md)；spec-v0.3 #8） |
 
-判定依据是渲染层 `window.desktop.platform`（browser shim = "browser"，同样不显示）。
+目录对象（目录行/空白处根目录）在 linux 走同一选择器：对目录调 `xdg-mime query filetype` 返回 `inode/directory`（2026-08-31 真机验证），.desktop 枚举按 MimeType 命中文件管理器（Nautilus 等），无额外分支。
+
+`inode/directory` 的应用枚举/启动链路无需改动（§2.3 2026-08-31 修订）：main 侧 `listOpenWithApps`/`openWithApp` 不区分文件与目录，`gio launch <desktop> <目录>` 与文件同契约。
+
+判定依据是渲染层 `window.desktop.platform`（browser shim = "browser"，不显示）。
+
+> 2026-08-31 修订触发点：用户需求「为文件夹也增加 open with 功能，包含点击文件树空白处（= 打开项目根目录）」。此前 §2.3 判定「目录无系统级打开方式语义」，实测不成立（`xdg-mime` 对目录返回 `inode/directory`，win32/darwin 系统机制也接受目录路径），故放开目录限制。
 
 ### 2.5 IPC 通道（renderer → main，动作单向）
 
