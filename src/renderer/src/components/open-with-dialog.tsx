@@ -102,7 +102,6 @@ export function OpenWithDialog({
                 )}
               </span>
               <span className="open-with-name">{a.name}</span>
-              <span className="mono open-with-id">{a.id}</span>
             </button>
           ))}
         </div>

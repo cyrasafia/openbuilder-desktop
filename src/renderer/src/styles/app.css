@@ -3606,10 +3606,3 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-.open-with-id {
-  margin-left: auto;
-  color: var(--outline);
-  font-size: var(--text-sm);
-  flex-shrink: 0;
-}

@@ -24,7 +24,7 @@
 ### 1.3 UI（渲染层）
 
 - 右键菜单「打开方式…」：Linux 恢复显示（win32/darwin 走原系统对话框 IPC 不变）。**2026-08-31 修订**：目录行/空白处根目录同样显示（原「目录仍不显示」废止）——`xdg-mime query filetype` 对目录返回 `inode/directory`（真机验证），枚举按 MimeType 命中文件管理器类应用，枚举/启动链路零改动
-- 点击 → `shell:listOpenWithApps` → **应用内选择器弹窗**（复用 `.dialog-mask`/`.dialog` 模式：列表行 = 应用图标（`icon` data URL，`<img class="open-with-icon">` 铺瓷片；null 时回退文本首字母瓷片，同 ProjectAvatar 模式）+ 名称；键盘 ↑↓ + Enter、Esc 关闭、点击行启动并关闭；目录与文件同一弹窗）
+- 点击 → `shell:listOpenWithApps` → **应用内选择器弹窗**（复用 `.dialog-mask`/`.dialog` 模式：列表行 = 应用图标（`icon` data URL，`<img class="open-with-icon">` 铺瓷片；null 时回退文本首字母瓷片，同 ProjectAvatar 模式）+ 名称（仅本地化名；**2026-08-31 修订：不再展示 id 包名**（`xx.desktop` 技术细节对用户无意义，id 仍作 key/启动白名单凭据）；键盘 ↑↓ + Enter、Esc 关闭、点击行启动并关闭；目录与文件同一弹窗）
 - 加载中/空态（无匹配应用）文案
 
 ## 2. 不做的事
