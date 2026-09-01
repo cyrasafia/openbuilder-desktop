@@ -170,11 +170,22 @@ describe("iconPathOf", () => {
 
   it("A：同尺寸差升档优先于降档；等距时大档优先", () => {
     // 48 目标：64（差16）先于 32（差16，同距取大）
-    const both = (p: string) => p.endsWith("/64x64/apps/e.png") || p.endsWith("/32x32/apps/e.png")
-    const c = (p: string) => (p.includes("64x64") ? FILES.add(p) && true : false) || true
     expect(iconPathOf("e", dirs, 48, (p) => p.includes("64x64") || p.includes("32x32"), chain)).toContain(
       "64x64",
     )
+  })
+
+  it("A：仅 32px+96px 档（无 scalable/48/64/72）→ 96px 胜出（升档全序先于降档，code review 修正）", () => {
+    // 距离排序会把 32 排在 96 前（|32-48|=16 < |96-48|=48）——与「升档优先」需求相反
+    expect(
+      iconPathOf(
+        "small-and-large",
+        dirs,
+        48,
+        (p) => p.includes("32x32") || p.includes("96x96"),
+        chain,
+      ),
+    ).toContain("96x96")
   })
 
   it("B：主题链优先于 hicolor；context 目录 apps 优先 → legacy 兜底", () => {
@@ -210,9 +221,16 @@ describe("iconPathOf", () => {
 
 describe("iconPixmapCaseInsensitiveOf", () => {
   it("大小写不敏感 + svg（D：Icon=Alacritty vs Alacritty.svg）", () => {
-    const entries = (p: string) => (p === "/sys/share/pixmaps" ? ["Alacritty.svg", "Other.png"] : null)
-    // readdirSync 不可注入——验证签名/契约即走集成路径；这里以真实临时目录验证
-    expect(iconPixmapCaseInsensitiveOf("Alacritty", ["/sys/share"])).toBeNull() // 目录不存在 → null
+    const list = (p: string) => (p === "/sys/share/pixmaps" ? ["Alacritty.svg", "Other.png"] : null)
+    expect(iconPixmapCaseInsensitiveOf("Alacritty", ["/sys/share"], list)).toBe(
+      "/sys/share/pixmaps/Alacritty.svg",
+    )
+    expect(iconPixmapCaseInsensitiveOf("alacritty", ["/sys/share"], list)).toBe(
+      "/sys/share/pixmaps/Alacritty.svg",
+    )
+    // 目录不存在 → null；无匹配 → null
+    expect(iconPixmapCaseInsensitiveOf("missing", ["/sys/share"], list)).toBeNull()
+    expect(iconPixmapCaseInsensitiveOf("x", ["/no/dir"], list)).toBeNull()
   })
 })
 

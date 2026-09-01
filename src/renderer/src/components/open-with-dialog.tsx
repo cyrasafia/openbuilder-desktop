@@ -67,6 +67,9 @@ export function OpenWithDialog({
   }
 
   const onKeyDown = (e: ReactKeyboardEvent) => {
+    // IME 组合中（fcitx5 等，key="Process"/keyCode 229）：Enter/Escape 是确认/取消
+    // 组合而非对话框操作，忽略（2026-08-31 code review 加固）
+    if (e.nativeEvent.isComposing) return
     const inSearch = document.activeElement === searchRef.current
     if (e.key === "Escape") {
       // 搜索框有内容先清空（同常见 command palette 语义），再 Esc 关闭

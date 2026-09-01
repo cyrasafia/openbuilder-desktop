@@ -46,7 +46,7 @@ interface DesktopEntry {
   exec?: string
   noDisplay: boolean
   mimeTypes: Set<string>
-  /** Icon= 原始值：主题图标名或绝对路径（v0.3 仅消费 PNG 位图，§1.1） */
+  /** Icon= 原始值：主题图标名或绝对路径（渲染消费 png/svg data URL，§1.1） */
   icon?: string
 }
 
@@ -147,7 +147,7 @@ export function xdgDataDirs(): string[] {
 }
 
 /**
- * 解析 index.theme 的 Inherits= 链（纯函数；环安全，已访问主题跳过；限深 10）。
+ * 解析 index.theme 的 Inherits= 链（纯函数）。
  * theme 文件按 XDG icon spec：`[Icon Theme]` 段 `Inherits=` 逗号列表。
  */
 export function parseInherits(content: string): string[] {
@@ -219,14 +219,16 @@ export function themeChainOf(
   return chain
 }
 
-/** 档位遍历序（A 类修复）：目标 48 → 升档（64→128→256→512→96…）→ 降档（32→24→22→16→8）。
- *  升档优先于降档（用户要求）：大图标缩小渲染无损失，小图标放大会糊。@2 目录不单列
- *  （位图按文件名查，@2 的文件同名不同目录——遍历 context 目录时自然覆盖不到，
- *  可接受；48px 标准档覆盖绝大多数应用） */
-const ICON_SIZES_ASC_FIRST = (want: number): number[] =>
-  [...new Set([want, 64, 128, 256, 512, 96, 72, 32, 24, 22, 16, 8])].sort(
-    (a, b) => Math.abs(a - want) - Math.abs(b - want) || b - a,
-  )
+/** 档位遍历序（A 类修复）：目标 48 精确档 → 升档全序（64→96→128→256→512…递增）
+ *  → 降档全序（32→24→22→16→8）。用户要求**升档优先于降档**（大图标缩小渲染
+ *  无损，小图标放大会糊）——纯距离排序会把 32 排在 96 前，与需求相反（2026-08-31
+ *  code review 修正）。@2 目录不单列（位图按文件名查，可接受）。 */
+const ICON_SIZES_ASC_FIRST = (want: number): number[] => {
+  const sizes = [...new Set([48, 64, 96, 128, 256, 512, 72, 32, 24, 22, 16, 8])]
+  const up = sizes.filter((s) => s > want).sort((a, b) => a - b)
+  const down = sizes.filter((s) => s < want).sort((a, b) => b - a)
+  return [want, ...up, ...down]
+}
 
 /** 主题内 context 子目录遍历序：apps 优先，其余（legacy/actions/devices 等
  *  AdwaitaLegacy 把老应用图标放在 legacy/）兜底。 */
@@ -296,19 +298,28 @@ export function iconPathOf(
 
 /**
  * pixmaps 大小写不敏感兜底（D 类）：iconPathOf 精确名未命中后调用，
- * 列目录逐项比对（pixmaps 目录通常数百项，同步 IO 可接受）。
+ * 列目录逐项比对（pixmaps 目录通常数百项，同步 IO 可接受；列目录谓词
+ * 注入便于单测）。
  */
-export function iconPixmapCaseInsensitiveOf(icon: string, dataDirs: string[]): string | null {
+export function iconPixmapCaseInsensitiveOf(
+  icon: string,
+  dataDirs: string[],
+  listDir: (path: string) => string[] | null = (p) => {
+    try {
+      return readdirSync(p)
+    } catch {
+      return null
+    }
+  },
+): string | null {
+  const want = `${icon.toLowerCase()}`
   for (const dir of dataDirs) {
     const pm = join(dir, "pixmaps")
-    let entries: string[]
-    try {
-      entries = readdirSync(pm)
-    } catch {
-      continue
-    }
+    const entries = listDir(pm)
+    if (!entries) continue
     const hit = entries.find(
-      (f) => f.toLowerCase() === `${icon.toLowerCase()}.png` || f.toLowerCase() === `${icon.toLowerCase()}.svg`,
+      (f) =>
+        f.toLowerCase() === `${want}.png` || f.toLowerCase() === `${want}.svg`,
     )
     if (hit) return join(pm, hit)
   }
