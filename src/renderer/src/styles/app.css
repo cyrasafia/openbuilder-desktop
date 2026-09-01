@@ -3606,3 +3606,11 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* 分段标题（匹配组 / 其他组；2026-08-31 全量列表修订） */
+.open-with-group {
+  padding: 8px 10px 4px;
+  font-size: var(--text-sm);
+  color: var(--outline);
+  user-select: none;
+}

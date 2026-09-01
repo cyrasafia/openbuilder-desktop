@@ -12,8 +12,10 @@ export interface OpenWithApp {
   id: string
   /** data dir 相对的 .desktop 路径（如 org.gnome.TextEditor.desktop / kde4/foo.desktop） */
   name: string
-  /** 应用图标 data URL（主题查找产物，png/svg；未找到/解析失败 = null——渲染层按首字母瓷片兜底） */
+  /** 应用图标 data URL（主题查找产物；未找到/解析失败 = null——渲染层按首字母瓷片兜底） */
   icon: string | null
+  /** MimeType 是否命中目标 MIME（祖先闭包）；全量列表中匹配组排前、其余排后 */
+  matches: boolean
 }
 
 /**
@@ -377,6 +379,8 @@ export async function listOpenWithApps(path: string, locale: string): Promise<Op
   const subclasses = await readSubclasses()
   const accepted = mimeAncestorsOf(mime, subclasses)
   lastEnumerated.clear()
+  // 2026-08-31 修订：**全量应用**（不再按 MimeType 过滤）——用户要求「所有类型的
+  // open with 列表都改为全量应用」；匹配与否以 matches 标记，渲染层分组展示
   const apps: OpenWithApp[] = []
   const seen = new Set<string>()
   for (const dir of xdgDataDirs()) {
@@ -394,17 +398,15 @@ export async function listOpenWithApps(path: string, locale: string): Promise<Op
       // 用户以 hidden 覆盖文件隐藏系统入口是常见手法），无论本条是否可用
       seen.add(id)
       if (!entry || entry.noDisplay || !entry.exec) continue
-      // octet-stream 兜底（MIME 查询失败）不过滤；正常路径按 MimeType∩祖先闭包命中
-      if (
-        mime !== "application/octet-stream" &&
-        ![...entry.mimeTypes].some((m) => accepted.has(m))
-      )
-        continue
+      const matches =
+        mime === "application/octet-stream" ||
+        [...entry.mimeTypes].some((m) => accepted.has(m))
       lastEnumerated.set(id, abs)
-      apps.push({ id, name: entry.name, icon: await iconDataUrlOf(entry.icon) })
+      apps.push({ id, name: entry.name, icon: await iconDataUrlOf(entry.icon), matches })
     }
   }
-  apps.sort((a, b) => a.name.localeCompare(b.name))
+  // 分组排序（2026-08-31）：匹配组在前、其余组在后；组内按本地化名字母序
+  apps.sort((a, b) => (a.matches === b.matches ? a.name.localeCompare(b.name) : a.matches ? -1 : 1))
   return apps
 }
 
