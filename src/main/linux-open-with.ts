@@ -378,47 +378,65 @@ export async function listOpenWithApps(path: string, locale: string): Promise<Op
   // 子类文件同样可由其打开（见 parseSubclasses 注释的 2026-08-31 实证）
   const subclasses = await readSubclasses()
   const accepted = mimeAncestorsOf(mime, subclasses)
+  // 主题链每枚举只算一次（性能实证 2026-08-31：iconDataUrlOf 内逐 app 调
+  // currentUserTheme → 110 个 gsettings 子进程 ≈ 900ms，占总耗时 ~75%）
+  const dirs = xdgDataDirs()
+  const chain = themeChainOf(await currentUserTheme(), dirs)
   lastEnumerated.clear()
   // 2026-08-31 修订：**全量应用**（不再按 MimeType 过滤）——用户要求「所有类型的
-  // open with 列表都改为全量应用」；匹配与否以 matches 标记，渲染层分组展示
-  const apps: OpenWithApp[] = []
+  // open with 列表都改为全量应用」；匹配与否以 matches 标记，渲染层分组展示。
+  // 单 app 处理（收集/读文件/图标）彼此无依赖 → Promise.all 并行
+  const results: OpenWithApp[] = []
   const seen = new Set<string>()
-  for (const dir of xdgDataDirs()) {
+  const jobs: Promise<void>[] = []
+  for (const dir of dirs) {
     for (const abs of await collectDesktopFiles(dir)) {
       const id = abs.slice(join(dir, "applications").length + 1)
       if (seen.has(id)) continue
-      let content: string
-      try {
-        content = await readFile(abs, "utf8")
-      } catch {
-        continue
-      }
-      const entry = parseDesktopEntry(content, locale)
-      // XDG 遮蔽：首个 data dir 的同名 id 即遮蔽后续目录条目（含 NoDisplay——
-      // 用户以 hidden 覆盖文件隐藏系统入口是常见手法），无论本条是否可用
       seen.add(id)
-      if (!entry || entry.noDisplay || !entry.exec) continue
-      const matches =
-        mime === "application/octet-stream" ||
-        [...entry.mimeTypes].some((m) => accepted.has(m))
-      lastEnumerated.set(id, abs)
-      apps.push({ id, name: entry.name, icon: await iconDataUrlOf(entry.icon), matches })
+      jobs.push(
+        (async () => {
+          let content: string
+          try {
+            content = await readFile(abs, "utf8")
+          } catch {
+            return
+          }
+          const entry = parseDesktopEntry(content, locale)
+          // XDG 遮蔽已由 seen 预过滤（此处 entry 仍可能为 null——解析失败跳过）
+          if (!entry || entry.noDisplay || !entry.exec) return
+          const matches =
+            mime === "application/octet-stream" ||
+            [...entry.mimeTypes].some((m) => accepted.has(m))
+          const app: OpenWithApp = {
+            id,
+            name: entry.name,
+            icon: await iconDataUrlOf(entry.icon, dirs, chain),
+            matches,
+          }
+          results.push(app)
+          lastEnumerated.set(id, abs)
+        })(),
+      )
     }
   }
+  await Promise.all(jobs)
   // 分组排序（2026-08-31）：匹配组在前、其余组在后；组内按本地化名字母序
-  apps.sort((a, b) => (a.matches === b.matches ? a.name.localeCompare(b.name) : a.matches ? -1 : 1))
-  return apps
+  results.sort((a, b) => (a.matches === b.matches ? a.name.localeCompare(b.name) : a.matches ? -1 : 1))
+  return results
 }
 
 /** Icon= → 图标 data URL（svg→image/svg+xml、png→image/png；未找到/读取失败 = null，兜底首字母瓷片）。
- *  主题链（gsettings 当前主题 → Inherits → hicolor）+ pixmaps 大小写不敏感兜底。 */
-async function iconDataUrlOf(icon: string | undefined): Promise<string | null> {
+ *  主题链/dir 列表由调用方注入（每枚举一次——否则 110 次 gsettings 子进程 ≈ 900ms），
+ *  pixmaps 大小写不敏感兜底。 */
+async function iconDataUrlOf(
+  icon: string | undefined,
+  dirs: string[],
+  chain: string[],
+): Promise<string | null> {
   if (!icon) return null
-  const dirs = xdgDataDirs()
-  const theme = await currentUserTheme()
   const file =
-    iconPathOf(icon, dirs, 48, existsSync, themeChainOf(theme, dirs)) ??
-    iconPixmapCaseInsensitiveOf(icon, dirs)
+    iconPathOf(icon, dirs, 48, existsSync, chain) ?? iconPixmapCaseInsensitiveOf(icon, dirs)
   if (!file) return null
   const mime = file.toLowerCase().endsWith(".svg") ? "image/svg+xml" : "image/png"
   try {
