@@ -85,6 +85,51 @@ export function parseDesktopEntry(content: string, locale: string): DesktopEntry
   }
 }
 
+/**
+ * 解析 subclasses 数据（共享 mime-db `<data>/mime/subclasses`，每行
+ * `<子类型> <祖先类型>`；# 注释）→ 子类型 → 直接祖先多重集。
+ * 语义对齐 libegg/xdg-utils：.desktop 只声明祖先 MIME（如文本编辑器仅声明
+ * `text/plain`）即可打开具体子类型（如 .json 子类链 text/plain ⇐ … ⇐
+ * application/json），字面 MimeType 精确匹配会漏掉这些应用（2026-08-31 真机
+ * 实证：application/json 只出 firefox，遗漏 gedit/TextEditor/micro/vim/sublime）。
+ */
+export function parseSubclasses(content: string): Map<string, Set<string>> {
+  const map = new Map<string, Set<string>>()
+  for (const raw of content.split("\n")) {
+    const line = raw.trim()
+    if (!line || line.startsWith("#")) continue
+    const sp = line.search(/\s/)
+    if (sp < 0) continue
+    const child = line.slice(0, sp)
+    const parent = line.slice(sp + 1).trim()
+    if (!map.has(child)) map.set(child, new Set())
+    map.get(child)!.add(parent)
+  }
+  return map
+}
+
+/**
+ * MIME 祖先后闭包（含自身；直接祖先由 subclasses 反复解引用；环安全）。
+ * 查不到 subclasses 数据时仅返回自身（退化为旧的字面匹配行为）。
+ */
+export function mimeAncestorsOf(
+  mime: string,
+  subclasses: Map<string, Set<string>>,
+): Set<string> {
+  const out = new Set<string>([mime])
+  const queue = [mime]
+  while (queue.length > 0) {
+    const mime = queue.pop()!
+    for (const parent of subclasses.get(mime) ?? []) {
+      if (!out.has(parent)) {
+        out.add(parent)
+        queue.push(parent)
+      }
+    }
+  }
+  return out
+}
+
 /** data dirs（XDG 语义：$XDG_DATA_HOME + $XDG_DATA_DIRS，缺省补齐） */
 export function xdgDataDirs(): string[] {
   const home = process.env.XDG_DATA_HOME || join(homedir(), ".local/share")
@@ -120,11 +165,41 @@ function execFileText(cmd: string, args: string[], timeoutMs: number): Promise<s
   })
 }
 
+/**
+ * 读共享 mime-db 子类表（xdg-mime 数据目录下的 `mime/subclasses`，与
+ * `xdg-mime query filetype` 同源）：**跨全部 data dir 合并**（mime-db 文件按
+ * shared-mime-info 规范联合而非遮蔽——如 WPS 只写 ~/.local/share/mime/subclasses，
+ * freedesktop 基线在 /usr/share/mime/subclasses，取首个会丢整条链）。
+ * 全部读取失败/不存在 → 空 map，枚举退化为字面匹配。
+ */
+async function readSubclasses(): Promise<Map<string, Set<string>>> {
+  const merged = new Map<string, Set<string>>()
+  for (const dir of xdgDataDirs()) {
+    let part: Map<string, Set<string>>
+    try {
+      part = parseSubclasses(await readFile(join(dir, "mime", "subclasses"), "utf8"))
+    } catch {
+      continue
+    }
+    for (const [child, parents] of part) {
+      const acc = merged.get(child) ?? new Set<string>()
+      for (const p of parents) acc.add(p)
+      merged.set(child, acc)
+    }
+  }
+  return merged
+}
+
 /** 最近一次枚举的 id → desktop 绝对路径（appId 白名单，§1.2） */
 const lastEnumerated = new Map<string, string>()
 
 export async function listOpenWithApps(path: string, locale: string): Promise<OpenWithApp[]> {
   const mime = (await execFileText("xdg-mime", ["query", "filetype", path], 2000)) || "application/octet-stream"
+  // 祖先闭包（共享 mime-db `<data>/mime/subclasses`；缺数据退化为字面匹配）：
+  // .desktop 常只声明祖先类型（文本编辑器仅 `text/plain`），按 gio/libegg 语义
+  // 子类文件同样可由其打开（见 parseSubclasses 注释的 2026-08-31 实证）
+  const subclasses = await readSubclasses()
+  const accepted = mimeAncestorsOf(mime, subclasses)
   lastEnumerated.clear()
   const apps: OpenWithApp[] = []
   const seen = new Set<string>()
@@ -143,8 +218,12 @@ export async function listOpenWithApps(path: string, locale: string): Promise<Op
       // 用户以 hidden 覆盖文件隐藏系统入口是常见手法），无论本条是否可用
       seen.add(id)
       if (!entry || entry.noDisplay || !entry.exec) continue
-      // octet-stream 兜底（MIME 查询失败）不过滤；正常路径按 MimeType 命中
-      if (mime !== "application/octet-stream" && !entry.mimeTypes.has(mime)) continue
+      // octet-stream 兜底（MIME 查询失败）不过滤；正常路径按 MimeType∩祖先闭包命中
+      if (
+        mime !== "application/octet-stream" &&
+        ![...entry.mimeTypes].some((m) => accepted.has(m))
+      )
+        continue
       lastEnumerated.set(id, abs)
       apps.push({ id, name: entry.name })
     }

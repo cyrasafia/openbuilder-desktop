@@ -1,10 +1,11 @@
 /**
  * Linux「打开方式」纯函数（design-linux-open-with §1.1）：
- * parseDesktopEntry（段过滤/本地化名/NoDisplay/MimeType）。
+ * parseDesktopEntry（段过滤/本地化名/NoDisplay/MimeType）、
+ * parseSubclasses/mimeAncestorsOf（祖先后闭包，字面匹配漏祖先声明应用的修复）。
  * 子进程与文件系统路径（listOpenWithApps/openWithApp）不做单测——真机 E2E 覆盖。
  */
 import { describe, expect, it } from "vitest"
-import { parseDesktopEntry, sanitizedChildEnv } from "./linux-open-with"
+import { mimeAncestorsOf, parseDesktopEntry, parseSubclasses, sanitizedChildEnv } from "./linux-open-with"
 
 const ENTRY = (body: string) => `[Desktop Entry]\n${body}\n`
 
@@ -49,6 +50,53 @@ describe("parseDesktopEntry", () => {
     expect(parseDesktopEntry(ENTRY("# comment\nExec=x\n"), "en")).toBeNull()
     const e = parseDesktopEntry(ENTRY("Name=N\nMimeType=a;;b;\n"), "en")
     expect([...e!.mimeTypes].sort()).toEqual(["a", "b"])
+  })
+})
+
+describe("parseSubclasses / mimeAncestorsOf", () => {
+  it("多行链式解引用：json→json5→ecmascript→text/javascript→typescript→text/plain 全闭包", () => {
+    const sub = parseSubclasses(
+      [
+        "# comment",
+        "application/json application/json5",
+        "application/json5 application/ecmascript",
+        "application/ecmascript text/javascript",
+        "text/javascript application/typescript",
+        "application/typescript text/plain",
+        "orphan", // 无祖先：跳过
+      ].join("\n"),
+    )
+    const acc = mimeAncestorsOf("application/json", sub)
+    for (const m of [
+      "application/json",
+      "application/json5",
+      "application/ecmascript",
+      "text/javascript",
+      "application/typescript",
+      "text/plain",
+    ]) {
+      expect(acc.has(m)).toBe(true)
+    }
+    expect(acc.has("text/html")).toBe(false)
+  })
+
+  it("环安全（父子互指不挂起）；未知 MIME 仅自身", () => {
+    const sub = parseSubclasses("a b\nb a")
+    const acc = mimeAncestorsOf("a", sub)
+    expect(acc.has("a")).toBe(true)
+    expect(acc.has("b")).toBe(true)
+    expect(mimeAncestorsOf("inode/directory", sub).has("inode/directory")).toBe(true)
+  })
+
+  it("空表（subclasses 缺失）退化为仅自身 = 字面匹配", () => {
+    const acc = mimeAncestorsOf("application/json", new Map())
+    expect([...acc]).toEqual(["application/json"])
+  })
+
+  it("子类型多祖先去重（diamond）", () => {
+    const sub = parseSubclasses("x p1\nx p2\np1 top\np2 top")
+    const acc = mimeAncestorsOf("x", sub)
+    expect([...acc].sort()).toEqual(["p1", "p2", "top", "x"])
   })
 })
 
