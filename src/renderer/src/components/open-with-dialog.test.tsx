@@ -157,6 +157,14 @@ describe("OpenWithDialog", () => {
     expect(onLaunch).not.toHaveBeenCalled()
   })
 
+  it("标题行关闭按钮（对齐打开项目弹窗）点击关闭（不启动）", async () => {
+    render(<OpenWithDialog path="/repo/a.json" onLaunch={onLaunch} onClose={onClose} />)
+    await screen.findByText("Alpha 编辑器")
+    fireEvent.click(document.querySelector(".dialog-title-row .icon-btn")!)
+    expect(onClose).toHaveBeenCalledTimes(1)
+    expect(onLaunch).not.toHaveBeenCalled()
+  })
+
   it("应用图标：有 icon 渲染 img，无 icon 回退首字母瓷片（2026-08-31）", async () => {
     render(<OpenWithDialog path="/repo/a.json" onLaunch={onLaunch} onClose={onClose} />)
     await screen.findByText("Alpha 编辑器")

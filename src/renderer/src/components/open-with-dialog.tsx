@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react"
+import { X } from "lucide-react"
 import { useI18n } from "../app"
 
 /**
@@ -131,10 +132,16 @@ export function OpenWithDialog({
   return (
     <div className="dialog-mask" onClick={onClose}>
       <div className="dialog open-with-dialog" onClick={(e) => e.stopPropagation()} onKeyDown={onKeyDown}>
-        <div className="dialog-title">{t.fileOpenWith}</div>
+        <div className="dialog-title dialog-title-row">
+          <span>{t.fileOpenWith}</span>
+          {/* 关闭按钮：对齐打开项目弹窗（dialog-title-row + icon-btn X） */}
+          <button className="icon-btn" title={t.close} onClick={onClose}>
+            <X size={14} aria-hidden />
+          </button>
+        </div>
         <input
           ref={searchRef}
-          className="ms-search open-with-search"
+          className="dialog-search"
           type="text"
           placeholder={t.openWithSearch}
           value={query}
