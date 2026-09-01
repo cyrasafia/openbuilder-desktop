@@ -6,12 +6,14 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { OpenWithDialog } from "./open-with-dialog"
 
+type AppRow = { id: string; name: string; icon: string | null; matches: boolean; lastUsed?: boolean }
+
 const listApps = vi.fn(async () => [
   { id: "a.desktop", name: "Alpha 编辑器", icon: "data:image/png;base64,AAAA", matches: true },
   { id: "b.desktop", name: "Beta", icon: null, matches: true },
   { id: "d.desktop", name: "Delta 查看器", icon: null, matches: false },
   { id: "c.desktop", name: "Gamma", icon: null, matches: false },
-])
+] as AppRow[])
 const onLaunch = vi.fn()
 const onClose = vi.fn()
 
@@ -24,6 +26,7 @@ vi.mock("../app", () => ({
       openWithSearch: "搜索应用…",
       openWithMatched: "推荐应用",
       openWithOther: "其他应用",
+      openWithLastUsed: "上次使用",
       openWithNoResult: "无匹配结果",
     },
     locale: "zh" as const,
@@ -76,6 +79,39 @@ describe("OpenWithDialog", () => {
     const names = () =>
       Array.from(document.querySelectorAll(".open-with-row .open-with-name")).map((n) => n.textContent)
     expect(names()).toEqual(["Alpha 编辑器", "Beta", "Delta 查看器", "Gamma"])
+  })
+
+  it("上次使用段（§1.4 记忆）：推荐组上方独占段；无标记时不显示；跨段搜索保留", async () => {
+    // Gamma 为上次使用（main 侧打标，无论其 matches 归属）
+    listApps.mockResolvedValue([
+      { id: "a.desktop", name: "Alpha 编辑器", icon: null, matches: true },
+      { id: "b.desktop", name: "Beta", icon: null, matches: true },
+      { id: "d.desktop", name: "Delta 查看器", icon: null, matches: false },
+      { id: "c.desktop", name: "Gamma", icon: null, matches: false, lastUsed: true },
+    ])
+    render(<OpenWithDialog path="/repo/a.json" onLaunch={onLaunch} onClose={onClose} />)
+    await screen.findByText("Alpha 编辑器")
+    const groups = () => Array.from(document.querySelectorAll(".open-with-group")).map((g) => g.textContent)
+    expect(groups()).toEqual(["上次使用", "推荐应用", "其他应用"])
+    const names = () =>
+      Array.from(document.querySelectorAll(".open-with-row .open-with-name")).map((n) => n.textContent)
+    expect(names()).toEqual(["Gamma", "Alpha 编辑器", "Beta", "Delta 查看器"])
+    // 首选中项 = 上次使用（打开即定位）
+    expect(document.querySelector(".open-with-row")!.className).toContain("selected")
+    // 搜索后段保留（"a" 命中 Alpha/Beta/Delta）
+    const input = screen.getByPlaceholderText("搜索应用…") as HTMLInputElement
+    fireEvent.change(input, { target: { value: "a" } })
+    expect(groups()).toEqual(["上次使用", "推荐应用", "其他应用"])
+    expect(names()).toEqual(["Gamma", "Alpha 编辑器", "Beta", "Delta 查看器"])
+    // 无 lastUsed（未用过）→ 不显示该段
+    cleanup()
+    listApps.mockResolvedValue([
+      { id: "a.desktop", name: "Alpha 编辑器", icon: null, matches: true },
+      { id: "b.desktop", name: "Beta", icon: null, matches: true, lastUsed: false },
+    ])
+    render(<OpenWithDialog path="/repo/a.json" onLaunch={onLaunch} onClose={onClose} />)
+    await screen.findByText("Alpha 编辑器")
+    expect(groups()).toEqual(["推荐应用"])
   })
 
   it("搜索：名称大小写不敏感子串过滤，跨段保留分组次序；清空恢复全量", async () => {

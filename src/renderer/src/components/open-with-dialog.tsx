@@ -8,6 +8,12 @@ import { useI18n } from "../app"
  * 渲染层按 matches 分段），键盘 ↑↓ + Enter、Esc 关闭、点击行启动并关闭。
  * 图标 = data URL 或首字母瓷片兜底（同 ProjectAvatar 模式）。
  */
+/**
+ * Linux「打开方式」选择器弹窗（design-linux-open-with §1.3）：全量应用列表
+ * （2026-08-31 修订）+ 搜索框 + 上次使用段（§1.4 记忆，推荐组上方独占段）；
+ * 分段由 main 侧 matches/lastUsed 标记排定，渲染层切段展示，键盘 ↑↓ + Enter、
+ * Esc 关闭、点击行启动并关闭。图标 = data URL 或首字母瓷片兜底（同 ProjectAvatar）。
+ */
 export function OpenWithDialog({
   path,
   onLaunch,
@@ -18,7 +24,7 @@ export function OpenWithDialog({
   onClose: () => void
 }) {
   const { t } = useI18n()
-  const [apps, setApps] = useState<{ id: string; name: string; icon: string | null; matches: boolean }[] | null>(null)
+  const [apps, setApps] = useState<{ id: string; name: string; icon: string | null; matches: boolean; lastUsed?: boolean }[] | null>(null)
   const [query, setQuery] = useState("")
   const [sel, setSel] = useState(0)
   const listRef = useRef<HTMLDivElement>(null)
@@ -52,10 +58,14 @@ export function OpenWithDialog({
     return apps.filter((a) => a.name.toLowerCase().includes(q))
   }, [apps, query])
 
-  // 分段（filtered 已是「匹配组先、字母序」）：matches 边界切两段
-  const matched = useMemo(() => filtered?.filter((a) => a.matches) ?? [], [filtered])
-  const other = useMemo(() => filtered?.filter((a) => !a.matches) ?? [], [filtered])
-  const flat = useMemo(() => [...matched, ...other], [matched, other])
+  // 分段（filtered 已是 main 排定序）：lastUsed（至多 1）→ matches → 其他
+  const lastUsedApp = useMemo(() => filtered?.find((a) => a.lastUsed), [filtered])
+  const matched = useMemo(() => filtered?.filter((a) => a.matches && !a.lastUsed) ?? [], [filtered])
+  const other = useMemo(() => filtered?.filter((a) => !a.matches && !a.lastUsed) ?? [], [filtered])
+  const flat = useMemo(
+    () => [...(lastUsedApp ? [lastUsedApp] : []), ...matched, ...other],
+    [lastUsedApp, matched, other],
+  )
 
   // 查询变化后选中项越界 → 归零（保留在有效范围内）
   useEffect(() => {
@@ -157,10 +167,12 @@ export function OpenWithDialog({
           {apps != null && apps.length > 0 && flat.length === 0 && (
             <div className="tree-empty">{t.openWithNoResult}</div>
           )}
+          {lastUsedApp && <div className="open-with-group">{t.openWithLastUsed}</div>}
+          {lastUsedApp && row(lastUsedApp, 0)}
           {matched.length > 0 && <div className="open-with-group">{t.openWithMatched}</div>}
-          {matched.map((a, i) => row(a, i))}
+          {matched.map((a, i) => row(a, (lastUsedApp ? 1 : 0) + i))}
           {other.length > 0 && <div className="open-with-group">{t.openWithOther}</div>}
-          {other.map((a, i) => row(a, matched.length + i))}
+          {other.map((a, i) => row(a, (lastUsedApp ? 1 : 0) + matched.length + i))}
         </div>
       </div>
     </div>

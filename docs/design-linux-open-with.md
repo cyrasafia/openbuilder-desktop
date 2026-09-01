@@ -27,6 +27,13 @@
 - 点击 → `shell:listOpenWithApps` → **应用内选择器弹窗**（骨架/尺寸/内边距/关闭按钮对齐 **DESIGN.md §标准弹窗** 列表档（700×560 固定、`dialog-title-row` 关闭钮、`dialog-search` 搜索框下边距 14）；顶部**搜索框**（名称大小写不敏感子串过滤；打开即聚焦；Esc 有内容先清空再关闭）+ 分段列表（匹配组标题「推荐应用」在前、其余「其他应用」在后，组次序由 main 排定、过滤后保持）+ 列表行 = 应用图标（`icon` data URL，`<img class="open-with-icon">` 铺瓷片；null 时回退文本首字母瓷片，同 ProjectAvatar 模式）+ 名称（仅本地化名；**2026-08-31 修订：不再展示 id 包名**（`xx.desktop` 技术细节对用户无意义，id 仍作 key/启动白名单凭据）；键盘 ↑↓/Enter 在过滤后列表内循环、点击行启动并关闭；目录与文件同一弹窗）
 - 加载中/空态/搜索无结果文案（枚举空 = openWithEmpty；搜索无结果 = openWithNoResult）
 
+### 1.4 上次使用记忆（2026-08-31，形态对齐 `model.defaults` 隐式配置）
+
+- **存储**：store 键 `"openWith.lastUsed": Record<MIME, appId>`（main 侧 JSON store，全局生效、跨 profile；未用过的 MIME 无键）。写入时机 = `shell:openWithApp` 启动**成功**后（失败不记——下次打开仍无「上次使用」段）
+- **读取**：`shell:listOpenWithApps` 先 `mimeOf(path)`（与枚举/启动同源的 MIME 缓存）→ 查记忆表 → `lastUsedAppId` 注入枚举；枚举结果打标（至多一个 `lastUsed: true`，打标为每 app 新对象——枚举缓存是共享快照，就地写会污染）
+- **UI**：应用列表中「上次使用」段在「推荐应用」上方（仅当有记忆且应用仍在枚举结果中——已卸载的应用无行可打标，段落自然消失）；段内独占（不参与组内字母序），首选中项即上次使用；无记忆时三段退化两段
+- **不记默认、不自动启动**：记忆只影响弹窗内的段落排序（上次使用置顶），选中后仍需用户确认——与「设为默认」（系统 mimeapps.list）是不同层面的能力，互不写
+
 ## 2. 不做的事
 
 - ~~图标真渲染~~（**2026-08-31 修订：已实现**，见 §1.1 步骤 4——Icon 解析 + hicolor 查找 + data URL；首字母瓷片保留为未找到时的兜底）
@@ -34,7 +41,7 @@
 - "设为默认"入口
 - Flatpak/Snap 沙箱应用特殊处理（其 .desktop 由桌面环境安装进 data dirs，天然覆盖）
 - macOS/Windows 自建选择器（沿用系统机制，spec 明确）
-- 记住上次选择（每次全列表）
+- ~~记住上次选择~~（**2026-08-31 修订：已实现**，见 §1.4——store 键 `openWith.lastUsed`，MIME → 上次 appId，启动成功写入；「上次使用」段置顶）
 
 ## 3. 涉及文件
 

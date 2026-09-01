@@ -16,6 +16,8 @@ export interface OpenWithApp {
   icon: string | null
   /** MimeType 是否命中目标 MIME（祖先闭包）；全量列表中匹配组排前、其余排后 */
   matches: boolean
+  /** 该应用是否为用户对当前 MIME 的上次选择（§1.4 记忆；至多一个 true，独占段首） */
+  lastUsed?: boolean
 }
 
 /**
@@ -393,23 +395,32 @@ const ENUM_CACHE_TTL = 30_000
 /** 路径 → MIME 查询缓存（同路径重复查询免 xdg-mime 子进程 44ms） */
 const mimeCache = new Map<string, string>()
 
-export async function listOpenWithApps(path: string, locale: string): Promise<OpenWithApp[]> {
+/** 路径 → MIME（缓存优先；ipc.ts 的记忆读/写与枚举同一来源） */
+export async function mimeOf(path: string): Promise<string> {
+  const hit = mimeCache.get(path)
+  if (hit !== undefined) return hit
+  const m = (await execFileText("xdg-mime", ["query", "filetype", path], 2000)) || "application/octet-stream"
+  mimeCache.set(path, m)
+  return m
+}
+
+export async function listOpenWithApps(
+  path: string,
+  locale: string,
+  lastUsedAppId?: string,
+): Promise<OpenWithApp[]> {
   // 三路独立前置（2026-08-31 性能修订）：MIME 查询 / subclasses / 主题链彼此
   // 无依赖，串行 56ms → 并行 44ms；缓存命中时全部跳过
   const [mime, subclasses, theme] = await Promise.all([
-    (async () => {
-      const hit = mimeCache.get(path)
-      if (hit !== undefined) return hit
-      const m = (await execFileText("xdg-mime", ["query", "filetype", path], 2000)) || "application/octet-stream"
-      mimeCache.set(path, m)
-      return m
-    })(),
+    mimeOf(path),
     readSubclasses(),
     currentUserTheme(),
   ])
-  // 缓存命中（locale 一致 + TTL 内）：同步返回（MIME/主题链全免）
+  // 缓存命中（locale 一致 + TTL 内）：同步返回（MIME/主题链全免）；
+  // lastUsed 标记在缓存快照上即时打补丁（记忆写入使缓存 apps 的 lastUsed
+  // 过期——启动必写 store，弹窗重开即需新段位，不能等 30s TTL）
   if (enumCache && enumCache.locale === locale && Date.now() - enumCache.at < ENUM_CACHE_TTL) {
-    return enumCache.apps
+    return applyLastUsed(enumCache.apps, lastUsedAppId)
   }
   const accepted = mimeAncestorsOf(mime, subclasses)
   // 主题链每枚举只算一次（性能实证 2026-08-31：iconDataUrlOf 内逐 app 调
@@ -457,8 +468,19 @@ export async function listOpenWithApps(path: string, locale: string): Promise<Op
   await Promise.all(jobs)
   // 分组排序（2026-08-31）：匹配组在前、其余组在后；组内按本地化名字母序
   results.sort((a, b) => (a.matches === b.matches ? a.name.localeCompare(b.name) : a.matches ? -1 : 1))
-  enumCache = { locale, at: Date.now(), apps: results }
-  return results
+  const withFlags = applyLastUsed(results, lastUsedAppId)
+  enumCache = { locale, at: Date.now(), apps: withFlags }
+  return withFlags
+}
+
+/** 给枚举结果打 lastUsed 标记（每 app 新对象，不改缓存数组元素——
+ *  缓存快照是共享引用，就地写会污染下次快照）。找不到该 id（应用已卸载）
+ *  时无任何行命中，渲染层不显示「上次使用」段。 */
+function applyLastUsed(apps: OpenWithApp[], lastUsedAppId?: string): OpenWithApp[] {
+  if (!lastUsedAppId) return apps.map((a) => (a.lastUsed ? { ...a, lastUsed: false } : a))
+  return apps.map((a) =>
+    a.id === lastUsedAppId ? { ...a, lastUsed: true } : a.lastUsed ? { ...a, lastUsed: false } : a,
+  )
 }
 
 /** Icon= → 图标 data URL（svg→image/svg+xml、png→image/png；未找到/读取失败 = null，兜底首字母瓷片）。

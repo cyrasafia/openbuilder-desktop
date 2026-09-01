@@ -21,7 +21,7 @@ const api = {
   shellOpenWith: (path: string) => ipcRenderer.invoke("shell:openWith", path) as Promise<string>,
   shellListOpenWithApps: (path: string) =>
     ipcRenderer.invoke("shell:listOpenWithApps", path) as Promise<
-      { id: string; name: string; icon: string | null; matches: boolean }[]
+      { id: string; name: string; icon: string | null; matches: boolean; lastUsed?: boolean }[]
     >,
   shellOpenWithApp: (path: string, appId: string) =>
     ipcRenderer.invoke("shell:openWithApp", path, appId) as Promise<string>,

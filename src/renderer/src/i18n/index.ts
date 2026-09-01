@@ -167,6 +167,7 @@ const zh = {
   openWithSearch: "搜索应用…",
   openWithMatched: "推荐应用",
   openWithOther: "其他应用",
+  openWithLastUsed: "上次使用",
   openWithNoResult: "无匹配结果",
   // 终端 Tab（design-terminal-tab）
   confirmCloseTerminal: "终端中有进程在运行，关闭将终止它。继续？",
@@ -356,6 +357,7 @@ const en: typeof zh = {
   openWithSearch: "Search apps…",
   openWithMatched: "Recommended",
   openWithOther: "Other apps",
+  openWithLastUsed: "Last used",
   openWithNoResult: "No matching apps",
   confirmCloseTerminal: "A process is running in this terminal. Closing will terminate it. Continue?",
   terminalExited: "Terminal exited",
