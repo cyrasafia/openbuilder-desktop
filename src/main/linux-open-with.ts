@@ -385,22 +385,26 @@ async function readSubclasses(): Promise<Map<string, Set<string>>> {
 const lastEnumerated = new Map<string, string>()
 
 /**
- * 枚举结果缓存（性能实证 2026-08-31：全链路 ~200ms，其中 xdg-mime 44ms +
- * 图标查找 173ms 为主；同一 .desktop 集合在数秒内重复打开弹窗是高频路径）。
- * key = locale（应用名本地化随语言变），TTL 30s——安装/卸载应用后最多 30s
- * 自愈。命中即同步返回（0ms），刷新时间戳（滚动过期，连续浏览不反复枚举）。
- */
-let enumCache: { locale: string; at: number; apps: OpenWithApp[] } | null = null
+  * 枚举结果缓存（性能实证 2026-08-31：全链路 ~200ms，其中 xdg-mime 44ms +
+  * 图标查找 173ms 为主；同一 .desktop 集合在数秒内重复打开弹窗是高频路径）。
+  * key = locale + **MIME**（matches 分组按 MIME 算——跨 MIME 复用会把上一个
+  * 文件的分组标错，2026-08-31 code review 修正），TTL 30s——安装/卸载应用后
+  * 最多 30s 自愈。命中即同步返回，刷新时间戳（滚动过期）。
+  */
+let enumCache: { locale: string; mime: string; at: number; apps: OpenWithApp[] } | null = null
 const ENUM_CACHE_TTL = 30_000
 /** 路径 → MIME 查询缓存（同路径重复查询免 xdg-mime 子进程 44ms） */
 const mimeCache = new Map<string, string>()
 
-/** 路径 → MIME（缓存优先；ipc.ts 的记忆读/写与枚举同一来源） */
+/** 路径 → MIME（缓存优先；ipc.ts 的记忆读/写与枚举同一来源）。
+ *  查询失败/超时（execFileText 兜底 octet-stream）**不入缓存**——瞬时失败
+ *  被钉死会把该路径的 matches 全置 true，且记忆会写到 octet-stream 键下 */
 export async function mimeOf(path: string): Promise<string> {
   const hit = mimeCache.get(path)
   if (hit !== undefined) return hit
-  const m = (await execFileText("xdg-mime", ["query", "filetype", path], 2000)) || "application/octet-stream"
-  mimeCache.set(path, m)
+  const raw = await execFileText("xdg-mime", ["query", "filetype", path], 2000)
+  const m = raw || "application/octet-stream"
+  if (raw) mimeCache.set(path, m)
   return m
 }
 
@@ -409,19 +413,22 @@ export async function listOpenWithApps(
   locale: string,
   lastUsedAppId?: string,
 ): Promise<OpenWithApp[]> {
-  // 三路独立前置（2026-08-31 性能修订）：MIME 查询 / subclasses / 主题链彼此
-  // 无依赖，串行 56ms → 并行 44ms；缓存命中时全部跳过
-  const [mime, subclasses, theme] = await Promise.all([
-    mimeOf(path),
-    readSubclasses(),
-    currentUserTheme(),
-  ])
-  // 缓存命中（locale 一致 + TTL 内）：同步返回（MIME/主题链全免）；
-  // lastUsed 标记在缓存快照上即时打补丁（记忆写入使缓存 apps 的 lastUsed
-  // 过期——启动必写 store，弹窗重开即需新段位，不能等 30s TTL）
-  if (enumCache && enumCache.locale === locale && Date.now() - enumCache.at < ENUM_CACHE_TTL) {
+  // 缓存命中检查先于三路前置（2026-08-31 code review 修正：原顺序每次命中
+  // 仍 spawn gsettings + 重读 subclasses，与「命中全跳过」注释相悖）。
+  // MIME 需先解（缓存键的一部分；同路径 mimeCache 命中即免子进程）
+  const mime = await mimeOf(path)
+  if (
+    enumCache &&
+    enumCache.locale === locale &&
+    enumCache.mime === mime &&
+    Date.now() - enumCache.at < ENUM_CACHE_TTL
+  ) {
+    // lastUsed 标记在缓存快照上即时打补丁（记忆写入使缓存 apps 的 lastUsed
+    // 过期——启动必写 store，弹窗重开即需新段位，不能等 30s TTL）
     return applyLastUsed(enumCache.apps, lastUsedAppId)
   }
+  // 三路独立前置（2026-08-31 性能修订）：subclasses / 主题链与上述 MIME 并行计算
+  const [subclasses, theme] = await Promise.all([readSubclasses(), currentUserTheme()])
   const accepted = mimeAncestorsOf(mime, subclasses)
   // 主题链每枚举只算一次（性能实证 2026-08-31：iconDataUrlOf 内逐 app 调
   // currentUserTheme → 110 个 gsettings 子进程 ≈ 900ms，占总耗时 ~75%）
@@ -469,7 +476,7 @@ export async function listOpenWithApps(
   // 分组排序（2026-08-31）：匹配组在前、其余组在后；组内按本地化名字母序
   results.sort((a, b) => (a.matches === b.matches ? a.name.localeCompare(b.name) : a.matches ? -1 : 1))
   const withFlags = applyLastUsed(results, lastUsedAppId)
-  enumCache = { locale, at: Date.now(), apps: withFlags }
+  enumCache = { locale, mime, at: Date.now(), apps: withFlags }
   return withFlags
 }
 

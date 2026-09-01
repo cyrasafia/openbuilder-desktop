@@ -4,12 +4,6 @@ import { useI18n } from "../app"
 
 /**
  * Linux「打开方式」选择器弹窗（design-linux-open-with §1.3）：全量应用列表
- * （2026-08-31 修订）+ 搜索框；匹配组在前、其他组在后（排序由 main 侧完成，
- * 渲染层按 matches 分段），键盘 ↑↓ + Enter、Esc 关闭、点击行启动并关闭。
- * 图标 = data URL 或首字母瓷片兜底（同 ProjectAvatar 模式）。
- */
-/**
- * Linux「打开方式」选择器弹窗（design-linux-open-with §1.3）：全量应用列表
  * （2026-08-31 修订）+ 搜索框 + 上次使用段（§1.4 记忆，推荐组上方独占段）；
  * 分段由 main 侧 matches/lastUsed 标记排定，渲染层切段展示，键盘 ↑↓ + Enter、
  * Esc 关闭、点击行启动并关闭。图标 = data URL 或首字母瓷片兜底（同 ProjectAvatar）。

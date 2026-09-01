@@ -59,6 +59,6 @@
 ## 4. 验收（对齐 spec #8）
 
 - Linux 右键 .json 文件 →「打开方式…」**全量应用**分段列出（匹配组：支持 application/json 及其祖先类型的应用如文本编辑器/VS Code 在前；其他应用在后；均可选），选择后对应应用打开该文件（2026-08-31 修订：真机 110 应用、matches 组 7 个与 `gio mime` 注册列表一致）
-- 目录行/空白处（作用域根目录）→ 同弹窗全量列表（`inode/directory` 命中文件管理器，匹配组在前）（2026-08-31 修订）；纯浏览器 shim 不显示；win32/darwin 行为不变（含目录）
+- 目录行/空白处（作用域根目录）→ 同弹窗全量列表（`inode/directory` 命中文件管理器，匹配组在前）（2026-08-31 修订）；纯浏览器 shim 不显示；win32/darwin 行为不变（含目录）。**已知残余风险（2026-08-31 code review 登记）**：目录路径走 win32 `OpenAs_RunDLL` / darwin `open -b` 的行为未在真机验证（主开发环境 Linux）——`OpenAs_RunDLL` 对目录的表现随 Windows 版本浮动，最坏为弹空对话框（非崩溃）；如有真机报障，回退方案 = 渲染层按 `platform && isDirectory` 门控目录项仅 Linux 显示
 - 搜索框：输入即过滤（大小写不敏感），键盘可达（↑↓/Enter/Esc），无结果有占位文案
 - `npm run test` / `typecheck` / `build` 全绿；真机 gio launch 实测一次

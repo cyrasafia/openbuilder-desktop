@@ -161,7 +161,7 @@ describe("iconPathOf", () => {
   const exists = (p: string) => FILES.has(p)
   const chain = ["Adwaita", "AdwaitaLegacy", "hicolor"]
 
-  it("A：48px 无 → 档位升（64→128→256→512→96）→ 降（32→…）", () => {
+  it("A：48px 无 → 档位升（64→72→96→128→256→512）→ 降（32→…）", () => {
     expect(iconPathOf("typora", dirs, 48, exists, chain)).toBe("/sys/share/icons/hicolor/64x64/apps/typora.png")
     expect(iconPathOf("discord", dirs, 48, exists, chain)).toBe(
       "/sys/share/icons/hicolor/256x256/apps/discord.png",
