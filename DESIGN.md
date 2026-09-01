@@ -168,8 +168,40 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 | 消息 markdown（assistant 正文/reasoning） | 块间距 8（flex gap）；标题两档：h1/h2=`title-md` 600、h3+ =`title-sm` 600；行内代码 `code` 色 + `codeBackground` 底 + 4px 圆角 + 0.92em mono；代码块与 chip 展开体同款（`codeBackground` 底 + `border` 边 + `rounded.chip`，头部高 26 含语言标签 `ui-xs` `outline` + 复制按钮）；引用 3px `quoteBar` 左栏 + `onSurfaceVariant`；表格 `border` 全框 + 表头 600 + `surfaceContainerLow` 底；链接 `link` 色；任务列表去符号 + checkbox `primary` |
 | 输入区 | min-height 32 自增高，`surfaceContainerLow` 底 + 1px `outlineVariant` 边，focus 1px `primary`；发送按钮 28×28 |
 | 焦点环（全局，2026-08-24 二次修订） | 键盘焦点（`:focus-visible`）**复用各控件 hover 样式**（hover 规则以 `, :focus-visible` 并列扩展），不设独立焦点环——描边环在贴边控件（标题栏钮/Tab 条）被裁剪只剩竖线、在自带边框控件（ms-pill/ms-seg）上成双框；UA 默认环全局压制；文本输入类沿用 1px `primary` 边框；原生 checkbox 无 hover 可复用，保留 2px `primary` 环；原无 hover 的可聚焦控件（status-cluster/pending-card-header/settings-tabs 钮/profile-row 钮/settings-defaults 清除钮）按同层 idiom 补齐 hover |
-| 设置弹窗 | 640×min(480, 80vh)，`rounded.dialog`，遮罩 rgba(0,0,0,.5)；表单标签 `ui-sm`，控件 32 |
+| 设置弹窗 | 640×min(480, 80vh)，`rounded.dialog`，遮罩 rgba(0,0,0,.5)；表单标签 `ui-sm`，控件 32（规格已收敛进 §标准弹窗，2026-08-31） |
 | 服务器状态行（左栏底部） | 高 30（22 控件 + 上下 4 padding），`ui-sm`（2026-08-29，原 `ui-xs` 比同排 12px 齿轮小、且与标题档位割裂）；状态点 8px：streaming=`status.running`、degraded=`status.pending`、offline=`status.error`、对账中=running 闪烁；连接错误为 `TriangleAlert` 12px `status.error`（2026-08-29，原 `⚠` 字符）；左状态右设置齿轮（lucide `Settings` 12px 同文字），置底常驻不随项目区变化；服务器版本不展示（2026-08-24 收编自原全宽状态栏） |
+
+### 标准弹窗（2026-08-31）
+
+实现基类 `app.css` 的 `.dialog` / `.dialog-mask`（2026-08-31 起为本标准），全部弹窗复用同一骨架，变体只落尺寸类；四类现役弹窗：设置（`dialog-lg`）、打开项目（`dialog-project`）、打开方式（`open-with-dialog`，2026-08-31 对齐）、确认（`dialog-sm`）。
+
+**骨架与类名**（`.dialog-mask` 点击关闭 → `.dialog` → 子元素自上而下）：
+
+| 区 | 类名 | 规格 |
+|---|---|---|
+| 容器 | `.dialog` | `surfaceContainerLow` 底 + 1px `outlineVariant` 边 + `rounded.dialog`（12px），flex column；默认宽 480、`max-width 90vw / max-height 80vh` |
+| 标题 | `.dialog-title` | `title-md`（16/600），内边距 `16px 20px 8px`（弹窗变体可覆写水平值，见内边距表） |
+| 标题行（有关闭钮） | `.dialog-title` + `.dialog-title-row` | flex 两端对齐；右侧 `.icon-btn`（lucide `X` 14px，`t.close` 作 title）——**列表选择类弹窗必须有**（打开项目/打开方式），表单/确认类不设（有明确动作钮） |
+| 搜索框 | `.dialog-search` | 高 32（`--control-h`）、`rounded.chip`、1px `outlineVariant` 边（focus `primary`）、`ui-sm`；底色 light `surfaceContainer` / dark `surfaceContainerHighest`（与弹窗底 `container-low` 拉开一档，同色会糊） |
+| 列表体 | `.dialog-body`（+ `.scroll`） | flex:1 占满余高，内部滚动；空态/加载态文案 `tree-empty` |
+| 底部动作行 | `.dialog-actions` | 右对齐按钮排（gap 8） |
+
+**尺寸档**（宽度选型：380 确认/480 表单默认/640 设置/700 列表选择）：
+
+| 档 | 类名 | 尺寸 | 现役 |
+|---|---|---|---|
+| sm | `.dialog-sm` | 380，随内容高 | 确认弹窗 |
+| 默认 | `.dialog` | 480，max-height 80vh | – |
+| lg | `.dialog-lg` | 640×min(480, 80vh) | 设置 |
+| 列表 | `.dialog-project` / `.open-with-dialog` | **固定 700×560（5:4），不随内容变化**（列表增减/搜索过滤不跳变） | 打开项目、打开方式 |
+
+**内边距与边距**（4px 网格；搜索框如有时）：
+
+- 基准（480 档）：标题 `16/20/8`、搜索框水平外边距 20、列表体 `8/20`、动作行 `12/20/16`
+- 列表档（700 宽，`.dialog-project`/`.open-with-dialog`）：**左右 28**（三区同缘）；标题 `16/28/8`、搜索框 `上 8 下 6~14`（下边距按列表密度取 6（项目选择器）/14（打开方式，组标题前拉开））、列表体 `2/28/8`
+- 搜索框与列表之间必须留 6px 以上间隔，禁止紧贴
+
+**键盘与遮罩**（交互惯例，全弹窗一致）：遮罩点击 = 关闭（在途操作型除外，如确认弹窗 loading 中禁点）；Esc 关闭；搜索框打开即聚焦、`↑↓/Enter` 操作列表、输入框内 IME 组合（`isComposing`）的 Enter/Escape 不触发选择/关闭；含过滤搜索的弹窗 Esc 语义 = 有内容先清空、再按关闭。
 
 ### 按钮（五类可复用样式，2026-08-29）
 
@@ -214,6 +246,7 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 ### Do
 
 - 新组件先查 tokens.css 语义色；状态色只用 `status.*`
+- 新弹窗从 §标准弹窗 选尺寸档（380/480/640/700）与骨架类，不新写弹窗骨架样式；列表选择类固定尺寸 + 关闭按钮 + 搜索框间隔遵循该节
 - 按钮从五类可复用样式（§按钮）选型，新场景先复用既有类再加修饰类，不写一次性按钮样式
 - 强调用 600 直跳；次级信息用 `ui-sm` + `outline` 降权，不加中间字重
 - 文案新增 key 时同步中英两份 catalog，并对照移动端 ARB 是否已有同场景 key
