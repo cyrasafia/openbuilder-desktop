@@ -148,4 +148,25 @@ describe("Markdown", () => {
     expect(screen.getByText("mermaid").classList.contains("md-codeblock-lang")).toBe(true)
     expect(container.querySelector(".md-pre")?.textContent).toContain("BAD graph")
   })
+
+  // 放末尾：softLineBreak 用例渲染含复制按钮的代码块，DOM 累积会污染
+  // 前面用例的 screen.getByText("复制") 全局查询（vitest 无全局 cleanup）
+  it("softLineBreak：单个换行渲染为 <br>（用户回显保真），代码块内换行不受影响", () => {
+    const { container } = render(
+      <Markdown softLineBreak>{"第一行\n第二行\n\n```py\nx=1\ny=2\n```"}</Markdown>,
+    )
+    const p = container.querySelector("p")!
+    expect(p.querySelectorAll("br").length).toBe(1)
+    expect(p.textContent).toContain("第一行")
+    expect(p.textContent).toContain("第二行")
+    // 代码块内容在 code 节点（非 text），不受软换行插件触及，原样换行
+    const code = container.querySelector(".md-pre code")!
+    expect(code.querySelectorAll("br").length).toBe(0)
+    expect(code.textContent).toBe("x=1\ny=2\n")
+  })
+
+  it("默认（无 softLineBreak）：单个换行按 CommonMark 折叠为空格，不产生 <br>", () => {
+    const { container } = render(<Markdown>{"第一行\n第二行"}</Markdown>)
+    expect(container.querySelector("p")!.querySelectorAll("br").length).toBe(0)
+  })
 })

@@ -9,7 +9,13 @@
  */
 import { cloneElement, isValidElement, useState, type ReactElement, type ReactNode } from "react"
 import { Info, Lightbulb, MessageSquareWarning, OctagonX, TriangleAlert, type LucideIcon } from "lucide-react"
-import { Streamdown, type Components, type LinkSafetyConfig } from "streamdown"
+import {
+  Streamdown,
+  defaultRemarkPlugins,
+  type Components,
+  type LinkSafetyConfig,
+  type StreamdownProps,
+} from "streamdown"
 import { useI18n } from "../app"
 import { MermaidDiagram } from "./mermaid-diagram"
 
@@ -210,9 +216,59 @@ const mdComponents: Components = {
 /** 模块级常量：Streamdown 的 memo 按引用比较 props，内联字面量会导致流式期间整树重渲染 */
 const mdLinkSafety: LinkSafetyConfig = { enabled: false }
 
-export function Markdown({ children }: { children: string }) {
+/* ---------- 用户消息软换行（对齐移动端 softLineBreak: user） ----------
+ * 用户回显按所键入的原样断行：单个 \n 渲染为 <br>，而非 CommonMark 的折叠为空格
+ * （Shift+Enter 是桌面输入框的换行操作，回显丢失换行即"发出的和写的不一致"）。
+ * assistant 文本/reasoning/文件预览维持标准 markdown 语义（移动端 softLineBreak
+ * 仅作用于 user，同口径）。等价 remark-breaks 的最小实现：遍历 mdast text 节点，
+ * 值内 \n 拆为 break 节点；代码块/行内代码的值在 code/inlineCode 节点上而非
+ * text 节点，天然不被触及。手动递归遍历（避免为 15 行逻辑引入 unist-util 直依赖）。 */
+interface MdNode {
+  type?: string
+  value?: string
+  children?: MdNode[]
+}
+
+const softBreaks = () => (tree: MdNode) => {
+  // CRLF/CR 与 LF 同拆（remark-breaks 口径）：回显可能来自未规范换行的客户端（如
+  // Windows CLI 写入的历史消息），残留在文本里的 \r 至多表现为 br 前的多余空白
+  const split = (value: string) => value.split(/\r\n|\r|\n/)
+  const walk = (node: MdNode) => {
+    if (!Array.isArray(node.children)) return
+    for (const child of node.children) walk(child)
+    // 后序替换：children 数组整体重建一次，避免遍历中变更索引
+    if (node.children.some((c) => c.type === "text" && c.value?.includes("\n"))) {
+      const next: MdNode[] = []
+      for (const child of node.children) {
+        if (child.type === "text" && child.value?.includes("\n")) {
+          split(child.value).forEach((seg, i) => {
+            if (i > 0) next.push({ type: "break" })
+            if (seg) next.push({ type: "text", value: seg })
+          })
+        } else {
+          next.push(child)
+        }
+      }
+      node.children = next
+    }
+  }
+  walk(tree)
+}
+
+/** remarkPlugins 传入即整体替换默认集（gfm + codeMeta），需拼回默认件；模块级常量防 memo 失效 */
+const userRemarkPlugins: StreamdownProps["remarkPlugins"] = [
+  ...Object.values(defaultRemarkPlugins),
+  softBreaks,
+]
+
+export function Markdown({ children, softLineBreak }: { children: string; softLineBreak?: boolean }) {
   return (
-    <Streamdown className="markdown-body md" components={mdComponents} linkSafety={mdLinkSafety}>
+    <Streamdown
+      className="markdown-body md"
+      components={mdComponents}
+      linkSafety={mdLinkSafety}
+      remarkPlugins={softLineBreak ? userRemarkPlugins : undefined}
+    >
       {children}
     </Streamdown>
   )
