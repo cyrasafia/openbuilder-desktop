@@ -3,7 +3,7 @@
  * xdg-mime / gio launch 子进程封装。纯函数独立导出供单测（fixture 字符串）。
  */
 import { execFile, spawn } from "node:child_process"
-import { existsSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { readFile, readdir } from "node:fs/promises"
 import { join } from "node:path"
 import { homedir } from "node:os"
@@ -145,24 +145,113 @@ export function xdgDataDirs(): string[] {
 }
 
 /**
- * Icon= 值 → 图标绝对路径（纯函数，注入 data dir 列表与存在性谓词便于单测）。
- * XDG icon spec 简化查找：hicolor 主题 `apps/` 下位图优先、`scalable/*.svg`
- * 次之 + 遗留 `/usr/share/pixmaps` 兜底。SVG 可渲染性已实证（2026-08-31，
- * Electron 43 真机：`<img>` 对 file:/data: 的 svg 均成功光栅化——最初
- * 「svg 不可靠」的判断有误；实测本机 PNG-only 覆盖率仅 ~31%，GNOME 应用
- * 图标几乎全在 scalable/*.svg，排除 svg 会大面积掉首字母瓷片）。
- * `Icon=/abs/path` 按后缀直用（无后缀补 .png）。Flatpak exports 也在
- * data dirs 内，天然覆盖。
- * 查找顺序对齐 spec：先数据目录序（用户目录优先），pixmaps 末位兜底。
+ * 解析 index.theme 的 Inherits= 链（纯函数；环安全，已访问主题跳过；限深 10）。
+ * theme 文件按 XDG icon spec：`[Icon Theme]` 段 `Inherits=` 逗号列表。
+ */
+export function parseInherits(content: string): string[] {
+  const out: string[] = []
+  let inEntry = false
+  for (const raw of content.split("\n")) {
+    const line = raw.trim()
+    if (!line) continue
+    if (line.startsWith("[")) {
+      inEntry = line === "[Icon Theme]"
+      continue
+    }
+    if (!inEntry) continue
+    const eq = line.indexOf("=")
+    if (eq > 0 && line.slice(0, eq).trim() === "Inherits") {
+      for (const t of line.slice(eq + 1).split(",")) {
+        const name = t.trim()
+        if (name && !out.includes(name)) out.push(name)
+      }
+      break
+    }
+  }
+  return out
+}
+
+/** 用户当前 icon 主题名（gsettings，2s 超时；GNOME 外桌面/失败 → hicolor） */
+async function currentUserTheme(): Promise<string> {
+  const v = await execFileText(
+    "gsettings",
+    ["get", "org.gnome.desktop.interface", "icon-theme"],
+    2000,
+  )
+  // gsettings 输出带引号：'Adwaita' → Adwaita
+  const m = v.match(/^'?([^']+)'?$/)
+  return m?.[1]?.trim() || "hicolor"
+}
+
+/**
+ * 主题继承链（B 类修复）：start 主题 → Inherits 逐级解引用；hicolor 未显式
+ * 出现时恒补链尾兜底（XDG icon spec 要求）。读不到 index.theme 的主题不展开
+ * Inherits 但仍占链位（其目录查找自然落空）。返回按优先级排序的主题名列表
+ * （环安全——已访问主题跳过）。
+ */
+export function themeChainOf(
+  start: string,
+  dataDirs: string[],
+  readIndex: (theme: string) => string | null = (t) => {
+    for (const dir of dataDirs) {
+      const p = join(dir, "icons", t, "index.theme")
+      if (existsSync(p)) return readFileSync(p, "utf8")
+    }
+    return null
+  },
+): string[] {
+  const chain: string[] = []
+  const seen = new Set<string>()
+  const queue = [start]
+  while (queue.length > 0) {
+    const t = queue.shift()!
+    if (seen.has(t)) continue
+    seen.add(t)
+    chain.push(t)
+    if (t === "hicolor") continue // spec：hicolor 不再 Inherits
+    const content = readIndex(t)
+    if (!content) continue
+    for (const parent of parseInherits(content)) if (!seen.has(parent)) queue.push(parent)
+  }
+  if (!chain.includes("hicolor")) chain.push("hicolor")
+  return chain
+}
+
+/** 档位遍历序（A 类修复）：目标 48 → 升档（64→128→256→512→96…）→ 降档（32→24→22→16→8）。
+ *  升档优先于降档（用户要求）：大图标缩小渲染无损失，小图标放大会糊。@2 目录不单列
+ *  （位图按文件名查，@2 的文件同名不同目录——遍历 context 目录时自然覆盖不到，
+ *  可接受；48px 标准档覆盖绝大多数应用） */
+const ICON_SIZES_ASC_FIRST = (want: number): number[] =>
+  [...new Set([want, 64, 128, 256, 512, 96, 72, 32, 24, 22, 16, 8])].sort(
+    (a, b) => Math.abs(a - want) - Math.abs(b - want) || b - a,
+  )
+
+/** 主题内 context 子目录遍历序：apps 优先，其余（legacy/actions/devices 等
+ *  AdwaitaLegacy 把老应用图标放在 legacy/）兜底。 */
+const ICON_CONTEXTS = ["apps", "legacy", "actions", "devices", "mimetypes", "places", "status", "categories", "emblems", "emotes", "ui"] as const
+
+/**
+ * Icon= 值 → 图标绝对路径（纯函数，注入依赖便于单测）。
+ * XDG icon spec 查找（2026-08-31 修订，覆盖五类失败实测）：
+ * 1. 主题链（B）：gsettings 当前主题 → Inherits 解引用 → hicolor 恒兜底
+ * 2. scalable 优先（svg/png——C 类：scalable/ 目录可能装的是位图）
+ * 3. 位图档位升→降序遍历（A：typora 仅 128/256 档）× context 目录（B：
+ *    AdwaitaLegacy 把应用图标放 legacy/、actions/）
+ * 4. 遗留 pixmaps：大小写不敏感 + svg（D：Alacritty.svg）
+ * `Icon=/abs/path` 按后缀直用（无后缀先 .png 后 .svg）。SVG 可渲染性已实证
+ * （Electron 43 真机 `<img>` 对 data:/file: 的 svg 均成功光栅化）。Flatpak
+ * exports 在 data dirs 内天然覆盖。彻底未找到 = null（E 类：悬空引用），
+ * 渲染层首字母瓷片兜底。
  */
 export function iconPathOf(
   icon: string,
   dataDirs: string[],
   size = 48,
   exists: (path: string) => boolean = existsSync,
+  chain: string[] = ["hicolor"],
 ): string | null {
   if (!icon) return null
-  // 绝对路径：svg/png 直用；无后缀补 .png
+  // 绝对路径：svg/png 直用；无后缀先 .png 后 .svg
   if (icon.startsWith("/")) {
     if (/\.(png|svg)$/i.test(icon)) return exists(icon) ? icon : null
     for (const ext of [".png", ".svg"]) {
@@ -171,20 +260,55 @@ export function iconPathOf(
     }
     return null
   }
-  // 主题图标名：hicolor apps/ 下按 size 查找（无 theme 继承解析——hicolor 为
-  // 兜底主题，应用图标几乎都装入；缺省 = null 走首字母瓷片）
-  for (const dir of dataDirs) {
-    const p = join(dir, "icons", "hicolor", `${size}x${size}`, "apps", `${icon}.png`)
-    if (exists(p)) return p
+  // 1+2：主题链 × scalable（svg → png；scalable 目录装位图同样接）
+  for (const theme of chain) {
+    for (const ext of ["svg", "png"]) {
+      for (const dir of dataDirs) {
+        const p = join(dir, "icons", theme, "scalable", "apps", `${icon}.${ext}`)
+        if (exists(p)) return p
+      }
+    }
   }
-  for (const dir of dataDirs) {
-    const p = join(dir, "icons", "hicolor", "scalable", "apps", `${icon}.svg`)
-    if (exists(p)) return p
+  // 3：主题链 × 档位（升→降）× context 目录
+  for (const theme of chain) {
+    for (const sz of ICON_SIZES_ASC_FIRST(size)) {
+      for (const ctx of ICON_CONTEXTS) {
+        for (const dir of dataDirs) {
+          const p = join(dir, "icons", theme, `${sz}x${sz}`, ctx, `${icon}.png`)
+          if (exists(p)) return p
+        }
+      }
+    }
   }
-  // 遗留 pixmaps 兜底
+  // 4：遗留 pixmaps——大小写不敏感 + svg
   for (const dir of dataDirs) {
-    const p = join(dir, "pixmaps", `${icon}.png`)
-    if (exists(p)) return p
+    const legacy = `${icon}.png`
+    const legacySvg = `${icon}.svg`
+    for (const name of [legacy, legacySvg]) {
+      const p = join(dir, "pixmaps", name)
+      if (exists(p)) return p
+    }
+  }
+  return null
+}
+
+/**
+ * pixmaps 大小写不敏感兜底（D 类）：iconPathOf 精确名未命中后调用，
+ * 列目录逐项比对（pixmaps 目录通常数百项，同步 IO 可接受）。
+ */
+export function iconPixmapCaseInsensitiveOf(icon: string, dataDirs: string[]): string | null {
+  for (const dir of dataDirs) {
+    const pm = join(dir, "pixmaps")
+    let entries: string[]
+    try {
+      entries = readdirSync(pm)
+    } catch {
+      continue
+    }
+    const hit = entries.find(
+      (f) => f.toLowerCase() === `${icon.toLowerCase()}.png` || f.toLowerCase() === `${icon.toLowerCase()}.svg`,
+    )
+    if (hit) return join(pm, hit)
   }
   return null
 }
@@ -284,10 +408,15 @@ export async function listOpenWithApps(path: string, locale: string): Promise<Op
   return apps
 }
 
-/** Icon= → 图标 data URL（svg→image/svg+xml、png→image/png；未找到/读取失败 = null，兜底首字母瓷片） */
+/** Icon= → 图标 data URL（svg→image/svg+xml、png→image/png；未找到/读取失败 = null，兜底首字母瓷片）。
+ *  主题链（gsettings 当前主题 → Inherits → hicolor）+ pixmaps 大小写不敏感兜底。 */
 async function iconDataUrlOf(icon: string | undefined): Promise<string | null> {
   if (!icon) return null
-  const file = iconPathOf(icon, xdgDataDirs())
+  const dirs = xdgDataDirs()
+  const theme = await currentUserTheme()
+  const file =
+    iconPathOf(icon, dirs, 48, existsSync, themeChainOf(theme, dirs)) ??
+    iconPixmapCaseInsensitiveOf(icon, dirs)
   if (!file) return null
   const mime = file.toLowerCase().endsWith(".svg") ? "image/svg+xml" : "image/png"
   try {

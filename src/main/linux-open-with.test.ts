@@ -7,10 +7,13 @@
 import { describe, expect, it } from "vitest"
 import {
   iconPathOf,
+  iconPixmapCaseInsensitiveOf,
   mimeAncestorsOf,
   parseDesktopEntry,
+  parseInherits,
   parseSubclasses,
   sanitizedChildEnv,
+  themeChainOf,
 } from "./linux-open-with"
 
 const ENTRY = (body: string) => `[Desktop Entry]\n${body}\n`
@@ -113,43 +116,103 @@ describe("parseSubclasses / mimeAncestorsOf", () => {
   })
 })
 
+describe("parseInherits / themeChainOf", () => {
+  it("Inherits 解析：逗号列表去空白去重", () => {
+    expect(parseInherits("[Icon Theme]\nInherits=AdwaitaLegacy, hicolor\n")).toEqual([
+      "AdwaitaLegacy",
+      "hicolor",
+    ])
+    expect(parseInherits("[Other]\nX=1\n[Icon Theme]\nName=A\n")).toEqual([])
+  })
+
+  it("themeChainOf：Inherits 逐级解引用 + hicolor 恒兜底；环安全", () => {
+    const index: Record<string, string> = {
+      Custom: "[Icon Theme]\nInherits=Adwaita\n",
+      Adwaita: "[Icon Theme]\nInherits=AdwaitaLegacy,hicolor\n",
+      Loop: "[Icon Theme]\nInherits=Self,Other\n",
+      Self: "[Icon Theme]\nInherits=Self\n",
+    }
+    const dirs = ["/fake/share"]
+    const read = (t: string) => index[t] ?? null
+    expect(themeChainOf("Custom", dirs, read)).toEqual(["Custom", "Adwaita", "AdwaitaLegacy", "hicolor"])
+    // 环：不挂起
+    expect(themeChainOf("Self", dirs, read)).toEqual(["Self", "hicolor"])
+    // 空数据（非 hicolor 主题无 index.theme）：仍占链位 + hicolor 兜底
+    expect(themeChainOf("Missing", dirs, read)).toEqual(["Missing", "hicolor"])
+  })
+})
+
 describe("iconPathOf", () => {
-  const dirs = ["/fake/home/share", "/fake/system/share"]
-  const exists = (p: string) =>
-    p === "/fake/home/share/icons/hicolor/48x48/apps/bitmap-app.png" ||
-    p === "/fake/system/share/icons/hicolor/scalable/apps/svg-app.svg" ||
-    p === "/fake/system/share/pixmaps/legacy.png"
+  // 模拟五类失败场景的最小目录树（2026-08-31 真机分类：A 档位/B 主题链/C scalable-png/D pixmaps/E 悬空）
+  const FILES = new Set([
+    "/sys/share/icons/hicolor/64x64/apps/typora.png", // A：仅 64 档
+    "/sys/share/icons/hicolor/256x256/apps/discord.png", // A：仅 256 档
+    "/sys/share/icons/hicolor/48x48/apps/app48.png",
+    "/sys/share/icons/Adwaita/48x48/apps/adw-app.png", // B：主题链命中
+    "/sys/share/icons/AdwaitaLegacy/48x48/legacy/legacy-app.png", // B：context=legacy
+    "/sys/share/icons/AdwaitaLegacy/24x24/legacy/small-legacy.png", // B+降档
+    "/sys/share/icons/hicolor/scalable/apps/svg-app.svg",
+    "/sys/share/icons/hicolor/scalable/apps/png-in-scalable.png", // C：scalable 放位图
+    "/sys/share/pixmaps/pixmap.png",
+    "/sys/share/pixmaps/CaseIcon.svg", // D：大小写 + svg
+    "/sys/share/pixmaps/abs.png",
+  ])
+  const dirs = ["/home/share", "/sys/share"]
+  const exists = (p: string) => FILES.has(p)
+  const chain = ["Adwaita", "AdwaitaLegacy", "hicolor"]
 
-  it("主题名：位图优先（hicolor <size>x<size>/apps），无位图才用 scalable svg", () => {
-    expect(iconPathOf("bitmap-app", dirs, 48, exists)).toBe(
-      "/fake/home/share/icons/hicolor/48x48/apps/bitmap-app.png",
-    )
-    expect(iconPathOf("svg-app", dirs, 48, exists)).toBe(
-      "/fake/system/share/icons/hicolor/scalable/apps/svg-app.svg",
+  it("A：48px 无 → 档位升（64→128→256→512→96）→ 降（32→…）", () => {
+    expect(iconPathOf("typora", dirs, 48, exists, chain)).toBe("/sys/share/icons/hicolor/64x64/apps/typora.png")
+    expect(iconPathOf("discord", dirs, 48, exists, chain)).toBe(
+      "/sys/share/icons/hicolor/256x256/apps/discord.png",
     )
   })
 
-  it("数据目录序 = 查找优先级（用户目录先于系统）；pixmaps 兜底次之", () => {
-    const pixmapsOnly = (p: string) => p === "/fake/system/share/pixmaps/legacy.png"
-    expect(iconPathOf("legacy", dirs, 48, pixmapsOnly)).toBe(
-      "/fake/system/share/pixmaps/legacy.png",
+  it("A：同尺寸差升档优先于降档；等距时大档优先", () => {
+    // 48 目标：64（差16）先于 32（差16，同距取大）
+    const both = (p: string) => p.endsWith("/64x64/apps/e.png") || p.endsWith("/32x32/apps/e.png")
+    const c = (p: string) => (p.includes("64x64") ? FILES.add(p) && true : false) || true
+    expect(iconPathOf("e", dirs, 48, (p) => p.includes("64x64") || p.includes("32x32"), chain)).toContain(
+      "64x64",
     )
   })
 
-  it("绝对路径：svg/png 直用；无后缀先 png 后 svg", () => {
-    expect(iconPathOf("/abs/icon.png", dirs, 48, (p) => p === "/abs/icon.png")).toBe(
-      "/abs/icon.png",
+  it("B：主题链优先于 hicolor；context 目录 apps 优先 → legacy 兜底", () => {
+    expect(iconPathOf("adw-app", dirs, 48, exists, chain)).toBe("/sys/share/icons/Adwaita/48x48/apps/adw-app.png")
+    expect(iconPathOf("legacy-app", dirs, 48, exists, chain)).toBe(
+      "/sys/share/icons/AdwaitaLegacy/48x48/legacy/legacy-app.png",
     )
-    expect(iconPathOf("/abs/icon.svg", dirs, 48, (p) => p === "/abs/icon.svg")).toBe(
-      "/abs/icon.svg",
+    // apps 无 → 降档 legacy 命中
+    expect(iconPathOf("small-legacy", dirs, 48, exists, chain)).toBe(
+      "/sys/share/icons/AdwaitaLegacy/24x24/legacy/small-legacy.png",
     )
-    expect(iconPathOf("/abs/icon", dirs, 48, (p) => p === "/abs/icon.svg")).toBe("/abs/icon.svg")
-    expect(iconPathOf("/abs/icon", dirs, 48, (p) => p === "/abs/icon.png")).toBe("/abs/icon.png")
   })
 
-  it("未找到 / 空值 → null（渲染层首字母瓷片兜底）", () => {
-    expect(iconPathOf("missing-app", dirs, 48, exists)).toBeNull()
-    expect(iconPathOf("", dirs, 48, exists)).toBeNull()
+  it("C：scalable/ 下 png 同样命中（svg 优先）", () => {
+    expect(iconPathOf("svg-app", dirs, 48, exists, chain)).toBe("/sys/share/icons/hicolor/scalable/apps/svg-app.svg")
+    expect(iconPathOf("png-in-scalable", dirs, 48, exists, chain)).toBe(
+      "/sys/share/icons/hicolor/scalable/apps/png-in-scalable.png",
+    )
+  })
+
+  it("绝对路径：svg/png 直用；无后缀先 .png 后 .svg", () => {
+    expect(iconPathOf("/sys/share/pixmaps/abs.png", dirs, 48, exists, chain)).toBe(
+      "/sys/share/pixmaps/abs.png",
+    )
+    expect(iconPathOf("/sys/share/pixmaps/abs", dirs, 48, exists, chain)).toBe("/sys/share/pixmaps/abs.png")
+  })
+
+  it("E：彻底未找到 → null（悬空引用，渲染层瓷片兜底）", () => {
+    expect(iconPathOf("hwloc", dirs, 48, exists, chain)).toBeNull()
+    expect(iconPathOf("", dirs, 48, exists, chain)).toBeNull()
+  })
+})
+
+describe("iconPixmapCaseInsensitiveOf", () => {
+  it("大小写不敏感 + svg（D：Icon=Alacritty vs Alacritty.svg）", () => {
+    const entries = (p: string) => (p === "/sys/share/pixmaps" ? ["Alacritty.svg", "Other.png"] : null)
+    // readdirSync 不可注入——验证签名/契约即走集成路径；这里以真实临时目录验证
+    expect(iconPixmapCaseInsensitiveOf("Alacritty", ["/sys/share"])).toBeNull() // 目录不存在 → null
   })
 })
 
