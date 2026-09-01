@@ -5,7 +5,13 @@
  * 子进程与文件系统路径（listOpenWithApps/openWithApp）不做单测——真机 E2E 覆盖。
  */
 import { describe, expect, it } from "vitest"
-import { mimeAncestorsOf, parseDesktopEntry, parseSubclasses, sanitizedChildEnv } from "./linux-open-with"
+import {
+  iconPathOf,
+  mimeAncestorsOf,
+  parseDesktopEntry,
+  parseSubclasses,
+  sanitizedChildEnv,
+} from "./linux-open-with"
 
 const ENTRY = (body: string) => `[Desktop Entry]\n${body}\n`
 
@@ -44,6 +50,13 @@ describe("parseDesktopEntry", () => {
       "en",
     )
     expect(e2!.name).toBe("A")
+  })
+
+  it("Icon= 透传（缺省 undefined）", () => {
+    expect(parseDesktopEntry(ENTRY("Name=N\nExec=x\nIcon=org.gnome.Nautilus\n"), "en")!.icon).toBe(
+      "org.gnome.Nautilus",
+    )
+    expect(parseDesktopEntry(ENTRY("Name=N\nExec=x\n"), "en")!.icon).toBeUndefined()
   })
 
   it("注释行跳过；无 Name 返回 null；MimeType 空项过滤", () => {
@@ -97,6 +110,46 @@ describe("parseSubclasses / mimeAncestorsOf", () => {
     const sub = parseSubclasses("x p1\nx p2\np1 top\np2 top")
     const acc = mimeAncestorsOf("x", sub)
     expect([...acc].sort()).toEqual(["p1", "p2", "top", "x"])
+  })
+})
+
+describe("iconPathOf", () => {
+  const dirs = ["/fake/home/share", "/fake/system/share"]
+  const exists = (p: string) =>
+    p === "/fake/home/share/icons/hicolor/48x48/apps/bitmap-app.png" ||
+    p === "/fake/system/share/icons/hicolor/scalable/apps/svg-app.svg" ||
+    p === "/fake/system/share/pixmaps/legacy.png"
+
+  it("主题名：位图优先（hicolor <size>x<size>/apps），无位图才用 scalable svg", () => {
+    expect(iconPathOf("bitmap-app", dirs, 48, exists)).toBe(
+      "/fake/home/share/icons/hicolor/48x48/apps/bitmap-app.png",
+    )
+    expect(iconPathOf("svg-app", dirs, 48, exists)).toBe(
+      "/fake/system/share/icons/hicolor/scalable/apps/svg-app.svg",
+    )
+  })
+
+  it("数据目录序 = 查找优先级（用户目录先于系统）；pixmaps 兜底次之", () => {
+    const pixmapsOnly = (p: string) => p === "/fake/system/share/pixmaps/legacy.png"
+    expect(iconPathOf("legacy", dirs, 48, pixmapsOnly)).toBe(
+      "/fake/system/share/pixmaps/legacy.png",
+    )
+  })
+
+  it("绝对路径：svg/png 直用；无后缀先 png 后 svg", () => {
+    expect(iconPathOf("/abs/icon.png", dirs, 48, (p) => p === "/abs/icon.png")).toBe(
+      "/abs/icon.png",
+    )
+    expect(iconPathOf("/abs/icon.svg", dirs, 48, (p) => p === "/abs/icon.svg")).toBe(
+      "/abs/icon.svg",
+    )
+    expect(iconPathOf("/abs/icon", dirs, 48, (p) => p === "/abs/icon.svg")).toBe("/abs/icon.svg")
+    expect(iconPathOf("/abs/icon", dirs, 48, (p) => p === "/abs/icon.png")).toBe("/abs/icon.png")
+  })
+
+  it("未找到 / 空值 → null（渲染层首字母瓷片兜底）", () => {
+    expect(iconPathOf("missing-app", dirs, 48, exists)).toBeNull()
+    expect(iconPathOf("", dirs, 48, exists)).toBeNull()
   })
 })
 

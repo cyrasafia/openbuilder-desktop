@@ -7,9 +7,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { OpenWithDialog } from "./open-with-dialog"
 
 const listApps = vi.fn(async () => [
-  { id: "a.desktop", name: "Alpha 编辑器" },
-  { id: "b.desktop", name: "Beta" },
-  { id: "c.desktop", name: "Gamma" },
+  { id: "a.desktop", name: "Alpha 编辑器", icon: "data:image/png;base64,AAAA" },
+  { id: "b.desktop", name: "Beta", icon: null },
+  { id: "c.desktop", name: "Gamma", icon: null },
 ])
 const onLaunch = vi.fn()
 const onClose = vi.fn()
@@ -30,9 +30,9 @@ beforeEach(() => {
   onLaunch.mockClear()
   onClose.mockClear()
   listApps.mockResolvedValue([
-    { id: "a.desktop", name: "Alpha 编辑器" },
-    { id: "b.desktop", name: "Beta" },
-    { id: "c.desktop", name: "Gamma" },
+    { id: "a.desktop", name: "Alpha 编辑器", icon: "data:image/png;base64,AAAA" },
+    { id: "b.desktop", name: "Beta", icon: null },
+    { id: "c.desktop", name: "Gamma", icon: null },
   ])
   Object.defineProperty(window, "desktop", {
     configurable: true,
@@ -91,6 +91,17 @@ describe("OpenWithDialog", () => {
     fireEvent.click(document.querySelector(".dialog-mask")!)
     expect(onClose).toHaveBeenCalledTimes(1)
     expect(onLaunch).not.toHaveBeenCalled()
+  })
+
+  it("应用图标：有 icon 渲染 img，无 icon 回退首字母瓷片（2026-08-31）", async () => {
+    render(<OpenWithDialog path="/repo/a.json" onLaunch={onLaunch} onClose={onClose} />)
+    await screen.findByText("Alpha 编辑器")
+    const img = document.querySelector<HTMLImageElement>(".open-with-icon")
+    expect(img?.src).toBe("data:image/png;base64,AAAA")
+    // Beta 无 icon → 首字母瓷片（B）
+    const rowB = screen.getByText("Beta").closest(".open-with-row") as HTMLElement
+    expect(rowB.querySelector(".open-with-icon")).toBeNull()
+    expect(rowB.querySelector(".open-with-avatar")?.textContent).toBe("B")
   })
 
   it("枚举失败容错（reject → 空列表按空态呈现）", async () => {

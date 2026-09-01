@@ -106,8 +106,9 @@ export interface DesktopApi {
   onBrowserViewState(cb: (state: BrowserViewState) => void): () => void
   /** 浏览器视图内快捷键转发（main → renderer；页面聚焦时 window keydown 不可达，评审 M5） */
   onBrowserShortcut(cb: (input: { key: string; control: boolean; meta: boolean; shift: boolean; alt: boolean }) => void): () => void
-  /** Linux「打开方式」应用枚举（design-linux-open-with §1.1；仅 linux 有意义） */
-  shellListOpenWithApps(path: string): Promise<{ id: string; name: string }[]>
+  /** Linux「打开方式」应用枚举（design-linux-open-with §1.1；仅 linux 有意义）。
+   *  icon = PNG data URL（主题查找产物；null = 渲染层首字母瓷片兜底） */
+  shellListOpenWithApps(path: string): Promise<{ id: string; name: string; icon: string | null }[]>
   /** Linux 按枚举结果中的应用启动（design-linux-open-with §1.2；appId 须来自
    *  最近一次枚举——main 侧白名单校验）。返回错误信息（""=成功） */
   shellOpenWithApp(path: string, appId: string): Promise<string>

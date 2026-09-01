@@ -3593,6 +3593,13 @@
   font-size: var(--text-sm);
 }
 
+/* 应用图标（PNG data URL）：铺满瓷片；无图标回退首字母文本（瓷片样式不变） */
+.open-with-icon {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+}
+
 .open-with-name {
   min-width: 0;
   overflow: hidden;

@@ -12,6 +12,8 @@ export interface OpenWithApp {
   id: string
   /** data dir 相对的 .desktop 路径（如 org.gnome.TextEditor.desktop / kde4/foo.desktop） */
   name: string
+  /** 应用图标 data URL（主题查找产物，png/svg；未找到/解析失败 = null——渲染层按首字母瓷片兜底） */
+  icon: string | null
 }
 
 /**
@@ -42,6 +44,8 @@ interface DesktopEntry {
   exec?: string
   noDisplay: boolean
   mimeTypes: Set<string>
+  /** Icon= 原始值：主题图标名或绝对路径（v0.3 仅消费 PNG 位图，§1.1） */
+  icon?: string
 }
 
 /** INI 浅解析（[Desktop Entry] 段键值；等号分割、注释/空行跳过；仅取首个段头后键） */
@@ -52,6 +56,7 @@ export function parseDesktopEntry(content: string, locale: string): DesktopEntry
   let nameLocalized = ""
   let exec: string | undefined
   let noDisplay = false
+  let icon: string | undefined
   const mimeTypes = new Set<string>()
   for (const raw of lines) {
     const line = raw.trim()
@@ -74,6 +79,7 @@ export function parseDesktopEntry(content: string, locale: string): DesktopEntry
     else if (key === "Exec") exec = value
     else if (key === "NoDisplay" && value.toLowerCase() === "true") noDisplay = true
     else if (key === "Hidden" && value.toLowerCase() === "true") noDisplay = true
+    else if (key === "Icon") icon = value
     else if (key === "MimeType") for (const m of value.split(";")) if (m) mimeTypes.add(m)
   }
   if (!name && !nameLocalized) return null
@@ -81,6 +87,7 @@ export function parseDesktopEntry(content: string, locale: string): DesktopEntry
     name: nameLocalized || name,
     exec,
     noDisplay,
+    icon,
     mimeTypes,
   }
 }
@@ -135,6 +142,51 @@ export function xdgDataDirs(): string[] {
   const home = process.env.XDG_DATA_HOME || join(homedir(), ".local/share")
   const dirs = (process.env.XDG_DATA_DIRS || "/usr/local/share:/usr/share").split(":").filter(Boolean)
   return [home, ...dirs]
+}
+
+/**
+ * Icon= 值 → 图标绝对路径（纯函数，注入 data dir 列表与存在性谓词便于单测）。
+ * XDG icon spec 简化查找：hicolor 主题 `apps/` 下位图优先、`scalable/*.svg`
+ * 次之 + 遗留 `/usr/share/pixmaps` 兜底。SVG 可渲染性已实证（2026-08-31，
+ * Electron 43 真机：`<img>` 对 file:/data: 的 svg 均成功光栅化——最初
+ * 「svg 不可靠」的判断有误；实测本机 PNG-only 覆盖率仅 ~31%，GNOME 应用
+ * 图标几乎全在 scalable/*.svg，排除 svg 会大面积掉首字母瓷片）。
+ * `Icon=/abs/path` 按后缀直用（无后缀补 .png）。Flatpak exports 也在
+ * data dirs 内，天然覆盖。
+ * 查找顺序对齐 spec：先数据目录序（用户目录优先），pixmaps 末位兜底。
+ */
+export function iconPathOf(
+  icon: string,
+  dataDirs: string[],
+  size = 48,
+  exists: (path: string) => boolean = existsSync,
+): string | null {
+  if (!icon) return null
+  // 绝对路径：svg/png 直用；无后缀补 .png
+  if (icon.startsWith("/")) {
+    if (/\.(png|svg)$/i.test(icon)) return exists(icon) ? icon : null
+    for (const ext of [".png", ".svg"]) {
+      const withExt = icon + ext
+      if (exists(withExt)) return withExt
+    }
+    return null
+  }
+  // 主题图标名：hicolor apps/ 下按 size 查找（无 theme 继承解析——hicolor 为
+  // 兜底主题，应用图标几乎都装入；缺省 = null 走首字母瓷片）
+  for (const dir of dataDirs) {
+    const p = join(dir, "icons", "hicolor", `${size}x${size}`, "apps", `${icon}.png`)
+    if (exists(p)) return p
+  }
+  for (const dir of dataDirs) {
+    const p = join(dir, "icons", "hicolor", "scalable", "apps", `${icon}.svg`)
+    if (exists(p)) return p
+  }
+  // 遗留 pixmaps 兜底
+  for (const dir of dataDirs) {
+    const p = join(dir, "pixmaps", `${icon}.png`)
+    if (exists(p)) return p
+  }
+  return null
 }
 
 /** 递归收集 applications/ 下 .desktop 文件（限深 3——kde4/ 等一级子目录足够） */
@@ -225,11 +277,25 @@ export async function listOpenWithApps(path: string, locale: string): Promise<Op
       )
         continue
       lastEnumerated.set(id, abs)
-      apps.push({ id, name: entry.name })
+      apps.push({ id, name: entry.name, icon: await iconDataUrlOf(entry.icon) })
     }
   }
   apps.sort((a, b) => a.name.localeCompare(b.name))
   return apps
+}
+
+/** Icon= → 图标 data URL（svg→image/svg+xml、png→image/png；未找到/读取失败 = null，兜底首字母瓷片） */
+async function iconDataUrlOf(icon: string | undefined): Promise<string | null> {
+  if (!icon) return null
+  const file = iconPathOf(icon, xdgDataDirs())
+  if (!file) return null
+  const mime = file.toLowerCase().endsWith(".svg") ? "image/svg+xml" : "image/png"
+  try {
+    const buf = await readFile(file)
+    return `data:${mime};base64,${buf.toString("base64")}`
+  } catch {
+    return null
+  }
 }
 
 /**

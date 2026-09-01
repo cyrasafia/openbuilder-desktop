@@ -16,7 +16,7 @@ export function OpenWithDialog({
   onClose: () => void
 }) {
   const { t } = useI18n()
-  const [apps, setApps] = useState<{ id: string; name: string }[] | null>(null)
+  const [apps, setApps] = useState<{ id: string; name: string; icon: string | null }[] | null>(null)
   const [sel, setSel] = useState(0)
   const listRef = useRef<HTMLDivElement>(null)
 
@@ -95,7 +95,11 @@ export function OpenWithDialog({
               onClick={() => pick(a.id)}
             >
               <span className="open-with-avatar" aria-hidden>
-                {initials[i]}
+                {a.icon ? (
+                  <img className="open-with-icon" src={a.icon} alt="" draggable={false} />
+                ) : (
+                  initials[i]
+                )}
               </span>
               <span className="open-with-name">{a.name}</span>
               <span className="mono open-with-id">{a.id}</span>

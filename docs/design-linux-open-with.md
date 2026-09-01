@@ -11,7 +11,7 @@
 1. MIME：`xdg-mime query filetype <path>`（2s 超时；失败/空 → `application/octet-stream` 兜底）
 2. 枚举 .desktop：`$XDG_DATA_DIRS`（缺省 `/usr/local/share:/usr/share`）∪ `$XDG_DATA_HOME`（`~/.local/share`）下 `applications/**/*.desktop`（含子目录如 `kde4/`；v0.3 不读 `settings.dat`/`mimeinfo.cache` 合并去重语义——直读全量）
 3. INI 解析（`[Desktop Entry]`）：取 `Name`（`Name[zh_CN]`/`Name[zh]` 本地化优先；Electron getLocale 的 BCP47 连字符在 handler 归一为下划线）、`Exec`（非空近似 Type=Application 判定）、`NoDisplay`/`Hidden`（true 跳过）、`MimeType` 分号列表。**遮蔽语义**：首个 data dir 的同名 id 即遮蔽后续（含 NoDisplay 条目）。**MIME 命中（2026-08-31 修订：祖先后闭包）**：目标 MIME 的祖先闭包（读 `<data>/mime/subclasses`，跨全部数据目录**合并**——mime-db 文件按 shared-mime-info 规范联合而非遮蔽，WPS 等只写用户目录会遮掉系统基线链）与条目 `MimeType` 求交非空即命中（`application/octet-stream` 兜底时不过滤——全量列出）。依据：.desktop 常只声明祖先类型（文本编辑器仅 `text/plain`），而 `application/json` 经子类链 `json→json5→ecmascript→text/javascript→typescript→text/plain` 传递子类于 `text/plain`；字面精确匹配会漏掉这些应用（真机实证：application/json 只出 firefox，遗漏 gedit/TextEditor/micro/vim/sublime——对照 `gio mime application/json` 的注册列表）。语义对齐 gio/libegg 的子类匹配（`xdg_mime_mime_type_subclass` 祖先后闭包）；subclasses 数据全缺时退化为字面匹配；闭包计算环安全
-4. 结果：`{ id（相对 data dir 的 .desktop 相对路径，如 `org.gnome.TextEditor.desktop`）, name }[]`，按 name `localeCompare` 排序（无 icon 字段，见 §2）
+4. 结果：`{ id（相对 data dir 的 .desktop 相对路径，如 `org.gnome.TextEditor.desktop`）, name, icon（data URL 或 null） }[]`，按 name `localeCompare` 排序。**应用图标（2026-08-31 追加）**：`Icon=` 值 → XDG icon spec 简化查找（hicolor 位图 `<size>x<size>/apps/*.png` 优先 → `scalable/apps/*.svg` → 遗留 `/usr/share/pixmaps`；`Icon=/abs/path` 按后缀直用）→ 读文件转 base64 data URL。**svg 可渲染性实证**：Electron 43 真机 `<img>` 对 data:/file: 的 svg 均成功光栅化（最初「svg 不可靠仅 png」的判断有误——file: 页面拉 file: 图标成功，data: 页面不能拉 file: 但枚举走 data URL 无此限制）；实测本机 PNG-only 覆盖率仅 ~31%（GNOME 应用图标几乎全在 scalable/*.svg），png+svg 双支持达 ~78%（其余为非 hicolor 主题/symbolic 名）。未找到 = null，渲染层回退首字母瓷片（§1.3 原方案成为兜底而非主体）。查找不含 theme 继承解析（hicolor 为兜底主题，应用图标几乎都装入）；真机渲染效果（图标观感/浅深色对比）待下轮 UI 检查
 
 ### 1.2 启动（main，`shell:openWithApp(path, appId)`）
 
@@ -24,12 +24,12 @@
 ### 1.3 UI（渲染层）
 
 - 右键菜单「打开方式…」：Linux 恢复显示（win32/darwin 走原系统对话框 IPC 不变）。**2026-08-31 修订**：目录行/空白处根目录同样显示（原「目录仍不显示」废止）——`xdg-mime query filetype` 对目录返回 `inode/directory`（真机验证），枚举按 MimeType 命中文件管理器类应用，枚举/启动链路零改动
-- 点击 → `shell:listOpenWithApps` → **应用内选择器弹窗**（复用 `.dialog-mask`/`.dialog` 模式：列表行 = 图标占位（v0.3 文本首字母瓷片，同 ProjectAvatar 模式）+ 名称；键盘 ↑↓ + Enter、Esc 关闭、点击行启动并关闭；目录与文件同一弹窗）
+- 点击 → `shell:listOpenWithApps` → **应用内选择器弹窗**（复用 `.dialog-mask`/`.dialog` 模式：列表行 = 应用图标（`icon` data URL，`<img class="open-with-icon">` 铺瓷片；null 时回退文本首字母瓷片，同 ProjectAvatar 模式）+ 名称；键盘 ↑↓ + Enter、Esc 关闭、点击行启动并关闭；目录与文件同一弹窗）
 - 加载中/空态（无匹配应用）文案
 
 ## 2. 不做的事
 
-- 图标真渲染（Icon 键解析 / icon theme 查找——首字母瓷片占位）
+- ~~图标真渲染~~（**2026-08-31 修订：已实现**，见 §1.1 步骤 4——Icon 解析 + hicolor 查找 + data URL；首字母瓷片保留为未找到时的兜底）
 - "设为默认"入口、仅显示推荐应用（mimeinfo.cache 排序）——全量字母序
 - Flatpak/Snap 沙箱应用特殊处理（其 .desktop 由桌面环境安装进 data dirs，天然覆盖）
 - macOS/Windows 自建选择器（沿用系统机制，spec 明确）
