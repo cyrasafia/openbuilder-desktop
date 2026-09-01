@@ -165,7 +165,7 @@ const zh = {
   openWithLoading: "正在枚举应用…",
   openWithEmpty: "无匹配的应用",
   openWithSearch: "搜索应用…",
-  openWithMatched: "支持此类型",
+  openWithMatched: "推荐应用",
   openWithOther: "其他应用",
   openWithNoResult: "无匹配结果",
   // 终端 Tab（design-terminal-tab）
@@ -354,7 +354,7 @@ const en: typeof zh = {
   openWithLoading: "Listing apps…",
   openWithEmpty: "No apps found",
   openWithSearch: "Search apps…",
-  openWithMatched: "Supports this type",
+  openWithMatched: "Recommended",
   openWithOther: "Other apps",
   openWithNoResult: "No matching apps",
   confirmCloseTerminal: "A process is running in this terminal. Closing will terminate it. Continue?",

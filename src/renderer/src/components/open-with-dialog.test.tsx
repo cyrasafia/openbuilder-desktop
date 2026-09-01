@@ -22,7 +22,7 @@ vi.mock("../app", () => ({
       openWithLoading: "正在枚举应用…",
       openWithEmpty: "无匹配的应用",
       openWithSearch: "搜索应用…",
-      openWithMatched: "支持此类型",
+      openWithMatched: "推荐应用",
       openWithOther: "其他应用",
       openWithNoResult: "无匹配结果",
     },
@@ -67,11 +67,11 @@ describe("OpenWithDialog", () => {
     expect(onLaunch).not.toHaveBeenCalled()
   })
 
-  it("全量列表分段：匹配组在前（支持此类型）、其他组在后，组标题正确", async () => {
+  it("全量列表分段：匹配组在前（推荐应用）、其他组在后，组标题正确", async () => {
     render(<OpenWithDialog path="/repo/a.json" onLaunch={onLaunch} onClose={onClose} />)
     await screen.findByText("Alpha 编辑器")
     const groups = () => Array.from(document.querySelectorAll(".open-with-group")).map((g) => g.textContent)
-    expect(groups()).toEqual(["支持此类型", "其他应用"])
+    expect(groups()).toEqual(["推荐应用", "其他应用"])
     // 行序：匹配组（Alpha/Beta）→ 其他组（Delta/Gamma；main 侧已按字母序排）
     const names = () =>
       Array.from(document.querySelectorAll(".open-with-row .open-with-name")).map((n) => n.textContent)
