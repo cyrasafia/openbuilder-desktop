@@ -2970,7 +2970,19 @@ describe("终端 Tab（design-terminal-tab）", () => {
     expect(calls).toEqual([`create:${ROOT}:undefined`])
     expect(store.tabs.some((t) => t.key === "terminal:pty_1" && t.directory === ROOT)).toBe(true)
     expect(store.activeTabKey).toBe("terminal:pty_1")
-    expect(store.ptyRuntimeFor("pty_1")).toEqual({ exited: false, title: "bash" })
+    expect(store.ptyRuntimeFor("pty_1")).toEqual({ exited: false, disconnected: false, title: "bash" })
+  })
+
+  it("markPtyDisconnected：断连标记置位/清除（关 Tab 免确认判定用）；exited 后 no-op", async () => {
+    ptyClient()
+    await store.openTerminalTab()
+    store.markPtyDisconnected("pty_1", true)
+    expect(store.ptyRuntimeFor("pty_1")?.disconnected).toBe(true)
+    store.markPtyDisconnected("pty_1", false)
+    expect(store.ptyRuntimeFor("pty_1")?.disconnected).toBe(false)
+    store.markPtyExited("pty_1")
+    store.markPtyDisconnected("pty_1", true)
+    expect(store.ptyRuntimeFor("pty_1")?.disconnected).toBe(false)
   })
 
   it("closeTerminalTab：DELETE pty + 关 Tab + 入关闭栈", async () => {
@@ -3012,11 +3024,29 @@ describe("终端 Tab（design-terminal-tab）", () => {
     expect(store.tabs.length).toBe(0)
   })
 
-  it("ptyConnectUrl：ticket 组装、不带 cursor（全量回放语义，评审 H1）", async () => {
+  it("ptyConnectUrl：ticket 组装；cursor 省略 = 全量回放、携带 = 续传（design-terminal-tab §1.2a）", async () => {
     ptyClient()
     await store.openTerminalTab()
-    const url = await store.ptyConnectUrl("pty_1")
-    expect(url).toBe("ws://127.0.0.1:1/pty/pty_1/connect?ticket=tkt&directory=%2Frepo")
+    const res = await store.ptyConnectUrl("pty_1")
+    expect(res).toEqual({ url: "ws://127.0.0.1:1/pty/pty_1/connect?ticket=tkt&directory=%2Frepo" })
+    const resumed = await store.ptyConnectUrl("pty_1", 103)
+    expect(resumed).toEqual({
+      url: "ws://127.0.0.1:1/pty/pty_1/connect?ticket=tkt&directory=%2Frepo&cursor=103",
+    })
+  })
+
+  it("ptyConnectUrl 三态：404 → gone（终态）；网络错误 → null（可重试）", async () => {
+    ptyClient()
+    await store.openTerminalTab()
+    const c = (store as unknown as { client: { ptyConnectToken: unknown } }).client
+    c.ptyConnectToken = async () => {
+      throw new ApiError(404, "not-found", "HTTP 404")
+    }
+    expect(await store.ptyConnectUrl("pty_1")).toEqual({ gone: true })
+    c.ptyConnectToken = async () => {
+      throw new ApiError(0, "network", "fetch failed")
+    }
+    expect(await store.ptyConnectUrl("pty_1")).toBeNull()
   })
 
   it("teardownConnection：pty 全杀在 client 置 null 之前执行（评审 H2）", async () => {

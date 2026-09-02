@@ -173,7 +173,7 @@ const zh = {
   confirmCloseTerminal: "终端中有进程在运行，关闭将终止它。继续？",
   terminalExited: "终端已退出",
   terminalDisconnected: "终端已断开",
-  terminalConnectFailed: "终端连接失败",
+  terminalReconnecting: "连接已断开，重连中…",
   terminalCopy: "复制",
   terminalPaste: "粘贴",
   // diff 详情页（design-diff-view）：单 Tab + segment 切换；短标签同移动端 diffMode*
@@ -362,7 +362,7 @@ const en: typeof zh = {
   confirmCloseTerminal: "A process is running in this terminal. Closing will terminate it. Continue?",
   terminalExited: "Terminal exited",
   terminalDisconnected: "Terminal disconnected",
-  terminalConnectFailed: "Terminal connection failed",
+  terminalReconnecting: "Disconnected — reconnecting…",
   terminalCopy: "Copy",
   terminalPaste: "Paste",
   diffTitle: "Diff",
