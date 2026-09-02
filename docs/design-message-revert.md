@@ -74,14 +74,14 @@ summary?: { additions: number; deletions: number; files: number }
   - **响应无 `revert` 字段 = server 未暂存**（消息已不存在，如他端先行删除/提交；源码 `revert.ts` `if (!rev) return session`）：不回填、返回 `{ok:false}` + `connectionError`「回滚未生效」明示——不得静默 ok；
   - 失败：`connectionError` 记录（左栏状态行可见）+ 返回 `{ok:false}`。409 专映射「会话进行中」文案。
 - `unrevertSession(sessionID): Promise<{ok, error?}>`：同上合并路径。
-- **草稿回填**（官方 `prompt.set(draft(messageID))` 语义）：成功后取回滚点 user 消息的 text parts 拼文本存 `revertDrafts: Map<sessionID,string>` 并 `revertDraftVersion++`；ChatView effect 消费（`takeRevertDraft`）置入输入框。无 text（纯附件/命令回显）则不回填。
+- **草稿回填**（官方 `prompt.set(draft(messageID))` 语义）：成功后取回滚点 user 消息的 text parts 拼文本存 `revertDrafts: Map<sessionID,string>` 并 `revertDraftVersion++`；ChatView effect 消费（`takeRevertDraft`）置入输入框。**斜杠命令回显一律不回填**（2026-09-01 修订，原「无 text 不回填」语义升级）：subtask part 消息自包含可判（含跨端发送）；text 展开型回显（skill/init 等，服务端展开模板为 text part）与普通消息无结构差异，由 `sendCommand` 置 `commandEchoPending`、SSE 首条真实 user 消息到达转记 `commandEchoMessages`（与乐观清除同一触发点、同一不精确界）。依据：展开文本非用户原文、参数已被模板展开消费不可还原（server 只持久化展开结果），回填是噪音。无 text 且无 subtask（纯附件）同样不回填。
 - **撤销清输入框**（官方 `restore→promptSession.reset()` 语义）：仅当种子**已被消费**（`revertDraftConsumed` 集——输入框正承载本地回填文本）时置**空种子**（`""`），ChatView 消费即清空草稿。**跨客户端暂存**（本端从未回填）或无文本回滚不置种子——不得误清用户自输内容。空种子本身不记消费（防二次撤销误判）。
-- 清理：`teardownConnection` 与 `cleanupSessionState` 清 `revertDrafts`/`revertDraftConsumed`。
-- 事件侧零改动：`session.updated` 已合并含 `revert` 的 info（跨客户端/重连一致）；提交时 `message.removed` 逐条删除已有处理；分页游标锚定最旧消息，尾部删除不影响。
+- 清理：`teardownConnection` 与 `cleanupSessionState` 清 `revertDrafts`/`revertDraftConsumed`/`commandEchoMessages`（`commandEchoPending` 由 POST 两分支自清；**SSE 重连时失效清空**——断连窗口内错过的回显经对账快照补载、不走 `message.updated`，残留 pending 会误标重连后首条真实 user 消息，清空后该回显退化为误回填展开文本的既有接受边缘）；`message.removed` 顺带摘除对应回显标记。
+- 事件侧其余零改动：`session.updated` 已合并含 `revert` 的 info（跨客户端/重连一致）；提交时 `message.removed` 逐条删除已有处理；分页游标锚定最旧消息，尾部删除不影响。
 
 ### 3.4 UI（`workspace.tsx` ChatView）
 
-- **入口**：紧贴用户气泡左侧、纵向居中的 hover 动作行（`.msg-actions` 为 `.msg.user` flex 子项、DOM 序先于气泡，`align-items: center` 居中；常驻占位 + opacity/visibility 显形——显隐零布局位移），`RotateCcw` 图标按钮 + tooltip「回滚到此消息」；乐观气泡与空文本消息不显示。
+- **入口**：紧贴用户气泡左侧、纵向居中的 hover 动作行（`.msg-actions` 为 `.msg.user` flex 子项、DOM 序先于气泡，`align-items: center` 居中；常驻占位 + opacity/visibility 显形——显隐零布局位移），`RotateCcw` 图标按钮 + tooltip「回滚到此消息」。显示条件（2026-09-01 修订）：有 text **或 subtask** part 的用户消息——斜杠命令回显（两类）均有入口（revert API 按 messageID 工作，与 part 形态无关）；乐观气泡与纯附件消息不显示（官方 session-ui 亦以 text 存在性门控 action 行，本端在 subtask 上放宽）。子会话（subagent）内禁用（design-subagent-status §D2）。
 - **回滚条**（`RevertBar`，composer 内、textarea 上方）：`session.revert` 存在时渲染——文案「已回滚：回滚点起 N 条消息将在发送后删除」+ 按钮「撤销回滚」（`btn-tonal`）；busy 时按钮禁用（409 前置防御）。
 - **隐藏**：`message id >= revert.messageID` 的消息从渲染列表剔除——纯函数 `filterRevertedEntries`（`message-merge.ts`，含边界单测；乐观消息恒显）——对齐官方 timeline 只渲染 `visibleUserMessages`（`session.tsx:2109`）。纯呈现层：store entries 不动，撤销回滚即恢复显示；分页头部基准/游标不受尾部隐藏影响。滚动布局 effect 依赖切到 `visibleEntries`——隐藏尾部引起条数变化时贴底重定位仍触发（条数减少走 auto 无动画）。回滚条计数 = `entries.length - visibleEntries.length`（与隐藏共用同一边界，无二份比较逻辑）。
 - **跨客户端覆盖窗口**：他端暂存的回滚点可能早于本端已加载窗口（此时全部已加载消息被隐藏、计数偏小）——ChatView effect 检测「无已加载消息落在回滚点之前」即持续 `loadEarlierMessages`，直到窗口覆盖回滚点或历史穷尽（复用分页 loading/exhausted/error 守卫）。本地发起的回滚不受影响（回滚点必然已加载）。
@@ -100,7 +100,7 @@ summary?: { additions: number; deletions: number; files: number }
 
 ## 5. 验收
 
-1. 空闲会话点用户消息「回滚到此消息」：文件即还原（工作区改动消失）、该消息起从消息流消失、回滚条出现、输入框回填该消息文本；
+1. 空闲会话点用户消息「回滚到此消息」：文件即还原（工作区改动消失）、该消息起从消息流消失、回滚条出现、输入框回填该消息文本；**斜杠命令回显（subtask/text 展开）不回填**；
 2. 回滚条「撤销回滚」：文件恢复、被隐藏消息重新显示、回滚条消失、**输入框清空**（回填文本随撤销清除；跨客户端暂存/无回填会话不清用户自输内容）；
 3. 回滚态下发送新消息：回滚点起消息正式删除（`message.removed`）、回滚态清除、新轮次正常；
 4. busy 中点回滚：确认后停止并回滚成功；取消则无副作用；

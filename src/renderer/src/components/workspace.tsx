@@ -1564,8 +1564,9 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
     return (
       <div className="msg user">
         {/* 动作行先于气泡（flex 顺序）：紧贴气泡左侧、纵向居中；常驻占位 hover 显形。
-            无 text part（纯附件/命令回显）不显示——草稿回填无文本可取（设计 §3.4） */}
-        {texts.length > 0 && !isChildSession && (
+            斜杠命令回显（subtask/展开 text）有入口（2026-09-01 修订，design-message-revert
+            §3.4）；纯附件（无 text 无 subtask）不显示——回滚 API 按 messageID 工作，与 part 无关 */}
+        {(texts.length > 0 || subtasks.length > 0) && !isChildSession && (
           <div className="msg-actions">
             <button
               className="icon-btn msg-action"

@@ -604,6 +604,8 @@ export class AppStore {
     this.sessionTodos.clear()
     this.revertDrafts.clear()
     this.revertDraftConsumed.clear()
+    this.commandEchoMessages.clear()
+    this.commandEchoPending.clear()
     this.chatDrafts.clear()
     this.guideDrafts.clear()
     this.scopeActiveKeys.clear()
@@ -722,6 +724,11 @@ export class AppStore {
       onEvent: (dir, ev, meta) => this.handleEvent(dir, ev, meta),
       onReconnected: () => {
         this.reconciler?.request()
+        // 回显标记失效（design-message-revert §3.3 修订）：pending 只在承载 POST 的
+        // 原 SSE 流上有效——断连窗口内错过的回显经对账快照补载（不走 message.updated），
+        // 残留 pending 会误标重连后首条真实 user 消息。清空后该回显退化为
+        // 「回滚误回填展开文本」的既有接受边缘（丢回填 < 误标正常消息）
+        this.commandEchoPending.clear()
         // worktree 增删补偿（design-worktree-sync §2）：断连窗口内他端创建的 worktree
         // 若 SSE 丢 worktree.ready（只发一次，重连不补发），靠此刷新补齐；删除无 SSE
         // 事件，刷新是唯一通道
@@ -904,6 +911,14 @@ export class AppStore {
           }
         }
         if (info.role === "user") {
+          // 斜杠命令回显标记（design-message-revert §3.3 修订）：sendCommand 发出后到达的
+          // 首条真实 user 消息 = 命令回显，记 id 供回滚跳过草稿回填（展开文本非用户原文）。
+          // 与乐观清除同一触发点、同一不精确界（他端并发消息会被误标，仅丢回填，无害）
+          if (this.commandEchoPending.delete(sessionID)) {
+            const ids = this.commandEchoMessages.get(sessionID)
+            if (ids) ids.add(info.id)
+            else this.commandEchoMessages.set(sessionID, new Set([info.id]))
+          }
           this.clearOptimistic(sessionID)
         }
         // busy/retry 不再从 message.completed 推断（中间步骤 tool-calls 完成会造成
@@ -913,6 +928,7 @@ export class AppStore {
       case "message.removed": {
         const { sessionID, messageID } = ev.properties as { sessionID: string; messageID: string }
         this.messagesBySession.get(sessionID)?.delete(messageID)
+        this.commandEchoMessages.get(sessionID)?.delete(messageID)
         break
       }
       case "message.part.updated": {
@@ -1903,6 +1919,9 @@ export class AppStore {
     this.sessionPages.delete(sessionID)
     this.revertDrafts.delete(sessionID)
     this.revertDraftConsumed.delete(sessionID)
+    // 命令回显标记同随会话卸载（重开 Tab 经快照重建，text 展开型回显不可再判——
+    // 接受：回滚到它仅误回填展开文本，与跨端发送同暴露面）
+    this.commandEchoMessages.delete(sessionID)
     // 草稿随会话运行时卸载（关 Tab/删会话/关项目/删工作区都经此，防无界增长）
     this.chatDrafts.delete(sessionID)
     // 引用同随会话卸载（design-file-reference §2 清理挂点）
@@ -2616,7 +2635,11 @@ export class AppStore {
         this.emit()
         return { ok: false, error: msg }
       }
-      const seed = this.userMessageText(sessionID, updated.revert.messageID)
+      // 斜杠命令回显不回填（design-message-revert §3.3 修订）：subtask part 或本端
+      // 命令回显标记——展开文本非用户原文（参数已消费），回填是噪音
+      const seed = this.isCommandEcho(sessionID, updated.revert.messageID)
+        ? null
+        : this.userMessageText(sessionID, updated.revert.messageID)
       if (seed) {
         this.revertDrafts.set(sessionID, seed)
         this.revertDraftVersion++
@@ -2678,9 +2701,27 @@ export class AppStore {
     return texts.length > 0 ? texts.join("\n") : null
   }
 
+  /** 斜杠命令回显判定：subtask part 自包含（跨端可判）；text 展开型只有本端发送标记 */
+  private isCommandEcho(sessionID: string, messageID: string): boolean {
+    const msg = this.messagesBySession.get(sessionID)?.get(messageID)
+    if (!msg || msg.info.role !== "user") return false
+    if (msg.parts.some((p) => p.type === "subtask")) return true
+    return this.commandEchoMessages.get(sessionID)?.has(messageID) ?? false
+  }
+
   // ============ 斜杠命令 ============
 
   private commandsInFlight = new Map<string, Promise<void>>()
+
+  /**
+   * 命令回显标记（design-message-revert §3.3 修订，2026-09-01）：斜杠命令撤回一律
+   * 不回填草稿。subtask part 消息自包含可判（含跨端）；text 展开型回显与普通消息
+   * 无结构差异，只能记本端 sendCommand 后到达的首条真实 user 消息 id。展开模板
+   * 非用户原文、参数不可还原（server 只持久化展开结果），回填是噪音
+   */
+  private commandEchoMessages = new Map<string, Set<string>>()
+  /** 已发送命令、等待回显到达的会话（message.updated 到达即转记；POST 出结果、SSE 重连均清——重连后错过回显只经快照补载，标记已失效） */
+  private commandEchoPending = new Set<string>()
 
   get commandsRefreshing(): boolean {
     return this.commandsInFlight.size > 0
@@ -2763,6 +2804,8 @@ export class AppStore {
       optimistic,
     ])
     this.emit()
+    // 回显标记：SSE 真实 user 消息到达时转记（正常路径在 POST await 期间消费）
+    this.commandEchoPending.add(sessionID)
     try {
       // 斜杠命令同样携带引用 parts（openapi command body 契约，移动端 6R-C）
       await this.client.sendCommand(
@@ -2773,8 +2816,13 @@ export class AppStore {
         refs?.map(fileRefToFilePart),
       )
       this.clearFileRefs(sessionID)
+      // 同步端点返回即执行完毕：回显已在 await 期间到达并转记；SSE 断线窗口内未
+      // 到达的（重连对账才补）不补标——接受该边缘（回滚到它仅误回填展开文本）
+      this.commandEchoPending.delete(sessionID)
       return { ok: true }
     } catch (e) {
+      // 快速真错误（400/404/断网）无回显：清标记，防误标后续普通消息
+      this.commandEchoPending.delete(sessionID)
       this.optimisticBySession.set(
         sessionID,
         (this.optimisticBySession.get(sessionID) ?? []).filter((o) => o.localId !== optimistic.localId),

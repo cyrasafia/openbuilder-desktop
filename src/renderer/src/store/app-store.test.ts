@@ -1494,7 +1494,7 @@ describe("回滚到指定消息（design-message-revert）", () => {
     expect(store.takeRevertDraft("s1")).toBeNull()
   })
 
-  it("revertToMessage 无 text part（纯命令回显）：不回填草稿", async () => {
+  it("revertToMessage 无 text part（subtask 命令回显）：不回填草稿", async () => {
     seedSession()
     store.messagesBySession.set(
       "s1",
@@ -1519,6 +1519,86 @@ describe("回滚到指定消息（design-message-revert）", () => {
     const res = await store.revertToMessage("s1", "msg_u1")
     expect(res.ok).toBe(true)
     expect(store.takeRevertDraft("s1")).toBeNull()
+  })
+
+  it("revertToMessage text 展开型命令回显（sendCommand 标记）：不回填草稿", async () => {
+    seedSession()
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    // 同步端点：回显（SSE message.updated）在 POST await 期间到达
+    const run = deferred<void>()
+    client.sendCommand = () => run.promise
+
+    const p = store.sendCommand("s1", "init", "--foo")
+    // part 先于 message.info 到达（pendingParts 回放路径，同真实 SSE 顺序）
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, {
+      type: "message.part.updated",
+      properties: {
+        sessionID: "s1",
+        part: { id: "prt_1", sessionID: "s1", messageID: "msg_u1", type: "text", text: "展开的模板全文" },
+      },
+    })
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, {
+      type: "message.updated",
+      properties: {
+        sessionID: "s1",
+        info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
+        // skill/非 subtask 命令展开为 text part（展开模板，非用户原文）
+        parts: [{ id: "prt_1", sessionID: "s1", messageID: "msg_u1", type: "text", text: "展开的模板全文" }],
+      },
+    })
+    run.resolve()
+    expect(await p).toEqual({ ok: true })
+    // 回显已加载且有 text（排除「消息未加载导致空回填」的假阳性）
+    expect(store.chatEntries("s1")).toEqual([
+      {
+        kind: "message",
+        data: expect.objectContaining({
+          info: expect.objectContaining({ id: "msg_u1", role: "user" }),
+          parts: [expect.objectContaining({ type: "text", text: "展开的模板全文" })],
+        }),
+      },
+    ])
+
+    client.revertMessage = async () => ({
+      ...session("s1", ROOT, { created: 1, updated: 2 }),
+      revert: { messageID: "msg_u1" },
+    })
+    const res = await store.revertToMessage("s1", "msg_u1")
+    expect(res.ok).toBe(true)
+    expect(store.takeRevertDraft("s1")).toBeNull()
+  })
+
+  it("sendCommand 失败：回显标记清除，后续普通消息回滚仍回填", async () => {
+    seedSession()
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    client.sendCommand = async () => {
+      throw new ApiError(400, "unknown", "HTTP 400")
+    }
+    const res = await store.sendCommand("s1", "no-such", "")
+    expect(res.ok).toBe(false)
+
+    // 失败后用户手输的普通消息不得被残留标记误判为命令回显
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, {
+      type: "message.part.updated",
+      properties: {
+        sessionID: "s1",
+        part: { id: "prt_1", sessionID: "s1", messageID: "msg_u1", type: "text", text: "手输的普通消息" },
+      },
+    })
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, {
+      type: "message.updated",
+      properties: {
+        sessionID: "s1",
+        info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
+        parts: [{ id: "prt_1", sessionID: "s1", messageID: "msg_u1", type: "text", text: "手输的普通消息" }],
+      },
+    })
+    client.revertMessage = async () => ({
+      ...session("s1", ROOT, { created: 1, updated: 2 }),
+      revert: { messageID: "msg_u1" },
+    })
+    await store.revertToMessage("s1", "msg_u1")
+    expect(store.takeRevertDraft("s1")).toBe("手输的普通消息")
   })
 
   it("busy 中 revertToMessage：先 abort 再 revert（官方 halt→stage）", async () => {
