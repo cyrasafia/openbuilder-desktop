@@ -1548,6 +1548,10 @@
 .ms-pill > span {
   white-space: nowrap;
 }
+/* 清空值 span（重置动效保持期）：保留最小宽度，pill 不塌缩成光秃秃的箭头钮 */
+.ms-pill > span:empty {
+  min-width: 64px;
+}
 .ms-pill-label,
 .ms-row-name {
   overflow: hidden;
@@ -1741,13 +1745,12 @@
 .settings-defaults .ms-bar {
   margin-right: 0;
 }
-
-/* 焦点复用 hover（tokens.css）：清除默认值按钮原无 hover 样式，焦点环压制后
-   补齐（同 ms-footer idiom：container-highest 底 + 4px 圆角） */
-.settings-defaults > button:hover,
-.settings-defaults > button:focus-visible {
-  background: var(--surface-container-highest);
-  border-radius: 4px;
+/* 重置钮走标准 .btn-tonal（自带 hover/focus-visible）；容器是 flex column，
+   默认 align-items:stretch 会把钮拉成通栏，收回到内容宽（ms-bar 保持满宽）。
+   重置动效不走 CSS 动画：cleared 空态由 ModelSwitcherBar 的 cleared prop
+   呈现（分段全不选 + pill 空值），settings 侧定时 ~500ms 后刷新出生效默认 */
+.settings-defaults .btn-tonal {
+  align-self: flex-start;
 }
 
 /* ---------- 斜杠命令菜单 ---------- */
@@ -2942,7 +2945,6 @@
   margin: 8px 28px 6px;
 }
 .dialog-project .dialog-body {
-  flex: 1;
   padding: 2px 28px 8px;
 }
 
@@ -2973,8 +2975,11 @@
   flex-shrink: 0;
 }
 
+/* lg 档（设置弹窗，§标准弹窗尺寸档）：固定 640×min(480, 80vh) 不随内容变化，
+   余高归 .dialog-body 内部滚动 */
 .dialog-lg {
   width: 640px;
+  height: min(480px, 80vh);
 }
 
 .dialog-title {
@@ -2988,6 +2993,13 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+/* 弹窗内视图跳转（模态不重叠原则）：标题行左侧组 = 返回钮 + 视图标题 */
+.dialog-title-side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 /* 打开项目选择器的搜索框（视觉语言对齐 .ms-search；
@@ -3016,7 +3028,9 @@
   background: var(--surface-container-high);
 }
 
+/* 列表/表单体（§标准弹窗骨架）：flex:1 占满余高，内部滚动；变体只覆写内边距 */
 .dialog-body {
+  flex: 1;
   padding: 8px 20px;
   overflow: auto;
   min-height: 80px;
@@ -3227,12 +3241,6 @@
 
 .profile-actions {
   margin: 8px 0;
-}
-
-.profile-form {
-  border-top: 1px solid var(--outline-variant);
-  padding-top: 12px;
-  margin-top: 8px;
 }
 
 .mono {
@@ -3580,7 +3588,6 @@
   margin: 8px 28px 14px;
 }
 .open-with-dialog .dialog-body {
-  flex: 1;
   padding: 2px 28px 8px;
 }
 

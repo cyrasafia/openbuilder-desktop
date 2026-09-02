@@ -158,9 +158,11 @@ interface BarProps {
   session?: Session | null
   /** 外部禁用（如发送中） */
   disabled?: boolean
+  /** 清空态（重置动效保持期）：分段全不选、模型 pill 空值——仅显示层，数据不变 */
+  cleared?: boolean
 }
 
-export function ModelSwitcherBar({ directory, mode, session, disabled }: BarProps) {
+export function ModelSwitcherBar({ directory, mode, session, disabled, cleared }: BarProps) {
   const store = useStore()
   const { t } = useI18n()
   const [switching, setSwitching] = useState(false)
@@ -220,6 +222,7 @@ export function ModelSwitcherBar({ directory, mode, session, disabled }: BarProp
       <AgentControl
         agents={agents}
         current={currentAgent}
+        cleared={cleared}
         disabled={busy}
         directory={directory}
         onPick={async (name) => {
@@ -242,6 +245,7 @@ export function ModelSwitcherBar({ directory, mode, session, disabled }: BarProp
       <ModelControl
         models={models}
         current={currentModel}
+        cleared={cleared}
         loading={catalogLoading}
         disabled={busy}
         directory={directory}
@@ -274,6 +278,7 @@ export function ModelSwitcherBar({ directory, mode, session, disabled }: BarProp
           <ThinkingControl
             variants={cur.variants}
             current={currentModel?.variant}
+            cleared={cleared}
             disabled={busy}
             directory={directory}
             onPick={async (variant) => {
@@ -313,12 +318,15 @@ export function ModelSwitcherBar({ directory, mode, session, disabled }: BarProp
 function AgentControl({
   agents,
   current,
+  cleared,
   disabled,
   directory,
   onPick,
 }: {
   agents: ModelCatalog["agents"]
   current: string
+  /** 清空态：所有分段不选中 / pill 空值（重置动效保持期） */
+  cleared?: boolean
   disabled: boolean
   directory: string
   onPick: (name: string) => void
@@ -363,7 +371,7 @@ function AgentControl({
     return (
       <div className="ms-segmented" ref={anchorRef as React.RefObject<HTMLDivElement>}>
         {agents.map((a) => {
-          const active = a.name === current
+          const active = !cleared && a.name === current
           return (
             <button
               key={a.name}
@@ -382,7 +390,7 @@ function AgentControl({
 
   // ≤1 个 → 静态 pill（无可切换目标，仅显示当前值）
   if (agents.length <= 1) {
-    return <div className="ms-pill ms-pill-static">{current}</div>
+    return <div className="ms-pill ms-pill-static">{cleared ? "" : current}</div>
   }
 
   // ≥3 → pill + popover（↑↓+Enter 导航，对齐 CommandHints）
@@ -394,7 +402,7 @@ function AgentControl({
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
       >
-        <span>{current}</span>
+        <span>{cleared ? "" : current}</span>
         <span className="ms-chev">▾</span>
       </button>
       <Popover open={open} anchorRef={anchorRef} onClose={() => setOpen(false)}>
@@ -446,6 +454,7 @@ function AgentControl({
 function ModelControl({
   models,
   current,
+  cleared,
   loading,
   disabled,
   directory,
@@ -453,6 +462,8 @@ function ModelControl({
 }: {
   models: ModelCatalog["models"]
   current: ModelRef | undefined
+  /** 清空态：pill 空值（重置动效保持期），不回落到占位词条 */
+  cleared?: boolean
   loading: boolean
   disabled: boolean
   directory: string
@@ -485,7 +496,7 @@ function ModelControl({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, directory])
 
-  const label = current ? `${current.providerID}/${current.id}` : t.model
+  const label = cleared ? "" : current ? `${current.providerID}/${current.id}` : t.model
 
   // 按 provider 分组（保序：首现序）
   const groups = new Map<string, ModelCatalog["models"]>()
@@ -601,12 +612,15 @@ function ModelControl({
 function ThinkingControl({
   variants,
   current,
+  cleared,
   disabled,
   directory,
   onPick,
 }: {
   variants: string[]
   current: string | undefined
+  /** 清空态：值空（保留 Thinking 前缀作控件标识） */
+  cleared?: boolean
   disabled: boolean
   directory: string
   onPick: (variant: string | undefined) => void
@@ -640,7 +654,7 @@ function ThinkingControl({
   // 选项 = 「默认」（undefined）+ variants keys
   const opts: (string | undefined)[] = [undefined, ...variants]
   const selClamped = Math.min(sel, Math.max(0, opts.length - 1))
-  const label = current ?? t.thinkingDefault
+  const label = cleared ? "" : current ?? t.thinkingDefault
   return (
     <>
       <button

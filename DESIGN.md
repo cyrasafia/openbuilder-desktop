@@ -173,7 +173,7 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 
 ### 标准弹窗（2026-08-31）
 
-实现基类 `app.css` 的 `.dialog` / `.dialog-mask`（2026-08-31 起为本标准），全部弹窗复用同一骨架，变体只落尺寸类；四类现役弹窗：设置（`dialog-lg`）、打开项目（`dialog-project`）、打开方式（`open-with-dialog`，2026-08-31 对齐）、确认（`dialog-sm`）。
+实现基类 `app.css` 的 `.dialog` / `.dialog-mask`（2026-08-31 起为本标准），全部弹窗复用同一骨架，变体只落尺寸类；四类现役弹窗：设置（`dialog-lg`）、打开项目（`dialog-project`）、打开方式（`open-with-dialog`，2026-08-31 对齐）、确认（`dialog-sm`）。设置弹窗内的服务器添加/编辑为弹窗内视图跳转（见下方「模态不重叠」）。
 
 **骨架与类名**（`.dialog-mask` 点击关闭 → `.dialog` → 子元素自上而下）：
 
@@ -181,7 +181,7 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 |---|---|---|
 | 容器 | `.dialog` | `surfaceContainerLow` 底 + 1px `outlineVariant` 边 + `rounded.dialog`（12px），flex column；默认宽 480、`max-width 90vw / max-height 80vh` |
 | 标题 | `.dialog-title` | `title-md`（16/600），内边距 `16px 20px 8px`（弹窗变体可覆写水平值，见内边距表） |
-| 标题行（有关闭钮） | `.dialog-title` + `.dialog-title-row` | flex 两端对齐；右侧 `.icon-btn`（lucide `X` 14px，`t.close` 作 title）——**列表选择类弹窗必须有**（打开项目/打开方式），表单/确认类不设（有明确动作钮） |
+| 标题行（有关闭钮） | `.dialog-title` + `.dialog-title-row` | flex 两端对齐；右侧 `.icon-btn`（lucide `X` 14px，`t.close` 作 title）——**列表选择类弹窗必须有**（打开项目/打开方式），表单/确认类不设（有明确动作钮）；即时生效无底部动作行的设置弹窗也设（2026-09-02 去确认钮，改动即存档，关闭即生效） |
 | 搜索框 | `.dialog-search` | 高 32（`--control-h`）、`rounded.chip`、1px `outlineVariant` 边（focus `primary`）、`ui-sm`；底色 light `surfaceContainer` / dark `surfaceContainerHighest`（与弹窗底 `container-low` 拉开一档，同色会糊） |
 | 列表体 | `.dialog-body`（+ `.scroll`） | flex:1 占满余高，内部滚动；空态/加载态文案 `tree-empty` |
 | 底部动作行 | `.dialog-actions` | 右对齐按钮排（gap 8） |
@@ -202,6 +202,8 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 - 搜索框与列表之间必须留 6px 以上间隔，禁止紧贴
 
 **键盘与遮罩**（交互惯例，全弹窗一致）：遮罩点击 = 关闭（在途操作型除外，如确认弹窗 loading 中禁点）；Esc 关闭；搜索框打开即聚焦、`↑↓/Enter` 操作列表、输入框内 IME 组合（`isComposing`）的 Enter/Escape 不触发选择/关闭；含过滤搜索的弹窗 Esc 语义 = 有内容先清空、再按关闭。
+
+**模态不重叠**（交互原则，2026-09-02）：弹窗之上不得再叠弹窗（遮罩叠遮罩、双浮层争焦点）；需要二级操作（如条目的添加/编辑）时在**原弹窗内跳转视图**——标题行左置返回钮（`.dialog-title-side` = `icon-btn` lucide `ArrowLeft` 14px + 视图标题），tabs/列表视图整体替换为表单视图，Esc 语义分层（先退内层视图、再关弹窗），确需独立操作面时先关当前弹窗再开新弹窗。首个应用：设置弹窗的服务器添加/编辑（曾短暂试用 portal 叠层子弹窗，因违反本原则当日改回）。
 
 ### 按钮（五类可复用样式，2026-08-29）
 
@@ -247,6 +249,7 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 
 - 新组件先查 tokens.css 语义色；状态色只用 `status.*`
 - 新弹窗从 §标准弹窗 选尺寸档（380/480/640/700）与骨架类，不新写弹窗骨架样式；列表选择类固定尺寸 + 关闭按钮 + 搜索框间隔遵循该节
+- 不在弹窗上再叠弹窗（§标准弹窗「模态不重叠」）；二级操作在原弹窗内跳转视图（标题行返回钮）
 - 按钮从五类可复用样式（§按钮）选型，新场景先复用既有类再加修饰类，不写一次性按钮样式
 - 强调用 600 直跳；次级信息用 `ui-sm` + `outline` 降权，不加中间字重
 - 文案新增 key 时同步中英两份 catalog，并对照移动端 ARB 是否已有同场景 key
