@@ -5,6 +5,7 @@
  * 第一道防线，排序层保底才是可靠防线。
  */
 import type { FileRef, Message, MessageWithParts, Part } from "./api-types"
+import { isSyntheticTextPart } from "./api-types"
 
 export interface OptimisticMessage {
   optimistic: true
@@ -104,9 +105,12 @@ export function mergeSnapshotIntoMessages(
   local: Map<string, MessageWithParts>,
   snapshot: MessageWithParts[],
 ): Map<string, MessageWithParts> {
+  // 快照入口过滤合成 text part（引用文件内容等 server 注入，isSyntheticTextPart
+  // 注释）：本地侧由 SSE handler 同规则过滤，双侧一致保证 mergeParts 并集不回流
+  const clean = snapshot.map((m) => ({ info: m.info, parts: m.parts.filter((p) => !isSyntheticTextPart(p)) }))
   const next = new Map(local)
   const snapshotIds = new Set<string>()
-  for (const item of snapshot) {
+  for (const item of clean) {
     snapshotIds.add(item.info.id)
     const prev = next.get(item.info.id)
     if (!prev) {

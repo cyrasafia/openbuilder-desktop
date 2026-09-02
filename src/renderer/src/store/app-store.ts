@@ -86,6 +86,7 @@ import type {
   Todo,
   Workspace,
 } from "@shared/api-types"
+import { isSyntheticTextPart } from "@shared/api-types"
 
 export type TabKind = "chat" | "file" | "diff" | "terminal" | "browser"
 
@@ -238,6 +239,14 @@ export class AppStore {
   projects: Project[] = []
   sessionsByProject = new Map<string, Map<string, Session>>()
   messagesBySession = new Map<string, Map<string, MessageWithParts>>()
+  /**
+   * ingestion 丢弃过合成 text part 的消息 id（sessionID → messageID 集）：
+   * 空消息守卫（chatEntries）据此区分「parts 在途」（乐观清理与真实 parts
+   * 到达之间的窗口，保留显示）与「全合成被滤空」（后台任务回执/compaction
+   * 续跑等单合成 part 消息，必须隐藏）——parts:[] 本身无法区分二者。
+   * 与 messagesBySession 同生命周期清理。
+   */
+  private syntheticDroppedBySession = new Map<string, Set<string>>()
   optimisticBySession = new Map<string, OptimisticMessage[]>()
   /**
    * 会话消息历史分页状态（design-message-history-pagination §4.2）：
@@ -591,6 +600,7 @@ export class AppStore {
     this.projects = []
     this.sessionsByProject.clear()
     this.messagesBySession.clear()
+    this.syntheticDroppedBySession.clear()
     this.sessionPages.clear()
     this.pendingPartsMap.clear()
     this.optimisticBySession.clear()
@@ -929,6 +939,7 @@ export class AppStore {
         const { sessionID, messageID } = ev.properties as { sessionID: string; messageID: string }
         this.messagesBySession.get(sessionID)?.delete(messageID)
         this.commandEchoMessages.get(sessionID)?.delete(messageID)
+        this.syntheticDroppedBySession.get(sessionID)?.delete(messageID)
         break
       }
       case "message.part.updated": {
@@ -945,6 +956,14 @@ export class AppStore {
                 .set(part.messageID, { info: { ...msg.info, error: err }, parts: msg.parts })
             }
           }
+          break
+        }
+        // 合成 text part 消费（design-file-reference §5，同 openbuilder 1351f32）：
+        // server 注入的引用文件内容/Read 回显等（synthetic:true）不入渲染部件列表
+        // ——回显只画用户文本 + 文件 chip。快照合并侧（mergeSnapshotIntoMessages）
+        // 同规则过滤，双侧一致。登记消息 id 供空消息守卫区分「在途」与「滤空」
+        if (isSyntheticTextPart(part)) {
+          this.noteSyntheticDropped(sessionID, part.messageID)
           break
         }
         // retry 保持解除（design-error-message §3.6）：真实流式进展（模型产出的内容
@@ -1082,6 +1101,23 @@ export class AppStore {
       this.pendingPartsMap.set(sessionID, m)
     }
     return m
+  }
+
+  private noteSyntheticDropped(sessionID: string, messageID: string) {
+    let set = this.syntheticDroppedBySession.get(sessionID)
+    if (!set) {
+      set = new Set()
+      this.syntheticDroppedBySession.set(sessionID, set)
+    }
+    set.add(messageID)
+  }
+
+  /** 快照（REST 页/对账）合并前登记：含合成 text part 的消息 id——过滤本身在
+   *  mergeSnapshotIntoMessages 内完成，此处仅记录空消息守卫依据 */
+  private noteSyntheticInSnapshot(sessionID: string, msgs: MessageWithParts[]) {
+    for (const m of msgs) {
+      if (m.parts.some((p) => isSyntheticTextPart(p))) this.noteSyntheticDropped(sessionID, m.info.id)
+    }
   }
 
   /**
@@ -1914,6 +1950,7 @@ export class AppStore {
    *  消费它），只在关项目/删工作区/会话删除/拆连接时清理；idle 条目本身不落 map。 */
   private cleanupSessionState(sessionID: string) {
     this.messagesBySession.delete(sessionID)
+    this.syntheticDroppedBySession.delete(sessionID)
     this.pendingPartsMap.delete(sessionID)
     this.optimisticBySession.delete(sessionID)
     this.sessionPages.delete(sessionID)
@@ -2294,6 +2331,7 @@ export class AppStore {
 
   /** REST 页合并进会话 map（快照合并 + pending parts 回放），返回本页新增的消息条数 */
   private mergeMessagePage(sessionID: string, msgs: MessageWithParts[]) {
+    this.noteSyntheticInSnapshot(sessionID, msgs)
     const local = this.messagesBySession.get(sessionID) ?? new Map()
     const hadIds = new Set(local.keys())
     const merged = mergeSnapshotIntoMessages(local, msgs)
@@ -4284,6 +4322,7 @@ export class AppStore {
         this.applyStatusSnapshot(dir, statuses)
       },
       onMessagesSnapshot: (sessionID, msgs) => {
+        this.noteSyntheticInSnapshot(sessionID, msgs)
         const local = this.messagesBySession.get(sessionID) ?? new Map()
         const merged = mergeSnapshotIntoMessages(local, msgs)
         this.messagesBySession.set(sessionID, merged)
@@ -4321,7 +4360,19 @@ export class AppStore {
   // ============ 派生 ============
 
   chatEntries(sessionID: string): ChatEntry[] {
-    const msgs = [...(this.messagesBySession.get(sessionID)?.values() ?? [])]
+    // 空 user 消息剔除（同 openbuilder _isEmptyUser）：合成 text part 被过滤后
+    // 无任何可渲染内容（非空 text / file / subtask）的 user 消息不进渲染列表，
+    // 防空气泡（后台任务回执/compaction 续跑等纯合成消息）。parts 为空的歧义
+    // 用 syntheticDroppedBySession 消解：见过合成 part = 已滤空 → 隐藏；未见过 =
+    // 事件在途（message.updated 先于 part 事件）→ 保留（与乐观清理时序衔接：
+    // 乐观已清、真实消息 parts 未到的窗口期仍显示）
+    const synthDropped = this.syntheticDroppedBySession.get(sessionID)
+    const msgs = [...(this.messagesBySession.get(sessionID)?.values() ?? [])].filter(
+      (m) =>
+        m.info.role !== "user" ||
+        hasRenderableUserParts(m.parts) ||
+        (m.parts.length === 0 && !synthDropped?.has(m.info.id)),
+    )
     const optimistic = this.optimisticBySession.get(sessionID) ?? []
     const entries: ChatEntry[] = [
       ...msgs.map((data): ChatEntry => ({ kind: "message", data })),
@@ -4329,4 +4380,15 @@ export class AppStore {
     ]
     return sortEntries(entries)
   }
+}
+
+/** user 消息可渲染判定——与 MessageBlock user 分支渲染面一致（text 中的合成
+ * part 已在 ingestion 过滤，此处再排除空文本；file 含无 source 的附件回灌） */
+function hasRenderableUserParts(parts: Part[]): boolean {
+  return parts.some(
+    (p) =>
+      (p.type === "text" && !isSyntheticTextPart(p) && ((p as TextPart).text ?? "").trim().length > 0) ||
+      p.type === "file" ||
+      p.type === "subtask",
+  )
 }

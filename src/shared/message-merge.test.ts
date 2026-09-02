@@ -25,6 +25,25 @@ function textPart(id: string, messageID: string, text: string, type: "text" | "r
   return { id, sessionID: "ses_1", messageID, type, text }
 }
 
+/** server 注入的合成 text part（引用文件 Read 回显/内容等，synthetic:true） */
+function syntheticTextPart(id: string, messageID: string, text: string): Part {
+  return { ...textPart(id, messageID, text), synthetic: true }
+}
+
+/** 引用回灌 file part（source.type=file） */
+function fileRefPart(id: string, messageID: string, path: string): Part {
+  return {
+    id,
+    sessionID: "ses_1",
+    messageID,
+    type: "file",
+    mime: "text/plain",
+    url: `file:///w/${path}`,
+    filename: path,
+    source: { type: "file", path, text: { value: "", start: 0, end: 0 } },
+  }
+}
+
 describe("sortMessages（sort-order 竞态防护）", () => {
   it("流式 assistant（created 不早于对方）排最后", () => {
     const user = entry(userMsg("msg_u1", 100))
@@ -184,6 +203,35 @@ describe("mergeSnapshotIntoMessages", () => {
     const m = merged.get("msg_1")!
     expect((m.info as AssistantMessage).time.completed).toBe(999)
     expect(m.parts.map((p) => p.id).sort()).toEqual(["prt_1", "prt_2"])
+  })
+
+  it("合成 text part（synthetic）快照入口过滤：引用回显只留用户文本 + file part", () => {
+    // server resolvePart 实测形态：用户文本 + "Called the Read tool..." + 文件内容 + 引用回灌 file part
+    const snapshot = [
+      {
+        info: userMsg("msg_1", 100),
+        parts: [
+          textPart("prt_u", "msg_1", "看下这个文件"),
+          syntheticTextPart("prt_s1", "msg_1", 'Called the Read tool with the following input: {"filePath":"/w/a.ts"}'),
+          syntheticTextPart("prt_s2", "msg_1", "<path>/w/a.ts</path>\n<type>file</type>\n<content>\n1: ...\n</content>"),
+          fileRefPart("prt_f", "msg_1", "a.ts"),
+        ],
+      },
+    ]
+    const merged = mergeSnapshotIntoMessages(new Map(), snapshot)
+    const m = merged.get("msg_1")!
+    expect(m.parts.map((p) => p.id)).toEqual(["prt_u", "prt_f"])
+  })
+
+  it("合成 part 过滤不误伤：无 synthetic 标的 text part 与 reasoning 保留", () => {
+    const snapshot = [
+      {
+        info: assistantMsg("msg_1", 100, 200),
+        parts: [textPart("prt_1", "msg_1", "正常文本"), textPart("prt_2", "msg_1", "推理", "reasoning")],
+      },
+    ]
+    const merged = mergeSnapshotIntoMessages(new Map(), snapshot)
+    expect(merged.get("msg_1")!.parts).toHaveLength(2)
   })
 })
 

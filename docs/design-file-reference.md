@@ -69,7 +69,8 @@ export interface FileRef {
 ## 5. 渲染
 
 - **composer 引用条**（`FileRefChips`，chat + 引导页共用）：composer 顶部一行 chip（lucide `FileText`/`Folder` 图标 + 相对 path + × 删除），横向滚动
-- **user 气泡引用 chip**：消息 parts 中 `type==="file" && source?.type==="file"`（`isFileRefPart` type guard）→ chip 列表渲染于气泡内文本下方；乐观消息用 FileRef 渲染同款
+- **合成 text part 过滤（2026-09-02 修订）**：server 把 file part 翻译成 Read 注入时会向 user 消息塞 `synthetic: true` 的 text part（"Called the Read tool…" + 文件/目录内容；agent 提示、shell/后台任务回执、compaction 续跑同标记）——这些是面向模型的上下文工程，UI 一律不消费。过滤在 **ingestion 层双侧一致**：SSE `message.part.updated`（app-store，同 retry part 消费模式）+ REST 快照入口（`mergeSnapshotIntoMessages`）。纯合成 user 消息（过滤后无任何非空 text / file / subtask）整条不进 `chatEntries`（防空气泡，同 openbuilder `_isEmptyUser`）。**parts:[] 的歧义**（在途 vs 滤空）用 `syntheticDroppedBySession` 登记（SSE 丢弃时 + 快照合并前扫描）消解：见过合成 part = 已滤空 → 隐藏（后台任务回执是单合成 part 消息，无其他 part 兜底）；未见过 = 事件在途 → 保留（与乐观清理时序衔接）。移动端同款过滤：openbuilder 1351f32 "hide synthetic text parts"
+- **user 气泡引用 chip**：消息 parts 中 `type==="file"` 分两型（构造收敛在 `userFileChipItems` 纯函数，file-ref.tsx）——`source?.type==="file"`（`isFileRefPart`）引用回灌型：chip 渲染于气泡内文本下方，path = source.path；**无 source 的附件回灌型**（server 对图片/PDF 引用以 data: 附件替换原 part，prompt.ts attachments 分支）：同样渲染为文件名 chip（附件形式，无 absolute 不可点）。乐观消息用 FileRef 渲染同款
 - chip 点击 = `openFileTab(absolute)`：absolute 由 `session.directory + source.path` 拼（**禁止用 part.url**——二进制回灌 url 变 `data:`，移动端 4R-B）；目录（path 尾随 `/`）与 data: 不可点
 - assistant/合成 part 的 file 不渲染引用 chip（仅 user 消息流内）
 
@@ -85,7 +86,8 @@ export interface FileRef {
 
 | 文件 | 变更 |
 |---|---|
-| `src/shared/api-types.ts` | `FilePartInput`（发送）+ `FileDisplayPart`（回灌消费 type guard 依据） |
+| `src/shared/api-types.ts` | `FilePartInput`（发送）+ `FileDisplayPart`（回灌消费 type guard 依据）+ `isSyntheticTextPart`/`isFilePart` 谓词（2026-09-02 修订） |
+| `src/shared/message-merge.ts` | `mergeSnapshotIntoMessages` 快照入口过滤合成 text part（2026-09-02 修订） |
 | `src/shared/rest-client.ts` | `promptAsync` parts 类型放宽；`findFiles(query, directory)`；`sendCommand` 携带 parts |
 | `src/renderer/src/store/app-store.ts` | `FileRef` + `fileRefToFilePart` + `fileRefs` Map 及读写清理；`sendPrompt` refs 参数与 parts 构造；乐观消息扩 refs |
 | `src/renderer/src/components/file-ref.tsx` | 新：`FileRefChips`（含 `pending` 占位渲染）+ `useFileRefInput`（@ 浮层 hook，返回 picker/chips/onTextChange/onKeyDown/dragProps）+ `atMentionQuery` 纯函数 + drop 处理 helper + 拖拽负载带外登记 `setDraggingFileRef`；2026-08-29 修订：dragover 实时占位 chip 预览 + dragend 兜底清理 |
@@ -99,7 +101,7 @@ export interface FileRef {
 
 - 三入口各添加一个文件 + 一个目录（@ 仅文件），chip 正确、× 可删
 - 文件树拖拽悬停 composer 即见引用条末位占位 chip（虚线降透明），松手落位与预览一致；已引用文件悬停不出占位；拖离/Esc 取消不残留占位
-- 纯引用可发送；server 端 AI 收到文件/目录内容（Read tool 注入）
+- 纯引用可发送；server 端 AI 收到文件/目录内容（Read tool 注入）；**回显气泡只见用户文本 + 文件名 chip，不见注入内容**（合成 part 过滤，§5）
 - 引用 + 文本混合发送 parts 序列正确；斜杠命令携带引用
-- user 气泡（乐观 + 回灌）渲染引用 chip；文本文件 chip 点击开文件 Tab；目录/data: chip 不可点
+- user 气泡（乐观 + 回灌）渲染引用 chip；文本文件 chip 点击开文件 Tab；目录/data: chip 不可点；图片/PDF 引用回显为文件名 chip（附件回灌型）
 - `npm run test` / `typecheck` / `build` 全绿

@@ -58,8 +58,7 @@ import { parseDiffTabKey } from "../store/app-store"
 import { closeTabInteractive } from "./tab-actions"
 import { TerminalView } from "./terminal-view"
 import { BrowserTabView } from "./browser-tab-view"
-import { FileRefChips, useFileRefInput, type RefChipItem } from "./file-ref"
-import { isFileRefPart } from "@shared/api-types"
+import { FileRefChips, useFileRefInput, userFileChipItems } from "./file-ref"
 
 export function Workspace() {
   const store = useStore()
@@ -1532,25 +1531,13 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
   const reasonings = store.showThinking ? parts.filter((p) => p.type === "reasoning") : []
   const tools = parts.filter((p) => p.type === "tool") as ToolPart[]
   const errored = info.role === "assistant" && info.error
-  // 引用回灌 file part（design-file-reference §5）：user 消息内 source.type=file
-  const fileRefParts = info.role === "user" ? parts.filter(isFileRefPart) : []
-  // chip 跳转绝对路径 = 会话目录 + source.path（禁用 part.url——二进制回灌变 data:，4R-B）
+  // user 气泡 chip（design-file-reference §5）：引用回灌（source 型，可点）+
+  // 二进制/图片附件回灌（无 source，server 以 data: 附件替换原 part，仅文件名）
+  // ——构造收敛在 userFileChipItems（file-ref.tsx，纯函数）
   const sessionDir = store.findSession(info.sessionID)?.directory
   // 子会话（subagent）内禁用回滚（design-subagent-status §D2）
   const isChildSession = !!store.findSession(info.sessionID)?.parentID
-  const refChipItems: RefChipItem[] = fileRefParts.map((p) => {
-    const rel = p.source?.path ?? p.filename ?? ""
-    const abs = sessionDir && rel && !rel.startsWith("/")
-      ? `${sessionDir.replace(/\/+$/, "")}/${rel.replace(/^\.?\//, "")}`
-      : null
-    return {
-      key: p.id,
-      path: rel,
-      absolute: abs ?? undefined,
-      isDir: rel.endsWith("/"),
-      title: abs ?? rel,
-    }
-  })
+  const refChipItems = info.role === "user" ? userFileChipItems(parts, sessionDir) : []
 
   if (info.role === "user") {
     // 回滚到此消息（design-message-revert §3.4）：busy 时确认后先停止再回滚

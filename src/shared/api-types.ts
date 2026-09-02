@@ -293,6 +293,21 @@ export function isFileRefPart(part: Part): part is FileDisplayPart {
   return !!source && typeof source === "object" && (source as { type?: unknown }).type === "file"
 }
 
+/** user 消息内任意 file part（引用回灌 source 型 + data: 附件回灌型） */
+export function isFilePart(part: Part): part is FileDisplayPart {
+  return part.type === "file"
+}
+
+/**
+ * server 注入的合成 text part（synthetic:true——引用文件的 Read 回显与内容、
+ * agent 提示、reminders、shell/后台任务回执等，server 源码仅对 text part 置此标）。
+ * 面向模型的上下文工程，UI 一律不消费：回显只画用户文本 + 文件 chip。
+ * 移动端同款过滤（openbuilder 1351f32 hide synthetic text parts）。
+ */
+export function isSyntheticTextPart(part: Part): boolean {
+  return part.type === "text" && (part as TextPart).synthetic === true
+}
+
 export interface MessageWithParts {
   info: Message
   parts: Part[]

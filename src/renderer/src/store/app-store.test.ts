@@ -586,6 +586,174 @@ describe("busy 补充发送（design-supplement-send）", () => {
   })
 })
 
+describe("合成 text part 过滤（design-file-reference §5，引用回显只画用户文本 + 文件 chip）", () => {
+  function dispatch(ev: { type: string; properties: unknown }) {
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, ev)
+  }
+
+  function userUpdated(id: string, created: number) {
+    dispatch({
+      type: "message.updated",
+      properties: { sessionID: "s1", info: { id, sessionID: "s1", role: "user", time: { created } } },
+    })
+  }
+
+  function partUpdated(part: Record<string, unknown>) {
+    dispatch({ type: "message.part.updated", properties: { sessionID: "s1", part } })
+  }
+
+  beforeEach(() => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+  })
+
+  it("SSE：synthetic text part（Read 回显/文件内容）不入 parts，用户文本与引用 file part 正常入", () => {
+    userUpdated("msg_u1", 100)
+    partUpdated({ id: "prt_u", sessionID: "s1", messageID: "msg_u1", type: "text", text: "看下这个文件" })
+    partUpdated({
+      id: "prt_s1",
+      sessionID: "s1",
+      messageID: "msg_u1",
+      type: "text",
+      text: 'Called the Read tool with the following input: {"filePath":"/repo/a.ts"}',
+      synthetic: true,
+    })
+    partUpdated({
+      id: "prt_s2",
+      sessionID: "s1",
+      messageID: "msg_u1",
+      type: "text",
+      text: "<path>/repo/a.ts</path>\n<content>…文件内容…</content>",
+      synthetic: true,
+    })
+    partUpdated({
+      id: "prt_f1",
+      sessionID: "s1",
+      messageID: "msg_u1",
+      type: "file",
+      mime: "text/plain",
+      url: "file:///repo/a.ts",
+      filename: "a.ts",
+      source: { type: "file", path: "a.ts", text: { value: "", start: 0, end: 0 } },
+    })
+    const entries = store.chatEntries("s1")
+    expect(entries).toHaveLength(1)
+    expect(entries[0]!.kind).toBe("message")
+    const parts = (entries[0] as { data: MessageWithParts }).data.parts
+    expect(parts.map((p) => p.id)).toEqual(["prt_u", "prt_f1"])
+  })
+
+  it("part 先于 message.updated 到达：pendingParts 缓存同样过滤，回放不含合成 part", () => {
+    partUpdated({ id: "prt_s1", sessionID: "s1", messageID: "msg_u1", type: "text", text: "内容", synthetic: true })
+    partUpdated({ id: "prt_u", sessionID: "s1", messageID: "msg_u1", type: "text", text: "正文" })
+    userUpdated("msg_u1", 100)
+    const entries = store.chatEntries("s1")
+    const parts = (entries[0] as { data: MessageWithParts }).data.parts
+    expect(parts.map((p) => p.id)).toEqual(["prt_u"])
+  })
+
+  it("纯合成 user 消息（真实载荷：单合成 text part，无 tool part）不进渲染列表", () => {
+    // server injectBackgroundResult（tool/task.ts）：user 消息仅一个 synthetic
+    // text part（"Background task completed: …"）——滤空后 parts:[]，守卫须隐藏
+    userUpdated("msg_u1", 100)
+    expect(store.chatEntries("s1").map((e) => (e.kind === "message" ? e.data.info.id : e.kind))).toEqual(["msg_u1"])
+    partUpdated({
+      id: "prt_s1",
+      sessionID: "s1",
+      messageID: "msg_u1",
+      type: "text",
+      text: "Background task completed: build docs",
+      synthetic: true,
+    })
+    expect(store.chatEntries("s1")).toHaveLength(0)
+  })
+
+  it("compaction 续跑消息（单合成 text part）同样隐藏", () => {
+    userUpdated("msg_u1", 100)
+    partUpdated({
+      id: "prt_s1",
+      sessionID: "s1",
+      messageID: "msg_u1",
+      type: "text",
+      text: "Continue if you have next steps…",
+      synthetic: true,
+    })
+    expect(store.chatEntries("s1")).toHaveLength(0)
+  })
+
+  it("真实 parts 后到（在途窗口）：合成 part 到达前 parts:[] 保留显示", () => {
+    // 正常发送流：message.updated 先到（parts:[]，无合成登记）→ 保留；
+    // 随后用户文本 part 到达 → 持续可见
+    userUpdated("msg_u1", 100)
+    expect(store.chatEntries("s1").map((e) => (e.kind === "message" ? e.data.info.id : e.kind))).toEqual(["msg_u1"])
+    partUpdated({ id: "prt_u", sessionID: "s1", messageID: "msg_u1", type: "text", text: "正文" })
+    expect(store.chatEntries("s1").map((e) => (e.kind === "message" ? e.data.info.id : e.kind))).toEqual(["msg_u1"])
+  })
+
+  it("快照路径（loadSessionMessages）：全合成消息登记并隐藏，混合消息正常", async () => {
+    ;(store as unknown as { client: unknown }).client = {
+      listMessagesPage: async () => ({
+        entries: [
+          {
+            info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
+            parts: [
+              { id: "prt_s1", sessionID: "s1", messageID: "msg_u1", type: "text", text: "Background task completed", synthetic: true },
+            ],
+          },
+          {
+            info: { id: "msg_u2", sessionID: "s1", role: "user", time: { created: 200 } },
+            parts: [
+              { id: "prt_u2", sessionID: "s1", messageID: "msg_u2", type: "text", text: "看下这个文件" },
+              { id: "prt_s2", sessionID: "s1", messageID: "msg_u2", type: "text", text: "<content>…</content>", synthetic: true },
+              {
+                id: "prt_f2",
+                sessionID: "s1",
+                messageID: "msg_u2",
+                type: "file",
+                mime: "text/plain",
+                url: "file:///repo/a.ts",
+                filename: "a.ts",
+                source: { type: "file", path: "a.ts", text: { value: "", start: 0, end: 0 } },
+              },
+            ],
+          },
+        ],
+        nextCursor: null,
+      }),
+    }
+    await store.loadSessionMessages("s1", ROOT)
+    const ids = store.chatEntries("s1").map((e) => (e.kind === "message" ? e.data.info.id : e.kind))
+    expect(ids).toEqual(["msg_u2"])
+    const parts = (store.chatEntries("s1")[0] as { data: MessageWithParts }).data.parts
+    expect(parts.map((p) => p.id)).toEqual(["prt_u2", "prt_f2"])
+  })
+
+  it("纯引用发送（无用户文本）：file part 保持可渲染，消息不剔除", () => {
+    userUpdated("msg_u1", 100)
+    partUpdated({
+      id: "prt_s1",
+      sessionID: "s1",
+      messageID: "msg_u1",
+      type: "text",
+      text: "Called the Read tool...",
+      synthetic: true,
+    })
+    partUpdated({
+      id: "prt_f1",
+      sessionID: "s1",
+      messageID: "msg_u1",
+      type: "file",
+      mime: "image/png",
+      url: "data:image/png;base64,AA==",
+      filename: "logo.png",
+      synthetic: true,
+    })
+    const entries = store.chatEntries("s1")
+    expect(entries).toHaveLength(1)
+    expect((entries[0] as { data: MessageWithParts }).data.parts.map((p) => p.id)).toEqual(["prt_f1"])
+  })
+})
+
 describe("会话任务列表（design-task-list）", () => {
   function dispatch(dir: string, ev: { type: string; properties: unknown }) {
     ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(dir, ev)
