@@ -284,9 +284,8 @@ select {
    hover 规则以 ", :focus-visible" 并列扩展，焦点即 hover 外观；UA 默认环
    全局压制。文本输入类沿用各自 :focus 1px primary 边框；原生 checkbox 无
    hover 可复用，保留 2px primary 环（否则 Space 切换无任何焦点反馈）；
-   原无 hover 的可聚焦控件（status-cluster / pending-card-header /
-   settings-tabs 钮 / profile-row 钮 / settings-defaults 清除钮）按同层
-   idiom 补齐 hover。 */
+    原无 hover 的可聚焦控件（status-cluster / pending-card-header /
+    settings-tabs 钮 / profile-row 钮）按同层 idiom 补齐 hover。 */
 :focus-visible {
   outline: none;
 }
