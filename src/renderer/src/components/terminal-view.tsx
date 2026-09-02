@@ -9,15 +9,19 @@ import { useI18n, useStore } from "../app"
 /**
  * 终端 Tab 内容（design-terminal-tab §1.2）：xterm.js 恒深色 + server pty WS。
  *
- * 生命周期：挂载建 Terminal（本地即可渲染）→ connect-token → WS 连接（不带
- * cursor——重挂载是全新 Terminal，server 全量回放保留 buffer）；出帧写 term
- * （0x00 控制帧跳过：cursor 供"同 buffer 重连"用，本架构不存在该场景，评审 H1）；
+ * 生命周期：挂载建 Terminal（本地即可渲染）→ connect-token → WS 连接（首连
+ * 不带 cursor = server 全量回放）；出帧写 term，0x00 控制帧（{cursor}）解析为
+ * 续传锚点不写屏，其后 live 帧按长度累计锚点（与 server cursor 同口径）；
  * 入帧 onData 直发；ResizeObserver → fit → PUT size（trailing 去抖 200ms）；
  * 卸载断 WS + dispose（重挂载经全量回放恢复内容）。
  *
- * WS close **code 1000** = pty 自然退出 → store 标 exited（此后关闭 Tab 不再
- * DELETE——legacy 路由已 404）；**其余 code** = 异常断开 → 仅叠加"已断开"态，
- * 不标 exited（关闭 Tab 仍尝试 DELETE 防孤儿，404 容忍），评审 M2。
+ * 自动重连（design-terminal-tab §1.2a）：异常断开（close code 非 1000/4404、
+ * token 瞬态失败）按 SSE 同款退避 1→2→4→8→16→30s 封顶重试，成功清零；窗口
+ * focus kick（openbuilder design-sse-reconnect-recovery 的 resume 语义）。
+ * 重连带 cursor 增量续传（同一 term 只补写缺失输出）；无锚点断开则 reset
+ * 清屏走全量回放（防重复）。终态两条：close **1000** = pty 自然退出、
+ * **4404** = session 不在 server（legacy 路由 not-found/exited 同码）、token
+ * 404 = pty 已被回收 → 标 exited（此后关 Tab 不再 DELETE——404 容忍），评审 M2。
  * 已退出的 Tab 重挂载：不建 WS（server 侧 exited 即 404），直接呈只读态。
  */
 
@@ -51,6 +55,12 @@ const DARK_THEME = {
   brightWhite: "#c8d0c4",
 }
 
+/**
+ * 断线重连退避序列（design-terminal-tab §1.2a）：与 SSE 订阅器同款
+ * （来源 openbuilder design-sse-reconnect-recovery），封顶 30s 稳态重试
+ */
+const BACKOFF_SEQUENCE = [1, 2, 4, 8, 16, 30]
+
 export function TerminalView({ ptyID }: { ptyID: string }) {
   const store = useStore()
   const { t } = useI18n()
@@ -58,8 +68,8 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
   const termRef = useRef<Terminal | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const runtime = store.ptyRuntimeFor(ptyID)
-  const [state, setState] = useState<"connecting" | "live" | "closed">("connecting")
-  // 已退出 = store 标记（自然退出，重挂载仍呈只读态）或本次连接已关闭
+  const [state, setState] = useState<"connecting" | "live" | "reconnecting" | "closed">("connecting")
+  // 已退出 = store 标记（自然退出/session 不在，重挂载仍呈只读态）或本次连接已终结
   const exited = !!runtime?.exited || state === "closed"
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
 
@@ -150,7 +160,28 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
     // 已退出 pty 的重挂载：write 缓存到 term 后标记 ready，
     // cleanup 时仅在 write 完成后才 serialize（xterm write 是异步队列）
     let bufferReady = false
-    const openWs = async () => {
+    // —— 断线重连运行时（§1.2a）——
+    let retryTimer: number | null = null
+    let backoffIdx = 0
+    // 绝对输出游标（0x00 控制帧 {cursor} 为锚点，其后 live 帧按长度累计，
+    // 与 server session.cursor 同口径）：null = 尚未收到锚点——此时断开
+    // 重连必须 term.reset() + 全量回放，否则重放内容与已写屏内容重复
+    let cursor: number | null = null
+
+    const scheduleReconnect = () => {
+      if (disposed) return
+      setState("reconnecting")
+      // 断连标记（closeTabInteractive 消费）：断连态关 Tab 免二次确认
+      store.markPtyDisconnected(ptyID, true)
+      const delay = BACKOFF_SEQUENCE[Math.min(backoffIdx, BACKOFF_SEQUENCE.length - 1)]!
+      backoffIdx++
+      retryTimer = window.setTimeout(() => {
+        retryTimer = null
+        void connect()
+      }, delay * 1000)
+    }
+
+    const connect = async () => {
       // 已退出的 pty 不再连接（server legacy 路由 exited 即 404）；
       // 但若有 client 侧序列化缓存（上次卸载前缓存），还原 buffer 保回滚
       const rt = store.ptyRuntimeFor(ptyID)
@@ -165,50 +196,93 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
         }
         return
       }
-      const url = await store.ptyConnectUrl(ptyID)
+      const res = await store.ptyConnectUrl(ptyID, cursor ?? undefined)
       if (disposed) return
-      if (!url) {
+      if (res && "gone" in res) {
+        // 404 = pty 已不在 server（退出回收 / server 重启内存态丢失）——终态
         setState("closed")
-        term.writeln(`\r\n\x1b[31m${t.terminalConnectFailed}\x1b[0m`)
+        store.markPtyExited(ptyID)
         return
       }
-      const ws = new WebSocket(url)
+      if (!res) {
+        // token 瞬态失败（网络/未连接）：退避重试，不写入错误行——重连成功后
+        // 本地写屏内容会永久留在 scrollback（cursor 续传只补 server 侧输出）
+        scheduleReconnect()
+        return
+      }
+      const ws = new WebSocket(res.url)
       ws.binaryType = "arraybuffer"
       wsRef.current = ws
       ws.onopen = () => {
-        if (disposed) return
+        if (disposed || wsRef.current !== ws) return
+        backoffIdx = 0
         setState("live")
-        // 建连即同步一次尺寸（pty 创建时是 server 默认 size）
+        store.markPtyDisconnected(ptyID, false)
+        // 建连即同步一次尺寸（server 会话保留断线前 size，视图可能已变）
         store.reportPtySize(ptyID, term.rows, term.cols)
       }
       ws.onmessage = (ev) => {
-        if (disposed) return
+        if (disposed || wsRef.current !== ws) return
         if (typeof ev.data === "string") {
           term.write(ev.data)
+          if (cursor != null) cursor += ev.data.length
           return
         }
-        // 二进制帧 = 0x00 控制帧（{cursor}）：跳过不写屏（见头注释）
         const buf = ev.data instanceof ArrayBuffer ? new Uint8Array(ev.data) : new Uint8Array()
-        if (buf.length > 0 && buf[0] !== 0) {
-          term.write(decoder.decode(buf))
+        if (buf.length === 0) return
+        // 二进制帧：0x00 控制帧（{cursor}）更新续传锚点不写屏；其余按输出写屏
+        if (buf[0] === 0) {
+          try {
+            const meta = JSON.parse(decoder.decode(buf.subarray(1))) as { cursor?: unknown }
+            if (typeof meta.cursor === "number" && Number.isSafeInteger(meta.cursor)) {
+              cursor = meta.cursor
+            }
+          } catch {
+            // 残缺控制帧：保留旧锚点（无锚点则重连退化为 reset + 全量回放）
+          }
+          return
         }
+        const text = decoder.decode(buf)
+        term.write(text)
+        if (cursor != null) cursor += text.length
       }
       ws.onclose = (ev) => {
-        if (disposed) return
-        setState("closed")
+        if (disposed || wsRef.current !== ws) return
+        setState(ev.code === 1000 || ev.code === 4404 ? "closed" : "reconnecting")
         bufferReady = true
-        // 1000 = pty 自然退出（server onEnd 主动关）；其余 = 异常断开——
-        // 不标 exited，关闭 Tab 时仍尝试 DELETE 防孤儿
-        if (ev.code === 1000) store.markPtyExited(ptyID)
+        wsRef.current = null
+        // 1000 = pty 自然退出（server onEnd 主动关）；4404 = session 不在
+        // （legacy 路由 not-found/exited 同码）——终态标 exited（关闭 Tab 不再
+        // DELETE，404 容忍）；其余 = 异常断开 → 退避重连，不标 exited（关闭
+        // Tab 仍尝试 DELETE 防孤儿，评审 M2）
+        if (ev.code === 1000 || ev.code === 4404) {
+          store.markPtyExited(ptyID)
+          return
+        }
+        if (cursor == null) term.reset()
+        scheduleReconnect()
       }
     }
-    void openWs()
+    void connect()
+
+    // 窗口 focus kick（openbuilder resume 语义）：退避睡眠中立即重试并重置
+    // 退避——断网恢复/系统挂起后不用等满 30s 稳态；建连尝试在途时不打扰
+    const onFocusKick = () => {
+      if (disposed || retryTimer == null) return
+      window.clearTimeout(retryTimer)
+      retryTimer = null
+      backoffIdx = 0
+      void connect()
+    }
+    window.addEventListener("focus", onFocusKick)
 
     return () => {
       disposed = true
       imeTextarea?.removeEventListener("compositionstart", onCompositionStart)
       imeTextarea?.removeEventListener("compositionend", onCompositionEnd)
       if (resizeTimer != null) window.clearTimeout(resizeTimer)
+      if (retryTimer != null) window.clearTimeout(retryTimer)
+      window.removeEventListener("focus", onFocusKick)
       observer.disconnect()
       wsRef.current?.close()
       wsRef.current = null
@@ -268,6 +342,11 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
       {exited && (
         <div className={`terminal-exited-overlay ${runtime?.exited ? "is-exited" : "is-disconnected"}`}>
           <span>{runtime?.exited ? t.terminalExited : t.terminalDisconnected}</span>
+        </div>
+      )}
+      {!exited && state === "reconnecting" && (
+        <div className="terminal-exited-overlay is-reconnecting">
+          <span>{t.terminalReconnecting}</span>
         </div>
       )}
       {menu && (

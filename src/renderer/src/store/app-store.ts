@@ -352,7 +352,10 @@ export class AppStore {
    * 兑现 §1.2「Tab 保持可读回滚直至用户关闭」）。运行中 pty 不缓存——重挂载靠
    * server 全量回放恢复。
    */
-  private ptyRuntimes = new Map<string, { exited: boolean; title: string; buffer?: string }>()
+  private ptyRuntimes = new Map<
+    string,
+    { exited: boolean; disconnected: boolean; title: string; buffer?: string }
+  >()
   /**
    * 浏览器 Tab（design-browser-tab §1.3）：tabKey → viewId（main 进程
    * WebContentsView）；browserStates = main 推送的视图状态（url/title/loading/
@@ -3294,17 +3297,29 @@ export class AppStore {
   // ============ 终端 Tab（design-terminal-tab） ============
 
   /** pty 运行时读（TerminalView 挂载判断已退出态；无条目 = 全新） */
-  ptyRuntimeFor(ptyID: string): { exited: boolean; title: string; buffer?: string } | null {
+  ptyRuntimeFor(
+    ptyID: string,
+  ): { exited: boolean; disconnected: boolean; title: string; buffer?: string } | null {
     return this.ptyRuntimes.get(ptyID) ?? null
   }
 
-  /** 自然退出标记（WS close code 1000；emit 驱动叠加态渲染） */
+  /** 自然退出标记（WS close code 1000/4404、token 404；emit 驱动叠加态渲染） */
   markPtyExited(ptyID: string) {
     const rt = this.ptyRuntimes.get(ptyID)
     if (rt && !rt.exited) {
       rt.exited = true
       this.emit()
     }
+  }
+
+  /**
+   * 断连标记（§1.2a）：异常断开进入退避重连置 true、重连成功（WS onopen）置
+   * false。无 UI 派生不 emit——唯一消费方 closeTabInteractive 的关闭确认
+   * 判定：断连态关 Tab 免二次确认（连接已不可用，确认无意义）。
+   */
+  markPtyDisconnected(ptyID: string, disconnected: boolean) {
+    const rt = this.ptyRuntimes.get(ptyID)
+    if (rt && !rt.exited) rt.disconnected = disconnected
   }
 
   /**
@@ -3340,7 +3355,7 @@ export class AppStore {
     const projectId = this.currentProject?.id ?? ""
     try {
       const pty = await this.client.createPty(directory, { cwd: directory })
-      this.ptyRuntimes.set(pty.id, { exited: false, title: pty.title ?? "terminal" })
+      this.ptyRuntimes.set(pty.id, { exited: false, disconnected: false, title: pty.title ?? "terminal" })
       const key = `terminal:${pty.id}`
       this.tabs.push({
         kind: "terminal",
@@ -3365,21 +3380,30 @@ export class AppStore {
 
   /**
    * WS 连接 URL 组装（design-terminal-tab §1.2）：connect-token（POST + 专用头）→
-   * ws://…/pty/{id}/connect?ticket=&directory=（不带 cursor = 全量回放，见 §1.2）。
-   * 失败/无 client → null（调用方呈现错误态）。
+   * ws://…/pty/{id}/connect?ticket=&directory=[&cursor=]。cursor 省略 = 全量回放
+   * （重挂载全新 Terminal 的语义）；携带 = 断线重连增量续传（server 只回放
+   * cursor 之后的输出，0x00 控制帧回新锚点）。**必须带 directory**（实测）：
+   * pty 路由按 directory 实例路由，缺参落到 server cwd 实例 → pty NotFound 404。
+   * 返回三态：{url} 组装成功；{gone:true} = token 请求 404（pty 已不在
+   * server——退出被 legacy 路由回收 / server 重启内存态丢失，调用方应标终态
+   * 不再重试）；null = 瞬态失败（网络/未连接/无 Tab directory，可退避重试）。
    */
-  async ptyConnectUrl(ptyID: string): Promise<string | null> {
+  async ptyConnectUrl(
+    ptyID: string,
+    cursor?: number,
+  ): Promise<{ url: string } | { gone: true } | null> {
     if (!this.client) return null
     const directory = this.tabs.find((t) => t.key === `terminal:${ptyID}`)?.directory
     if (!directory) return null
     try {
       const ticket = await this.client.ptyConnectToken(ptyID, directory)
-      // 不带 cursor：server cursor 省略 = 全量回放（重挂载全新 Terminal 的正确语义）
-      // **必须带 directory**（实测）：pty 路由按 directory 实例路由，缺参落到
-      // server cwd 实例 → pty NotFound 404
       const qs = new URLSearchParams({ ticket: ticket.ticket, directory })
-      return `${this.client.ptyWsOrigin()}/pty/${encodeURIComponent(ptyID)}/connect?${qs.toString()}`
-    } catch {
+      if (cursor !== undefined) qs.set("cursor", String(cursor))
+      return {
+        url: `${this.client.ptyWsOrigin()}/pty/${encodeURIComponent(ptyID)}/connect?${qs.toString()}`,
+      }
+    } catch (e) {
+      if (e instanceof ApiError && e.kind === "not-found") return { gone: true }
       return null
     }
   }

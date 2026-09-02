@@ -15,9 +15,12 @@ export function closeTabInteractive(store: AppStore, tab: TabEntity, t: Catalog)
   } else if (tab.kind === "browser") {
     store.closeBrowserTab(tab.key)
   } else if (tab.kind === "terminal") {
-    // 关终端 Tab = 杀 pty（design-terminal-tab §1.1）：运行中先确认
+    // 关终端 Tab = 杀 pty（design-terminal-tab §1.1）：仅 live 连接态先确认
+    // ——已退出（exited）与断连退避中（disconnected，§1.2a）连接已不可用，
+    // 确认"将终止进程"无意义，直接关（closeTerminalTab 仍尝试 DELETE 防孤儿）
     const ptyID = tab.key.slice("terminal:".length)
-    const running = !store.ptyRuntimeFor(ptyID)?.exited
+    const rt = store.ptyRuntimeFor(ptyID)
+    const running = !!rt && !rt.exited && !rt.disconnected
     if (running && !confirm(t.confirmCloseTerminal)) return
     void store.closeTerminalTab(ptyID)
   } else {

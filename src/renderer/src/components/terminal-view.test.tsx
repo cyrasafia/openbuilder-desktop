@@ -1,15 +1,17 @@
 /**
- * 终端组件生命周期（design-terminal-tab §1.2）：mock xterm/FitAddon 与全局
- * WebSocket 假类，验证 connect-token→WS 组装、出帧 write / 控制帧 cursor、
- * onData 直发、close → 已退出叠加态。
+ * 终端组件生命周期（design-terminal-tab §1.2/§1.2a）：mock xterm/FitAddon 与
+ * 全局 WebSocket 假类，验证 connect-token→WS 组装、出帧 write / 控制帧 cursor
+ * 锚点、onData 直发、close code 终态区分（1000/4404 已退出）、异常断开的
+ * 退避自动重连（cursor 续传 / 无锚点 reset 全量 / focus kick / 终态不重试）。
  */
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { TerminalView } from "./terminal-view"
 import { ResizeObserverStub } from "./resize-observer-stub"
 
-// xterm mock：记录 write/onData/dispose
+// xterm mock：记录 write/onData/dispose/reset
 const writes: string[] = []
+let resetCount = 0
 let dataHandler: ((d: string) => void) | null = null
 vi.mock("@xterm/xterm", () => {
   // class 而非 vi.fn+箭头 impl：`new Terminal()` 需要可构造体
@@ -26,6 +28,9 @@ vi.mock("@xterm/xterm", () => {
     })
     writeln = vi.fn((d: string) => {
       writes.push(d + "\n")
+    })
+    reset = vi.fn(() => {
+      resetCount++
     })
     onData = vi.fn((cb: (d: string) => void) => {
       dataHandler = cb
@@ -76,13 +81,24 @@ class FakeWS {
   }
 }
 
-/** 可变 runtime 对象：markPtyExited 模拟 store 原位突变（真实 store 改同一引用） */
-const runtimeObj: { exited: boolean; title: string; buffer?: string } = { exited: false, title: "bash" }
+/** 可变 runtime 对象：markPtyExited/markPtyDisconnected 模拟 store 原位突变（真实 store 改同一引用） */
+const runtimeObj: { exited: boolean; disconnected: boolean; title: string; buffer?: string } = {
+  exited: false,
+  disconnected: false,
+  title: "bash",
+}
 const actions = {
-  ptyConnectUrl: vi.fn(async (): Promise<string | null> => "ws://s/pty/pty_1/connect?ticket=t"),
+  ptyConnectUrl: vi.fn(
+    async (): Promise<{ url: string } | { gone: true } | null> => ({
+      url: "ws://s/pty/pty_1/connect?ticket=t",
+    }),
+  ),
   reportPtySize: vi.fn(),
   markPtyExited: vi.fn((_id: string) => {
     runtimeObj.exited = true
+  }),
+  markPtyDisconnected: vi.fn((_id: string, disconnected: boolean) => {
+    runtimeObj.disconnected = disconnected
   }),
   cachePtyBuffer: vi.fn((_id: string, _buf: string) => {
     runtimeObj.buffer = _buf
@@ -98,7 +114,7 @@ vi.mock("../app", () => ({
     t: {
       terminalExited: "终端已退出",
       terminalDisconnected: "终端已断开",
-      terminalConnectFailed: "终端连接失败",
+      terminalReconnecting: "重连中",
       terminalCopy: "复制",
       terminalPaste: "粘贴",
     },
@@ -107,74 +123,212 @@ vi.mock("../app", () => ({
   useStore: () => storeStub,
 }))
 
+/** 建立首连并 open（fake timers 下冲刷 microtask 链）；返回 ws 与 unmount */
+async function bootLive() {
+  const res = render(<TerminalView ptyID="pty_1" />)
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0)
+  })
+  const ws = FakeWS.instances[0]!
+  ws.readyState = 1
+  act(() => {
+    ws.onopen?.()
+  })
+  return { ws, unmount: res.unmount }
+}
+
+/** 0x00 控制帧（{cursor}）构造 */
+function metaFrame(cursor: number): ArrayBuffer {
+  const json = new TextEncoder().encode(JSON.stringify({ cursor }))
+  const buf = new Uint8Array(1 + json.length)
+  buf.set(json, 1)
+  return buf.buffer
+}
+
 beforeEach(() => {
   ResizeObserverStub.reset()
   ;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = ResizeObserverStub
   writes.length = 0
+  resetCount = 0
   dataHandler = null
   FakeWS.instances = []
   for (const fn of Object.values(actions)) fn.mockClear()
-  actions.ptyConnectUrl.mockResolvedValue("ws://s/pty/pty_1/connect?ticket=t")
+  actions.ptyConnectUrl.mockResolvedValue({ url: "ws://s/pty/pty_1/connect?ticket=t" })
   runtimeObj.exited = false
+  runtimeObj.disconnected = false
   runtimeObj.buffer = undefined
   ;(globalThis as unknown as { WebSocket: unknown }).WebSocket = FakeWS
 })
 
 afterEach(() => {
   cleanup()
+  vi.useRealTimers()
   ;(globalThis as unknown as { WebSocket: unknown }).WebSocket = undefined
   ;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = undefined
 })
 
 describe("TerminalView", () => {
-  it("挂载：connect-token URL 建 WS；文本帧写入终端；建连即上报尺寸", async () => {
-    render(<TerminalView ptyID="pty_1" />)
-    await waitFor(() => expect(FakeWS.instances.length).toBe(1))
+  it("挂载：connect-token URL 建 WS（首连不带 cursor = 全量回放）；文本帧写入终端；建连即上报尺寸", async () => {
+    vi.useFakeTimers()
+    await bootLive()
     const ws = FakeWS.instances[0]!
     expect(ws.url).toBe("ws://s/pty/pty_1/connect?ticket=t")
-    ws.readyState = 1
-    ws.onopen?.()
+    expect(actions.ptyConnectUrl).toHaveBeenNthCalledWith(1, "pty_1", undefined)
     expect(actions.reportPtySize).toHaveBeenCalledWith("pty_1", 24, 80)
     ws.onmessage?.({ data: "hello $ " })
     expect(writes).toContain("hello $ ")
   })
 
-  it("二进制 0x00 控制帧跳过不写屏；非 0x00 二进制输出块解码写入", async () => {
-    render(<TerminalView ptyID="pty_1" />)
-    await waitFor(() => expect(FakeWS.instances.length).toBe(1))
+  it("二进制 0x00 控制帧解析 cursor 锚点不写屏；非 0x00 二进制输出块解码写入", async () => {
+    vi.useFakeTimers()
+    await bootLive()
     const ws = FakeWS.instances[0]!
-    const enc = new TextEncoder()
-    // 控制帧 = 0x00 + JSON{cursor}：不写屏（cursor 消费方不存在，评审 H1）
-    const json = enc.encode(JSON.stringify({ cursor: 42 }))
-    const ctrl = new Uint8Array(1 + json.length)
-    ctrl.set(json, 1)
     const before = writes.length
-    ws.onmessage?.({ data: ctrl.buffer })
+    ws.onmessage?.({ data: metaFrame(42) })
     expect(writes.length).toBe(before)
     // 非 0x00 首字节的二进制块按输出写入（防御路径）
-    const out = new Uint8Array(enc.encode("out"))
+    const out = new Uint8Array(new TextEncoder().encode("out"))
     ws.onmessage?.({ data: out.buffer })
     expect(writes).toContain("out")
   })
 
   it("onData 直发 WS（open 态）；close code 1000 → markPtyExited + 已退出叠加", async () => {
-    render(<TerminalView ptyID="pty_1" />)
-    await waitFor(() => expect(dataHandler).toBeTruthy())
-    const ws = FakeWS.instances[0]!
-    ws.readyState = 1
+    vi.useFakeTimers()
+    const { ws } = await bootLive()
+    expect(dataHandler).toBeTruthy()
     dataHandler!("ls\r")
     expect(ws.sent).toContain("ls\r")
-    ws.onclose?.({ code: 1000 })
+    act(() => {
+      ws.onclose?.({ code: 1000 })
+    })
     expect(actions.markPtyExited).toHaveBeenCalledWith("pty_1")
-    expect(await screen.findByText("终端已退出")).toBeTruthy()
+    expect(screen.getByText("终端已退出")).toBeTruthy()
   })
 
-  it("异常断开（非 1000）→ 已断开叠加、不 markPtyExited（关闭时仍可 DELETE，评审 M2）", async () => {
-    render(<TerminalView ptyID="pty_1" />)
-    await waitFor(() => expect(FakeWS.instances.length).toBe(1))
-    FakeWS.instances[0]!.onclose?.({ code: 1006 })
+  it("close 4404（session 不在 server：legacy not-found/exited 同码）→ markPtyExited 终态、不重连", async () => {
+    vi.useFakeTimers()
+    const { ws } = await bootLive()
+    act(() => {
+      ws.onclose?.({ code: 4404 })
+    })
+    expect(actions.markPtyExited).toHaveBeenCalledWith("pty_1")
+    expect(screen.getByText("终端已退出")).toBeTruthy()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+    expect(FakeWS.instances.length).toBe(1)
+  })
+
+  it("异常断开（非 1000/4404）→ 重连中叠加、不 markPtyExited；退避后自动重连带 cursor 续传，成功后叠加消失", async () => {
+    vi.useFakeTimers()
+    const { ws } = await bootLive()
+    // meta 锚点 100 + live 帧 "out"（3 字符）→ 续传 cursor 103
+    ws.onmessage?.({ data: metaFrame(100) })
+    ws.onmessage?.({ data: "out" })
+    act(() => {
+      ws.onclose?.({ code: 1006 })
+    })
     expect(actions.markPtyExited).not.toHaveBeenCalled()
-    expect(await screen.findByText("终端已断开")).toBeTruthy()
+    // 断连标记置位（closeTabInteractive 消费：断连态关 Tab 免确认）
+    expect(actions.markPtyDisconnected).toHaveBeenLastCalledWith("pty_1", true)
+    expect(runtimeObj.disconnected).toBe(true)
+    expect(screen.getByText("重连中")).toBeTruthy()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    expect(FakeWS.instances.length).toBe(2)
+    expect(actions.ptyConnectUrl).toHaveBeenLastCalledWith("pty_1", 103)
+    // 重连成功：退避清零（下一次断开仍从 1s 起步）、叠加消失、断连标记清除
+    const ws2 = FakeWS.instances[1]!
+    ws2.readyState = 1
+    act(() => {
+      ws2.onopen?.()
+    })
+    expect(screen.queryByText("重连中")).toBeNull()
+    expect(actions.markPtyDisconnected).toHaveBeenLastCalledWith("pty_1", false)
+    expect(runtimeObj.disconnected).toBe(false)
+    act(() => {
+      ws2.onclose?.({ code: 1006 })
+    })
+    ws2.readyState = 3
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    expect(FakeWS.instances.length).toBe(3)
+  })
+
+  it("无 cursor 锚点断开 → term.reset 清屏 + 不带 cursor 重连（防全量回放重复）", async () => {
+    vi.useFakeTimers()
+    const { ws } = await bootLive()
+    // 未收 meta 控制帧即断开
+    ws.onmessage?.({ data: "partial" })
+    ws.onclose?.({ code: 1006 })
+    expect(resetCount).toBe(1)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    expect(actions.ptyConnectUrl).toHaveBeenLastCalledWith("pty_1", undefined)
+    expect(FakeWS.instances.length).toBe(2)
+  })
+
+  it("token 404（gone）→ markPtyExited 终态、不建 WS 不再重试", async () => {
+    vi.useFakeTimers()
+    actions.ptyConnectUrl.mockResolvedValue({ gone: true })
+    render(<TerminalView ptyID="pty_1" />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(actions.markPtyExited).toHaveBeenCalledWith("pty_1")
+    expect(screen.getByText("终端已退出")).toBeTruthy()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+    expect(FakeWS.instances.length).toBe(0)
+  })
+
+  it("token 瞬态失败（网络）→ 重连中叠加 + 退避后重试成功", async () => {
+    vi.useFakeTimers()
+    actions.ptyConnectUrl.mockResolvedValueOnce(null)
+    render(<TerminalView ptyID="pty_1" />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(FakeWS.instances.length).toBe(0)
+    expect(screen.getByText("重连中")).toBeTruthy()
+    expect(actions.markPtyExited).not.toHaveBeenCalled()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    expect(FakeWS.instances.length).toBe(1)
+  })
+
+  it("focus kick：退避睡眠中窗口 focus 立即重连并重置退避", async () => {
+    vi.useFakeTimers()
+    const { ws } = await bootLive()
+    ws.onmessage?.({ data: metaFrame(10) })
+    ws.onclose?.({ code: 1006 })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200)
+    })
+    expect(FakeWS.instances.length).toBe(1)
+    fireEvent(window, new Event("focus"))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(FakeWS.instances.length).toBe(2)
+    expect(actions.ptyConnectUrl).toHaveBeenLastCalledWith("pty_1", 10)
+  })
+
+  it("退避中卸载：清重连定时器，不再重连", async () => {
+    vi.useFakeTimers()
+    const { ws, unmount } = await bootLive()
+    ws.onclose?.({ code: 1006 })
+    unmount()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+    expect(FakeWS.instances.length).toBe(1)
+    expect(actions.ptyConnectUrl).toHaveBeenCalledTimes(1)
   })
 
   it("已退出的 pty 重挂载：不建 WS 直接只读态；有 buffer 缓存则还原（评审 L2）", async () => {
@@ -185,14 +339,6 @@ describe("TerminalView", () => {
     await new Promise((r) => setTimeout(r, 10))
     expect(FakeWS.instances.length).toBe(0)
     expect(writes.join("")).toContain("CACHED_OUTPUT")
-    expect(writes.join("")).not.toContain("终端连接失败")
-  })
-
-  it("connect-token 失败：错误行写入，不建 WS", async () => {
-    actions.ptyConnectUrl.mockResolvedValue(null)
-    render(<TerminalView ptyID="pty_1" />)
-    await waitFor(() => expect(writes.join("")).toContain("终端连接失败"))
-    expect(FakeWS.instances.length).toBe(0)
   })
 
   it("卸载：断 WS + dispose", async () => {
