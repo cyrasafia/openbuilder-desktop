@@ -329,6 +329,12 @@ export class AppStore {
    * 响应对各自 Tab 幂等收敛
    */
   private pendingFork: { directory: string; title: RegExp } | null = null
+  /**
+   * 本端 closeChatTab 在途集合（§17 修订二，SSE 归档回环关闭抑制）：关 Tab=归档
+   * 流程"先 PATCH 后 closeTab(pushClosed 入关闭栈)"，SSE 归档回环可能先到——
+   * 实时收敛分支抢先关会丢 Ctrl+Shift+T 关闭栈条目，在途期间抑制、交本地收尾
+   */
+  private closingChatSessions = new Set<string>()
   settingsOpen = false
   /** 打开项目选择器（左栏 "+" 与 Ctrl+O 同路径；overlay 计数协调浏览器视图显隐） */
   pickerOpen = false
@@ -858,8 +864,8 @@ export class AppStore {
         // createNext 先建壳发 session.created、消息复制要跑几十秒、HTTP 响应
         // 最后才回（源码核实）。pending 窗口内按 directory + fork 标题模式
         // （getForkedTitle：`base (fork #N)`）命中 = 本端 fork 的复制已开始，
-        // 立即开 Tab——消息经 message.* 事件在复制期间逐步流入。REST 响应
-        // 到达后 openChatTab 幂等收敛（同 key 仅刷标题/激活）
+        // 立即开 Tab 并激活——消息经 message.* 事件在复制期间逐步流入。REST
+        // 响应到达后 openChatTab 幂等收敛（同 key 仅刷标题/激活）
         if (
           ev.type === "session.created" &&
           this.pendingFork &&
@@ -868,6 +874,27 @@ export class AppStore {
         ) {
           this.pendingFork = null
           this.openChatTab(info)
+          break
+        }
+        // 实时收敛（§17 修订二，2026-09-02）：他端归档 → 立即关 Tab（跨作用域，
+        // 同 session.deleted 处置——Tab 集 = 未归档会话投影；archive:false 纯本地
+        // 移除，归档已由他端完成；激活回退/草稿清理/记忆收缩走 closeTab 既有路径）。
+        // 本端关 Tab=归档流程（closeChatTab）在途时抑制——其"先 PATCH 后
+        // closeTab(pushClosed 入关闭栈)"的 SSE 回环可能先到，抢先关会丢
+        // Ctrl+Shift+T 关闭栈条目，交由本地路径收尾
+        if (info.time.archived) {
+          if (!this.closingChatSessions.has(info.id)) {
+            this.closeTab(`chat:${info.id}`, { archive: false })
+          }
+        }
+        // 实时补开（§17 修订，2026-09-02）：当前作用域未归档顶层会话无 Tab 即
+        // 末尾追加（不激活不抢焦点）。created = 他端/本端新建；updated = 他端
+        // 取消归档（契约 archived:0，实测 1.18.20，null 不生效）及 touch/重命名
+        // 等（有 Tab 时幂等跳过，仅付一次 tabs.some）。口径同 visibleSessions：
+        // subagent 子会话不开；非当前作用域目录不开（经 §17 切入补开）。SSE
+        // 丢失的补偿路径不变：切入作用域的完整恢复
+        else if (!info.parentID && info.directory === this.scopeDirectory()) {
+          this.openChatTabPassive(info)
         }
         break
       }
@@ -1865,6 +1892,25 @@ export class AppStore {
       title: session.title || session.slug || "",
       directory: session.directory,
     })
+  }
+
+  /**
+   * 实时补开（§17 修订，2026-09-02）：SSE session.created 新增当前作用域未归档
+   * 会话时**末尾追加** Tab——不激活不抢焦点（他端新建不打断当前工作，
+   * recordScopeActive 不动）；记忆即时吸收（同 §17 切入补开口径，重启/切回
+   * 顺序保持）。emit 由 handleEvent 尾部统一发出。
+   */
+  private openChatTabPassive(session: Session) {
+    const key = `chat:${session.id}`
+    if (this.tabs.some((t) => t.key === key)) return
+    this.tabs.push({
+      kind: "chat",
+      key,
+      projectId: session.projectID,
+      title: session.title || session.slug || "",
+      directory: session.directory,
+    })
+    this.syncScopeMemory(session.directory)
   }
 
   /**
@@ -3733,21 +3779,28 @@ export class AppStore {
 
   /** 关闭 chat Tab = 归档（design-layout 锁定语义），并卸载会话运行时状态 */
   async closeChatTab(sessionID: string, opts: { streaming: boolean }): Promise<boolean> {
-    if (opts.streaming) {
-      await this.abortSession(sessionID)
+    // 在途标记（§17 修订二）：archive PATCH 的 SSE 回环（实时收敛）先到时
+    // 抑制其关 Tab，保住此处的 pushClosed 关闭栈条目；finally 必清
+    this.closingChatSessions.add(sessionID)
+    try {
+      if (opts.streaming) {
+        await this.abortSession(sessionID)
+      }
+      // 会话已不存在（如被其他客户端删除）：视为成功关闭
+      if (!this.findSession(sessionID)) {
+        this.closeTab(`chat:${sessionID}`, { archive: false, pushClosed: true })
+        this.cleanupSessionState(sessionID)
+        return true
+      }
+      const ok = await this.archiveSession(sessionID)
+      if (ok) {
+        this.closeTab(`chat:${sessionID}`, { archive: false, pushClosed: true })
+        this.cleanupSessionState(sessionID)
+      }
+      return ok
+    } finally {
+      this.closingChatSessions.delete(sessionID)
     }
-    // 会话已不存在（如被其他客户端删除）：视为成功关闭
-    if (!this.findSession(sessionID)) {
-      this.closeTab(`chat:${sessionID}`, { archive: false, pushClosed: true })
-      this.cleanupSessionState(sessionID)
-      return true
-    }
-    const ok = await this.archiveSession(sessionID)
-    if (ok) {
-      this.closeTab(`chat:${sessionID}`, { archive: false, pushClosed: true })
-      this.cleanupSessionState(sessionID)
-    }
-    return ok
   }
 
   closeTab(key: string, _opts: { archive?: boolean; pushClosed?: boolean } = {}) {

@@ -61,6 +61,12 @@
 > REST 到达后再开真 fork Tab，无害；REST 失败（4xx/断网）窗口已清、SSE 命中
 > 开的 Tab 对应真实存在的会话，不撤销。E2E 实测：Tab **0.7s** 出现并激活
 > （此前 28s），收敛后 211 条消息全量在场。
+>
+> **2026-09-02 修订三（与实时补开协同）**：同日 design-tab-memory §17 修订引入
+> 「实时补开」——当前作用域的 `session.created` 一律被动开 Tab（末尾追加、不激
+> 活）。两分支共存且 **fork 关联优先并 break**：fork 命中走 `openChatTab`
+> （**激活**，用户动作的直接反馈）；其余新建（含引导页 `openTab:false` 流程的
+> 建会话回环）走被动开不激活。详见 design-tab-memory §17 修订块。
 
 ### 2.3 store 路径（app-store `forkSession`）
 

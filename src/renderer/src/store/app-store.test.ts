@@ -155,7 +155,8 @@ describe("先切换后加载：setCurrentWorkspace", () => {
   it("记忆外可见会话补开（§17，kind-engine 场景）：切走期间他端新建，切回即补开、active 保持", async () => {
     const s1 = session("s1", WT1, { created: 1, updated: 1 })
     const s2 = session("s2", WT1, { created: 2, updated: 20 }) // 切走期间他端新建
-    // SSE session.created 已达本地（sessionsByProject 有记录），但不开 Tab 不写记忆
+    // 事件在非当前作用域期间到达（实时补开只覆盖当前作用域，§17 修订 2026-09-02）：
+    // 仅合并进 sessionsByProject 不开 Tab；切入时由 §17 补开
     store.sessionsByProject.set("proj1", sessionsOf(s1, s2))
     store.tabMemory = { default: { [WT1]: { projectId: "proj1", tabs: ["s1"], active: "s1" } } }
     snapshots.set(ROOT, [])
@@ -2707,6 +2708,127 @@ describe("关闭栈跨作用域恢复（design-keyboard-shortcuts §2.1 修订�
     expect(store.tabs.length).toBe(0)
     expect(store.activeTabKey).toBeNull()
     expect(store.scopeQuery.directory).toBe(ROOT)
+  })
+})
+
+describe("实时补开与实时收敛（design-tab-memory §17 修订 2026-09-02）", () => {
+  const fire = (info: Session, type: "session.created" | "session.updated" = "session.created", dir = info.directory) => {
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(dir, {
+      type,
+      properties: { info },
+    })
+  }
+
+  it("当前作用域他端新建：末尾追加 Tab、不激活、记忆即时吸收", () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
+    store.activeTabKey = "chat:s1"
+    store.tabMemory = { default: { [ROOT]: { projectId: "proj1", tabs: ["s1"], active: "s1" } } }
+
+    const s2 = session("s2", ROOT, { created: 2, updated: 2 })
+    fire(s2)
+    // 末尾追加 + 不激活（他端新建不打断当前工作）
+    expect(store.tabs.map((t) => t.key)).toEqual(["chat:s1", "chat:s2"])
+    expect(store.activeTabKey).toBe("chat:s1")
+    // 记忆即时吸收（重启/切回顺序保持）
+    expect(store.tabMemory.default?.[ROOT]?.tabs).toEqual(["s1", "s2"])
+    expect(store.tabMemory.default?.[ROOT]?.active).toBe("s1")
+  })
+
+  it("subagent 子会话 / 建即归档：合并不开 Tab（口径同 visibleSessions）", () => {
+    const child = { ...session("sc", ROOT, { created: 2, updated: 2 }), parentID: "s1" }
+    const archived = { ...session("sa", ROOT, { created: 3, updated: 3 }), time: { created: 3, updated: 3, archived: 9 } }
+    fire(child)
+    fire(archived)
+    expect(store.tabs).toHaveLength(0)
+    expect(store.findSession("sc")).not.toBeNull()
+    expect(store.findSession("sa")).not.toBeNull()
+  })
+
+  it("非当前作用域目录：不开 Tab（留待 §17 切入补开）", () => {
+    const s2 = session("s2", WT1, { created: 2, updated: 2 })
+    fire(s2)
+    expect(store.tabs).toHaveLength(0)
+    expect(store.findSession("s2")).not.toBeNull()
+  })
+
+  it("他端归档（session.updated）：立即关 Tab（跨作用域）、激活回退、记忆收缩", () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    const s2 = { ...session("s2", WT1, { created: 2, updated: 2 }) }
+    store.sessionsByProject = new Map([["proj1", sessionsOf(s1, s2)]])
+    // 跨作用域 Tab 也收敛（同 session.deleted 处置）
+    store.tabs = [
+      { kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT },
+      { kind: "chat", key: "chat:s2", projectId: "proj1", title: "s2", directory: WT1 },
+    ]
+    store.activeTabKey = "chat:s1"
+    store.tabMemory = {
+      default: {
+        [ROOT]: { projectId: "proj1", tabs: ["s1"], active: "s1" },
+        [WT1]: { projectId: "proj1", tabs: ["s2"], active: "s2" },
+      },
+    }
+
+    const archived2 = { ...s2, time: { created: 2, updated: 2, archived: 99 } }
+    fire(archived2, "session.updated")
+    expect(store.tabs.map((t) => t.key)).toEqual(["chat:s1"])
+    expect(store.tabMemory.default?.[WT1]?.tabs).toEqual([])
+
+    // 激活 Tab 被他端归档：回退同作用域相邻（此处无邻居 → null）
+    const archived1 = { ...s1, time: { created: 1, updated: 1, archived: 99 } }
+    fire(archived1, "session.updated")
+    expect(store.tabs).toHaveLength(0)
+    expect(store.activeTabKey).toBeNull()
+  })
+
+  it("他端取消归档（session.updated archived:0，契约实测）：当前作用域被动补开不激活；非当前作用域不开", () => {
+    const s1 = { ...session("s1", ROOT, { created: 1, updated: 1 }), time: { created: 1, updated: 1, archived: 9 } }
+    const s2 = { ...session("s2", WT1, { created: 2, updated: 2 }), time: { created: 2, updated: 2, archived: 9 } }
+    store.sessionsByProject = new Map([["proj1", sessionsOf(s1, s2)]])
+    store.tabs = []
+    store.activeTabKey = null
+
+    // 非当前作用域（WT1）：合并不开
+    fire({ ...s2, time: { created: 2, updated: 2, archived: 0 } }, "session.updated")
+    expect(store.tabs).toHaveLength(0)
+    // 当前作用域（ROOT）：末尾补开不激活
+    fire({ ...s1, time: { created: 1, updated: 1, archived: 0 } }, "session.updated")
+    expect(store.tabs.map((t) => t.key)).toEqual(["chat:s1"])
+    expect(store.activeTabKey).toBeNull()
+    expect(store.tabMemory.default?.[ROOT]?.tabs).toEqual(["s1"])
+  })
+
+  it("touch 类 session.updated（无归档变化、已有 Tab）：幂等无副作用", () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
+    store.activeTabKey = "chat:s1"
+    fire({ ...s1, updated: 5 }, "session.updated")
+    expect(store.tabs.map((t) => t.key)).toEqual(["chat:s1"])
+    expect(store.tabs[0]!.title).toBe("s1")
+  })
+
+  it("本端关 Tab=归档流程在途：SSE 归档回环被抑制，本地路径收尾且关闭栈保留", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    let resolveArchive!: (v: Session) => void
+    ;(store as unknown as { client: unknown }).client = {
+      ...(store as unknown as { client: Record<string, unknown> }).client,
+      updateSession: () =>
+        new Promise<Session>((r) => (resolveArchive = r)),
+    }
+    store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
+    store.activeTabKey = "chat:s1"
+
+    const p = store.closeChatTab("s1", { streaming: false })
+    // PATCH 在途期间 SSE 归档回环先到：不关 Tab（保 pushClosed 关闭栈条目）
+    fire({ ...s1, time: { created: 1, updated: 1, archived: 99 } }, "session.updated")
+    expect(store.tabs.map((t) => t.key)).toEqual(["chat:s1"])
+    resolveArchive({ ...s1, time: { created: 1, updated: 1, archived: 99 } })
+    await expect(p).resolves.toBe(true)
+    expect(store.tabs).toHaveLength(0)
+    expect(store.closedTabs.map((c) => c.key)).toEqual(["chat:s1"])
   })
 })
 

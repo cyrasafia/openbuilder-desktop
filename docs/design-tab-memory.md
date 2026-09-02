@@ -64,6 +64,7 @@ interface ScopeTabMemory {
 | `closeTab`（chat 分支，含关 Tab=归档、session.deleted、删会话） | 从所属 directory 记忆移除；若移除的是 active → 按激活回退结果更新 |
 | `setActiveTab` | 激活 chat Tab → 更新所属 directory 的 active；**激活 file Tab 不改写**（保留该作用域最近 chat 激活，见 §7 激活规则） |
 | 首次打开写入 / 恢复收缩（§6） | 整体写入 |
+| `openChatTabPassive`（§17 修订 2026-09-02，实时补开） | 新 Tab 末尾追加进所属 directory 记忆；**active 不动**（不激活） |
 | `closeProject(projectId)` | 删除记忆中**所有 `projectId` 匹配的条目**（不按当前 sandboxes 枚举——外部删除的 worktree 目录不在 sandboxes 里，按目录枚举会留孤儿条目永久残留 store.json）——需求明确：关闭项目清除记忆；重开项目即"首次打开" |
 | `removeWorkspace(directory)` | 删除该 directory 条目（目录已死，记忆无意义）；并显式关闭该目录 live chat Tab（现状依赖 session.deleted 事件兜底，存在订阅已拆的窗口期）；删除的是当前 worktree 时作用域切回项目根 → 走 §6 恢复（与其他切换路径一致） |
 
@@ -142,11 +143,14 @@ restoreScopeTabs(dir):
 | 场景 | 行为 |
 |---|---|
 | 首次切入 worktree（无记忆），3 个未归档会话 | 3 个 Tab 按 created 升序，激活最近活跃 |
-| 首次切入，0 个会话 | 空记忆写入，会话列表视图；此后外部新建会话在下次切入/重启/快照恢复时补开为 Tab（§17） |
+| 首次切入，0 个会话 | 空记忆写入，会话列表视图；此后外部新建会话**驻留期间实时补开为 Tab**（§17 修订 2026-09-02），SSE 丢失时下次切入/重启/快照恢复补开 |
 | 开 3 Tab → 切另一 worktree → 切回 | 点击即时恢复（记忆 + 已有快照，先切换后加载），快照刷新后再收敛 |
 | 切走期间某会话被他端归档 | 切回时该 Tab 不恢复，记忆收缩；若 Tab 一直未关，完整恢复凭新快照关闭（§16 第四轮） |
 | 切走期间该目录会话被他端全部删除 | 空快照清除本地死会话，Tab 收敛、记忆收缩至空（§16 第四轮） |
-| 切走期间他端新建会话 | 切回补开（§17）：记忆序在前、新会话按 created 升序追加尾部；active 保持记忆值 |
+| 切走期间他端新建会话 | 驻留其他作用域期间不开（实时补开只覆盖当前作用域）；切回补开（§17）：记忆序在前、新会话按 created 升序追加尾部；active 保持记忆值 |
+| **驻留期间他端在当前作用域新建会话** | **实时补开**（§17 修订 2026-09-02）：Tab 末尾追加、不激活不抢焦点、记忆即时吸收（subagent 子会话/建即归档不开） |
+| **驻留期间他端归档会话（任意作用域）** | **实时收敛**（§17 修订二）：Tab 立即关（激活回退/记忆收缩走 closeTab 既有路径）；本端关 Tab=归档的 SSE 回环被在途集合抑制（保关闭栈） |
+| **驻留期间他端取消归档（当前作用域）** | 实时补开回归（契约 `archived:0`，实测 `null` 不生效）；非当前作用域切回补开 |
 | 关闭某 Tab（= 归档） | 记忆移除；切走再切回不再出现 |
 | 关闭项目 | 项目 Tab 全关（不归档）+ 该项目记忆全清；重开 = 首次打开（全量按 created） |
 | 删除 worktree | 该目录记忆删除 + live Tab 显式关闭 |
@@ -241,6 +245,20 @@ restoreScopeTabs(dir):
 **已知后果**：补开的 Tab 只能以"归档"收场——对他端创建的会话执行 close=archive 是跨客户端副作用（会话在创建端也消失）。此为锁定语义（关 Tab = 归档）与"两者都应展示"决策的必然推论，有意为之。另：每次恢复补开全部可见会话，外部维护大量未归档会话的作用域 Tab 数随之增长——与首次打开语义一致，实践观察。
 
 **幂等性**：immediate 段与完整恢复段跑同一 reconcile——本地已有者即时段即开（SSE 单全局流下他端新建事件已实时入 `sessionsByProject`），滞后漏开由完整恢复补齐，无固化风险（对比：首次打开仍须等快照落地，空/滞后目录与真实状态不可区分）。
+
+**修订（2026-09-02）：实时补开——Tab 集 = 当前作用域未归档会话的投影**。原设计里本节补开只在切入作用域时发生（上面问题清单第 1 条"SSE `session.created` 只写 map 不开 Tab"即根因之一）；用户需求修订为：**处于某作用域期间，该作用域的未归档会话应实时反映到 Tab 条**。落地：`session.created` 事件到达且满足「`directory === 当前作用域` && 无 `parentID` && 未归档」（口径同 `visibleSessions`）→ `openChatTabPassive`：末尾追加 Tab，**不激活不抢焦点**（他端新建不打断当前工作，§5 挂点表已补），记忆即时吸收（重启/切回顺序保持）。边界：
+
+- **非当前作用域目录不开**：其他 worktree/global 目录仍走本节切入补开——后台作用域不被实时事件推高 Tab 基线，零 Tab 哨兵（用户已收敛的旧作用域）不被未察看的新会话扰动
+- **SSE 丢失的补偿路径不变**：切入作用域的完整恢复补开（本节）+ 重连对账快照合并后切回补开；即本节从"唯一入口"降级为"补偿 + 非当前作用域入口"
+- **本端新建的可见时点提前**：引导页 `openTab:false` 流程（先建会话再发首条消息）中，会话建立即经本修订实时开 Tab（原"发送成功才开 Tab、失败不产生空 Tab"的保证不再成立）——与投影语义一致，且与本节既有推论（pending 会话经补开可达可管理）同向；发送失败时 Tab 留存（空会话可管理，关 Tab = 归档清理）
+- **fork 协同**（design-session-tab-context-menu §2.3）：pendingFork 关联命中优先于此分支并 `break`——fork 需要**激活**（用户动作的直接反馈），其余新建一律被动开。E2E 实测：curl 他端新建 → Tab 0.3s 末尾出现、active 保持
+
+**修订二（2026-09-02）：实时收敛——他端归档立即关 Tab**（投影语义的双向闭合）。实测契约（server 1.18.20）：归档 = `PATCH {time:{archived:<ts>}}`、取消归档 = `{time:{archived:0}}`（**`null` 不生效**——解码层丢弃，PATCH 原样返回旧值），两者均发 `session.updated` 事件（`info.time.archived` 带 0/时间戳，truthiness 判定与 `!s.time.archived` 口径一致）。落地（`session.created`/`session.updated` 共用分支，fork 关联优先）：
+
+- **`info.time.archived` truthy → `closeTab(archive:false)` 立即关**，**跨作用域**（同 `session.deleted` 处置——归档/删除都不该在任何作用域留 Tab；激活回退/草稿引用清理/记忆收缩走 closeTab 既有路径）。不额外做 `cleanupSessionState`（归档 ≠ 删除，会话仍存在，引导页恢复后状态可复用；对照：§16 死会话收敛也只经 closeTab）
+- **`session.updated` 且未归档且当前作用域 → 实时补开（上述 passive）**：覆盖他端取消归档（tab 回归）与 touch/重命名（有 Tab 幂等跳过，仅付一次 `tabs.some`）；取消归档在非当前作用域不开（切回补开）
+- **本端关 Tab=归档的回环抑制**：`closeChatTab` 是"先 PATCH 归档、后 `closeTab(pushClosed)` 入关闭栈"，SSE 回环可能先到——实时收敛抢先关会丢 Ctrl+Shift+T 关闭栈条目。`closingChatSessions` 在途集合（try/finally 维护）抑制窗口内的回环关闭，交本地路径收尾。archiveSession 全仓唯一调用方是 closeChatTab，守护面闭合
+- E2E 实测：curl 归档 → Tab **0.3s** 消失、active 不受扰；取消归档 → Tab 回归
 
 **验证**：vitest 125/125（纯函数新增：补开排序/active 不顶替/全失效等价首次打开/零哨兵补开；store 级新增：kind-engine 场景同步段即补开 + active 保持、快照滞后幂等补齐、零哨兵可达；"死会话收敛"用例期望更新——记忆外可见 Tab 由补开吸收进记忆而非仅保留）；typecheck 双侧全绿。
 
