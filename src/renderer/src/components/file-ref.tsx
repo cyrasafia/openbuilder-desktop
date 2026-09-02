@@ -10,7 +10,8 @@ import {
 } from "react"
 import { FileText, Folder, X } from "lucide-react"
 import { useI18n, useStore } from "../app"
-import type { FileRef } from "@shared/api-types"
+import type { FileRef, Part } from "@shared/api-types"
+import { isFilePart, isFileRefPart } from "@shared/api-types"
 
 /** 文件树拖拽引用的自定义 MIME（design-file-reference §3.3，与 Tab 拖拽同约定） */
 export const FILEREF_MIME = "application/x-openbuilder-fileref"
@@ -132,6 +133,36 @@ export function fileRefFromSearch(rel: string, directory: string): FileRef {
   const absolute = rel.startsWith("/") ? rel : `${directory.replace(/\/+$/, "")}/${rel}`
   const filename = absolute.split("/").pop() ?? absolute
   return { path: rel, absolute, filename, isDir: false }
+}
+
+/**
+ * user 消息 file parts → chip 条目（design-file-reference §5，回显只画文件名）：
+ * - 引用回灌型（source.type=file）：path = source.path，absolute = 会话目录拼合
+ *   （禁用 part.url——二进制回灌变 data:，4R-B），文件可点开 Tab、目录不可点
+ * - 附件回灌型（无 source，server 对图片/PDF 引用以 data: 附件替换原 part）：
+ *   仅文件名 chip，无 absolute 不可点
+ */
+export function userFileChipItems(parts: Part[], sessionDir: string | undefined): RefChipItem[] {
+  return parts.filter(isFilePart).map((p): RefChipItem => {
+    // 字段先取后判：isFileRefPart 与 isFilePart 同为目标类型，负分支 narrowing 会塌缩 never
+    const name = p.filename ?? ""
+    const id = p.id
+    if (isFileRefPart(p)) {
+      const rel = p.source?.path ?? name
+      const abs =
+        sessionDir && rel && !rel.startsWith("/")
+          ? `${sessionDir.replace(/\/+$/, "")}/${rel.replace(/^\.?\//, "")}`
+          : null
+      return {
+        key: p.id,
+        path: rel,
+        absolute: abs ?? undefined,
+        isDir: rel.endsWith("/"),
+        title: abs ?? rel,
+      }
+    }
+    return { key: id, path: name, isDir: false, title: name }
+  })
 }
 
 /**

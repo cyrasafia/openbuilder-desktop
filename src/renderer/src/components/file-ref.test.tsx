@@ -6,7 +6,16 @@
 import { act, cleanup, createEvent, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { useState } from "react"
-import { atMentionQuery, fileRefFromSearch, FileRefChips, useFileRefInput, FILEREF_MIME, setDraggingFileRef } from "./file-ref"
+import type { Part } from "@shared/api-types"
+import {
+  atMentionQuery,
+  fileRefFromSearch,
+  FileRefChips,
+  useFileRefInput,
+  userFileChipItems,
+  FILEREF_MIME,
+  setDraggingFileRef,
+} from "./file-ref"
 
 vi.mock("../app", () => ({
   useI18n: () => ({
@@ -65,6 +74,50 @@ describe("fileRefFromSearch（相对路径 → FileRef）", () => {
 
   it("目录尾斜杠归一", () => {
     expect(fileRefFromSearch("a.ts", "/repo/").absolute).toBe("/repo/a.ts")
+  })
+})
+
+describe("userFileChipItems（user 消息 file parts → chip 条目）", () => {
+  const refPart = (id: string, path: string): Part => ({
+    id,
+    sessionID: "s1",
+    messageID: "msg_u1",
+    type: "file",
+    mime: "text/plain",
+    url: `file:///repo/${path}`,
+    filename: path,
+    source: { type: "file", path, text: { value: "", start: 0, end: 0 } },
+  })
+  /** server 对图片/PDF 引用的附件回灌形态：data: URL、无 source、filename 保留 */
+  const attachPart = (id: string, name: string): Part => ({
+    id,
+    sessionID: "s1",
+    messageID: "msg_u1",
+    type: "file",
+    mime: "image/png",
+    url: "data:image/png;base64,AA==",
+    filename: name,
+    synthetic: true,
+  })
+
+  it("引用回灌：absolute = 会话目录 + source.path，目录尾随 / 不可点", () => {
+    const items = userFileChipItems([refPart("prt_f1", "src/a.ts"), refPart("prt_f2", "docs/")], "/repo")
+    expect(items).toEqual([
+      { key: "prt_f1", path: "src/a.ts", absolute: "/repo/src/a.ts", isDir: false, title: "/repo/src/a.ts" },
+      { key: "prt_f2", path: "docs/", absolute: "/repo/docs/", isDir: true, title: "/repo/docs/" },
+    ])
+  })
+
+  it("附件回灌（无 source）：仅文件名 chip，无 absolute 不可点", () => {
+    const items = userFileChipItems([attachPart("prt_a1", "logo.png")], "/repo")
+    expect(items).toEqual([{ key: "prt_a1", path: "logo.png", isDir: false, title: "logo.png" }])
+  })
+
+  it("非 file part 不产出 chip；混合 parts 只取 file", () => {
+    const text = { id: "prt_t", sessionID: "s1", messageID: "msg_u1", type: "text", text: "看下" } as Part
+    const items = userFileChipItems([text, refPart("prt_f1", "a.ts")], "/repo")
+    expect(items).toHaveLength(1)
+    expect(items[0]!.key).toBe("prt_f1")
   })
 })
 
