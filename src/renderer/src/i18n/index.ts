@@ -27,6 +27,8 @@ const zh = {
   closeTab: "关闭",
   newTab: "新建 Tab",
   renameTab: "重命名会话",
+  // Tab 右键菜单（design-session-tab-context-menu）
+  forkSession: "Fork 会话",
   untitled: "（未命名）",
   // 聊天
   inputPlaceholder: "输入消息…（Enter 发送，Shift+Enter 换行）",
@@ -237,6 +239,7 @@ const en: typeof zh = {
   closeTab: "Close",
   newTab: "New tab",
   renameTab: "Rename session",
+  forkSession: "Fork session",
   untitled: "(untitled)",
   inputPlaceholder: "Message… (Enter to send, Shift+Enter for newline)",
   send: "Send",

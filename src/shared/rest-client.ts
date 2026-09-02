@@ -282,6 +282,31 @@ export class RestClient {
     )
   }
 
+  /**
+   * 会话 fork（design-session-tab-context-menu §2.2，实测 server 1.18.x）：
+   * `POST /session/{id}/fork` 复制会话至指定消息点（messageID 省略 = 整会话末位），
+   * 返回新会话完整 Session（title 自动加 " (fork #N)" 后缀，cost/tokens 清零）。
+   *
+   * **同步端点，timeoutMs: 0 无限等待**（同 sendCommand 先例）：server handler
+   * 同步复制源会话全部消息后才响应，耗时随会话体积线性（实测大会话 24s，
+   * 2026-09-02 联调）；沿用默认 15s 超时会在 server 实际成功的同时误判失败
+   * ——会话已创建但 Tab 不开，直到切作用域经快照补开才可见（fork bug 根因）。
+   */
+  forkSession(
+    sessionID: string,
+    directory: string,
+    opts: { messageID?: string } = {},
+  ): Promise<Session> {
+    return this.request<Session>(
+      `/session/${encodeURIComponent(sessionID)}/fork${RestClient.dirQuery(directory)}`,
+      {
+        method: "POST",
+        body: JSON.stringify(opts.messageID ? { messageID: opts.messageID } : {}),
+        timeoutMs: 0,
+      },
+    )
+  }
+
   listMessages(sessionID: string, directory: string, limit?: number): Promise<MessageWithParts[]> {
     return this.request<MessageWithParts[]>(
       `/session/${encodeURIComponent(sessionID)}/message${RestClient.dirQuery(directory, { limit })}`,

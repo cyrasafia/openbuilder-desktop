@@ -2772,6 +2772,142 @@ describe("Tab 拖拽重排与重命名（design-tab-drag-rename）", () => {
     expect(store.connectionError).toContain("boom")
     expect(store.tabs[0]!.title).toBe("s1")
   })
+
+  it("forkSession：成功合并新会话 + 开 Tab 激活（design-session-tab-context-menu）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    const forked = session("s9", ROOT, { created: 9, updated: 9 })
+    let calledDir = ""
+    ;(store as unknown as { client: unknown }).client = {
+      forkSession: async (id: string, dir: string) => {
+        expect(id).toBe("s1")
+        calledDir = dir
+        return forked
+      },
+    }
+    store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
+    const res = await store.forkSession("s1")
+    expect(res?.id).toBe("s9")
+    expect(calledDir).toBe(ROOT)
+    expect(store.findSession("s9")?.id).toBe("s9")
+    expect(store.tabs.map((t) => t.key)).toEqual(["chat:s1", "chat:s9"])
+    expect(store.activeTabKey).toBe("chat:s9")
+  })
+
+  it("forkSession：directory 直传优先——本地无源会话记录（僵尸 Tab）也能发起", async () => {
+    const forked = session("s9", WT1, { created: 9, updated: 9 })
+    let calledDir = ""
+    ;(store as unknown as { client: unknown }).client = {
+      forkSession: async (_id: string, dir: string) => {
+        calledDir = dir
+        return forked
+      },
+    }
+    // sessionsByProject 无 s1（快照间隙/他端已删本地未同步）
+    store.sessionsByProject = new Map([["proj1", sessionsOf()]])
+    const res = await store.forkSession("s1", { directory: WT1 })
+    expect(res?.id).toBe("s9")
+    expect(calledDir).toBe(WT1)
+    expect(store.tabs.map((t) => t.key)).toEqual(["chat:s9"])
+  })
+
+  it("forkSession 失败：connectionError 可见、不开 Tab", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    ;(store as unknown as { client: unknown }).client = {
+      forkSession: async () => {
+        throw new Error("fork failed")
+      },
+    }
+    store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
+    const res = await store.forkSession("s1")
+    expect(res).toBeNull()
+    expect(store.connectionError).toContain("fork failed")
+    expect(store.tabs.map((t) => t.key)).toEqual(["chat:s1"])
+  })
+
+  it("forkSession：directory 与本地会话记录双双缺失时不发请求", async () => {
+    let called = 0
+    ;(store as unknown as { client: unknown }).client = {
+      forkSession: async () => {
+        called++
+        return session("s9", ROOT, { created: 9, updated: 9 })
+      },
+    }
+    store.sessionsByProject = new Map([["proj1", sessionsOf()]])
+    const res = await store.forkSession("ghost")
+    expect(res).toBeNull()
+    expect(called).toBe(0)
+  })
+
+  it("fork 提前开 Tab：SSE session.created（fork 标题）在 REST 响应前命中即开，REST 到达幂等收敛", async () => {
+    const s1 = { ...session("s1", WT1, { created: 1, updated: 1 }), title: "Add fork (fork #1)" }
+    const forked = { ...session("s9", WT1, { created: 9, updated: 9 }), title: "Add fork (fork #2)" }
+    let resolveRest!: (v: Session) => void
+    ;(store as unknown as { client: unknown }).client = {
+      forkSession: () => new Promise<Session>((r) => (resolveRest = r)),
+    }
+    store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: s1.title, directory: WT1 }]
+
+    const p = store.forkSession("s1")
+    // REST 未决期间，server 建壳即发的 session.created 到达（源标题已是 fork #1 → 新会话 fork #2）
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(WT1, {
+      type: "session.created",
+      properties: { info: forked },
+    })
+    expect(store.tabs.map((t) => t.key)).toEqual(["chat:s1", "chat:s9"])
+    expect(store.activeTabKey).toBe("chat:s9")
+
+    resolveRest(forked)
+    await expect(p).resolves.toMatchObject({ id: "s9" })
+    // 幂等收敛：不重复开 Tab，激活保持
+    expect(store.tabs.map((t) => t.key)).toEqual(["chat:s1", "chat:s9"])
+    expect(store.activeTabKey).toBe("chat:s9")
+    expect(store.findSession("s9")?.title).toBe("Add fork (fork #2)")
+  })
+
+  it("fork 提前开 Tab：pending 窗口内不匹配的他端新建会话不误开", async () => {
+    const s1 = { ...session("s1", WT1, { created: 1, updated: 1 }), title: "我的会话" }
+    const other = { ...session("s8", WT1, { created: 8, updated: 8 }), title: "他端的新会话" }
+    const forked = { ...session("s9", WT1, { created: 9, updated: 9 }), title: "我的会话 (fork #1)" }
+    let resolveRest!: (v: Session) => void
+    ;(store as unknown as { client: unknown }).client = {
+      forkSession: () => new Promise<Session>((r) => (resolveRest = r)),
+    }
+    store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: s1.title, directory: WT1 }]
+
+    const p = store.forkSession("s1")
+    // 他端普通新建（标题不匹配 fork 模式）：合并进 map 但不开 Tab（§17 语义）
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(WT1, {
+      type: "session.created",
+      properties: { info: other },
+    })
+    expect(store.tabs.map((t) => t.key)).toEqual(["chat:s1"])
+
+    resolveRest(forked)
+    await p
+    expect(store.tabs.map((t) => t.key)).toEqual(["chat:s1", "chat:s9"])
+    expect(store.activeTabKey).toBe("chat:s9")
+  })
+
+  it("forkTitlePattern：剥既有后缀匹配新编号；正则元字符转义", async () => {
+    const { forkTitlePattern } = await import("./app-store")
+    const p1 = forkTitlePattern("普通标题")!
+    expect(p1.test("普通标题 (fork #1)")).toBe(true)
+    expect(p1.test("普通标题 (fork #12)")).toBe(true)
+    expect(p1.test("其他标题 (fork #1)")).toBe(false)
+    const p2 = forkTitlePattern("X (fork #1)")!
+    expect(p2.test("X (fork #2)")).toBe(true)
+    // 同 base 任意编号均匹配（并发 fork 时 server 全局编号会偏移，不收紧到 N+1）
+    expect(p2.test("X (fork #1)")).toBe(true)
+    expect(p2.test("Y (fork #2)")).toBe(false)
+    const p3 = forkTitlePattern("a.b*c [v1]")!
+    expect(p3.test("a.b*c [v1] (fork #1)")).toBe(true)
+    expect(forkTitlePattern(undefined)).toBeNull()
+    expect(forkTitlePattern("")).toBeNull()
+  })
 })
 
 describe("applyTabOrder 防御（design-tab-drag-rename §1 修订）", () => {

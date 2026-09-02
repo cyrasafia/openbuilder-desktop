@@ -253,3 +253,32 @@ describe("pty 端点（design-terminal-tab §1）", () => {
     expect(https.ptyWsOrigin()).toBe("wss://s")
   })
 })
+
+describe("forkSession（design-session-tab-context-menu §2.2）", () => {
+  const SES = { id: "ses_fork", projectID: "p1", directory: "/repo", time: { created: 1, updated: 1 } }
+
+  it("POST /session/{id}/fork + directory query；messageID 省略时 body 为空对象；同步长端点不设超时信号", async () => {
+    let hit = ""
+    let hasSignal = false
+    const client = mkClient((url, init) => {
+      hit = `${init.method} ${url} ${String(init.body)}`
+      hasSignal = "signal" in init
+      return new Response(JSON.stringify(SES))
+    })
+    const forked = await client.forkSession("ses_1", "/repo")
+    expect(forked.id).toBe("ses_fork")
+    expect(hit).toBe("POST http://server/session/ses_1/fork?directory=%2Frepo {}")
+    // timeoutMs: 0（大会话 fork 实测 24s，同 sendCommand 同步长端点先例）
+    expect(hasSignal).toBe(false)
+  })
+
+  it("messageID 携带时进 body（fork 到指定消息点）", async () => {
+    let hit = ""
+    const client = mkClient((url, init) => {
+      hit = `${String(init.body)}`
+      return new Response(JSON.stringify(SES))
+    })
+    await client.forkSession("ses_1", "/repo", { messageID: "msg_1" })
+    expect(hit).toBe('{"messageID":"msg_1"}')
+  })
+})
