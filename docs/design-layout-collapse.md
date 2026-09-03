@@ -17,6 +17,7 @@
 
 - 收起 = 栅格列宽 0 + 面板 `display:none`（无窄条、无图标条残留；面板内不可聚焦元素随卸载退出 Tab 序列）
 - 入口 = 标题栏右侧两个开关按钮，**最小化按钮左边**，先左栏后右栏（lucide `PanelLeft` / `PanelRight` 各一枚，图标不随状态切换——按钮是开关不是状态指示，tooltip 随状态切换文案）
+- **键盘入口：Ctrl+[ 左栏 / Ctrl+] 右栏收起/展开**（翻转语义，与标题栏开关同路径 toggle，分发见 design-keyboard-shortcuts §1；终端 Tab 聚焦时键归 xterm 不生效——冲突核查结论 2026-09-03 亦在该文档）
 - **TitleBar 改为全平台渲染**（app.tsx 去掉 linux 门控）；拖拽区与窗口控制三按钮仍仅 linux（frameless 才有意义）。非 linux/浏览器 shim 下标题栏 = 居中标题 + 两个开关，无窗口控制（系统装饰已有）
 
 ### 2.2 store 状态与持久化
@@ -70,7 +71,7 @@ collapsed ? "0px" : `${layoutLeftWidth}px` | minmax(0,1fr) | collapsed ? "0px" :
 
 | 文件 | 变更 |
 |---|---|
-| `src/renderer/src/store/app-store.ts` | 四个布局字段 + doInit 读取 + toggle/setPanelWidth/persistLayout |
+| `src/renderer/src/store/app-store.ts` | 四个布局字段 + doInit 读取 + toggle/setPanelWidth/persistLayout（Ctrl+[ /] 复用 toggle，无新增方法） |
 | `src/renderer/src/app.tsx` | TitleBar 全平台渲染；Shell 栅格列内联计算；resizing 类接线 |
 | `src/renderer/src/components/title-bar.tsx` | 两个面板开关按钮（useStore） |
 | `src/renderer/src/components/sidebar.tsx` | 左栏内缘手柄 |
