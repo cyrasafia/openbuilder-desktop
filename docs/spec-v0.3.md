@@ -16,6 +16,7 @@
 | 8 | Linux Open With | 文件树右键「打开方式…」在 Linux 恢复显示：`xdg-mime` 查 MIME → 解析 .desktop 枚举支持该类型的应用 → 应用内选择器 → `gio launch` 启动。修订 design-file-panel-context-menu §2.4 原「Linux 不提供」决策；win32/darwin 原路径不变。**2026-08-31 修订**：目录行/空白处（作用域根目录）同样提供——目录 MIME 为 `inode/directory`，命中文件管理器，枚举/启动链路零改动 |
 | 9 | 会话任务列表展示 | ChatFooter 第三类卡片（见 [design-task-list.md](design-task-list.md)）：agent 用 todowrite 维护的任务清单在会话底部展示，默认收起（头部 done/total 计数，点击展开进度条 + 逐条状态行）；任务全部完成（completed/cancelled）时整卡隐藏；有待处理授权/问题卡时不渲染（不遮挡人机交互卡） |
 | 10 | 会话 Tab 右键菜单（重命名/Fork） | chat Tab 右键弹菜单（[design-session-tab-context-menu.md](design-session-tab-context-menu.md)）：**重命名** = 双击行内编辑的菜单入口；**Fork 会话** = `POST /session/{id}/fork` 复制会话（省略 messageID = 全量复制），**fire-and-forget**——发起不等结果、不自动切换；新 Tab 由 SSE `session.created` 经实时补开自然打开（末尾追加、不抢焦点，实测 0.3s），消息在复制期间逐步流入；REST 响应（同步长端点，大会话实测 24s+，不设超时）仅做数据收敛。源会话不动；仅 chat Tab 有菜单，其余 kind 右键仅屏蔽默认菜单 |
+| 11 | Tab 会话恢复（2026-09-03 增补） | 打开的 Tab（全 kind）、选中状态、Tab 顺序跨**刷新页面**与**重启应用**保留（[design-tab-session-restore.md](./design-tab-session-restore.md)）：新增会话持久层 `tabs.session`（按 profile 隔离），冷启动在 Tab 记忆（chat）之后恢复 file/diff/terminal/browser 实体 + 全 kind 混排顺序 + 各作用域最后激活（任意 kind/引导页跨重启）。终端恢复 = 重连原 pty 全量回放（pty 已亡呈已退出终态）；浏览器恢复 = 按持久化当前页 URL 重开导航；显式断开/切 profile 后 terminal/browser 不恢复（pty 已杀/view 已 dispose）。顺带修复刷新后浏览器视图孤儿残留（doInit 全量 dispose） |
 
 ## 范围外（明确不做）
 
@@ -24,6 +25,7 @@
 - 终端分屏/多路复用、自定义主题色（恒深色）
 - 文件引用的 `SymbolSource`/`ResourceSource`（仅文件与目录）
 - macOS/Windows 的应用选择器自建（沿用系统机制）
+- Tab 视图状态跨重启（文件预览/源码模式、滚动位置、TOC、diff 折叠——实体恢复但视图回默认态）；关闭栈跨重启；terminal buffer 序列化跨重启（2026-09-03，design-tab-session-restore §8）
 
 ## 新增 API 映射
 
@@ -52,3 +54,4 @@
 - [ ] Linux 右键「打开方式…」列出支持该 MIME 的应用，选择后文件被对应应用打开；目录行/空白处（根目录）同提供，选择后文件管理器打开该目录（2026-08-31 修订）
 - [ ] agent 更新任务（todowrite）时会话底部出现任务卡：默认收起、头部计数正确，展开可见进度条与逐条状态；全部完成后整卡隐藏；授权/问题卡在队时任务卡不渲染，应答后自动回归
 - [ ] chat Tab 右键弹菜单：重命名进入行内编辑（同双击）；Fork 后新 Tab 打开激活、标题带 "(fork #N)"、消息全量复制，源会话不动；其余 kind Tab 右键无菜单
+- [ ] Tab 会话恢复：混排开 chat+file+diff/终端/浏览器 → 刷新/重启后 Tab 集合与顺序保留、激活回到离开时的 Tab（含引导页）；终端重连回放不丢（pty 亡则已退出终态）；浏览器恢复到离开时页面；关项目重开不复活旧 Tab；显式断开重连后 terminal/browser 不恢复；刷新时正在显示的浏览器 Tab 无幽灵视图残留

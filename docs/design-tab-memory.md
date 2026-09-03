@@ -37,7 +37,7 @@ interface ScopeTabMemory {
 // 持久化：Record<profileKey, Record<directory, ScopeTabMemory>>
 ```
 
-- 只记 **chat Tab**。file Tab 虽作用域化（2026-08-25 修订，见 §18；原为跨作用域全局显示）但仍不参与记忆——只读视图重开成本为零，冷启动不恢复，激活经 §7 回退
+- 只记 **chat Tab**。file Tab 虽作用域化（2026-08-25 修订，见 §18；原为跨作用域全局显示）但仍不参与记忆——只读视图重开成本为零，激活经 §7 回退。（**2026-09-03 修订**：file/diff/terminal/browser 实体经 [design-tab-session-restore.md](./design-tab-session-restore.md) 的**会话持久层**跨刷新/重启恢复；记忆结构不变、chat 语义不变，本节"不参与记忆"指不进 ScopeTabMemory）
 - 顺序 = Tab 条顺序。v0.1 无拖拽排序，顺序即打开顺序；记忆结构预留顺序语义，拖拽（v0.2+）落地后天然兼容
 - **运行期任意 kind 的最后选中态另经 `scopeActiveKeys` 内存记录**（2026-08-26，见 §7 规则 1.5 与 [design-tab-state-memory.md](./design-tab-state-memory.md) §2.1）——本记忆结构的 `active` 仍 chat-only，仅约束冷启动恢复
 
@@ -123,10 +123,11 @@ restoreScopeTabs(dir):
 `connect()` 在 `refreshAllOpenedProjects()` 成功后、`startSse()` 前：
 
 1. **逐作用域重建**：对每个打开项目的每个 directory（`worktree ∪ sandboxes`）有记忆条目的 → 按 §6 恢复分支补齐 live Tab（校验收缩），不改变激活
-2. **当前作用域**再走一遍 `restoreScopeTabs`（含激活规则）——无记忆则首次打开
-3. 消息不预取：ChatView 激活即重拉（现状），恢复的 Tab 仅建 Tab 实体
+2. **会话层恢复**（2026-09-03 增补，[design-tab-session-restore.md](./design-tab-session-restore.md) §3）：非 chat 实体重建 + 模板序合并 + scopeActive 播种
+3. **当前作用域**再走一遍 `restoreScopeTabs`（含激活规则）——无记忆则首次打开；规则 1.5 在此消费播种记录（任意 kind 激活/引导页跨重启）
+4. 消息不预取：ChatView 激活即重拉（现状），恢复的 Tab 仅建 Tab 实体
 
-改变的行为：重启不再必然空 Tab——有记忆的作用域恢复，当前作用域首次则全量开。与 `project.state` 持久化对称，补齐"重启回到离开时上下文"的体验。
+改变的行为：重启不再必然空 Tab——有记忆的作用域恢复，当前作用域首次则全量开。与 `project.state` 持久化对称，补齐"重启回到离开时上下文"的体验。（2026-09-03 起"上下文"扩展至非 chat Tab 与任意 kind 激活，见会话层文档）
 
 ## 9. 与锁定语义的关系（AGENTS.md）
 
@@ -287,3 +288,16 @@ restoreScopeTabs(dir):
 - chat Tab 的全部语义（记忆/补开/死会话收敛/两阶段恢复）不动
 
 **验证**：vitest 231/231（纯函数 `resolveRestoreActive` 签名简化 3 用例；store 级新增 6 用例：file Tab 激活时切 worktree 激活随作用域走 + 切回恢复、闸门清算覆盖 file、关 file Tab 回退限同作用域、关 Tab 回退取相邻（左邻优先/pos=0 取右邻）、关项目随关 file Tab 且不误伤他项目、删 worktree 随关 file Tab）；typecheck 双侧全绿。
+
+## 19. 会话持久层增补（2026-09-03）
+
+file/diff/terminal/browser Tab、任意 kind 激活、全 kind 混排顺序的跨刷新/重启持久化由
+[design-tab-session-restore.md](./design-tab-session-restore.md) 承接（新持久层 `tabs.session`，
+与本文记忆分账：记忆管 chat 的集合/校验/补开，会话层管非 chat 实体 + 全局顺序 + 各作用域
+最后激活）。对本文的修订点：
+
+- §3.2 "file/diff 不参与记忆、冷启动不恢复" → 记忆结构不变（ScopeTabMemory 仍 chat-only），
+  但非 chat 实体经会话层冷启动恢复；§8 启动管线插入会话层步骤
+- §18 "冷启动不恢复" 的不变量随上条解除；运行期语义（切换不关不归档、关项目随关）全部不变
+- §7 规则 1.5 的 `scopeActiveKeys` 由纯内存改为冷启动播种（跨重启），规则本身与 mem.active
+  的 chat-only 约束不变

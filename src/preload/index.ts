@@ -30,6 +30,7 @@ const api = {
   browserViewShow: (viewId: number) => ipcRenderer.send("browser:view-show", viewId),
   browserViewHide: (viewId: number) => ipcRenderer.send("browser:view-hide", viewId),
   browserViewDispose: (viewId: number) => ipcRenderer.send("browser:view-dispose", viewId),
+  browserViewDisposeAll: () => ipcRenderer.send("browser:dispose-all"),
   browserNavigate: (viewId: number, url: string) => ipcRenderer.send("browser:navigate", viewId, url),
   browserGoBack: (viewId: number) => ipcRenderer.send("browser:goBack", viewId),
   browserGoForward: (viewId: number) => ipcRenderer.send("browser:goForward", viewId),

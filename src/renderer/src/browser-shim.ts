@@ -54,6 +54,7 @@ function createBrowserDesktopApi(): DesktopApi {
     browserViewShow() {},
     browserViewHide() {},
     browserViewDispose() {},
+    browserViewDisposeAll() {},
     browserNavigate() {},
     browserGoBack() {},
     browserGoForward() {},
