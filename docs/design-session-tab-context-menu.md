@@ -67,20 +67,33 @@
 > 活）。两分支共存且 **fork 关联优先并 break**：fork 命中走 `openChatTab`
 > （**激活**，用户动作的直接反馈）；其余新建（含引导页 `openTab:false` 流程的
 > 建会话回环）走被动开不激活。详见 design-tab-memory §17 修订块。
+>
+> **2026-09-02 修订四（废弃关联，fork 改 fire-and-forget）**：修订二/三的标题
+> 关联（directory + getForkedTitle 模式）**不可靠**——v1 协议的 `session.created`
+> 无 fork 来源字段，而标题在同名会话、并发 fork（server 全局编号偏移）下误报
+> 不可控；REST 响应虽带确定的新会话 ID，但要等复制完成（大会话 24s+），无法
+> 用于即时激活。据此放弃关联：**forkSession 改 fire-and-forget**——发起 POST
+> 后不等结果、不开 Tab 不激活；新 Tab 由 `session.created` 经实时补开**自然
+> 打开**（同他端新建一条路径：末尾追加、不抢焦点，E2E 实测 0.3s）。REST 响应
+> （timeoutMs: 0）到达仅做数据收敛：合并快照 + 当前作用域被动补开（SSE 丢失
+> 的兜底，幂等）；失败置 connectionError。UX 变化：fork 不再自动切到新会话
+> （用户自行点击）；大会话复制期间新 Tab 消息逐步流入（条数增长即进度）。
+> E2E 实测：fork 点击 → 0.3s Tab 末尾出现、active 保持原 Tab → 复制完成后
+> 焦点不被顶替。修订二/三的 pendingFork/forkTitlePattern 机制随本修订移除。
 
-### 2.3 store 路径（app-store `forkSession`）
+### 2.3 store 路径（app-store `forkSession`，修订四：fire-and-forget）
 
 1. directory 解析：**调用方直传优先**（菜单层传 chat Tab 的作用域 directory），
    `findSession` 兜底——本地无源会话记录的僵尸 Tab（server 会话仍在，如快照间隙）
-   也能发起；两者皆无 → null 不发请求
-2. 成功：merge 进 `sessionsByProject`（projectID map get-or-create，同 createSession
-   路径）→ `openChatTab(forked)`（开 Tab + 激活 + 记忆同步 + unarchive 语义——新会话
-   本就未归档）→ 返回新会话。**新 Tab 开头激活是预期反馈**（fork 后继续工作的对象
-   是新会话）；源 Tab 不关不动
-3. SSE `session.created` 回环亦会到达（同目录必过事件闸门）——该分支本就 map.set
-   幂等，且不重复开 Tab（开 Tab 只在 REST 路径），与 createSession 同构，无需去重
-4. 失败：`connectionError`（左栏状态行可见，无 toast 基建同文件菜单取舍）、返回 null
-   由菜单层静默（不打断用户，重试 = 再点一次）
+   也能发起；两者皆无 → 不发请求
+2. **发起即走**：POST（timeoutMs: 0，复制完才回）不阻塞 UI、不开 Tab 不激活；
+   新 Tab 由 SSE `session.created` 经实时补开（§17 修订）自然打开——同他端新建
+   一条路径（末尾追加、不抢焦点），消息在复制期间经 message.* 事件逐步流入
+3. REST 响应到达仅做数据收敛：合并快照进 `sessionsByProject` + 当前作用域被动
+   补开（`openChatTabPassive`，SSE 丢失的兜底，同路径幂等）；非当前作用域不
+   开（切回经 §17 补开）
+4. 失败：`connectionError`（左栏状态行可见，无 toast 基建同文件菜单取舍），
+   fire-and-forget 无返回值，菜单层无等待
 
 ### 2.4 流式中的 fork
 
@@ -96,26 +109,28 @@
 | 非 chat Tab 的右键菜单项 | 无会话语义；关闭已有按钮/Ctrl+W |
 | 菜单基建组件化统一（4 处实例抽取） | 各处条目/可见性差异小但存在，抽取收益不及迁移面；沿用既有"复用模式"惯例，出现第 5 处再议 |
 | fork 中/成功 toast | 新 Tab 打开即反馈；无全局 toast 基建 |
-| ~~fork 进行中的即时反馈~~（修订二已化解大半：Tab 即开 + 消息流入即进度） | 剩余场景：SSE 命中前的极短窗口（<1s）与标题不可解析（源会话无本地记录）时仍需等 REST；显式进度条/禁点不做（v1 无 fork 总量事件，进度只能本地伪装） |
+| fork 进行中的显式反馈（进度条/禁点/复制中标记） | Tab 经实时补开即时可见 + 消息条数增长即进度；v1 无 fork 总量事件，显式进度只能本地伪装 |
+| REST↔SSE 事件关联（fork 结果即时激活） | v1 协议无来源字段，标题模式同名/并发误报不可控（修订四废弃）；REST 响应虽带确定 ID 但需等复制完成（大会话 24s+），激活无即时通道 |
 
 ## 4. 涉及文件
 
 | 文件 | 变更 |
 |---|---|
-| `src/shared/rest-client.ts` | `forkSession(sessionID, directory, {messageID?})`：POST fork 端点 |
-| `src/renderer/src/store/app-store.ts` | `forkSession`：REST → merge → openChatTab；失败 connectionError |
+| `src/shared/rest-client.ts` | `forkSession(sessionID, directory, {messageID?})`：POST fork 端点（timeoutMs: 0） |
+| `src/renderer/src/store/app-store.ts` | `forkSession`：fire-and-forget——REST then 合并快照（迟到守卫：本地更新更晚跳过）+ 当前作用域被动补开；失败 connectionError |
 | `src/renderer/src/components/workspace.tsx` | Tab `onContextMenu`（chat 门禁 + 快照 state）；`TabContextMenu` 组件（FileContextMenu 模式） |
 | `src/renderer/src/i18n/index.ts` | `forkSession`（"Fork 会话"/"Fork session"；重命名复用 `renameTab`） |
-| 测试 | rest-client：URL/body 两种形态；store：成功（merge+开 Tab 激活）/失败（connectionError）/源不在本地 no-op |
+| 测试 | rest-client：URL/body 形态与无超时信号；store：fire-and-forget 合并+被动补开不激活 / SSE 先到幂等 / directory 直传 / 失败 / 双缺 no-op |
 
 ## 5. 验收
 
 - chat Tab 右键弹菜单（重命名 / Fork 会话两项）；file/diff/terminal/browser Tab 右键无菜单
 - 重命名项进入与双击相同的行内编辑（Enter 提交、Esc 取消、IME 安全）
-- fork 后新 Tab **立即**打开并激活（SSE `session.created` 提前开，实测 <1s），
-  标题带 "(fork #N)" 后缀，消息在 server 复制期间逐步流入（条数增长即进度），
-  REST 收敛后为源会话全部内容；源 Tab/源会话不受扰动；重复 fork 编号递增
-  （2026-09-02 修订二；SSE 命中失败时退化为等 REST——大会话实测 28s，不设超时）
+- fork 点击后新 Tab 经 SSE `session.created` 实时补开**立即**出现（实测 0.3s，
+  末尾追加、**不激活不抢焦点**），标题带 "(fork #N)" 后缀，消息在 server 复制
+  期间逐步流入（条数增长即进度）；REST 收敛后焦点不被顶替、Tab 不重复；
+  源 Tab/源会话不受扰动；重复 fork 编号递增（2026-09-02 修订四）
+- SSE 丢失时：REST 响应到达被动补开（当前作用域）或切回作用域补开
 - fork 失败（断连/会话已删）经左栏状态行可见错误，无残留 Tab
 - 流式中的会话可 fork（快照至当前消息边界）
 - `npm run test` / `typecheck` / `build` 全绿

@@ -352,9 +352,9 @@ export function Workspace() {
             setRenaming({ key: menu.tab.key, value: menu.tab.title })
           }}
           onFork={() =>
-            void store.forkSession(menu.tab.key.slice(5), {
+            store.forkSession(menu.tab.key.slice(5), {
               // directory 直传（Tab 作用域）：本地会话记录缺失（快照间隙/僵尸 Tab）
-              // 也能发起（design-session-tab-context-menu §2.3）
+              // 也能发起（design-session-tab-context-menu §2.3 修订四）
               directory: menu.tab.directory,
             })
           }
@@ -369,8 +369,8 @@ export function Workspace() {
 
 /** Tab 右键菜单（design-session-tab-context-menu §2.1）：重命名 / fork，仅 chat Tab
  *  触发（其余 kind 在 onContextMenu 处早退）。重命名复用行内编辑路径（同双击语义，
- *  提交经 renameSession）；fork 走 store.forkSession（POST /session/{id}/fork，
- *  成功开新 Tab 激活）。
+ *  提交经 renameSession）；fork 走 store.forkSession（fire-and-forget，新 Tab 由
+ *  SSE session.created 实时补开自然打开，不激活）。
  *  复用 FileContextMenu 模式（首帧隐藏测量钳制 + capture 四触发关闭 + 浮层计数）。 */
 function TabContextMenu({
   x,

@@ -143,18 +143,6 @@ export function diffDataKey(type: DiffTabType, directory: string): string {
 }
 
 /**
- * fork 标题匹配模式（design-session-tab-context-menu §2.3 修订）：server
- * getForkedTitle 生成的标题 = 源标题剥去既有 ` (fork #N)` 后缀后加新编号。
- * 用于 SSE session.created 提前开 Tab 的关联判定（v1 事件无 fork 来源字段）。
- */
-export function forkTitlePattern(title: string | undefined): RegExp | null {
-  const base = (title ?? "").replace(/ \(fork #\d+\)$/, "")
-  if (!base) return null
-  const escaped = base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-  return new RegExp(`^${escaped} \\(fork #\\d+\\)$`)
-}
-
-/**
  * 引用 → 发送 file part（design-file-reference §1/§2 契约）：url 必须 absolute
  * `file://`（相对被 server 静默丢弃）；mime 占位 text/plain（server 按 url 读真实
  * 内容，二进制回灌按真实类型重写）；source.text 留空（无需在正文插 @path）。
@@ -321,14 +309,6 @@ export class AppStore {
    * 成功行随 sandboxes 移除消失，失败复位行可重试。纯内存（重启后行随快照恢复真实态）。
    */
   deletingWorkspaces = new Set<string>()
-  /**
-   * fork 提前开 Tab 的关联窗口（design-session-tab-context-menu §2.3 修订）：
-   * forkSession 发起时挂、REST 响应/SSE 命中时清。窗口内 session.created 按
-   * directory + fork 标题模式命中即开 Tab（server 建壳即发事件，消息复制
-   * 要几十秒才随 HTTP 响应回）。单槽：并发 fork 后发者覆盖先发者，REST
-   * 响应对各自 Tab 幂等收敛
-   */
-  private pendingFork: { directory: string; title: RegExp } | null = null
   /**
    * 本端 closeChatTab 在途集合（§17 修订二，SSE 归档回环关闭抑制）：关 Tab=归档
    * 流程"先 PATCH 后 closeTab(pushClosed 入关闭栈)"，SSE 归档回环可能先到——
@@ -860,22 +840,6 @@ export class AppStore {
         // 同步更新已打开 chat Tab 的 title（会话重命名后 Tab 名跟随刷新）
         const tab = this.tabs.find((t) => t.kind === "chat" && t.key === `chat:${info.id}`)
         if (tab) tab.title = info.title || info.slug || ""
-        // fork 提前开 Tab（design-session-tab-context-menu §2.3 修订）：server
-        // createNext 先建壳发 session.created、消息复制要跑几十秒、HTTP 响应
-        // 最后才回（源码核实）。pending 窗口内按 directory + fork 标题模式
-        // （getForkedTitle：`base (fork #N)`）命中 = 本端 fork 的复制已开始，
-        // 立即开 Tab 并激活——消息经 message.* 事件在复制期间逐步流入。REST
-        // 响应到达后 openChatTab 幂等收敛（同 key 仅刷标题/激活）
-        if (
-          ev.type === "session.created" &&
-          this.pendingFork &&
-          info.directory === this.pendingFork.directory &&
-          this.pendingFork.title.test(info.title ?? "")
-        ) {
-          this.pendingFork = null
-          this.openChatTab(info)
-          break
-        }
         // 实时收敛（§17 修订二，2026-09-02）：他端归档 → 立即关 Tab（跨作用域，
         // 同 session.deleted 处置——Tab 集 = 未归档会话投影；archive:false 纯本地
         // 移除，归档已由他端完成；激活回退/草稿清理/记忆收缩走 closeTab 既有路径）。
@@ -888,11 +852,12 @@ export class AppStore {
           }
         }
         // 实时补开（§17 修订，2026-09-02）：当前作用域未归档顶层会话无 Tab 即
-        // 末尾追加（不激活不抢焦点）。created = 他端/本端新建；updated = 他端
-        // 取消归档（契约 archived:0，实测 1.18.20，null 不生效）及 touch/重命名
-        // 等（有 Tab 时幂等跳过，仅付一次 tabs.some）。口径同 visibleSessions：
-        // subagent 子会话不开；非当前作用域目录不开（经 §17 切入补开）。SSE
-        // 丢失的补偿路径不变：切入作用域的完整恢复
+        // 末尾追加（不激活不抢焦点）。created = 他端/本端新建（含 fork：复制期间
+        // 消息经 message.* 流入，激活等 REST 响应权威收敛——标题关联已废弃，
+        // design-session-tab-context-menu 修订四）；updated = 他端取消归档（契约
+        // archived:0，实测 1.18.20，null 不生效）及 touch/重命名等（有 Tab 时
+        // 幂等跳过）。口径同 visibleSessions：subagent 子会话不开；非当前作用域
+        // 目录不开（经 §17 切入补开）。SSE 丢失的补偿路径不变
         else if (!info.parentID && info.directory === this.scopeDirectory()) {
           this.openChatTabPassive(info)
         }
@@ -2698,42 +2663,41 @@ export class AppStore {
   }
 
   /**
-   * 会话 fork（design-session-tab-context-menu §2.2/§2.3）：POST /session/{id}/fork
-   * （messageID 省略 = 整会话复制），成功后合并新会话快照并打开激活其 Tab。
+   * 会话 fork（design-session-tab-context-menu §2.3 修订四）：**fire-and-forget**——
+   * 发起 POST 后不等结果、不开 Tab 不激活；新 Tab 由 SSE `session.created` 经
+   * 实时补开（§17 修订）自然打开（末尾追加、不抢焦点，E2E 实测 0.3s）。
+   * 不做 REST↔事件关联：v1 协议无来源字段，标题模式（getForkedTitle）在同名
+   * 会话/并发 fork 下误报不可控，已废弃。
    * directory 优先取调用方直传（chat Tab 作用域）——本地无源会话记录的僵尸 Tab
-   * （server 会话仍在，如快照间隙）也能发起；REST 端点为同步长操作（大会话
-   * 实测 24s，rest-client forkSession 注释），失败置 connectionError 由调用方静默。
-   *
-   * 提前开 Tab：发起即挂 pendingFork，SSE session.created 命中（directory +
-   * fork 标题模式）先开 Tab（复制期间消息经 message.* 事件流入），REST 响应
-   * 到达后此处 openChatTab 幂等收敛（SSE 已开则仅刷标题/激活）。
+   * 也能发起。REST 端点为同步长操作（大会话实测 24s，timeoutMs: 0，不设超时——
+   * 误判失败会在 server 实际成功时误报错误）。响应到达仅做数据收敛：合并快照 +
+   * 当前作用域被动补开（SSE 丢失的兜底，同一条路径，幂等）；失败置
+   * connectionError（左栏状态行可见），无 toast 基建同文件菜单取舍。
    */
-  async forkSession(
-    sessionID: string,
-    opts: { messageID?: string; directory?: string } = {},
-  ): Promise<Session | null> {
+  forkSession(sessionID: string, opts: { messageID?: string; directory?: string } = {}): void {
     const client = this.client
-    if (!client) return null
-    const source = this.findSession(sessionID)
-    const directory = opts.directory ?? source?.directory
-    if (!directory) return null
-    const pattern = forkTitlePattern(source?.title)
-    if (pattern) this.pendingFork = { directory, title: pattern }
-    try {
-      const forked = await client.forkSession(sessionID, directory, opts)
-      this.pendingFork = null
-      const map = this.sessionsByProject.get(forked.projectID) ?? new Map()
-      map.set(forked.id, forked)
-      this.sessionsByProject.set(forked.projectID, map)
-      this.openChatTab(forked)
-      this.emit()
-      return forked
-    } catch (e) {
-      this.pendingFork = null
-      this.connectionError = e instanceof Error ? e.message : String(e)
-      this.emit()
-      return null
-    }
+    if (!client) return
+    const directory = opts.directory ?? this.findSession(sessionID)?.directory
+    if (!directory) return
+    void client
+      .forkSession(sessionID, directory, opts)
+      .then((forked) => {
+        // 迟到快照不回卷（review #1）：REST 响应携带的是复制完成时刻的快照，
+        // 复制窗口内对该会话的后续变更（关 Tab=归档、重命名）已先经
+        // session.updated 到达本地——本地记录 time.updated 更晚时跳过合并与
+        // 补开，否则会把已归档会话洗回未归档并复活刚关的 Tab
+        const existing = this.findSession(forked.id)
+        if (existing && existing.time.updated > forked.time.updated) return
+        const map = this.sessionsByProject.get(forked.projectID) ?? new Map()
+        map.set(forked.id, forked)
+        this.sessionsByProject.set(forked.projectID, map)
+        if (forked.directory === this.scopeDirectory()) this.openChatTabPassive(forked)
+        this.emit()
+      })
+      .catch((e) => {
+        this.connectionError = e instanceof Error ? e.message : String(e)
+        this.emit()
+      })
   }
 
   async abortSession(sessionID: string) {

@@ -251,7 +251,11 @@ restoreScopeTabs(dir):
 - **非当前作用域目录不开**：其他 worktree/global 目录仍走本节切入补开——后台作用域不被实时事件推高 Tab 基线，零 Tab 哨兵（用户已收敛的旧作用域）不被未察看的新会话扰动
 - **SSE 丢失的补偿路径不变**：切入作用域的完整恢复补开（本节）+ 重连对账快照合并后切回补开；即本节从"唯一入口"降级为"补偿 + 非当前作用域入口"
 - **本端新建的可见时点提前**：引导页 `openTab:false` 流程（先建会话再发首条消息）中，会话建立即经本修订实时开 Tab（原"发送成功才开 Tab、失败不产生空 Tab"的保证不再成立）——与投影语义一致，且与本节既有推论（pending 会话经补开可达可管理）同向；发送失败时 Tab 留存（空会话可管理，关 Tab = 归档清理）
-- **fork 协同**（design-session-tab-context-menu §2.3）：pendingFork 关联命中优先于此分支并 `break`——fork 需要**激活**（用户动作的直接反馈），其余新建一律被动开。E2E 实测：curl 他端新建 → Tab 0.3s 末尾出现、active 保持
+- **fork 协同**（design-session-tab-context-menu 修订四）：fork 亦经本分支被动开
+  （同他端新建一条路径，不激活）——REST↔事件的标题关联（getForkedTitle 模式）因
+  v1 无来源字段、同名/并发场景误报不可控已废弃，fork 改 fire-and-forget，REST
+  响应仅做数据收敛 + 同路径幂等补开。E2E 实测：fork 点击 → Tab 0.3s 末尾出现、
+  active 保持
 
 **修订二（2026-09-02）：实时收敛——他端归档立即关 Tab**（投影语义的双向闭合）。实测契约（server 1.18.20）：归档 = `PATCH {time:{archived:<ts>}}`、取消归档 = `{time:{archived:0}}`（**`null` 不生效**——解码层丢弃，PATCH 原样返回旧值），两者均发 `session.updated` 事件（`info.time.archived` 带 0/时间戳，truthiness 判定与 `!s.time.archived` 口径一致）。落地（`session.created`/`session.updated` 共用分支，fork 关联优先）：
 
