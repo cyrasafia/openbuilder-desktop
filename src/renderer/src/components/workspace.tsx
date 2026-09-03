@@ -49,12 +49,13 @@ import { externalDirectoryPath, permissionCommand } from "@shared/pending-reques
 import { todoActive, todoDone, todoKey, todosActive } from "@shared/session-todos"
 import { Markdown } from "./markdown"
 import { splitFrontMatter } from "./markdown-frontmatter"
+import { createPortal } from "react-dom"
 import { ModelSwitcherBar } from "./model-switcher"
 import { CodeView } from "./code-view"
 import { collectHeadings, MdToc, type TocHeading } from "./md-toc"
 import { DiffView } from "./diff-view"
 import { PdfFrameView } from "./pdf-frame-view"
-import { parseDiffTabKey } from "../store/app-store"
+import { parseDiffTabKey, type TabEntity } from "../store/app-store"
 import { closeTabInteractive } from "./tab-actions"
 import { TerminalView } from "./terminal-view"
 import { BrowserTabView } from "./browser-tab-view"
@@ -87,6 +88,10 @@ export function Workspace() {
   const tabbarRef = useRef<HTMLDivElement | null>(null)
   // 行内重命名（design-tab-drag-rename §2）：仅 chat Tab，双击进入
   const [renaming, setRenaming] = useState<{ key: string; value: string } | null>(null)
+  // Tab 右键菜单（design-session-tab-context-menu §2.1）：仅 chat Tab 提供
+  // 重命名/fork；file/diff/terminal/browser Tab 无会话语义，右键仅屏蔽浏览器默认菜单。
+  // 菜单目标 = 被右键的 Tab（快照入 state——菜单存活期内 Tab 列表/标题变化不重定目标）
+  const [menu, setMenu] = useState<{ x: number; y: number; tab: TabEntity } | null>(null)
 
   const endDrag = () => {
     setDragKey(null)
@@ -242,6 +247,14 @@ export function Workspace() {
               e.dataTransfer.effectAllowed = "move"
             }}
             onDragEnd={handleDragEnd}
+            onContextMenu={(e) => {
+              // 菜单仅 chat Tab（design-session-tab-context-menu §2.1）：其余 kind
+              // 阻止默认菜单即可（不弹空菜单）；重命名态（输入框）不劫持右键
+              e.preventDefault()
+              e.stopPropagation()
+              if (tab.kind !== "chat" || isRenamingThis) return
+              setMenu({ x: e.clientX, y: e.clientY, tab })
+            }}
           >
             {dot && <span className={"status-dot " + dotClass} />}
             {isRenamingThis ? (
@@ -330,8 +343,136 @@ export function Workspace() {
           })()}
       </div>
 
+      {menu && (
+        <TabContextMenu
+          x={menu.x}
+          y={menu.y}
+          onRename={() => {
+            // 复用双击重命名路径：以 Tab 当前标题进编辑态（提交经 commitRename）
+            setRenaming({ key: menu.tab.key, value: menu.tab.title })
+          }}
+          onFork={() =>
+            store.forkSession(menu.tab.key.slice(5), {
+              // directory 直传（Tab 作用域）：本地会话记录缺失（快照间隙/僵尸 Tab）
+              // 也能发起（design-session-tab-context-menu §2.3 修订四）
+              directory: menu.tab.directory,
+            })
+          }
+          onClose={() => setMenu(null)}
+        />
+      )}
+
       {store.settingsOpen && <SettingsDialog />}
     </main>
+  )
+}
+
+/** Tab 右键菜单（design-session-tab-context-menu §2.1）：重命名 / fork，仅 chat Tab
+ *  触发（其余 kind 在 onContextMenu 处早退）。重命名复用行内编辑路径（同双击语义，
+ *  提交经 renameSession）；fork 走 store.forkSession（fire-and-forget，新 Tab 由
+ *  SSE session.created 实时补开自然打开，不激活）。
+ *  复用 FileContextMenu 模式（首帧隐藏测量钳制 + capture 四触发关闭 + 浮层计数）。 */
+function TabContextMenu({
+  x,
+  y,
+  onRename,
+  onFork,
+  onClose,
+}: {
+  x: number
+  y: number
+  onRename: () => void
+  onFork: () => void
+  onClose: () => void
+}) {
+  const store = useStore()
+  const { t } = useI18n()
+  const ref = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+
+  // 首帧隐藏渲染供测量，再钳制到视口内定位（同 Popover 无闪烁模式）
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    setPos({
+      left: Math.max(4, Math.min(x, window.innerWidth - el.offsetWidth - 4)),
+      top: Math.max(4, Math.min(y, window.innerHeight - el.offsetHeight - 4)),
+    })
+    requestAnimationFrame(() => ref.current?.querySelector<HTMLButtonElement>("button")?.focus())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 浮层计数（design-browser-tab §1.2 z-order）：菜单存在期间隐藏浏览器视图
+  useEffect(() => {
+    store.pushOverlay()
+    return () => store.popOverlay()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 外部 mousedown / Esc / 滚动 / 失焦关闭（capture 阶段；回调走 ref 免重订阅）。
+  // 注：window 监听器参数是 DOM 事件——本文件顶部 React 类型名遮蔽全局，
+  // 用 globalThis. 限定（同文件既有 React KeyboardEvent/WheelEvent 用法不受扰）
+  useEffect(() => {
+    const outside = (target: EventTarget | null) => !ref.current?.contains(target as Node)
+    const onDown = (e: globalThis.MouseEvent) => {
+      if (outside(e.target)) onCloseRef.current()
+    }
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation()
+        onCloseRef.current()
+      }
+    }
+    const onWheel = (e: globalThis.WheelEvent) => {
+      if (outside(e.target)) onCloseRef.current()
+    }
+    const onBlur = () => onCloseRef.current()
+    window.addEventListener("mousedown", onDown, true)
+    window.addEventListener("keydown", onKey, true)
+    window.addEventListener("wheel", onWheel, true)
+    window.addEventListener("blur", onBlur)
+    return () => {
+      window.removeEventListener("mousedown", onDown, true)
+      window.removeEventListener("keydown", onKey, true)
+      window.removeEventListener("wheel", onWheel, true)
+      window.removeEventListener("blur", onBlur)
+    }
+  }, [])
+
+  const run = (action: () => void) => {
+    onClose()
+    action()
+  }
+
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return
+    e.preventDefault()
+    const items = Array.from(ref.current?.querySelectorAll<HTMLButtonElement>("button") ?? [])
+    if (items.length === 0) return
+    const idx = items.indexOf(document.activeElement as HTMLButtonElement)
+    const next =
+      e.key === "ArrowDown" ? (idx + 1) % items.length : idx <= 0 ? items.length - 1 : idx - 1
+    items[next].focus()
+  }
+
+  return createPortal(
+    <div
+      ref={ref}
+      className="popover context-menu"
+      style={pos ? { left: pos.left, top: pos.top } : { left: 0, top: 0, visibility: "hidden" }}
+      onContextMenu={(e) => e.preventDefault()}
+      onKeyDown={onKeyDown}
+    >
+      <button className="context-menu-item" onClick={() => run(onRename)}>
+        {t.renameTab}
+      </button>
+      <button className="context-menu-item" onClick={() => run(onFork)}>
+        {t.forkSession}
+      </button>
+    </div>,
+    document.body,
   )
 }
 

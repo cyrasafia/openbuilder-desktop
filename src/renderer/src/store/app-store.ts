@@ -309,6 +309,12 @@ export class AppStore {
    * 成功行随 sandboxes 移除消失，失败复位行可重试。纯内存（重启后行随快照恢复真实态）。
    */
   deletingWorkspaces = new Set<string>()
+  /**
+   * 本端 closeChatTab 在途集合（§17 修订二，SSE 归档回环关闭抑制）：关 Tab=归档
+   * 流程"先 PATCH 后 closeTab(pushClosed 入关闭栈)"，SSE 归档回环可能先到——
+   * 实时收敛分支抢先关会丢 Ctrl+Shift+T 关闭栈条目，在途期间抑制、交本地收尾
+   */
+  private closingChatSessions = new Set<string>()
   settingsOpen = false
   /** 打开项目选择器（左栏 "+" 与 Ctrl+O 同路径；overlay 计数协调浏览器视图显隐） */
   pickerOpen = false
@@ -837,6 +843,27 @@ export class AppStore {
         // 同步更新已打开 chat Tab 的 title（会话重命名后 Tab 名跟随刷新）
         const tab = this.tabs.find((t) => t.kind === "chat" && t.key === `chat:${info.id}`)
         if (tab) tab.title = info.title || info.slug || ""
+        // 实时收敛（§17 修订二，2026-09-02）：他端归档 → 立即关 Tab（跨作用域，
+        // 同 session.deleted 处置——Tab 集 = 未归档会话投影；archive:false 纯本地
+        // 移除，归档已由他端完成；激活回退/草稿清理/记忆收缩走 closeTab 既有路径）。
+        // 本端关 Tab=归档流程（closeChatTab）在途时抑制——其"先 PATCH 后
+        // closeTab(pushClosed 入关闭栈)"的 SSE 回环可能先到，抢先关会丢
+        // Ctrl+Shift+T 关闭栈条目，交由本地路径收尾
+        if (info.time.archived) {
+          if (!this.closingChatSessions.has(info.id)) {
+            this.closeTab(`chat:${info.id}`, { archive: false })
+          }
+        }
+        // 实时补开（§17 修订，2026-09-02）：当前作用域未归档顶层会话无 Tab 即
+        // 末尾追加（不激活不抢焦点）。created = 他端/本端新建（含 fork：复制期间
+        // 消息经 message.* 流入，激活等 REST 响应权威收敛——标题关联已废弃，
+        // design-session-tab-context-menu 修订四）；updated = 他端取消归档（契约
+        // archived:0，实测 1.18.20，null 不生效）及 touch/重命名等（有 Tab 时
+        // 幂等跳过）。口径同 visibleSessions：subagent 子会话不开；非当前作用域
+        // 目录不开（经 §17 切入补开）。SSE 丢失的补偿路径不变
+        else if (!info.parentID && info.directory === this.scopeDirectory()) {
+          this.openChatTabPassive(info)
+        }
         break
       }
       case "session.deleted": {
@@ -1836,6 +1863,25 @@ export class AppStore {
   }
 
   /**
+   * 实时补开（§17 修订，2026-09-02）：SSE session.created 新增当前作用域未归档
+   * 会话时**末尾追加** Tab——不激活不抢焦点（他端新建不打断当前工作，
+   * recordScopeActive 不动）；记忆即时吸收（同 §17 切入补开口径，重启/切回
+   * 顺序保持）。emit 由 handleEvent 尾部统一发出。
+   */
+  private openChatTabPassive(session: Session) {
+    const key = `chat:${session.id}`
+    if (this.tabs.some((t) => t.key === key)) return
+    this.tabs.push({
+      kind: "chat",
+      key,
+      projectId: session.projectID,
+      title: session.title || session.slug || "",
+      directory: session.directory,
+    })
+    this.syncScopeMemory(session.directory)
+  }
+
+  /**
    * 切入作用域的 Tab 恢复（§6，替换原"补开最近活跃前 8"）：
    * - 无记忆 / 记忆 projectId 不符（worktree 同路径重建）→ 首次打开：
    *   全量开未归档会话（created 升序），active = 最近活跃；真实空目录也写入空记忆（§3.3）
@@ -2617,6 +2663,44 @@ export class AppStore {
       this.emit()
       return false
     }
+  }
+
+  /**
+   * 会话 fork（design-session-tab-context-menu §2.3 修订四）：**fire-and-forget**——
+   * 发起 POST 后不等结果、不开 Tab 不激活；新 Tab 由 SSE `session.created` 经
+   * 实时补开（§17 修订）自然打开（末尾追加、不抢焦点，E2E 实测 0.3s）。
+   * 不做 REST↔事件关联：v1 协议无来源字段，标题模式（getForkedTitle）在同名
+   * 会话/并发 fork 下误报不可控，已废弃。
+   * directory 优先取调用方直传（chat Tab 作用域）——本地无源会话记录的僵尸 Tab
+   * 也能发起。REST 端点为同步长操作（大会话实测 24s，timeoutMs: 0，不设超时——
+   * 误判失败会在 server 实际成功时误报错误）。响应到达仅做数据收敛：合并快照 +
+   * 当前作用域被动补开（SSE 丢失的兜底，同一条路径，幂等）；失败置
+   * connectionError（左栏状态行可见），无 toast 基建同文件菜单取舍。
+   */
+  forkSession(sessionID: string, opts: { messageID?: string; directory?: string } = {}): void {
+    const client = this.client
+    if (!client) return
+    const directory = opts.directory ?? this.findSession(sessionID)?.directory
+    if (!directory) return
+    void client
+      .forkSession(sessionID, directory, opts)
+      .then((forked) => {
+        // 迟到快照不回卷（review #1）：REST 响应携带的是复制完成时刻的快照，
+        // 复制窗口内对该会话的后续变更（关 Tab=归档、重命名）已先经
+        // session.updated 到达本地——本地记录 time.updated 更晚时跳过合并与
+        // 补开，否则会把已归档会话洗回未归档并复活刚关的 Tab
+        const existing = this.findSession(forked.id)
+        if (existing && existing.time.updated > forked.time.updated) return
+        const map = this.sessionsByProject.get(forked.projectID) ?? new Map()
+        map.set(forked.id, forked)
+        this.sessionsByProject.set(forked.projectID, map)
+        if (forked.directory === this.scopeDirectory()) this.openChatTabPassive(forked)
+        this.emit()
+      })
+      .catch((e) => {
+        this.connectionError = e instanceof Error ? e.message : String(e)
+        this.emit()
+      })
   }
 
   async abortSession(sessionID: string) {
@@ -3683,21 +3767,28 @@ export class AppStore {
 
   /** 关闭 chat Tab = 归档（design-layout 锁定语义），并卸载会话运行时状态 */
   async closeChatTab(sessionID: string, opts: { streaming: boolean }): Promise<boolean> {
-    if (opts.streaming) {
-      await this.abortSession(sessionID)
+    // 在途标记（§17 修订二）：archive PATCH 的 SSE 回环（实时收敛）先到时
+    // 抑制其关 Tab，保住此处的 pushClosed 关闭栈条目；finally 必清
+    this.closingChatSessions.add(sessionID)
+    try {
+      if (opts.streaming) {
+        await this.abortSession(sessionID)
+      }
+      // 会话已不存在（如被其他客户端删除）：视为成功关闭
+      if (!this.findSession(sessionID)) {
+        this.closeTab(`chat:${sessionID}`, { archive: false, pushClosed: true })
+        this.cleanupSessionState(sessionID)
+        return true
+      }
+      const ok = await this.archiveSession(sessionID)
+      if (ok) {
+        this.closeTab(`chat:${sessionID}`, { archive: false, pushClosed: true })
+        this.cleanupSessionState(sessionID)
+      }
+      return ok
+    } finally {
+      this.closingChatSessions.delete(sessionID)
     }
-    // 会话已不存在（如被其他客户端删除）：视为成功关闭
-    if (!this.findSession(sessionID)) {
-      this.closeTab(`chat:${sessionID}`, { archive: false, pushClosed: true })
-      this.cleanupSessionState(sessionID)
-      return true
-    }
-    const ok = await this.archiveSession(sessionID)
-    if (ok) {
-      this.closeTab(`chat:${sessionID}`, { archive: false, pushClosed: true })
-      this.cleanupSessionState(sessionID)
-    }
-    return ok
   }
 
   closeTab(key: string, _opts: { archive?: boolean; pushClosed?: boolean } = {}) {

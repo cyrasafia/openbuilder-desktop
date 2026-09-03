@@ -15,6 +15,7 @@
 | 7 | PDF 预览 | 文件 Tab 内预览 PDF：文件 Tab 内嵌专用 WebContentsView + 顶层 `file://` 导航（Chromium 内置 PDFium 查看器渲染；iframe/embed/pdfjs 路线实测不可行，见 design-pdf-preview §0）。仅预览态；非二进制/错误走占位（随文件监听刷新），内容变更重开 Tab 即见 |
 | 8 | Linux Open With | 文件树右键「打开方式…」在 Linux 恢复显示：`xdg-mime` 查 MIME → 解析 .desktop 枚举支持该类型的应用 → 应用内选择器 → `gio launch` 启动。修订 design-file-panel-context-menu §2.4 原「Linux 不提供」决策；win32/darwin 原路径不变。**2026-08-31 修订**：目录行/空白处（作用域根目录）同样提供——目录 MIME 为 `inode/directory`，命中文件管理器，枚举/启动链路零改动 |
 | 9 | 会话任务列表展示 | ChatFooter 第三类卡片（见 [design-task-list.md](design-task-list.md)）：agent 用 todowrite 维护的任务清单在会话底部展示，默认收起（头部 done/total 计数，点击展开进度条 + 逐条状态行）；任务全部完成（completed/cancelled）时整卡隐藏；有待处理授权/问题卡时不渲染（不遮挡人机交互卡） |
+| 10 | 会话 Tab 右键菜单（重命名/Fork） | chat Tab 右键弹菜单（[design-session-tab-context-menu.md](design-session-tab-context-menu.md)）：**重命名** = 双击行内编辑的菜单入口；**Fork 会话** = `POST /session/{id}/fork` 复制会话（省略 messageID = 全量复制），**fire-and-forget**——发起不等结果、不自动切换；新 Tab 由 SSE `session.created` 经实时补开自然打开（末尾追加、不抢焦点，实测 0.3s），消息在复制期间逐步流入；REST 响应（同步长端点，大会话实测 24s+，不设超时）仅做数据收敛。源会话不动；仅 chat Tab 有菜单，其余 kind 右键仅屏蔽默认菜单 |
 
 ## 范围外（明确不做）
 
@@ -35,6 +36,7 @@
 | 终端 resize | `PUT /pty/{id}`（`size: {rows, cols}`） |
 | Shell 列表 | `GET /pty/shells` |
 | 会话任务列表 | `GET /session/{id}/todo`（全量列表）；SSE `todo.updated`（sessionID + 全量 todos） |
+| 会话 fork | `POST /session/{id}/fork`（body `{messageID?}` 省略 = 全量复制；响应 = 新 Session，title 自动后缀） |
 | 文件引用发送 | `POST /session/{id}/prompt_async` parts 扩 `FilePartInput`（`url` = absolute `file://`，`source.type=file`，mime 占位 `text/plain`） |
 
 ## 验收口径
@@ -49,3 +51,4 @@
 - [ ] PDF 文件在文件 Tab 内渲染预览（PDFium），非二进制/错误占位随文件监听更新；内容变更重开 Tab 即见
 - [ ] Linux 右键「打开方式…」列出支持该 MIME 的应用，选择后文件被对应应用打开；目录行/空白处（根目录）同提供，选择后文件管理器打开该目录（2026-08-31 修订）
 - [ ] agent 更新任务（todowrite）时会话底部出现任务卡：默认收起、头部计数正确，展开可见进度条与逐条状态；全部完成后整卡隐藏；授权/问题卡在队时任务卡不渲染，应答后自动回归
+- [ ] chat Tab 右键弹菜单：重命名进入行内编辑（同双击）；Fork 后新 Tab 打开激活、标题带 "(fork #N)"、消息全量复制，源会话不动；其余 kind Tab 右键无菜单
