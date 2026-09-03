@@ -247,6 +247,8 @@
    16(图标)+6(gap) 前置占位 22，故 padding-left 16（2026-08-24，原 22 为任意值） */
 .ws-row {
   padding-left: 16px;
+  /* 不可拖拽行文本可被划选，与 draggable 的项目行（名称/路径）表现不一致：禁用选中对齐 */
+  user-select: none;
 }
 
 /* worktree 行图标：16px 线性（lucide folder-git-2，DESIGN.md） */
