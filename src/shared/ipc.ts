@@ -114,8 +114,9 @@ export interface DesktopApi {
   browserStop(viewId: number): void
   /** 视图状态推送（main → renderer），返回取消订阅 */
   onBrowserViewState(cb: (state: BrowserViewState) => void): () => void
-  /** 浏览器视图内快捷键转发（main → renderer；页面聚焦时 window keydown 不可达，评审 M5） */
-  onBrowserShortcut(cb: (input: { key: string; control: boolean; meta: boolean; shift: boolean; alt: boolean }) => void): () => void
+  /** 浏览器视图内快捷键转发（main → renderer；页面聚焦时 window keydown 不可达，评审 M5）。
+   *  code = 物理键（macOS ⌘⇧[/] 切 Tab 按 code 匹配，US 布局 shift+[ 的 key 是 "{"） */
+  onBrowserShortcut(cb: (input: { key: string; code: string; control: boolean; meta: boolean; shift: boolean; alt: boolean }) => void): () => void
   /** Linux「打开方式」应用枚举（design-linux-open-with §1.1；仅 linux 有意义）。
    *  **全量应用**（2026-08-31 修订，不再按 MIME 过滤）：matches = MimeType 命中
    *  目标 MIME（祖先闭包）；已按「匹配组在前、其余组后，组内字母序」排序。

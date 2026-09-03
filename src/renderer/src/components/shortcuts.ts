@@ -7,7 +7,10 @@ import { closeTabInteractive } from "./tab-actions"
  * 浏览器视图聚焦时原生 webContents 抢走键盘，经 main 的 before-input-event
  * 转发（onBrowserShortcut，design-browser-tab 评审 M5）走同一分发。
  * IME 组合中（fcitx5 上屏）不触发；已 preventDefault 的事件不重复处理。
- * Ctrl+O/T/W、Ctrl(+Shift)+Tab、Ctrl+PgUp/PgDn、Ctrl+Shift+T、Ctrl+Alt+↑/↓、Ctrl+[/]。
+ * Ctrl+O/T/W、Ctrl+Shift+T、Ctrl+Alt+↑/↓、Ctrl(+Shift)+Tab（非 mac）、Ctrl+PgUp/PgDn（非 mac）；
+ * 面板开关全平台 VS Code 系：Ctrl+B / Ctrl+Alt+B（mac 经 metaKey 等价即 ⌘B / ⌥⌘B）。
+ * macOS 切 Tab 仅惯例键 ⌘⌥←/→ 与 ⌘⇧[/]（⌘Tab/⌘⇧Tab 是系统应用切换器到不了应用，
+ * Ctrl+Tab/PgUp/PgDn 亦不绑定——用户决策 2026-09-04）。
  */
 
 /** 键盘事件统一分发（window keydown 与 browser:shortcut 转发共用）；
@@ -20,20 +23,45 @@ function dispatch(
   ctrl: boolean,
   shift: boolean,
   alt: boolean,
+  code: string,
 ): boolean {
+  const mac = window.desktop.platform === "darwin"
   // Ctrl+Alt+↑/↓：左栏作用域遍历
   if (ctrl && alt && (key === "ArrowDown" || key === "ArrowUp")) {
     store.cycleScopeEntry(key === "ArrowDown" ? 1 : -1)
     return true
   }
-  if (!alt && key === "Tab") {
+  // macOS 专属切 Tab 键（浏览器惯例，2026-09-03 修订，design-keyboard-shortcuts
+  // §1）：⌘⌥←/→ 与 ⌘⇧[/]。⌘⇧[ 按 code 匹配——US 布局 shift+[ 的 key 是 "{"，
+  // code 布局无关。linux 不绑这两组：Ctrl+Alt+←/→ 是 GNOME/KDE 工作区切换，
+  // Ctrl+Shift+[/] 维持放行语义
+  if (mac && ctrl && alt && (key === "ArrowLeft" || key === "ArrowRight")) {
+    store.cycleTab(key === "ArrowRight" ? 1 : -1)
+    return true
+  }
+  if (mac && ctrl && shift && !alt && (code === "BracketLeft" || code === "BracketRight")) {
+    store.cycleTab(code === "BracketRight" ? 1 : -1)
+    return true
+  }
+  // Ctrl+Tab 系仅非 mac 绑定（mac 切 Tab 只有上面的惯例键，用户决策 2026-09-04）
+  if (!mac && !alt && key === "Tab") {
     store.cycleTab(shift ? -1 : 1)
     return true
   }
-  if (!alt && (key === "PageDown" || key === "PageUp")) {
+  if (!mac && !alt && (key === "PageDown" || key === "PageUp")) {
     // Shift 反转方向（与 Ctrl+Shift+Tab 一致）
     const base = key === "PageDown" ? 1 : -1
     store.cycleTab(shift ? (-base as 1 | -1) : (base as 1 | -1))
+    return true
+  }
+  // Ctrl+B / Ctrl+Alt+B：左/右栏收起/展开（翻转，与标题栏开关同路径 toggle；
+  // VS Code 系全平台统一，2026-09-04 修订替换原 Ctrl+[/]）。按 code 匹配
+  // KeyB——mac ⌥B 的 key 是 "∫"（Option 产特殊字符），key 不可靠。终端 Tab
+  // 聚焦时 xterm 抢先消费 Ctrl+B（STX 0x02 归 pty），事件到不了这里——与
+  // Ctrl+T/W 在终端内不生效一致
+  if (!shift && (code === "KeyB" || key.toLowerCase() === "b")) {
+    if (alt) store.toggleRightPanel()
+    else store.toggleLeftPanel()
     return true
   }
   if (alt || shift) {
@@ -59,17 +87,6 @@ function dispatch(
     closeTabInteractive(store, active, t)
     return true
   }
-  // Ctrl+[ / Ctrl+]：左/右栏收起/展开（翻转，与标题栏开关同路径 toggle）。
-  // 仅裸 Ctrl——Shift/Alt 组合在上方已放行（AltGr 防误触：欧陆布局 [ 由
-  // AltGr 产生会上报 ctrl+alt）。终端 Tab 聚焦时 xterm 抢先消费（cancel →
-  // preventDefault+stopPropagation，Ctrl+[=ESC / Ctrl+]=0x1d 字节归 pty），
-  // 事件到不了这里——与 Ctrl+T/W 在终端内不生效一致；macOS 开发态 Cmd+[ /]
-  // 是 Chromium 后退/前进（BrowserView 内双触发，主环境 Linux 无影响）
-  if (key === "[" || key === "]") {
-    if (key === "[") store.toggleLeftPanel()
-    else store.toggleRightPanel()
-    return true
-  }
   return false
 }
 export function useShortcuts() {
@@ -83,7 +100,7 @@ export function useShortcuts() {
       const ctrl = e.ctrlKey || e.metaKey
       if (!ctrl) return
       // 消费才吞（未映射组合放行——Ctrl+S 浏览器保存；Ctrl+W 无激活 Tab 也吞，见 dispatch）
-      if (dispatch(store, t, e.key, ctrl, e.shiftKey, e.altKey)) e.preventDefault()
+      if (dispatch(store, t, e.key, ctrl, e.shiftKey, e.altKey, e.code)) e.preventDefault()
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
@@ -93,7 +110,7 @@ export function useShortcuts() {
   useEffect(() => {
     return window.desktop.onBrowserShortcut?.((input) => {
       if (!input || typeof input.key !== "string") return
-      dispatch(store, t, input.key, input.control || input.meta, input.shift, input.alt)
+      dispatch(store, t, input.key, input.control || input.meta, input.shift, input.alt, input.code ?? "")
     })
   }, [store, t])
 }
