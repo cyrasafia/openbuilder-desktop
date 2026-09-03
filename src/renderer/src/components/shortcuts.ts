@@ -7,7 +7,7 @@ import { closeTabInteractive } from "./tab-actions"
  * 浏览器视图聚焦时原生 webContents 抢走键盘，经 main 的 before-input-event
  * 转发（onBrowserShortcut，design-browser-tab 评审 M5）走同一分发。
  * IME 组合中（fcitx5 上屏）不触发；已 preventDefault 的事件不重复处理。
- * Ctrl+O/T/W、Ctrl(+Shift)+Tab、Ctrl+PgUp/PgDn、Ctrl+Shift+T、Ctrl+Alt+↑/↓。
+ * Ctrl+O/T/W、Ctrl(+Shift)+Tab、Ctrl+PgUp/PgDn、Ctrl+Shift+T、Ctrl+Alt+↑/↓、Ctrl+[/]。
  */
 
 /** 键盘事件统一分发（window keydown 与 browser:shortcut 转发共用）；
@@ -57,6 +57,17 @@ function dispatch(
     // 无激活 Tab 也吞（禁用而非放行）：Electron 默认菜单的 close 加速键会关窗口
     if (!active) return true
     closeTabInteractive(store, active, t)
+    return true
+  }
+  // Ctrl+[ / Ctrl+]：左/右栏收起/展开（翻转，与标题栏开关同路径 toggle）。
+  // 仅裸 Ctrl——Shift/Alt 组合在上方已放行（AltGr 防误触：欧陆布局 [ 由
+  // AltGr 产生会上报 ctrl+alt）。终端 Tab 聚焦时 xterm 抢先消费（cancel →
+  // preventDefault+stopPropagation，Ctrl+[=ESC / Ctrl+]=0x1d 字节归 pty），
+  // 事件到不了这里——与 Ctrl+T/W 在终端内不生效一致；macOS 开发态 Cmd+[ /]
+  // 是 Chromium 后退/前进（BrowserView 内双触发，主环境 Linux 无影响）
+  if (key === "[" || key === "]") {
+    if (key === "[") store.toggleLeftPanel()
+    else store.toggleRightPanel()
     return true
   }
   return false

@@ -12,6 +12,8 @@ const actions = {
   cycleTab: vi.fn(),
   cycleScopeEntry: vi.fn(),
   restoreClosedTab: vi.fn(),
+  toggleLeftPanel: vi.fn(),
+  toggleRightPanel: vi.fn(),
   closeTab: vi.fn(),
   closeChatTab: vi.fn(async () => true),
   isSessionActive: vi.fn(() => false),
@@ -124,6 +126,22 @@ describe("useShortcuts 分发", () => {
     expect(actions.cycleScopeEntry).toHaveBeenCalledWith(-1)
   })
 
+  it("Ctrl+[ / Ctrl+] → 左/右栏收起/展开（翻转）；Shift/Alt 组合放行（AltGr 防误触）", () => {
+    render(<Harness />)
+    const left = press({ key: "[", ctrlKey: true })
+    expect(left.defaultPrevented).toBe(true)
+    expect(actions.toggleLeftPanel).toHaveBeenCalledTimes(1)
+    expect(actions.toggleRightPanel).not.toHaveBeenCalled()
+    press({ key: "]", ctrlKey: true })
+    expect(actions.toggleRightPanel).toHaveBeenCalledTimes(1)
+    expect(actions.toggleLeftPanel).toHaveBeenCalledTimes(1)
+    // Shift+Ctrl+[（US 布局 e.key="{"}）与 Ctrl+Alt+[（欧陆 AltGr 产生 [）未映射，不吞
+    const shifted = press({ key: "{", ctrlKey: true, shiftKey: true })
+    expect(shifted.defaultPrevented).toBe(false)
+    const alted = press({ key: "[", ctrlKey: true, altKey: true })
+    expect(alted.defaultPrevented).toBe(false)
+  })
+
   it("浏览器视图快捷键转发（onBrowserShortcut）走同一分发", () => {
     render(<Harness />)
     expect(shortcutCb).not.toBeNull()
@@ -133,6 +151,8 @@ describe("useShortcuts 分发", () => {
     expect(actions.cycleScopeEntry).toHaveBeenCalledWith(1)
     shortcutCb?.({ key: "Tab", control: true, meta: false, shift: true, alt: false })
     expect(actions.cycleTab).toHaveBeenCalledWith(-1)
+    shortcutCb?.({ key: "]", control: true, meta: false, shift: false, alt: false })
+    expect(actions.toggleRightPanel).toHaveBeenCalledTimes(1)
   })
 
   it("IME 组合中与其他 Ctrl 组合不触发", () => {

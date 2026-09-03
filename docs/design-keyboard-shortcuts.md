@@ -15,10 +15,13 @@
 | Ctrl+Tab / Ctrl+PageDown | 下一个可见 Tab（作用域内循环；Shift 反转方向） |
 | Ctrl+Shift+Tab / Ctrl+PageUp | 上一个可见 Tab（循环；Shift+PgUp/PgDn 同样反转） |
 | Ctrl+Alt+↓ / Ctrl+Alt+↑ | 左栏项目/工作区行按显示顺序向下/上切换作用域（§3，循环） |
+| Ctrl+[ | 收起/展开**左栏**（翻转，与标题栏开关同路径 `toggleLeftPanel()`） |
+| Ctrl+] | 收起/展开**右栏**（翻转，`toggleRightPanel()`） |
 
 - 注册：Shell 内 `useShortcuts()`，window keydown（bubble）；`e.isComposing` 守卫（fcitx5）；已 preventDefault 的事件不再处理
 - **无激活 Tab 的 Ctrl+W 也消费**（2026-08-29 修订，推翻原"无加速键冲突"断言）：Electron 默认菜单并未因 autoHideMenuBar 消失，其 role:close 的 Ctrl+W 加速键对 **renderer 未消费**的按键生效（Chromium 对 renderer 未处理的键回调 `HandleKeyboardEvent` 触发加速键）——实测无 Tab 时 Ctrl+W 直接把窗口关掉。故 dispatch 对无激活 Tab 的 Ctrl+W 返回"已消费"（preventDefault、不动作）；其余未映射组合仍放行。Ctrl+数字跳转不做（用户决策，系统/输入法易冲突）
 - 修饰键判定以 ctrlKey 为准（macOS 开发态 Cmd 亦生效——metaKey 等价 Ctrl，成本零）；Ctrl+Alt+↑/↓ 与 AltGr 的组合风险仅限"AltGr+方向键产生字符"的场景，不存在（方向键非字符键）
+- **Ctrl+[ / Ctrl+] 冲突核查结论**（2026-09-03，实现前核查）：Electron 默认菜单加速键无 `[`/`]`（无 Ctrl+W 式放行风险）；Chromium 在 Linux/Win 无绑定（macOS 的 Cmd+[ /] = 后退/前进，metaKey 视同 Ctrl 下 BrowserView 内会双触发——仅 macOS 开发态，主环境 Linux 无影响）；**终端 Tab 聚焦时 xterm 在 textarea capture 监听器内 `cancel(e, force)` → preventDefault+stopPropagation 抢先消费**（Ctrl+[=ESC 字节 0x1b、Ctrl+]=0x1d 归 pty），事件到不了 window 分发——快捷键在终端内不生效，与 Ctrl+T/W 同行为，属预期而非缺陷，且保住了 vim 用户的 Ctrl+[=Esc；code-view 只装 searchKeymap 无 defaultKeymap（Mod-[ /] 缩进绑定不存在），将来上可编辑编辑器时 CM preventDefault 在先、窗口层跳过 defaultPrevented，自然共存。匹配要求裸 Ctrl（Shift/Alt 组合放行）——AltGr 在部分欧陆布局产生 `[` 时会上报 ctrl+alt，排除 alt 防误触
 
 ## 2. 关闭栈与恢复
 
