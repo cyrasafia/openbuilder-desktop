@@ -125,8 +125,11 @@ interface PreparedFile {
 
 function prepareFile(file: FileDiff): PreparedFile {
   const hunks = parseDiffHunks(file.patch)
-  // 大文件保护（设计 §4.2）：超过阈值跳过高亮（纯文本渲染，底色/行号照常）
-  if (file.patch.length > HIGHLIGHT_PATCH_LIMIT) {
+  // 大文件保护（设计 §4.2）：按收窄后的展示体量计——session diff 的 patch 是
+  // 整文件（server 端全量 context），收窄后实际渲染量小，不应因原始 patch
+  // 超限而跳过高亮；超过阈值跳过高亮（纯文本渲染，底色/行号照常）
+  const keptBytes = hunks.reduce((acc, h) => acc + h.lines.reduce((a, l) => a + l.text.length, 0), 0)
+  if (keptBytes > HIGHLIGHT_PATCH_LIMIT) {
     return { hunks, spans: hunks.map(() => []) }
   }
   const spans = hunks.map((hunk) => {

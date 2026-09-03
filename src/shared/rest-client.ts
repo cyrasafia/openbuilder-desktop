@@ -507,7 +507,9 @@ export class RestClient {
    * 大到等价"整文件作 context"——无论两处改动相距多远都合并成单 hunk、patch
    * 恒为整文件，即移动端踩过的"展示完整文件"根因（参考 openbuilder 提交 086e32d
    * 与 design-diff-view §DV-CX1）。3 对齐 git diff --unified=3。
-   * /session/:id/diff 无 context 参数，不受影响。
+   * /session/:id/diff 无 context 参数**且同样中招**：server 端 Snapshot.diffFull
+   * 硬编码 context=Number.MAX_SAFE_INTEGER 预计算并持久化到消息 summary.diffs，
+   * 客户端无法从请求侧绕过——由 diff-parse 解析层统一收窄（见 narrowHunk）。
    */
   listVcsDiff(
     directory: string,

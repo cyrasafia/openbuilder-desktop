@@ -19,7 +19,9 @@
 
 `SnapshotFileDiff = { file, patch, additions, deletions, status: added|deleted|modified }`。
 
-**context 恒显式传值（2026-08-26 修订）**：`/vcs/diff` 的 `context`（hunk 周边保留的未变更上下文行数）**省略时 server 内部默认值大到等价"整文件作 context"**——无论两处改动相距多远都合并成单 hunk、patch 恒为整文件，即"hunk 展示全量文件内容"的根因（移动端先踩过，见 openbuilder 提交 `086e32d` / design-diff-view §DV-CX1：同一症状"展示的总是完整文件内容，而非仅变更部分"，根因不在客户端渲染）。客户端决策：`listVcsDiff` 内缺省 `context = VCS_DIFF_CONTEXT = 3`（对齐 `git diff --unified=3`），调用点不写字面量；`/session/:id/diff` 无 `context` 参数，不受影响。
+**context 恒显式传值（2026-08-26 修订）**：`/vcs/diff` 的 `context`（hunk 周边保留的未变更上下文行数）**省略时 server 内部默认值大到等价"整文件作 context"**——无论两处改动相距多远都合并成单 hunk、patch 恒为整文件，即"hunk 展示全量文件内容"的根因（移动端先踩过，见 openbuilder 提交 `086e32d` / design-diff-view §DV-CX1：同一症状"展示的总是完整文件内容，而非仅变更部分"，根因不在客户端渲染）。客户端决策：`listVcsDiff` 内缺省 `context = VCS_DIFF_CONTEXT = 3`（对齐 `git diff --unified=3`），调用点不写字面量。
+
+**`/session/:id/diff` 同样中招（2026-09-03 修订，推翻上段原结论"`/session/:id/diff` 无 context 参数，不受影响"）**：实测上一轮仍展示整文件。server 源码核实（opencode `packages/opencode/src`）：该端点返回的是**轮次完成时预计算并持久化**的 `message.info.summary.diffs`（`SessionSummary.summarize` → `computeDiff` → `Snapshot.diffFull`），而 diffFull 生成 patch 时硬编码 `context: Number.MAX_SAFE_INTEGER`（snapshot/index.ts）——jsdiff 恒产出整文件单 hunk。端点无 `context` query 参数，客户端**无法从请求侧绕过**；此前"无参数 ⇒ 不受影响"是把"客户端传不了"误当"服务端不用大 context"（openbuilder DV-CX1 复审同误，其 round 路径至今遗留此问题）。客户端决策：**解析层统一收窄**——`parseDiffHunks` 解析后按 `HUNK_CONTEXT_KEEP = 3` 重切 hunk（变更块前后各留 3 行 context、保留区间未覆盖处拆段，等价 git `-U3` 分节规则；对 `/vcs/diff` 已是 -U3 形态的 patch 是 no-op），三种来源共享同一展示不变量，不依赖来源自觉。
 
 实测 patch 头两种形态：session diff 为 `Index: f\n====…\n--- f\t\n+++ f\t`（git 无 --git 前缀风格），vcs diff 为 `diff --git a/f b/f\n[new file mode…]\nindex…\n--- /dev/null\n+++ b/f`。hunk 体均为标准 unified。**上一轮的消息定位**：客户端取当前作用域最近会话（updated 降序首个）的最后一条 user 消息 id 作 messageID。
 
@@ -51,6 +53,7 @@
 - `@@ -o,ol +n,nl @@` 解析出 old/new 起始行号，行号随 kind 推进（oldNo/newNo）；
 - 多文件兜底：内容行产不出 `diff `/`Index: ` 前缀，遇之即停（防御 patch 意外含多文件）；
 - `\ No newline at end of file` 丢弃（机读噪声，移动端同决策）；
+- **context 收窄（2026-09-03 增补，§1 修订的配套）**：解析后每 hunk 按 `HUNK_CONTEXT_KEEP = 3` 重切——变更行（连续 +/- 块）前后各留 3 行 context，其余 context 丢弃；保留区间之间出现未覆盖 context 即拆为新 hunk（两处改动间 context > 2×keep 行则分节，同 git `-U3`）。段头行号取**行前推进计数**（与解析循环同规则推进）：added 段首的 oldStart / removed 段首的 newStart 取虚拟推进值（= 该侧下一行号）。纯 context hunk（无变更行）丢弃。对 `/vcs/diff` 的 -U3 patch 幂等（头尾 context ≤3、内部 ≤6 恒全保留）；
 - 产物：`{ oldStart, newStart, additions, deletions, lines: [{ kind, text, oldNo?, newNo? }] }[]`。
 
 ### 4.2 高亮层（双路重建，headless CodeMirror）
@@ -59,7 +62,7 @@
 - `EditorState.create({ doc, extensions: [languageForPath(file)] })` + `ensureSyntaxTree(state, doc.length, budget)` → `highlightCode(code, tree, classHighlighter, putText, putBreak)`（`@lezer/highlight` 官方编辑器外高亮 API，classHighlighter 即 cm-theme 的 class 化 HighlightStyle——**同一张 tag→class 表**，零复制）；
 - 产物按行收集 `{text, cls}[]`，双游标映射回 hunk 行（context 取 new 路）；
 - 未知语言 / 高亮超时 → plain mono（底色与行号照常）；
-- 大文件防护：单文件 patch > 512 KiB 跳过高亮（纯文本渲染）；`useMemo` 按 patch 缓存。
+- 大文件防护：**按收窄后的展示体量计**（§4.1 收窄后各 hunk 行文本总长）> 512 KiB 跳过高亮（纯文本渲染）——session diff 的 patch 恒为整文件，按原始 patch 大小判会误杀"大文件小改动"的高亮（2026-09-03 随收窄修订）；`useMemo` 按 patch 缓存。
 
 ### 4.3 视图层
 
@@ -117,5 +120,5 @@
 - 文件块折叠/展开、工具条「全部折叠/全部展开」一键切换（折叠后手动开文件 → hunk 头与行恢复）、行号、增删底色、语法高亮（ts/md 等已映射语言）、长行横滚；
 - 文件块展开时「查看文件」按钮 → 新 Tab 打开文件 CodeView 并锚定首个 hunk 行（center）；复用已开 Tab 更新锚定行；无 hunk 仅打开不锚定；revealLine 强制源码模式；
 - hunk header / body 右键菜单 → 「查看文件」锚定至该 hunk 首行；
-- 解析器单测（含 `+++i` 内容行、多文件兜底、`\ No newline`）；
+- 解析器单测（含 `+++i` 内容行、多文件兜底、`\ No newline`、context 收窄：长 context 拆段/头尾裁剪/-U3 幂等/纯 context 丢弃/段首 added 行号）；
 - `npm run test` / `npm run typecheck` 全绿；本机 15120 实测三端点。
