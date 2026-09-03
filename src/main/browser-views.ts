@@ -21,8 +21,10 @@ let mainWindow: BrowserWindow | null = null
 export function bindMainWindowForBrowserViews(win: BrowserWindow) {
   mainWindow = win
   win.on("closed", () => {
-    disposeAllBrowserViews()
+    // closed 触发时原生窗口已销毁：先置 null 使 disposeBrowserView 跳过
+    // removeChildView（对已销毁窗口访问 contentView 抛 "Object has been destroyed"）
     mainWindow = null
+    disposeAllBrowserViews()
   })
 }
 
@@ -136,8 +138,9 @@ function disposeBrowserView(viewId: number) {
   views.delete(viewId)
   if (mainWindow) mainWindow.contentView.removeChildView(entry.view)
   // Electron 43 无 webContents.destroy()——close() 即销毁（BrowserView 语境非
-  // window.close 语义；beforeunload 否决是窗口 close 行为，不适用于从父视图移除后的强制清理）
-  entry.view.webContents.close()
+  // window.close 语义；beforeunload 否决是窗口 close 行为，不适用于从父视图移除后的强制清理）。
+  // 窗口销毁时子视图树随之销毁，close() 前须防已销毁对象
+  if (!entry.view.webContents.isDestroyed()) entry.view.webContents.close()
 }
 
 export function disposeAllBrowserViews() {
