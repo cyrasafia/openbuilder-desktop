@@ -1,6 +1,7 @@
 /** 持久化 store 的形状（main 进程 electron-store 风格，自写 JSON 实现） */
 import type { ModelRef } from "./api-types"
 import type { ScopeTabMemory } from "./scope-tab-memory"
+import type { TabSessionState } from "./tab-session"
 
 export interface StoreShape {
   /** 连接配置列表 + 激活项 */
@@ -15,6 +16,9 @@ export interface StoreShape {
   >
   /** worktree 级 Tab 记忆（design-tab-memory）：profileKey → directory → 记忆 */
   "tabs.memory": Record<string, Record<string, ScopeTabMemory>>
+  /** Tab 会话持久层（design-tab-session-restore）：profileKey → 全 kind 有序
+   *  Tab 投影 + 各作用域最后激活——冷启动恢复输入（chat 实体仍由 tabs.memory 管） */
+  "tabs.session": Record<string, TabSessionState>
   /** 布局状态：各栏尺寸/折叠 */
   "layout.state": {
     leftWidth: number
@@ -100,6 +104,9 @@ export interface DesktopApi {
   browserViewShow(viewId: number): void
   browserViewHide(viewId: number): void
   browserViewDispose(viewId: number): void
+  /** 全量 dispose（design-tab-session-restore §4）：renderer 重载后旧视图注册表
+   *  在 main 存活但 renderer 丢失映射——doInit 起步清孤儿（含 PDF 文件 Tab 视图） */
+  browserViewDisposeAll(): void
   browserNavigate(viewId: number, url: string): void
   browserGoBack(viewId: number): void
   browserGoForward(viewId: number): void

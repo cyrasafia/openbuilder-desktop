@@ -110,6 +110,11 @@ export function registerBrowserViewIpc() {
   ipcMain.on("browser:view-dispose", (_e, viewId: number) => {
     disposeBrowserView(viewId)
   })
+  // renderer 重载后的孤儿视图清理（design-tab-session-restore §4）：注册表键在
+  // renderer 内存，重载即失联——doInit 起步全量 dispose
+  ipcMain.on("browser:dispose-all", () => {
+    disposeAllBrowserViews()
+  })
   ipcMain.on("browser:navigate", (_e, viewId: number, url: string) => {
     const wc = views.get(viewId)?.view.webContents
     if (wc && typeof url === "string" && url.length > 0) void wc.loadURL(url)

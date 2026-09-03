@@ -3782,3 +3782,333 @@ describe("createProjectFromDirectory（design-new-project）", () => {
     expect(store.projectStateFor().opened).toEqual(["proj1"])
   })
 })
+
+describe("Tab 会话持久层（design-tab-session-restore）", () => {
+  type Priv = {
+    restoreScopeTabs: (directory: string, applyActivation?: boolean, immediate?: boolean) => void
+    restoreTabSession: () => Promise<void>
+    teardownConnection: () => void
+    persistTabSession: () => void
+    restoringTabs: boolean
+    tabSession: Record<string, import("@shared/tab-session").TabSessionState>
+    sessionProfileKey: string | null
+  }
+  const priv = () => store as unknown as Priv
+
+  /** 模拟 connect 冷启动恢复段（design-tab-session-restore §3 管线）：
+   *  逐作用域记忆恢复 → 会话层恢复 → 当前作用域激活（规则 1.5 消费播种） */
+  async function coldStart() {
+    const p = priv()
+    p.restoringTabs = true
+    try {
+      for (const dir of Object.keys(store.tabMemory.default ?? {})) {
+        p.restoreScopeTabs(dir, false)
+      }
+      await p.restoreTabSession()
+      p.restoreScopeTabs(store.scopeQuery.directory, true)
+    } finally {
+      p.restoringTabs = false
+    }
+    p.persistTabSession()
+  }
+
+  /** 捕获 tabs.session 落盘 */
+  function captureSessionWrites() {
+    const mock = vi.fn<(key: string, value: unknown) => Promise<void>>(async () => {})
+    ;(window as unknown as { desktop: { storeSet: unknown } }).desktop.storeSet = mock
+    return {
+      mock,
+      writes: () =>
+        mock.mock.calls
+          .filter((c) => c[0] === "tabs.session")
+          .map((c) => c[1] as Record<string, import("@shared/tab-session").TabSessionState>),
+    }
+  }
+
+  function seedRootMemory(sessions: Session[]) {
+    store.sessionsByProject.set("proj1", sessionsOf(...sessions))
+    store.tabMemory = {
+      default: {
+        [ROOT]: { projectId: "proj1", tabs: sessions.map((s) => s.id), active: sessions[0]?.id ?? null },
+      },
+    }
+  }
+
+  it("冷启动恢复：非 chat 实体重建 + 模板序合并 + 规则 1.5 激活 file Tab", async () => {
+    seedRootMemory([session("s1", ROOT, { created: 1, updated: 1 })])
+    const readCalls: unknown[][] = []
+    ;(store as unknown as { client: Record<string, unknown> }).client.readFileContent = async (
+      ...args: unknown[]
+    ) => {
+      readCalls.push(args)
+      return { type: "text", content: "x" }
+    }
+    priv().tabSession = {
+      default: {
+        tabs: [
+          { kind: "file", key: `file:${ROOT}/a.md`, projectId: "proj1", directory: ROOT, title: "a.md" },
+          { kind: "chat", key: "chat:s1", projectId: "proj1", directory: ROOT, title: "s1" },
+          { kind: "terminal", key: "terminal:pty1", projectId: "proj1", directory: ROOT, title: "zsh" },
+        ],
+        scopeActive: { [ROOT]: `file:${ROOT}/a.md` },
+      },
+    }
+
+    await coldStart()
+    // 模板序（file 在 chat 前）覆盖记忆恢复的插入序；terminal 实体重建
+    expect(store.tabs.map((t) => t.key)).toEqual([`file:${ROOT}/a.md`, "chat:s1", "terminal:pty1"])
+    // 播种记录经规则 1.5 恢复任意 kind 激活（原冷启动恒落 chat 记忆激活）
+    expect(store.activeTabKey).toBe(`file:${ROOT}/a.md`)
+    // pty 运行时播种（挂载即全量回放；已亡则 token 404 终态）
+    expect(store.ptyRuntimeFor("pty1")).toEqual({ exited: false, disconnected: false, title: "zsh" })
+    // 内容预拉用 Tab 归属目录（跨作用域 Tab 不用当前 scopeQuery、不带 workspace）
+    expect(readCalls).toContainEqual([ROOT, `${ROOT}/a.md`, undefined])
+  })
+
+  it("引导页哨兵跨重启：scopeActive null → 冷启动落引导页", async () => {
+    seedRootMemory([session("s1", ROOT, { created: 1, updated: 1 })])
+    priv().tabSession = { default: { tabs: [], scopeActive: { [ROOT]: null } } }
+
+    await coldStart()
+    expect(store.tabs.map((t) => t.key)).toEqual(["chat:s1"])
+    expect(store.activeTabKey).toBeNull()
+  })
+
+  it("模板死 chat 跳过、模板外 chat 尾追（顺序自动收紧）", async () => {
+    seedRootMemory([
+      session("s1", ROOT, { created: 1, updated: 1 }),
+      session("s2", ROOT, { created: 2, updated: 2 }),
+    ])
+    priv().tabSession = {
+      default: {
+        // chat:s9 = 已死会话（记忆校验未恢复）；chat:s2 在模板，chat:s1 模板外尾追
+        tabs: [
+          { kind: "chat", key: "chat:s9", projectId: "proj1", directory: ROOT, title: "s9" },
+          { kind: "chat", key: "chat:s2", projectId: "proj1", directory: ROOT, title: "s2" },
+          { kind: "file", key: `file:${ROOT}/a.md`, projectId: "proj1", directory: ROOT, title: "a.md" },
+        ],
+        scopeActive: {},
+      },
+    }
+
+    await coldStart()
+    expect(store.tabs.map((t) => t.key)).toEqual(["chat:s2", `file:${ROOT}/a.md`, "chat:s1"])
+  })
+
+  it("条目闸门：目录未打开 / projectId 失配（worktree 重建语义）跳过", async () => {
+    seedRootMemory([session("s1", ROOT, { created: 1, updated: 1 })])
+    priv().tabSession = {
+      default: {
+        tabs: [
+          { kind: "file", key: "file:/elsewhere/a.md", projectId: "proj1", directory: "/elsewhere", title: "a.md" },
+          { kind: "file", key: `file:${ROOT}/b.md`, projectId: "projX", directory: ROOT, title: "b.md" },
+        ],
+        scopeActive: {},
+      },
+    }
+
+    await coldStart()
+    expect(store.tabs.map((t) => t.key)).toEqual(["chat:s1"])
+  })
+
+  it("browser 恢复：新建 view + 导航到持久化当前页 URL", async () => {
+    seedRootMemory([session("s1", ROOT, { created: 1, updated: 1 })])
+    priv().tabSession = {
+      default: {
+        tabs: [
+          {
+            kind: "browser",
+            key: "browser:https://a.dev/",
+            projectId: "proj1",
+            directory: ROOT,
+            title: "A",
+            url: "https://a.dev/x/y",
+          },
+        ],
+        scopeActive: { [ROOT]: "browser:https://a.dev/" },
+      },
+    }
+
+    await coldStart()
+    // 模板只含 browser 条目 → 模板序在前、记忆恢复的 chat 尾追
+    expect(store.tabs.map((t) => t.key)).toEqual(["browser:https://a.dev/", "chat:s1"])
+    expect(store.browserViewIdFor("browser:https://a.dev/")).toBe(1)
+    expect(
+      (window as unknown as { desktop: { browserNavigate: import("vitest").Mock } }).desktop.browserNavigate,
+    ).toHaveBeenCalledWith(1, "https://a.dev/x/y")
+    expect(store.activeTabKey).toBe("browser:https://a.dev/")
+  })
+
+  it("落盘挂点：开/关 Tab 派生投影；无变更不写（序列化去重）", () => {
+    const { writes } = captureSessionWrites()
+
+    store.openFileTab(ROOT + "/a.md")
+    expect(writes()).toHaveLength(1)
+    expect(writes()[0]!.default.tabs).toEqual([
+      { kind: "file", key: `file:${ROOT}/a.md`, projectId: "proj1", directory: ROOT, title: "a.md" },
+    ])
+
+    // 同激活重复设置：投影无变化，不落盘
+    store.setActiveTab(`file:${ROOT}/a.md`)
+    expect(writes()).toHaveLength(1)
+
+    store.closeTab(`file:${ROOT}/a.md`)
+    expect(writes()).toHaveLength(2)
+    expect(writes()[1]!.default.tabs).toEqual([])
+  })
+
+  it("browser 当前页 URL 变更落盘；loading 瞬态不触发（含首导航前空 URL 推送）", async () => {
+    const { writes } = captureSessionWrites()
+    await store.openBrowserTab("https://a.dev/")
+    expect(writes()).toHaveLength(1)
+    expect(writes()[0]!.default.tabs[0]).not.toHaveProperty("url")
+
+    // 首导航前的 did-start-loading 推送（agg.url 恒 ""，review 二轮）：不得触发派生
+    // ——此刻 browserStates.url 已被覆写为 ""，派生会把 url 字段丢掉
+    store.applyBrowserState({
+      viewId: 1,
+      url: "",
+      title: "",
+      loading: true,
+      canGoBack: false,
+      canGoForward: false,
+    })
+    expect(writes()).toHaveLength(1)
+
+    store.applyBrowserState({
+      viewId: 1,
+      url: "https://a.dev/x",
+      title: "X",
+      loading: false,
+      canGoBack: false,
+      canGoForward: false,
+    })
+    expect(writes()[1]!.default.tabs[0]?.url).toBe("https://a.dev/x")
+    expect(store.tabs.find((t) => t.kind === "browser")?.title).toBe("X")
+
+    store.applyBrowserState({
+      viewId: 1,
+      url: "https://a.dev/x",
+      title: "X",
+      loading: true,
+      canGoBack: false,
+      canGoForward: false,
+    })
+    expect(writes()).toHaveLength(2)
+  })
+
+  it("teardown 外科修剪：pty 已杀/view 已 dispose 的 terminal/browser 剔除，file 保留", async () => {
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    client.createPty = async () => ({ id: "p1", title: "zsh" })
+    client.deletePty = async () => {}
+    const { writes } = captureSessionWrites()
+
+    await store.openTerminalTab()
+    await store.openBrowserTab("https://a.dev/")
+    store.openFileTab(ROOT + "/a.md")
+    expect(writes().at(-1)!.default.tabs.map((t) => t.kind)).toEqual(["terminal", "browser", "file"])
+
+    priv().sessionProfileKey = "default" // 连接归属切片（connect 成功段落位）
+    priv().teardownConnection()
+
+    const final = writes().at(-1)!.default.tabs
+    expect(final.map((t) => t.kind)).toEqual(["file"])
+    expect(priv().sessionProfileKey).toBeNull()
+    expect(store.tabs).toHaveLength(0)
+    expect(store.ptyRuntimeFor("p1")).toBeNull()
+  })
+
+  it("teardown 修剪同步清除指向被剔除实体的 scopeActive 悬挂指针（review 二轮）", async () => {
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    client.createPty = async () => ({ id: "p2", title: "zsh" })
+    client.deletePty = async () => {}
+    const { writes } = captureSessionWrites()
+
+    // 终端是离开时激活 → scopeActive 指向 terminal key
+    await store.openTerminalTab()
+    expect(writes().at(-1)!.default.scopeActive[ROOT]).toBe("terminal:p2")
+
+    priv().sessionProfileKey = "default"
+    priv().teardownConnection()
+
+    const final = writes().at(-1)!.default
+    expect(final.tabs).toEqual([])
+    expect(final.scopeActive[ROOT]).toBeUndefined()
+  })
+
+  it("空 live teardown（刷新路径）不动持久层", () => {
+    priv().tabSession = {
+      default: {
+        tabs: [{ kind: "terminal", key: "terminal:pty1", projectId: "proj1", directory: ROOT, title: "zsh" }],
+        scopeActive: {},
+      },
+    }
+    const { writes } = captureSessionWrites()
+
+    priv().teardownConnection() // 新 store：sessionProfileKey null、live 空
+
+    expect(writes()).toHaveLength(0)
+    expect(priv().tabSession.default.tabs).toHaveLength(1)
+  })
+
+  it("空 live 守卫（review 2026-09-03）：断连/恢复期窗口的用户动作不以空投影覆写持久层", async () => {
+    priv().tabSession = {
+      default: {
+        tabs: [
+          { kind: "file", key: `file:${ROOT}/a.md`, projectId: "proj1", directory: ROOT, title: "a.md" },
+          { kind: "terminal", key: "terminal:pty1", projectId: "proj1", directory: ROOT, title: "zsh" },
+        ],
+        scopeActive: { [ROOT]: `file:${ROOT}/a.md` },
+      },
+    }
+    const { writes } = captureSessionWrites()
+
+    // 窗口一（断连）：teardown 后 live 已清空、client == null——Ctrl+T / Tab 条 "+"
+    // 仍可达（Workspace 不卸载），showGuidePage 的派生不得覆写保留切片
+    priv().teardownConnection()
+    store.showGuidePage()
+    expect(writes()).toHaveLength(0)
+    expect(priv().tabSession.default.tabs).toHaveLength(2)
+    expect(priv().tabSession.default.scopeActive[ROOT]).toBe(`file:${ROOT}/a.md`)
+
+    // 窗口二（connect 恢复期）：client 已置、快照/恢复在途（restoringTabs）——同上
+    ;(store as unknown as { client: unknown }).client = {
+      listSessions: async () => [],
+      listSessionStatus: async () => ({}),
+    }
+    priv().restoringTabs = true
+    try {
+      store.showGuidePage()
+      store.openFileTab(ROOT + "/b.md") // 开 Tab 挂点同样静默
+    } finally {
+      priv().restoringTabs = false
+    }
+    expect(writes()).toHaveLength(0)
+    expect(priv().tabSession.default.tabs.map((t) => t.key)).toEqual([
+      `file:${ROOT}/a.md`,
+      "terminal:pty1",
+    ])
+  })
+
+  it("closeProject 修剪持久层：重开不再恢复旧 file Tab（首开语义）", async () => {
+    const p2: Project = { id: "proj2", worktree: "/other", time: { created: 0, updated: 0 }, sandboxes: [] }
+    store.projects = [project(), p2]
+    store.projectStates.default.opened = ["proj1", "proj2"]
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+    snapshots.set("/other", [])
+    const { writes } = captureSessionWrites()
+
+    store.openFileTab(ROOT + "/README.md")
+    await store.openProject("proj2")
+    store.openFileTab("/other/x.md")
+    expect(writes().at(-1)!.default.tabs).toHaveLength(2)
+
+    await store.closeProject("proj1")
+    const final = writes().at(-1)!.default.tabs
+    expect(final.map((t) => t.key)).toEqual(["file:/other/x.md"])
+    // scopeActive 同步修剪（项目目录的激活记录不残留）
+    expect(writes().at(-1)!.default.scopeActive[ROOT]).toBeUndefined()
+  })
+})

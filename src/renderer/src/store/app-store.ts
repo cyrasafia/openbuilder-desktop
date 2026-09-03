@@ -17,6 +17,13 @@ import {
   type ScopeTabMemory,
 } from "@shared/scope-tab-memory"
 import {
+  deriveTabSession,
+  orderTabsByTemplate,
+  sanitizeTabSessionMap,
+  type PersistedTab,
+  type TabSessionState,
+} from "@shared/tab-session"
+import {
   carriedVariant,
   emptyCatalog,
   effectiveDefaultModel,
@@ -218,6 +225,20 @@ export class AppStore {
   projectStates: Record<string, ProjectState> = {}
   /** worktree 级 Tab 记忆（design-tab-memory）：profileKey → directory → 记忆 */
   tabMemory: Record<string, Record<string, ScopeTabMemory>> = {}
+  /**
+   * Tab 会话持久层（design-tab-session-restore）：profileKey → 全 kind 有序投影 +
+   * 各作用域最后激活。live tabs 唯一权威、本层是派生投影（同 tabMemory 模型），
+   * 仅冷启动消费；teardown 外科式剔除 terminal/browser（pty 已杀/view 已 dispose
+   * 不可恢复），其余与 tabMemory 同寿命
+   */
+  private tabSession: Record<string, TabSessionState> = {}
+  /** 当前连接归属的 profile 切片键（connect 成功段落位；teardown 修剪用——切 profile
+   *  时 activeProfileId 已变，不能按它定位旧切片）。null = 无连接（刷新路径） */
+  private sessionProfileKey: string | null = null
+  /** 冷启动恢复期 guard：persistTabSession 挂点静默，恢复段收尾统一固化一次 */
+  private restoringTabs = false
+  /** 会话层序列化去重缓存（无变化不落盘；teardown 修剪后置空强制下次写入） */
+  private lastSessionSnapshot = ""
   themeMode: "auto" | "dark" | "light" = "auto"
   localeMode: "auto" | "zh" | "en" = "auto"
   /** 消息流思考（reasoning）显隐——默认隐藏，切换即时生效（数据仍在 store，只是不渲染） */
@@ -442,6 +463,10 @@ export class AppStore {
     window.desktop.onBrowserViewState?.((state) => {
       if (state && typeof state.viewId === "number") this.applyBrowserState(state)
     })
+    // 孤儿视图清理（design-tab-session-restore §4）：renderer 重载后旧 WebContentsView
+    // 注册表在 main 存活但本端丢失映射（重载前可见的会绘制在新 DOM 之上）——起步全量
+    // dispose；首启无视图为 no-op。PDF 文件 Tab 视图激活重挂载时懒建，不受影响
+    window.desktop.browserViewDisposeAll?.()
     const profileData = (await window.desktop.storeGet("connection.profiles")) ?? {
       profiles: [],
       activeId: null,
@@ -463,6 +488,9 @@ export class AppStore {
       if (migrated) void window.desktop.storeSet("project.state", ps).catch(() => {})
     }
     this.tabMemory = (await window.desktop.storeGet("tabs.memory")) ?? {}
+    // 会话层逐切片校验（design-tab-session-restore §2）：坏切片/坏条目丢弃，等效无记录
+    this.tabSession = sanitizeTabSessionMap(await window.desktop.storeGet("tabs.session"))
+    this.lastSessionSnapshot = JSON.stringify(this.tabSession)
     this.themeMode = (await window.desktop.storeGet("theme.mode")) ?? "auto"
     this.localeMode = (await window.desktop.storeGet("locale.mode")) ?? "auto"
     this.defaults = (await window.desktop.storeGet("model.defaults")) ?? {}
@@ -540,32 +568,47 @@ export class AppStore {
     // 全部快照成功后才暴露 client（失败路径不悬挂）
     this.client = client
     this.projects = projects
+    // 连接归属切片键落位（teardown 外科修剪用它定位；见 sessionProfileKey 注释）
+    this.sessionProfileKey = this.profileKey()
     // 生效凭据（managed 模式为主进程生成值）——后续 SSE 重建统一使用
     this.sseCreds = { username, password }
 
-    // global 拆分发现快照：ensureDefaultProjects 的"最近活跃 global 目录"依赖它
-    await this.refreshGlobalSessions()
+    // 恢复期 guard 提前段位（review 2026-09-03，design-tab-session-restore §5 空 live
+    // 守卫）：client 暴露后到恢复段结束前的网络窗口（发现/默认项目/快照拉取）内，
+    // 用户动作（Ctrl+T / Tab 条 "+"）触发的会话层派生会以空 live 态覆写持久切片——
+    // 正是 restoreTabSession 即将读取的输入。恢复段收尾统一固化
+    this.restoringTabs = true
+    try {
+      // global 拆分发现快照：ensureDefaultProjects 的"最近活跃 global 目录"依赖它
+      await this.refreshGlobalSessions()
 
-    // 首次连接默认打开 current + 最近活跃 1 个（design-layout）
-    await this.ensureDefaultProjects()
+      // 首次连接默认打开 current + 最近活跃 1 个（design-layout）
+      await this.ensureDefaultProjects()
 
-    // 打开项目的快照 + 订阅
-    await this.refreshAllOpenedProjects()
-    // 启动恢复（design-tab-memory §8）：逐作用域按记忆重建 Tab（不动激活），
-    // 当前作用域含激活规则；无记忆则首次打开。须在快照落地之后（WT-2 教训）
-    {
-      const slice = this.tabMemory[this.profileKey()] ?? {}
-      for (const p of this.openedProjects) {
-        const dirs =
-          p.id === GLOBAL_PROJECT_ID
-            ? this.openedGlobalDirectories
-            : [...new Set([p.worktree, ...(p.sandboxes ?? [])])]
-        for (const dir of dirs) {
-          if (slice[dir]) this.restoreScopeTabs(dir, false)
+      // 打开项目的快照 + 订阅
+      await this.refreshAllOpenedProjects()
+      // 启动恢复（design-tab-memory §8 + design-tab-session-restore §3）：逐作用域按记忆
+      // 重建 chat Tab（不动激活）→ 会话层恢复非 chat 实体 + 模板序合并 + scopeActive
+      // 播种 → 当前作用域含激活规则（规则 1.5 消费播种记录——任意 kind/引导页跨重启）。
+      // 须在快照落地之后（WT-2 教训）；恢复期 guard 内不落会话盘，收尾统一固化
+      {
+        const slice = this.tabMemory[this.profileKey()] ?? {}
+        for (const p of this.openedProjects) {
+          const dirs =
+            p.id === GLOBAL_PROJECT_ID
+              ? this.openedGlobalDirectories
+              : [...new Set([p.worktree, ...(p.sandboxes ?? [])])]
+          for (const dir of dirs) {
+            if (slice[dir]) this.restoreScopeTabs(dir, false)
+          }
         }
+        await this.restoreTabSession()
+        this.restoreScopeTabs(this.scopeDirectory(), true)
       }
-      this.restoreScopeTabs(this.scopeDirectory(), true)
+    } finally {
+      this.restoringTabs = false
     }
+    this.persistTabSession()
     this.startSse()
     this.startWorktreeSyncTimer()
     // 冷启动 pending 回填（离线期间产生的授权/问题请求）
@@ -585,6 +628,16 @@ export class AppStore {
 
   /** 拆除连接相关的一切运行时状态（SSE、域数据、Tab、managed 地址） */
   private teardownConnection() {
+    // 会话层修剪输入捕获（design-tab-session-restore §6）：须在下方清空 live 态之前——
+    // 有 terminal Tab / browser view = pty 将被杀 / view 将被 dispose（不可恢复）；
+    // 空 live（刷新路径的新 store teardown）两者皆空 → 不动持久层。
+    // browser view 计数只认 browser Tab 的注册（PDF 文件 Tab 视图同用注册表——它们
+    // 属 file 条目、重连可恢复且激活懒建，不得推高 browser 修剪标记）
+    const sessionKeyForPrune = this.sessionProfileKey
+    const hadTerminalTabs = this.tabs.some((t) => t.kind === "terminal")
+    const hadBrowserViews = this.tabs.some(
+      (t) => t.kind === "browser" && this.browserViewIds.has(t.key),
+    )
     this.sseSubscriber?.stop()
     this.sseSubscriber = null
     // pty 全杀（fire-and-forget）+ 运行时全清——**必须在 client 置 null 之前**
@@ -634,6 +687,38 @@ export class AppStore {
     this.diffViewStates.clear()
     this.tabs = []
     this.activeTabKey = null
+    // 会话层外科式修剪（design-tab-session-restore §6）：pty 已杀 / view 已 dispose 的
+    // 实体重连不可恢复——从持久层剔除对应 kind 条目（chat/file/diff 保留，重连恢复），
+    // 指向被剔除实体的 scopeActive 悬挂指针同步清除（规则 1.5 虽会校验失效，但残留
+    // 指针会被反复播种/派生回持久层，直到该作用域发生真实激活——review 二轮）。
+    // 按**连接归属切片**修剪（sessionProfileKey，非 activeProfileId——切 profile 时
+    // 后者已指向新 profile）；同帧无该类实体则跳过
+    if (sessionKeyForPrune != null && (hadTerminalTabs || hadBrowserViews)) {
+      const sess = this.tabSession[sessionKeyForPrune]
+      if (sess) {
+        const removedKeys = new Set(
+          sess.tabs
+            .filter(
+              (t) =>
+                (hadTerminalTabs && t.kind === "terminal") || (hadBrowserViews && t.kind === "browser"),
+            )
+            .map((t) => t.key),
+        )
+        if (removedKeys.size > 0) {
+          const scopeActive = { ...sess.scopeActive }
+          for (const [dir, key] of Object.entries(scopeActive)) {
+            if (key != null && removedKeys.has(key)) delete scopeActive[dir]
+          }
+          this.tabSession[sessionKeyForPrune] = {
+            tabs: sess.tabs.filter((t) => !removedKeys.has(t.key)),
+            scopeActive,
+          }
+          this.lastSessionSnapshot = ""
+          void window.desktop.storeSet("tabs.session", this.tabSession).catch(() => {})
+        }
+      }
+    }
+    this.sessionProfileKey = null
     this.diffData.clear()
     this.diffSelectedTypes.clear()
     this.commandCache = initialCommandCache()
@@ -1621,6 +1706,8 @@ export class AppStore {
       delete this.tabMemory[memKey][directory]
       void window.desktop.storeSet("tabs.memory", this.tabMemory).catch(() => {})
     }
+    // 会话层整体派生（design-tab-session-restore §5，同 closeProject：循环/删除之后修剪）
+    this.persistTabSession()
     await this.persistProjectState()
     await this.switchProjectContext()
     this.emit()
@@ -1738,6 +1825,9 @@ export class AppStore {
     // 此处最终清除；按 projectId 匹配而非 sandboxes 枚举，外部删除的 worktree
     // 目录不在 sandboxes 里，按目录枚举会留孤儿条目永久残留 store.json）
     this.forgetProjectMemory(projectId)
+    // 会话层整体派生（design-tab-session-restore §5）：关 Tab 循环 + scopeActive 删除
+    // 之后——项目条目/激活记录随派生自然修剪（重开 = 首开语义，陈旧实体不复活）
+    this.persistTabSession()
     await this.persistProjectState()
     await this.switchProjectContext()
     this.emit()
@@ -1849,6 +1939,147 @@ export class AppStore {
     if (changed) void window.desktop.storeSet("tabs.memory", this.tabMemory).catch(() => {})
   }
 
+  // ============ Tab 会话持久层（design-tab-session-restore） ============
+
+  /**
+   * live tabs + scopeActiveKeys → 会话投影落盘（§5 挂点：全 kind 开/关/重排/激活变更、
+   * browser URL 变更、目录卸载收尾、connect 恢复段收尾）。序列化比对去重——无变化
+   * 不写（多挂点同帧触发只落一次）；恢复期（restoringTabs）静默。写失败仅内存/持久
+   * 暂不一致，下次变更自愈（同 tabs.memory 取舍）
+   *
+   * 空 live 守卫（review 2026-09-03）：断连（client == null，live 已 teardown 清空）与
+   * connect 恢复期（restoringTabs）两窗口内，用户动作（Ctrl+T/Tab 条 "+" →
+   * showGuidePage）触发的派生会以空投影**覆写**持久切片——teardown 外科修剪特意保留
+   * 的 chat/file/diff 条目与 scopeActive 被清掉，重连/重启即无物可恢复。两窗口内
+   * live tabs 恒空，静默不丢任何合法写入
+   */
+  private persistTabSession() {
+    if (this.restoringTabs || this.client == null) return
+    const key = this.profileKey()
+    this.tabSession[key] = deriveTabSession(this.tabs, this.scopeActiveKeys, (tabKey) => {
+      const viewId = this.browserViewIds.get(tabKey)
+      return viewId != null ? this.browserStates.get(viewId)?.url : undefined
+    })
+    const snapshot = JSON.stringify(this.tabSession)
+    if (snapshot === this.lastSessionSnapshot) return
+    this.lastSessionSnapshot = snapshot
+    void window.desktop.storeSet("tabs.session", this.tabSession).catch(() => {})
+  }
+
+  /**
+   * 冷启动会话恢复（§3 管线，connect 内于逐作用域记忆恢复之后、当前作用域激活
+   * 恢复之前）：播种 scopeActiveKeys（规则 1.5 跨重启）+ 按 模板重建非 chat 实体 +
+   * 模板序合并。chat 条目只作顺序标记（实体/校验/补开由记忆层负责，避免双权威）；
+   * 条目闸门 = 目录已打开 && 目录归属与持久化 projectId 一致（worktree 同路径重建
+   * 的失配语义同记忆 §3.3）
+   */
+  private async restoreTabSession() {
+    const sess = this.tabSession[this.profileKey()]
+    if (!sess) return
+    const openDirs = new Set(this.openedDirectories())
+    // 播种作用域最后激活：仅已打开目录（陈旧条目不得误导重开的项目/目录）
+    for (const [dir, act] of Object.entries(sess.scopeActive)) {
+      if (openDirs.has(dir)) this.scopeActiveKeys.set(dir, act)
+    }
+    const templateKeys: string[] = []
+    let created = false
+    for (const e of sess.tabs) {
+      if (!openDirs.has(e.directory) || !this.sessionEntryOwned(e)) continue
+      // chat 由记忆层恢复（或已判定死会话不恢复）；已存在的非 chat 实体只占模板位
+      if (e.kind !== "chat" && !this.tabs.some((t) => t.key === e.key)) {
+        const ok = await this.restoreSessionTab(e)
+        if (!ok) continue
+        created = true
+      }
+      templateKeys.push(e.key)
+    }
+    if (created && templateKeys.length > 0) {
+      this.tabs = orderTabsByTemplate(this.tabs, templateKeys)
+      this.emit()
+    }
+  }
+
+  /** 模板条目的作用域归属闸门：findProjectOwningDirectory 解析（git 优先，global 兜底）；
+   *  global 无会话目录（仅 file/diff 等实体）以已打开 entry 认领 */
+  private sessionEntryOwned(e: PersistedTab): boolean {
+    const owner = this.findProjectOwningDirectory(e.directory)
+    if (owner) return owner.id === e.projectId
+    return e.projectId === GLOBAL_PROJECT_ID && this.openedGlobalDirectories.includes(e.directory)
+  }
+
+  /** 单条非 chat 实体重建（§3 kind 分流）。返回 false = 不可恢复（browser 不可用等），跳过 */
+  private async restoreSessionTab(e: PersistedTab): Promise<boolean> {
+    switch (e.kind) {
+      case "file": {
+        this.tabs.push({
+          kind: "file",
+          key: e.key,
+          projectId: e.projectId,
+          title: e.title,
+          directory: e.directory,
+        })
+        // 按 Tab 归属目录预拉（同 doFileReload 口径：跨作用域 Tab 不用当前 scopeQuery，
+        // 不带 workspace）；文件已不存在 → 错误条目（FileView 错误态，同监听 unlink 路径）
+        void this.loadFileContent(e.key.slice("file:".length), e.directory)
+        return true
+      }
+      case "diff":
+        this.tabs.push({
+          kind: "diff",
+          key: e.key,
+          projectId: e.projectId,
+          title: "diff",
+          directory: e.directory,
+        })
+        return true
+      case "terminal": {
+        // pty 运行时播种（title 供展示；挂载即 connect-token + WS 全量回放）。
+        // pty 已亡（server 重启/被回收）→ 挂载走 token 404 gone 终态（已退出只读空视图）
+        const ptyID = e.key.slice("terminal:".length)
+        this.tabs.push({
+          kind: "terminal",
+          key: e.key,
+          projectId: e.projectId,
+          title: e.title,
+          directory: e.directory,
+        })
+        this.ptyRuntimes.set(ptyID, { exited: false, disconnected: false, title: e.title })
+        return true
+      }
+      case "browser":
+        return this.restoreBrowserTab(e)
+      default:
+        return false
+    }
+  }
+
+  /** browser 实体重建：新建 view + 导航到持久化当前页 URL（§3；view 创建即隐藏，
+   *  显隐由激活后的 syncBrowserViewVisibility 协调，bounds 由挂载 ResizeObserver 推送）。
+   *  IPC 失败（catch null）跳过该条——单条降级不断开连接恢复链 */
+  private async restoreBrowserTab(e: PersistedTab): Promise<boolean> {
+    const viewId = await window.desktop.browserViewCreate().catch(() => null)
+    if (viewId == null || viewId < 0) return false
+    const url = e.url || e.key.slice("browser:".length)
+    this.browserViewIds.set(e.key, viewId)
+    this.browserStates.set(viewId, {
+      viewId,
+      url,
+      title: e.title || url,
+      loading: false,
+      canGoBack: false,
+      canGoForward: false,
+    })
+    this.tabs.push({
+      kind: "browser",
+      key: e.key,
+      projectId: e.projectId,
+      title: e.title || url,
+      directory: e.directory,
+    })
+    window.desktop.browserNavigate(viewId, url)
+    return true
+  }
+
   /** 无激活副作用的开 Tab（恢复路径专用，§5：不走 openChatTab 的记忆同步钩子） */
   private openChatTabSilent(session: Session) {
     const key = `chat:${session.id}`
@@ -1879,6 +2110,9 @@ export class AppStore {
       directory: session.directory,
     })
     this.syncScopeMemory(session.directory)
+    // 会话层落盘（design-tab-session-restore §5）：passive 不激活、不经
+    // recordScopeActive，实体追加须在此挂
+    this.persistTabSession()
   }
 
   /**
@@ -2218,6 +2452,8 @@ export class AppStore {
       delete this.tabMemory[key][directory]
       void window.desktop.storeSet("tabs.memory", this.tabMemory).catch(() => {})
     }
+    // 会话层整体派生（design-tab-session-restore §5，同 closeProject：循环/删除之后修剪）
+    this.persistTabSession()
     this.dropPendingForDirectories([directory])
     const ps = this.projectStateFor()
     // 仅当前项目删除当前 worktree 时需复位 currentWorkspaceId 并恢复根作用域；
@@ -3452,6 +3688,9 @@ export class AppStore {
       if (this.scopeDirectory() === directory) {
         this.activeTabKey = key
         this.recordScopeActive(directory, key)
+      } else {
+        // 不经 recordScopeActive 的路径补挂（design-tab-session-restore §5）
+        this.persistTabSession()
       }
       this.emit()
       return true
@@ -3546,15 +3785,27 @@ export class AppStore {
   /** 视图状态事件入口（main 推送；tab 标题取页面 title——仅浏览器 Tab，
    *  PDF 文件 Tab 标题恒文件名，不被 PDFium 的 title 覆写，评审 N3） */
   applyBrowserState(state: BrowserViewState) {
+    const prev = this.browserStates.get(state.viewId)
     this.browserStates.set(state.viewId, state)
+    let sessionDirty = false
     for (const [key, viewId] of this.browserViewIds) {
       if (viewId === state.viewId) {
         const tab = this.tabs.find((t) => t.key === key)
-        if (tab && tab.kind === "browser") tab.title = state.title || state.url
+        if (tab && tab.kind === "browser") {
+          const nextTitle = state.title || state.url
+          // 会话层落盘判定（design-tab-session-restore §5）：当前页 URL/标题变更跟随
+          // （恢复时导航到当前页）；loading 等瞬态不触发。空 URL 推送不算变更——
+          // 新建/恢复视图首导航前 did-start-loading 的 agg.url 恒 ""，此刻派生会把
+          // 刚持久化的 url 字段丢掉（review 二轮 2026-09-03）；后续 did-navigate /
+          // did-stop-loading 携带真实 URL 再落盘
+          sessionDirty = !!state.url && (prev?.url !== state.url || tab.title !== nextTitle)
+          tab.title = nextTitle
+        }
         break
       }
     }
     this.emit()
+    if (sessionDirty) this.persistTabSession()
   }
 
   browserViewIdFor(tabKey: string): number | null {
@@ -3751,10 +4002,13 @@ export class AppStore {
     this.emit()
   }
 
-  async loadFileContent(absolutePath: string) {
-    const { directory, workspace } = this.scopeQuery
+  /** directory 显式传入（Tab 会话恢复——跨作用域 file Tab 的归属目录，同 doFileReload
+   *  口径不带 workspace）；缺省 = 当前作用域（openFileTab 时 Tab 归属即当前作用域） */
+  async loadFileContent(absolutePath: string, directory?: string) {
+    const dir = directory ?? this.scopeQuery.directory
+    const workspace = directory == null ? this.scopeQuery.workspace : undefined
     try {
-      const fc = await this.client!.readFileContent(directory, absolutePath, workspace)
+      const fc = await this.client!.readFileContent(dir, absolutePath, workspace)
       this.fileContents.set(absolutePath, fileContentEntry(fc))
     } catch (e) {
       this.fileContents.set(absolutePath, {
@@ -3851,6 +4105,9 @@ export class AppStore {
     }
     // Tab 记忆同步（§5 挂点）：chat Tab 关闭 → 从所属目录记忆移除（active 按回退结果派生）
     if (closed.kind === "chat" && closed.directory) this.syncScopeMemory(closed.directory)
+    // 会话层落盘（design-tab-session-restore §5）：实体移除（关背景 Tab 无激活变更，
+    // 不经 recordScopeActive，须在此挂）
+    this.persistTabSession()
     this.emit()
   }
 
@@ -3905,6 +4162,9 @@ export class AppStore {
     // 一次 syncScopeMemory 覆盖该作用域 chat 序
     const chatTab = desired.find((t) => t.kind === "chat")
     if (chatTab?.directory) this.syncScopeMemory(chatTab.directory)
+    // 会话层落盘（design-tab-session-restore §5）：全 kind 混排顺序变更（纯 file/diff
+    // 重排不经记忆同步，须在此挂）
+    this.persistTabSession()
     this.emit()
   }
 
@@ -4123,9 +4383,12 @@ export class AppStore {
     return this.scopeActiveKeys.get(directory)
   }
 
-  /** 记录用户意图的激活变更（挂点见 scopeActiveKeys 注释；恢复路径不得调用） */
+  /** 记录用户意图的激活变更（挂点见 scopeActiveKeys 注释；恢复路径不得调用）。
+   *  会话层落盘挂点（design-tab-session-restore §5）：全 kind 激活变更的公共漏斗
+   *  （open*Tab 开即激活 / setActiveTab / closeTab 回退 / showGuidePage 都经此） */
   private recordScopeActive(directory: string, key: string | null) {
     if (directory) this.scopeActiveKeys.set(directory, key)
+    this.persistTabSession()
   }
 
   /** 文件视图状态读（挂载初始化取模式 + 待恢复偏移） */
