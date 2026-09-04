@@ -52,6 +52,9 @@ export interface ConnectionProfile {
   password?: string
   /** managed: 用本机 opencode serve 起进程（v0.1 简化：发现 + spawn） */
   mode: "attach" | "managed"
+  /** managed: opencode 二进制路径（空/缺省 = 自动发现走 PATH；
+   *  OPENCODE_BIN 环境变量仍优先生效）。v0.4 取代 env hack（design-managed-config §1） */
+  binaryPath?: string
 }
 
 /** 自动扫描（design-auto-scan）：managed 二进制候选 */
@@ -67,6 +70,13 @@ export interface ServerCandidate {
   version: string | null
   source: "loopback" | "mdns"
 }
+
+/** managed server 崩溃重启提示（design-managed-config §3.2）：managed:event
+ *  exit/restart/restart-error 的结构化形态（restarted 清空） */
+export type ManagedNotice =
+  | { kind: "exit"; code: number | null; signal: string | null }
+  | { kind: "restart"; attempt: number; delayMs: number }
+  | { kind: "restart-error"; attempt: number; error: string }
 
 /** 运行平台：main 进程 process.platform 的字面量集；纯浏览器 shim 为 "browser" */
 export type DesktopPlatform = "linux" | "darwin" | "win32" | "browser"
@@ -94,15 +104,18 @@ export interface DesktopApi {
   platform: DesktopPlatform
   storeGet<K extends keyof StoreShape>(key: K): Promise<StoreShape[K] | null>
   storeSet<K extends keyof StoreShape>(key: K, value: StoreShape[K]): Promise<void>
-  managedStart(): Promise<{
+  managedStart(opts?: { binaryPath?: string }): Promise<{
     ok: boolean
     error?: string
     baseUrl?: string
     username?: string
     password?: string
+    version?: string
   }>
   managedStop(): Promise<void>
   onManagedEvent(cb: (payload: string) => void): () => void
+  /** managed 二进制路径手选（design-managed-config §1）：系统文件选择器 */
+  openBinaryPicker(): Promise<string | null>
   /** 自动扫描（design-auto-scan）：managed 二进制候选（PATH + 常见安装落点） */
   scanBinaries(): Promise<BinaryCandidate[]>
   /** 自动扫描（design-auto-scan）：attach server 候选（loopback 默认端口 + mDNS；

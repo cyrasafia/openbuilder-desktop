@@ -1,9 +1,20 @@
-import { spawn, type ChildProcess } from "node:child_process"
+/**
+ * managed server 单例接线（design-managed-config §3.1）：状态机在 managed-core.ts，
+ * 本文件只注入 electron 环境（BrowserWindow 广播 emit）与真实探测实现。
+ */
+import { execFile as execFileCb, spawn } from "node:child_process"
 import { createServer } from "node:net"
 import { randomBytes } from "node:crypto"
+import { promisify } from "node:util"
 import { BrowserWindow } from "electron"
+import { sanitizedChildEnv } from "./linux-open-with"
+import {
+  ManagedServerController,
+  type ManagedEvent,
+  type ManagedStartResult,
+} from "./managed-core"
 
-let child: ChildProcess | null = null
+const execFile = promisify(execFileCb)
 
 function findFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -17,17 +28,16 @@ function findFreePort(): Promise<number> {
   })
 }
 
-function emit(event: string, data: unknown) {
-  for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send("managed:event", JSON.stringify({ event, data }))
-  }
-}
-
-async function waitHealthy(baseUrl: string, timeoutMs: number): Promise<void> {
+/** 健康等待：/global/health 受 Authorization 中间件保护（密码注入后裸 fetch 恒
+ *  401），必须带凭据——授权头由控制器按本次 spawn 密码构造传入 */
+async function waitHealthy(baseUrl: string, timeoutMs: number, authorization: string): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(`${baseUrl}/global/health`, { signal: AbortSignal.timeout(2000) })
+      const res = await fetch(`${baseUrl}/global/health`, {
+        signal: AbortSignal.timeout(2000),
+        headers: { authorization },
+      })
       if (res.ok) return
     } catch {
       // 尚未就绪
@@ -37,106 +47,43 @@ async function waitHealthy(baseUrl: string, timeoutMs: number): Promise<void> {
   throw new Error("opencode server 健康检查超时")
 }
 
-export interface ManagedStartResult {
-  ok: boolean
-  error?: string
-  baseUrl?: string
-  /** basic auth 凭据：spawn 时注入 server，renderer 连接时使用 */
-  username?: string
-  password?: string
+function emit(e: ManagedEvent) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send("managed:event", JSON.stringify(e))
+  }
 }
 
-let startPromise: Promise<ManagedStartResult> | null = null
-
-export async function startManagedServer(): Promise<ManagedStartResult> {
-  if (child) {
-    return { ok: true, baseUrl: childEnvBaseUrl, username: "opencode", password: childPassword }
-  }
-  // 并发去重（StrictMode 双 init 等）：同一次启动只 spawn 一个进程
-  if (!startPromise) {
-    startPromise = doStart().finally(() => {
-      startPromise = null
-    })
-  }
-  return startPromise
-}
-
-async function doStart(): Promise<ManagedStartResult> {
-  const bin = process.env.OPENCODE_BIN ?? "opencode"
-  const port = await findFreePort()
-  const password = randomBytes(16).toString("hex")
-  childEnvBaseUrl = `http://127.0.0.1:${port}`
-  childPassword = password
-
-  return new Promise((resolve) => {
+const controller = new ManagedServerController({
+  env: process.env,
+  spawnImpl: spawn,
+  findFreePort,
+  probeVersion: async (bin) => {
     try {
-      child = spawn(bin, ["serve", "--port", String(port), "--hostname", "127.0.0.1"], {
-        stdio: ["ignore", "pipe", "pipe"],
-        detached: false,
-        env: {
-          ...process.env,
-          OPENCODE_SERVER_PASSWORD: password,
-        },
+      const { stdout } = await execFile(bin, ["--version"], {
+        timeout: 3000,
+        env: sanitizedChildEnv(process.env),
       })
-    } catch (err) {
-      child = null
-      resolve({ ok: false, error: `spawn ${bin} 失败: ${String(err)}` })
-      return
+      const line = stdout.trim().split("\n")[0]?.trim()
+      return line || null
+    } catch {
+      return null
     }
+  },
+  waitHealthy,
+  emit,
+  randomPassword: () => randomBytes(16).toString("hex"),
+})
 
-    let stderrTail = ""
-    const fail = (msg: string) => {
-      cleanupChild()
-      resolve({ ok: false, error: msg })
-    }
+export type { ManagedStartResult }
 
-    child.stdout?.on("data", (d: Buffer) => emit("log", d.toString()))
-    child.stderr?.on("data", (d: Buffer) => {
-      stderrTail = (stderrTail + d.toString()).slice(-2000)
-      emit("log", d.toString())
-    })
-    child.on("error", (err) => {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-        fail(`未在 PATH 中找到 opencode（${bin}）。请安装 opencode 或使用 attach 模式。`)
-      } else {
-        fail(`opencode 进程错误: ${err.message}`)
-      }
-    })
-    child.on("exit", (code, signal) => {
-      emit("exit", { code, signal })
-      if (child) {
-        // 非主动停止的退出视为崩溃
-        child = null
-      }
-    })
-
-    void waitHealthy(childEnvBaseUrl, 20000)
-      .then(() => resolve({ ok: true, baseUrl: childEnvBaseUrl, username: "opencode", password }))
-      .catch(() => fail(`opencode serve 启动超时。stderr 尾部:\n${stderrTail}`))
-  })
+export function startManagedServer(opts: { binaryPath?: string } = {}): Promise<ManagedStartResult> {
+  return controller.start(opts)
 }
-
-let childEnvBaseUrl = ""
-let childPassword = ""
 
 export async function stopManagedServer() {
-  if (child && !child.killed) {
-    child.kill("SIGTERM")
-  }
-  cleanupChild()
-}
-
-function cleanupChild() {
-  child = null
+  controller.stop()
 }
 
 export function killManagedSync() {
-  if (child && !child.killed) {
-    try {
-      child.kill("SIGTERM")
-    } catch {
-      // ignore
-    }
-  }
-  child = null
+  controller.killSync()
 }

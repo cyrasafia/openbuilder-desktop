@@ -62,8 +62,9 @@ import {
   migrateOpenedKeys,
   type GlobalDirectoryRow,
 } from "@shared/project-entries"
-import type { BrowserViewState, ConnectionProfile } from "@shared/ipc"
+import type { BrowserViewState, ConnectionProfile, ManagedNotice } from "@shared/ipc"
 import "@shared/ipc-global"
+import { belowMinServerVersion } from "@shared/semver"
 import {
   applyCommandFetch,
   initialCommandCache,
@@ -259,6 +260,19 @@ export class AppStore {
   reconciling = false
   connectionError: string | null = null
   managedBaseUrl: string | null = null
+  /** connect 串行化（review 2026-09-04）：在途标记 + 排队标记——并发 connect
+   *  双 teardown/双恢复竞态的根治（restarted 事件 vs 用户 activate 等） */
+  private connectInFlight = false
+  private connectQueued = false
+  /** server 版本低于最低要求（design-managed-config §2）：仅提示不阻断；
+   *  结构化存版本号，文案在 UI 层 i18n；达标/无法解析 = null */
+  serverVersionWarning: { version: string } | null = null
+  /** managed server 崩溃重启进行中的提示（design-managed-config §3.2）：
+   *  exit/restart/restart-error 事件驱动；restarted/断开清空 */
+  managedNotice: ManagedNotice | null = null
+  /** managed server 日志尾部 ring（design-managed-config §4）：chunk 原样累积，
+   *  容量 300 超出丢头；disconnect 清空（重连/重启保留——同一条 server 生命线） */
+  managedLogLines: string[] = []
 
   // ---- 域数据 ----
   projects: Project[] = []
@@ -467,6 +481,9 @@ export class AppStore {
     window.desktop.onBrowserViewState?.((state) => {
       if (state && typeof state.viewId === "number") this.applyBrowserState(state)
     })
+    // managed server 事件订阅（design-managed-config §3.2/§4：log/exit/restart*/
+    // restarted——崩溃自动重启的通知与日志可观察）
+    window.desktop.onManagedEvent?.((payload) => this.applyManagedEvent(payload))
     // 孤儿视图清理（design-tab-session-restore §4）：renderer 重载后旧 WebContentsView
     // 注册表在 main 存活但本端丢失映射（重载前可见的会绘制在新 DOM 之上）——起步全量
     // dispose；首启无视图为 no-op。PDF 文件 Tab 视图激活重挂载时懒建，不受影响
@@ -530,6 +547,27 @@ export class AppStore {
   }
 
   async connect() {
+    // 串行化（review 2026-09-04）：connect 并发重入（activate 的 connect 在途时
+    // "restarted" 事件再入）会双 teardown/双恢复——第二次的 teardownConnection
+    // 拆第一次正在 restore 的状态，恢复链对已清空容器解引用。在途时只记一次
+    // 排队，完成后由队列触发重连（拿到最新 baseUrl/凭据）
+    if (this.connectInFlight) {
+      this.connectQueued = true
+      return
+    }
+    this.connectInFlight = true
+    try {
+      await this.doConnect()
+    } finally {
+      this.connectInFlight = false
+      if (this.connectQueued) {
+        this.connectQueued = false
+        void this.connect()
+      }
+    }
+  }
+
+  private async doConnect() {
     const profile = this.activeProfile
     if (!profile) return
     // 连接前先拆干净旧连接（SSE、域数据、Tab）——防跨 profile 状态串台
@@ -542,7 +580,7 @@ export class AppStore {
     let username = profile.username
     let password = profile.password
     if (profile.mode === "managed") {
-      const res = await window.desktop.managedStart()
+      const res = await window.desktop.managedStart({ binaryPath: profile.binaryPath || undefined })
       if (!res.ok || !res.baseUrl) {
         this.connectionState = "disconnected"
         this.connectionError = res.error ?? "managed 启动失败"
@@ -560,7 +598,12 @@ export class AppStore {
     let projects: Project[]
     try {
       // 连通性探针（快照前的快速失败；版本信息仅设置弹窗"测试连接"时按需拉取）
-      await client.health()
+      const health = await client.health()
+      // 版本下限校验（design-managed-config §2）：低于 1.0.66（单全局 SSE 要求）
+      // 仅提示不阻断，attach/managed 同口径
+      this.serverVersionWarning = belowMinServerVersion(health.version)
+        ? { version: health.version }
+        : null
       projects = await client.listProjects()
     } catch (e) {
       this.connectionState = "disconnected"
@@ -618,6 +661,9 @@ export class AppStore {
     // 冷启动 pending 回填（离线期间产生的授权/问题请求）
     void this.backfillPending()
     this.connectionState = "streaming"
+    // 连接成功清 managed 退避提示：主进程侧显式 start() 取代排队重启时不发
+    // restarted 事件，notice 会残留（崩溃 → 排队 → 用户动作触发 connect 的路径）
+    this.managedNotice = null
     this.emit()
   }
 
@@ -627,12 +673,77 @@ export class AppStore {
     }
     this.teardownConnection()
     this.connectionState = "disconnected"
+    // managed 可观察状态随连接结束清空（design-managed-config §4）
+    this.managedNotice = null
+    this.managedLogLines = []
     this.emit()
   }
 
+  /** managed:event 事件应用（design-managed-config §3.2/§4） */
+  private applyManagedEvent(payload: string) {
+    let e: { event?: string; data?: unknown }
+    try {
+      e = JSON.parse(payload) as { event?: string; data?: unknown }
+    } catch {
+      return
+    }
+    switch (e.event) {
+      case "log":
+        if (typeof e.data === "string") {
+          this.managedLogLines.push(e.data)
+          if (this.managedLogLines.length > 300) {
+            this.managedLogLines.splice(0, this.managedLogLines.length - 300)
+          }
+          this.emit()
+        }
+        break
+      case "exit": {
+        const d = e.data as { code?: number | null; signal?: string | null } | undefined
+        this.managedNotice = {
+          kind: "exit",
+          code: d?.code ?? null,
+          signal: d?.signal ?? null,
+        }
+        this.emit()
+        break
+      }
+      case "restart": {
+        const d = e.data as { attempt?: number; delayMs?: number } | undefined
+        this.managedNotice = {
+          kind: "restart",
+          attempt: d?.attempt ?? 0,
+          delayMs: d?.delayMs ?? 0,
+        }
+        this.emit()
+        break
+      }
+      case "restart-error": {
+        const d = e.data as { attempt?: number; error?: string } | undefined
+        this.managedNotice = {
+          kind: "restart-error",
+          attempt: d?.attempt ?? 0,
+          error: d?.error ?? "",
+        }
+        this.emit()
+        break
+      }
+      case "restarted": {
+        // 重启成功：清提示；managed 连接走既有全量对账（teardown + 快照 + 恢复，
+        // 新 baseUrl/凭据由 managedStart 返回值接管——child 存活时直接返回现行信息）
+        this.managedNotice = null
+        this.emit()
+        if (this.activeProfile?.mode === "managed") {
+          void this.connect()
+        }
+        break
+      }
+      default:
+        break
+    }
+  }
+
   /** 拆除连接相关的一切运行时状态（SSE、域数据、Tab、managed 地址） */
-  private teardownConnection() {
-    // 会话层修剪输入捕获（design-tab-session-restore §6）：须在下方清空 live 态之前——
+  private teardownConnection() {    // 会话层修剪输入捕获（design-tab-session-restore §6）：须在下方清空 live 态之前——
     // 有 terminal Tab / browser view = pty 将被杀 / view 将被 dispose（不可恢复）；
     // 空 live（刷新路径的新 store teardown）两者皆空 → 不动持久层。
     // browser view 计数只认 browser Tab 的注册（PDF 文件 Tab 视图同用注册表——它们

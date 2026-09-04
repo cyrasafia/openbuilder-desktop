@@ -64,8 +64,25 @@ export function registerIpc() {
     await persistStore()
   })
 
-  ipcMain.handle("managed:start", () => startManagedServer())
+  ipcMain.handle(
+    "managed:start",
+    (_e, opts: unknown) =>
+      startManagedServer(
+        opts && typeof opts === "object" && typeof (opts as { binaryPath?: unknown }).binaryPath === "string"
+          ? { binaryPath: (opts as { binaryPath: string }).binaryPath }
+          : {},
+      ),
+  )
   ipcMain.handle("managed:stop", () => stopManagedServer())
+
+  // managed 二进制路径手选（design-managed-config §1）
+  ipcMain.handle("dialog:openBinaryFile", async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ["openFile"],
+      title: "选择 opencode 二进制",
+    })
+    return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0]
+  })
 
   // 自动扫描（design-auto-scan §4）：单次收束 + in-flight 去重（StrictMode 双触发
   // 不重复 spawn 一串 --version 子进程/开两条 mDNS 浏览）
