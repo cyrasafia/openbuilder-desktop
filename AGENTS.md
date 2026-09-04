@@ -12,7 +12,7 @@ opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录�
 
 ## 必读文档（写任何代码/文档前）
 
-- `PRINCIPLES.md`（根目录，设计原则）— 产品定位（builder 桌面驾驶舱）+ 三条核心原则（服务用户/不做大而全/理念先行）+ 界面理念 Everything is a tab + 元原则保持精简。**功能取舍与版本规划的判据源**，spec/design 文档与其冲突时先修订本文
+- `PRINCIPLES.md`（根目录，设计原则）— 基本原则 Keep Lean（保持精简）+ 三条推论（服务用户/不做大而全/理念先行）+ 目标用户与工作流推导（产品定位、功能取向、三栏布局）+ 界面理念 Everything is a tab。**功能取舍与版本规划的判据源**，spec/design 文档与其冲突时先修订本文
 - `docs/design-architecture.md` — 技术栈与 4 条关键决策（D1–D4）及依据。**决策不可被隐式推翻**：Electron 而非 Tauri（GNOME/Wayland 性能）；自建而非 fork opencode-desktop（其内嵌 server 不发 npm，fork 即冻结）；React 19 而非 Solid；无中间服务层，renderer 直连 opencode server
 - `docs/spec-v0.1.md` — 当前版本功能范围、API 映射表、SSE+REST 对账策略、验收口径。改功能范围必须同步此文件
 - `docs/design-layout.md` — 主界面三栏布局、Tab 注册制、project-scoped 语义。布局/交互改动以此为准
