@@ -1,10 +1,12 @@
 /**
  * profile 表单按模式分化（design-managed-config §1）：managed 隐藏 URL/凭据、
  * 显示二进制路径与扫描候选；attach 字段齐全。mock desktop.scanBinaries。
+ * Provider 页签（design-provider-config）：已连接组/搜索/设删 key（ops 注入）。
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { SettingsDialog } from "./settings-dialog"
+import { ProviderSettings, SettingsDialog, type ProviderOps } from "./settings-dialog"
+import type { ProviderCatalog, ProviderInfo } from "@shared/api-types"
 
 const scanBinaries = vi.fn(async () => [
   { path: "/usr/bin/opencode", version: "1.18.20" },
@@ -12,11 +14,15 @@ const scanBinaries = vi.fn(async () => [
 ])
 const openBinaryPicker = vi.fn(async (): Promise<string | null> => null)
 
+/** 可切换的 store mock（Provider 用例换已连接态） */
+const storeState: { current: Record<string, unknown> } = { current: {} }
+
 vi.mock("../app", () => ({
   useI18n: () => ({
     t: {
       settings: "设置",
       connectionTitle: "服务器连接",
+      providerTitle: "Provider",
       appearanceTitle: "外观",
       defaultsTitle: "默认",
       close: "关闭",
@@ -51,10 +57,32 @@ vi.mock("../app", () => ({
       serverLogTitle: "服务器日志",
       serverLogEmpty: "暂无日志",
       serverLogCopy: "复制日志",
+      providerSearch: "搜索 provider（全部目录）…",
+      providerRefresh: "刷新",
+      scanRescanning: "扫描中…",
+      providerKeyHint: "API key 存于 server 侧",
+      providerNoneConnected: "尚无已配置的 provider",
+      providerModels: "模型 {count}",
+      providerKeySet: "设置 key",
+      providerKeyReplace: "更换 key",
+      providerKeyDelete: "删除",
+      providerKeyOn: "已配置 key",
+      providerKeyOff: "未配置",
+      providerKeyFor: "{name} 的 API key",
+      providerKeyDeleteConfirmTitle: "删除 {name} 的凭据",
+      providerKeyDeleteConfirmBody: "删除后该 provider 的模型将不可用。",
+      connectFirst: "请先连接服务器",
+      noProjectMatch: "无匹配",
     },
     locale: "zh" as const,
   }),
-  useStore: () => ({
+  useStore: () => storeState.current,
+}))
+
+beforeEach(() => {
+  scanBinaries.mockClear()
+  openBinaryPicker.mockClear()
+  storeState.current = {
     profiles: [],
     activeProfileId: null,
     activeProfile: null,
@@ -65,12 +93,11 @@ vi.mock("../app", () => ({
     serverVersionWarning: null,
     managedNotice: null,
     managedLogLines: [],
-  }),
-}))
-
-beforeEach(() => {
-  scanBinaries.mockClear()
-  openBinaryPicker.mockClear()
+    getActiveClient: () => null,
+    scopeQuery: { directory: null },
+    pushOverlay: () => {},
+    popOverlay: () => {},
+  }
   Object.defineProperty(window, "desktop", {
     configurable: true,
     get: () => ({ scanBinaries, openBinaryPicker }),
@@ -124,5 +151,123 @@ describe("ProfileFormView 模式分化", () => {
     await waitFor(() => {
       expect((screen.getByLabelText("二进制路径") as HTMLInputElement).value).toBe("/picked/opencode")
     })
+  })
+})
+
+// ============ Provider 页签（design-provider-config） ============
+
+
+describe("filterProviders 纯函数", () => {
+  const all: ProviderInfo[] = [
+    { id: "anthropic", name: "Anthropic", source: "env", env: [], models: { m1: {} } },
+    { id: "deepseek", name: "DeepSeek", source: "api", env: [], key: "k", models: {} },
+    { id: "openrouter", name: "OpenRouter", source: "env", env: [], models: {} },
+  ]
+  it("空查询 = 空结果；id/名称子串不区分大小写", () => {
+    expect(filterProviders(all, "")).toEqual([])
+    expect(filterProviders(all, "  ")).toEqual([])
+    expect(filterProviders(all, "deep").map((p) => p.id)).toEqual(["deepseek"])
+    expect(filterProviders(all, "SEEK").map((p) => p.id)).toEqual(["deepseek"])
+    expect(filterProviders(all, "Anthropic").map((p) => p.id)).toEqual(["anthropic"])
+  })
+  it("上限 20", () => {
+    const many: ProviderInfo[] = Array.from({ length: 50 }, (_, i) => ({
+      id: `p${i}`,
+      name: `P${i}`,
+      source: "env",
+      env: [],
+      models: {},
+    }))
+    expect(filterProviders(many, "p")).toHaveLength(20)
+  })
+})
+
+
+describe("ProviderSettings 组件", () => {
+  const cat: ProviderCatalog = {
+    all: [
+      { id: "deepseek", name: "DeepSeek", source: "api", env: [], key: "k1", models: { a: {}, b: {} } },
+      { id: "anthropic", name: "Anthropic", source: "env", env: [], models: { c: {} } },
+      { id: "opencode", name: "OpenCode", source: "custom", env: [], key: null, models: {} },
+    ],
+    default: { deepseek: "a" },
+    connected: ["deepseek"],
+  }
+  const mkOps = () => {
+    const list = vi.fn(async (): Promise<ProviderCatalog> => cat)
+    const setKey = vi.fn(async (): Promise<boolean> => true)
+    const removeKey = vi.fn(async (): Promise<boolean> => true)
+    return { ops: { list, setKey, removeKey } satisfies ProviderOps, list, setKey, removeKey }
+  }
+  const connectStore = () => {
+    storeState.current = {
+      ...storeState.current,
+      activeProfileId: "p1",
+      activeProfile: { id: "p1", name: "a", baseUrl: "http://x", mode: "attach" },
+      getActiveClient: () => ({}),
+      scopeQuery: { directory: "/repo" },
+    }
+  }
+
+  it("默认视图只显示已配置 key 的 provider（名称/source/模型数）；搜索切全目录", async () => {
+    connectStore()
+    const { ops, list } = mkOps()
+    render(<ProviderSettings ops={ops} />)
+    await waitFor(() => expect(screen.getByText("DeepSeek")).toBeTruthy())
+    expect(screen.queryByText("Anthropic")).toBeNull()
+    expect(list).toHaveBeenCalledWith("/repo")
+    expect(screen.getByText("模型 2")).toBeTruthy()
+    expect(screen.getByText("更换 key")).toBeTruthy()
+    // 搜索 anthropic → 全目录命中，未配置项出现
+    fireEvent.change(screen.getByPlaceholderText(/搜索 provider/), {
+      target: { value: "anthropic" },
+    })
+    await waitFor(() => expect(screen.getByText("Anthropic")).toBeTruthy())
+    expect(screen.getByText("设置 key")).toBeTruthy()
+  })
+
+  it("设置 key：视图跳转 → 输入 → 保存调用并重拉列表", async () => {
+    connectStore()
+    const { ops, setKey, list } = mkOps()
+    render(<ProviderSettings ops={ops} />)
+    await waitFor(() => expect(screen.getByText("DeepSeek")).toBeTruthy())
+    fireEvent.change(screen.getByPlaceholderText(/搜索 provider/), {
+      target: { value: "anthropic" },
+    })
+    await waitFor(() => expect(screen.getByText("设置 key")).toBeTruthy())
+    fireEvent.click(screen.getByText("设置 key"))
+    fireEvent.change(screen.getByLabelText("Anthropic 的 API key"), {
+      target: { value: "sk-new" },
+    })
+    fireEvent.click(screen.getByText("保存"))
+    await waitFor(() => expect(setKey).toHaveBeenCalledWith("anthropic", "sk-new"))
+    await waitFor(() => expect(list.mock.calls.length).toBeGreaterThanOrEqual(2))
+    // 搜索词残留（未清除）：视图回列表仍按 anthropic 过滤
+    await waitFor(() => expect(screen.getByText("Anthropic")).toBeTruthy())
+  })
+
+  it("删除 key：二次确认后调用并重拉", async () => {
+    connectStore()
+    const { ops, removeKey, list } = mkOps()
+    render(<ProviderSettings ops={ops} />)
+    await waitFor(() => expect(screen.getByText("DeepSeek")).toBeTruthy())
+    const callsBefore = list.mock.calls.length
+    fireEvent.click(screen.getByText("删除"))
+    await waitFor(() => expect(screen.getByText(/删除 DeepSeek 的凭据/)).toBeTruthy())
+    // 确认弹窗里的确认钮（danger）——行内也有「删除」，取 confirm 弹窗内那个
+    const confirmBtn = screen
+      .getAllByText("删除")
+      .find((b) => (b as HTMLButtonElement).className.includes("btn-primary"))
+    expect(confirmBtn).toBeTruthy()
+    fireEvent.click(confirmBtn!)
+    await waitFor(() => expect(removeKey).toHaveBeenCalledWith("deepseek"))
+    await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(callsBefore))
+  })
+
+  it("无连接：connectFirst 引导态", async () => {
+    const { ops, list } = mkOps()
+    render(<ProviderSettings ops={ops} />)
+    await waitFor(() => expect(screen.getByText("请先连接服务器")).toBeTruthy())
+    expect(list).not.toHaveBeenCalled()
   })
 })

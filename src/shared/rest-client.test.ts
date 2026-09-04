@@ -282,3 +282,58 @@ describe("forkSession（design-session-tab-context-menu §2.2）", () => {
     expect(hit).toBe('{"messageID":"msg_1"}')
   })
 })
+
+// ============ Provider 目录 / API key（design-provider-config） ============
+
+describe("provider catalog / auth key", () => {
+  it("listProviderCatalog：directory 走 query，返回 all/default/connected 原样", async () => {
+    let called = ""
+    const client = mkClient((url) => {
+      called = url
+      return new Response(
+        JSON.stringify({
+          all: [{ id: "p1", name: "P1", source: "api", env: [], key: "sk-x", models: {} }],
+          default: { p1: "m1" },
+          connected: ["p1"],
+        }),
+      )
+    })
+    const cat = await client.listProviderCatalog("/repo")
+    expect(called).toBe("http://server/provider?directory=%2Frepo")
+    expect(cat.all[0]?.id).toBe("p1")
+    expect(cat.connected).toEqual(["p1"])
+  })
+
+  it("setProviderKey：PUT /auth/{id} body {type:'api',key}，providerID 编码", async () => {
+    let method = ""
+    let url = ""
+    let body = ""
+    const client = mkClient((u, init) => {
+      url = u
+      method = init.method ?? ""
+      body = String(init.body)
+      return new Response("true")
+    })
+    const ok = await client.setProviderKey("some/provider", "sk-123")
+    expect(ok).toBe(true)
+    expect(method).toBe("PUT")
+    expect(url).toBe("http://server/auth/some%2Fprovider")
+    expect(body).toBe(JSON.stringify({ type: "api", key: "sk-123" }))
+  })
+
+  it("deleteProviderKey：DELETE /auth/{id}，无 directory", async () => {
+    let method = ""
+    let url = ""
+    let qs = ""
+    const client = mkClient((u, init) => {
+      url = u
+      method = init.method ?? ""
+      qs = String(new URL(u).search)
+      return new Response("true")
+    })
+    await client.deleteProviderKey("p1")
+    expect(method).toBe("DELETE")
+    expect(url).toBe("http://server/auth/p1")
+    expect(qs).toBe("")
+  })
+})

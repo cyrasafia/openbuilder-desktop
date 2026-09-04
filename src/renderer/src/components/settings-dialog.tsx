@@ -4,6 +4,8 @@ import { useI18n, useStore } from "../app"
 import type { BinaryCandidate, ConnectionProfile, ManagedNotice } from "@shared/ipc"
 import { MIN_SERVER_VERSION } from "@shared/semver"
 import { ApiError, RestClient } from "@shared/rest-client"
+import type { ProviderCatalog, ProviderInfo } from "@shared/api-types"
+import { ConfirmDialog } from "./confirm-dialog"
 import { managedNoticeText } from "./managed-notice"
 import { ModelSwitcherBar } from "./model-switcher"
 
@@ -12,7 +14,7 @@ import { ModelSwitcherBar } from "./model-switcher"
 export function SettingsDialog() {
   const store = useStore()
   const { t } = useI18n()
-  const [tab, setTab] = useState<"connection" | "appearance" | "defaults">("connection")
+  const [tab, setTab] = useState<"connection" | "providers" | "appearance" | "defaults">("connection")
   // 非空 = 弹窗内跳转到服务器表单视图（丢弃 tabs 视图，草稿随视图卸载）
   const [editing, setEditing] = useState<{ profile: ConnectionProfile; isNew: boolean } | null>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
@@ -89,6 +91,9 @@ export function SettingsDialog() {
               <button className={tab === "connection" ? "active" : ""} onClick={() => setTab("connection")}>
                 {t.connectionTitle}
               </button>
+              <button className={tab === "providers" ? "active" : ""} onClick={() => setTab("providers")}>
+                {t.providerTitle}
+              </button>
               <button className={tab === "appearance" ? "active" : ""} onClick={() => setTab("appearance")}>
                 {t.appearanceTitle}
               </button>
@@ -99,6 +104,8 @@ export function SettingsDialog() {
             <div className="dialog-body">
               {tab === "connection" ? (
                 <ConnectionSettings onEdit={setEditing} />
+              ) : tab === "providers" ? (
+                <ProviderSettings />
               ) : tab === "appearance" ? (
                 <AppearanceSettings />
               ) : (
@@ -364,6 +371,202 @@ function ProfileFormView({
         </button>
       </div>
     </>
+  )
+}
+
+/** Provider 页签数据操作面（注入供测试；默认走激活连接的 client） */
+export interface ProviderOps {
+  list: (directory: string) => Promise<ProviderCatalog>
+  setKey: (providerID: string, key: string) => Promise<boolean>
+  removeKey: (providerID: string) => Promise<boolean>
+}
+
+function defaultProviderOps(store: ReturnType<typeof useStore>): ProviderOps {
+  const client = () => {
+    const c = store.getActiveClient()
+    if (!c) throw new Error("not connected")
+    return c
+  }
+  return {
+    list: (directory) => client().listProviderCatalog(directory),
+    setKey: (id, key) => client().setProviderKey(id, key),
+    removeKey: (id) => client().deleteProviderKey(id),
+  }
+}
+
+/** 全目录搜索过滤（纯函数供单测）：id/名称子串不区分大小写，上限 20 */
+export function filterProviders(all: ProviderInfo[], query: string): ProviderInfo[] {
+  const q = query.trim().toLowerCase()
+  if (!q) return []
+  const out: ProviderInfo[] = []
+  for (const p of all) {
+    if (p.id.toLowerCase().includes(q) || p.name.toLowerCase().includes(q)) {
+      out.push(p)
+      if (out.length >= 20) break
+    }
+  }
+  return out
+}
+
+/** Provider 页签（design-provider-config）：已连接组 + 全目录搜索 + key 设置/删除。
+ *  ops 注入供测试；组件导出仅为测试直挂（Fast Refresh 兼容：组件导出） */
+export function ProviderSettings({ ops }: { ops?: ProviderOps }) {
+  const store = useStore()
+  const { t } = useI18n()
+  const directory = store.scopeQuery.directory
+  const connected = !!store.getActiveClient()
+  // 目录可能随作用域变化：进入页签/作用域变化时重拉
+  const [catalog, setCatalog] = useState<ProviderCatalog | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [query, setQuery] = useState("")
+  // key 设置视图（弹窗内跳转，同 profile 表单模式）
+  const [editing, setEditing] = useState<ProviderInfo | null>(null)
+  const [keyDraft, setKeyDraft] = useState("")
+  const [saving, setSaving] = useState(false)
+  const [editError, setEditError] = useState<string | null>(null)
+  // 删除二次确认
+  const [confirming, setConfirming] = useState<ProviderInfo | null>(null)
+  const realOps = ops ?? defaultProviderOps(store)
+
+  const reload = async () => {
+    if (!connected || !directory) return
+    setLoading(true)
+    setError(null)
+    try {
+      setCatalog(await realOps.list(directory))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      setCatalog(null)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void reload()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected, directory])
+
+  if (!connected || !directory) {
+    return (
+      <div className="settings-providers">
+        <div className="form-note">{t.connectFirst}</div>
+      </div>
+    )
+  }
+
+  if (editing) {
+    return (
+      <>
+        <div className="dialog-body">
+          <label className="form-label">
+            {t.providerKeyFor.replace("{name}", editing.name)}
+            <input
+              type="password"
+              autoFocus
+              value={keyDraft}
+              onChange={(e) => setKeyDraft(e.target.value)}
+            />
+          </label>
+          {editError && <div className="form-note">{editError}</div>}
+        </div>
+        <div className="dialog-actions">
+          <button
+            onClick={() => {
+              setEditing(null)
+              setKeyDraft("")
+              setEditError(null)
+            }}
+          >
+            {t.cancel}
+          </button>
+          <button
+            className="btn-primary"
+            disabled={saving || !keyDraft.trim()}
+            onClick={() => {
+              setSaving(true)
+              setEditError(null)
+              void realOps
+                .setKey(editing.id, keyDraft.trim())
+                .then(() => {
+                  setEditing(null)
+                  setKeyDraft("")
+                  void reload()
+                })
+                .catch((e: unknown) => {
+                  setEditError(e instanceof Error ? e.message : String(e))
+                })
+                .finally(() => setSaving(false))
+            }}
+          >
+            {t.save}
+          </button>
+        </div>
+      </>
+    )
+  }
+
+  const searchResults = filterProviders(catalog?.all ?? [], query)
+  const rows = query.trim() ? searchResults : (catalog?.all ?? []).filter((p) => !!p.key)
+
+  return (
+    <div className="settings-providers">
+      <div className="scan-section-title">
+        <input
+          className="provider-search"
+          placeholder={t.providerSearch}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <button type="button" disabled={loading} onClick={() => void reload()}>
+          {loading ? t.scanRescanning : t.providerRefresh}
+        </button>
+      </div>
+      {error && <div className="form-note">{error}</div>}
+      {!error && !loading && catalog && (
+        <div className="provider-key-hint form-note">{t.providerKeyHint}</div>
+      )}
+      {!loading && catalog && rows.length === 0 && (
+        <div className="form-note">{query.trim() ? t.noProjectMatch : t.providerNoneConnected}</div>
+      )}
+      <div className="provider-list">
+        {rows.map((p) => (
+          <div key={p.id} className="provider-row">
+            <span className={"provider-key-dot " + (p.key ? "on" : "off")} title={p.key ? t.providerKeyOn : t.providerKeyOff} />
+            <span className="tree-label">{p.name}</span>
+            <span className="profile-mode">{p.source}</span>
+            <span className="tree-meta mono">
+              {t.providerModels.replace("{count}", String(Object.keys(p.models ?? {}).length))}
+            </span>
+            <button onClick={() => setEditing(p)}>{p.key ? t.providerKeyReplace : t.providerKeySet}</button>
+            {p.key && (
+              <button className="danger" onClick={() => setConfirming(p)}>
+                {t.providerKeyDelete}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+      {confirming && (
+        <ConfirmDialog
+          title={t.providerKeyDeleteConfirmTitle.replace("{name}", confirming.name)}
+          message={t.providerKeyDeleteConfirmBody}
+          confirmLabel={t.providerKeyDelete}
+          cancelLabel={t.cancel}
+          danger
+          onConfirm={() => {
+            const target = confirming
+            setConfirming(null)
+            void realOps
+              .removeKey(target.id)
+              .then(() => reload())
+              .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+          }}
+          onClose={() => setConfirming(null)}
+        />
+      )}
+    </div>
   )
 }
 

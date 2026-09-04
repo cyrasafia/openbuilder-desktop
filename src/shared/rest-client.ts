@@ -13,6 +13,7 @@ import type {
   MessageWithParts,
   ModelRef,
   Project,
+  ProviderCatalog,
   Session,
   SessionStatusValue,
   Workspace,
@@ -172,6 +173,34 @@ export class RestClient {
 
   listSessions(directory: string, workspace?: string): Promise<Session[]> {
     return this.request<Session[]>(`/session${RestClient.dirQuery(directory, { workspace })}`)
+  }
+
+  // ============ Provider 目录 / API key（design-provider-config） ============
+
+  /**
+   * 全 provider 目录（`GET /provider?directory=`，实测：all=全目录含未配置项、
+   * 每项 key 有值为已配置、connected=已连接 id 集）。**key 是明文 API key**，
+   * 调用方只可做布尔判定。作用域目录影响 config 来源的 provider 合成。
+   */
+  listProviderCatalog(directory: string): Promise<ProviderCatalog> {
+    return this.request<ProviderCatalog>(`/provider${RestClient.dirQuery(directory)}`)
+  }
+
+  /** 设置 API key（`PUT /auth/{providerID}` body `{type:"api", key}`；auth 存储
+   *  全局、无 directory 参数——openapi 核实）。仅 API key 形态（OAuth 范围外） */
+  setProviderKey(providerID: string, key: string): Promise<boolean> {
+    return this.request<boolean>(`/auth/${encodeURIComponent(providerID)}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "api", key }),
+    })
+  }
+
+  /** 删除 provider 凭据（`DELETE /auth/{providerID}`，无 directory） */
+  deleteProviderKey(providerID: string): Promise<boolean> {
+    return this.request<boolean>(`/auth/${encodeURIComponent(providerID)}`, {
+      method: "DELETE",
+    })
   }
 
   // ============ pty（design-terminal-tab §1，契约经 opencode 源码核实） ============
