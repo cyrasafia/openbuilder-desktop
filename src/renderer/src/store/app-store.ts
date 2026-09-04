@@ -703,8 +703,11 @@ export class AppStore {
     this.emit()
   }
 
-  /** managed:event 事件应用（design-managed-config §3.2/§4） */
+  /** managed:event 事件应用（design-managed-config §3.2/§4）；
+   *  disconnected 态整体忽略（review 第三轮 P3）：断开后迟到的 restarted 不
+   *  复活连接/server，迟到的 exit/restart/log 不重写已清空的观察状态 */
   private applyManagedEvent(payload: string) {
+    if (this.connectionState === "disconnected") return
     let e: { event?: string; data?: unknown }
     try {
       e = JSON.parse(payload) as { event?: string; data?: unknown }

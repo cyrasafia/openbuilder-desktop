@@ -4228,6 +4228,11 @@ describe("applyManagedEvent", () => {
       JSON.stringify(payload),
     )
 
+  beforeEach(() => {
+    // 事件只在连接中流动（disconnected 态整体忽略，review 第三轮）
+    store.connectionState = "streaming"
+  })
+
   it("log 事件进 ring，容量 300 超出丢头", () => {
     for (let i = 0; i < 305; i++) {
       fire({ event: "log", data: `line-${i}\n` })
@@ -4339,5 +4344,29 @@ describe("connect 串行化与代际（review 第二轮）", () => {
     expect(store.connectionState).toBe("disconnected")
     expect((store as unknown as { client: unknown }).client).toBeNull()
     expect(store.managedBaseUrl).toBeNull()
+  })
+})
+
+describe("applyManagedEvent disconnected 闸门（review 第三轮）", () => {
+  it("断开态迟到的 restarted 不触发 connect、log 不进 ring", async () => {
+    const managedStart = vi.fn()
+    ;(window as unknown as { desktop: unknown }).desktop = {
+      ...(window as unknown as { desktop: Record<string, unknown> }).desktop,
+      managedStart,
+    }
+    store.profiles = [{ id: "p1", name: "m", baseUrl: "", mode: "managed" }]
+    store.activeProfileId = "p1"
+    store.connectionState = "disconnected"
+    const fire = (payload: unknown) =>
+      (store as unknown as { applyManagedEvent: (p: string) => void }).applyManagedEvent(
+        JSON.stringify(payload),
+      )
+    fire({ event: "restarted", data: { baseUrl: "http://127.0.0.1:1", username: "opencode", password: "x", version: "1.0.0" } })
+    fire({ event: "log", data: "late\n" })
+    fire({ event: "exit", data: { code: 1, signal: null } })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(managedStart).not.toHaveBeenCalled()
+    expect(store.managedLogLines).toEqual([])
+    expect(store.managedNotice).toBeNull()
   })
 })

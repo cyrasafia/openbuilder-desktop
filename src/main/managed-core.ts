@@ -156,7 +156,14 @@ export class ManagedServerController {
 
   private async doStart(binaryPath?: string): Promise<ManagedStartResult> {
     const bin = this.resolveBinaryPath(binaryPath)
-    const version = await this.deps.probeVersion(bin)
+    // probe/findFreePort rejection 兜底（review 第三轮 P3）：裸 rejection 经 IPC
+    // 传导为 renderer 未处理 rejection 且卡 "connecting"
+    let version: string | null
+    try {
+      version = await this.deps.probeVersion(bin)
+    } catch {
+      version = null
+    }
     if (version === null) {
       return { ok: false, error: `无法执行 ${bin} --version（不存在或不可执行）` }
     }
@@ -166,7 +173,12 @@ export class ManagedServerController {
       return { ok: false, error: "已停止" }
     }
     this.version = version
-    const port = await this.deps.findFreePort()
+    let port: number
+    try {
+      port = await this.deps.findFreePort()
+    } catch (err) {
+      return { ok: false, error: `寻找空闲端口失败: ${String(err)}` }
+    }
     if (this.intentionalStop) {
       return { ok: false, error: "已停止" }
     }
