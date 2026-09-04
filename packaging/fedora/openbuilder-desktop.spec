@@ -6,7 +6,7 @@
 %define _binaries_in_noarch_packages_terminate_build 0
 
 Name:           openbuilder-desktop
-Version:        0.3.4
+Version:        0.4.0
 Release:        1%{?dist}
 Summary:        Thin desktop client for opencode server (Electron + React)
 License:        MIT
