@@ -4,6 +4,8 @@ import { useI18n, useStore } from "../app"
 import type { BinaryCandidate, ConnectionProfile, ManagedNotice } from "@shared/ipc"
 import { MIN_SERVER_VERSION } from "@shared/semver"
 import { ApiError, RestClient } from "@shared/rest-client"
+import type { ProviderCatalog, ProviderInfo } from "@shared/api-types"
+import { ConfirmDialog } from "./confirm-dialog"
 import { managedNoticeText } from "./managed-notice"
 import { ModelSwitcherBar } from "./model-switcher"
 
@@ -12,19 +14,23 @@ import { ModelSwitcherBar } from "./model-switcher"
 export function SettingsDialog() {
   const store = useStore()
   const { t } = useI18n()
-  const [tab, setTab] = useState<"connection" | "appearance" | "defaults">("connection")
+  const [tab, setTab] = useState<"connection" | "providers" | "appearance" | "defaults">("connection")
   // 非空 = 弹窗内跳转到服务器表单视图（丢弃 tabs 视图，草稿随视图卸载）
   const [editing, setEditing] = useState<{ profile: ConnectionProfile; isNew: boolean } | null>(null)
+  // 非空 = 弹窗内跳转到 provider key 表单视图（review P2：与 profile 表单同层，
+  // Esc 退回列表、标题行返回钮、actions 钉底）
+  const [providerEdit, setProviderEdit] = useState<ProviderInfo | null>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
 
   const close = () => {
     store.closeSettings()
   }
 
-  // 列表视图聚焦弹窗容器（Esc keydown 有落脚点，表单视图焦点在首输入框）
+  // 列表视图聚焦弹窗容器（Esc keydown 有落脚点，review 第二轮：providerEdit
+  // 返回路径同样需要——否则焦点回落 body，Esc 分层最后一跳静默失效）
   useEffect(() => {
-    if (!editing) dialogRef.current?.focus()
-  }, [editing])
+    if (!editing && !providerEdit) dialogRef.current?.focus()
+  }, [editing, providerEdit])
 
   // 保存 = upsert 直落 store（弹窗内视图跳转后 ConnectionSettings 卸载重挂，
   // 列表从 store 直读，无本地镜像；持久化用计算出的 next 列表）
@@ -46,9 +52,11 @@ export function SettingsDialog() {
         onKeyDown={(e) => {
           // IME 组合中的 Escape 是取消候选词，不能顺手关弹窗（同项目选择器）
           if (e.nativeEvent.isComposing) return
-          // Esc 分层：表单视图先退回列表（丢弃草稿），列表视图才关弹窗
+          // Esc 分层（review P2）：profile 表单 / provider key 表单先退回列表
+          //（丢弃草稿），列表视图才关弹窗
           if (e.key === "Escape") {
             if (editing) setEditing(null)
+            else if (providerEdit) setProviderEdit(null)
             else close()
           }
         }}
@@ -77,6 +85,30 @@ export function SettingsDialog() {
               onSave={saveProfile}
             />
           </>
+        ) : providerEdit ? (
+          <>
+            <div className="dialog-title dialog-title-row">
+              <div className="dialog-title-side">
+                <button
+                  className="icon-btn"
+                  title={t.back}
+                  aria-label={t.back}
+                  onClick={() => setProviderEdit(null)}
+                >
+                  <ArrowLeft size={14} aria-hidden />
+                </button>
+                <span>{t.providerKeyFor.replace("{name}", providerEdit.name)}</span>
+              </div>
+              <button className="icon-btn" title={t.close} aria-label={t.close} onClick={close}>
+                <X size={14} aria-hidden />
+              </button>
+            </div>
+            <ProviderKeyForm
+              provider={providerEdit}
+              onCancel={() => setProviderEdit(null)}
+              onSaved={() => setProviderEdit(null)}
+            />
+          </>
         ) : (
           <>
             <div className="dialog-title dialog-title-row">
@@ -89,6 +121,9 @@ export function SettingsDialog() {
               <button className={tab === "connection" ? "active" : ""} onClick={() => setTab("connection")}>
                 {t.connectionTitle}
               </button>
+              <button className={tab === "providers" ? "active" : ""} onClick={() => setTab("providers")}>
+                {t.providerTitle}
+              </button>
               <button className={tab === "appearance" ? "active" : ""} onClick={() => setTab("appearance")}>
                 {t.appearanceTitle}
               </button>
@@ -99,6 +134,8 @@ export function SettingsDialog() {
             <div className="dialog-body">
               {tab === "connection" ? (
                 <ConnectionSettings onEdit={setEditing} />
+              ) : tab === "providers" ? (
+                <ProviderSettings onEditKey={setProviderEdit} />
               ) : tab === "appearance" ? (
                 <AppearanceSettings />
               ) : (
@@ -360,6 +397,244 @@ function ProfileFormView({
           </button>
         )}
         <button className="btn-primary" onClick={() => onSave(draft)}>
+          {t.save}
+        </button>
+      </div>
+    </>
+  )
+}
+
+/** Provider 页签数据操作面（注入供测试；默认走激活连接的 client） */
+export interface ProviderOps {
+  list: (directory: string) => Promise<ProviderCatalog>
+  setKey: (providerID: string, key: string) => Promise<boolean>
+  removeKey: (providerID: string) => Promise<boolean>
+}
+
+function defaultProviderOps(store: ReturnType<typeof useStore>): ProviderOps {
+  const client = () => {
+    const c = store.getActiveClient()
+    if (!c) throw new Error("not connected")
+    return c
+  }
+  return {
+    // 全 async 包装（review 第二轮 P3）：client() 的同步 throw 若在调用点直接
+    // 冒出会逃逸 .catch 链（saving 卡死/静默失败）——async 化后走 rejection
+    list: async (directory) => client().listProviderCatalog(directory),
+    setKey: async (id, key) => client().setProviderKey(id, key),
+    removeKey: async (id) => client().deleteProviderKey(id),
+  }
+}
+
+/** 全目录搜索过滤（纯函数供单测）：id/名称子串不区分大小写，上限 20 */
+export function filterProviders(all: ProviderInfo[], query: string): ProviderInfo[] {
+  const q = query.trim().toLowerCase()
+  if (!q) return []
+  const out: ProviderInfo[] = []
+  for (const p of all) {
+    if (p.id.toLowerCase().includes(q) || p.name.toLowerCase().includes(q)) {
+      out.push(p)
+      if (out.length >= 20) break
+    }
+  }
+  return out
+}
+
+/** Provider 页签（design-provider-config）：已连接组 + 全目录搜索 + key 删除；
+ *  key 设置经 onEditKey 提升到 SettingsDialog 层的表单视图（review P2：Esc 分层
+ *  与 ProfileFormView 一致、actions 钉底）。ops 注入供测试 */
+export function ProviderSettings({
+  ops,
+  onEditKey,
+}: {
+  ops?: ProviderOps
+  onEditKey: (p: ProviderInfo) => void
+}) {
+  const store = useStore()
+  const { t } = useI18n()
+  const directory = store.scopeQuery.directory
+  const connected = !!store.getActiveClient()
+  const [catalog, setCatalog] = useState<ProviderCatalog | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [query, setQuery] = useState("")
+  // 删除二次确认
+  const [confirming, setConfirming] = useState<ProviderInfo | null>(null)
+  const realOps = ops ?? defaultProviderOps(store)
+  // 请求序号（review P3）：作用域/连接态变化重拉时，迟到的旧响应不覆盖新结果
+  const reloadSeq = useRef(0)
+
+  const reload = async () => {
+    if (!connected || !directory) return
+    const seq = ++reloadSeq.current
+    setLoading(true)
+    setError(null)
+    try {
+      const next = await realOps.list(directory)
+      if (seq !== reloadSeq.current) return
+      setCatalog(next)
+    } catch (e) {
+      if (seq !== reloadSeq.current) return
+      // 错误不清已渲染列表（review P3：瞬态网络错误不白屏）
+      setError(
+        e instanceof Error && e.message !== "not connected"
+          ? e.message
+          : t.connectFirst,
+      )
+    } finally {
+      if (seq === reloadSeq.current) setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void reload()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected, directory])
+
+  if (!connected) {
+    return (
+      <div className="settings-providers">
+        <div className="form-note">{t.connectFirst}</div>
+      </div>
+    )
+  }
+  if (!directory) {
+    // 已连接但未打开项目（review 第二轮 P3：无作用域目录不可查目录级配置，
+    // 与未连接的文案分开）
+    return (
+      <div className="settings-providers">
+        <div className="form-note">{t.providerNoProject}</div>
+      </div>
+    )
+  }
+
+  // 默认视图 = 已配置（key 非空 **或** 在 connected 集——多 env 候选的 provider
+  // key 合并为 undefined 但已连接，review P2：漏掉会误显示"尚无已配置"）
+  const connectedIds = new Set(catalog?.connected ?? [])
+  const searchResults = filterProviders(catalog?.all ?? [], query)
+  const rows = query.trim()
+    ? searchResults
+    : (catalog?.all ?? []).filter((p) => !!p.key || connectedIds.has(p.id))
+
+  return (
+    <div className="settings-providers">
+      <div className="scan-section-title">
+        <input
+          className="provider-search"
+          placeholder={t.providerSearch}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <button type="button" disabled={loading} onClick={() => void reload()}>
+          {loading ? t.providerReloading : t.providerRefresh}
+        </button>
+      </div>
+      {error && <div className="form-note">{error}</div>}
+      {!error && !loading && catalog && (
+        <div className="provider-key-hint form-note">{t.providerKeyHint}</div>
+      )}
+      {!loading && catalog && rows.length === 0 && (
+        <div className="form-note">{query.trim() ? t.providerNoMatch : t.providerNoneConnected}</div>
+      )}
+      <div className="provider-list">
+        {rows.map((p) => {
+          const keyOn = !!p.key || connectedIds.has(p.id)
+          return (
+            <div key={p.id} className="provider-row">
+              <span
+                className={"provider-key-dot " + (keyOn ? "on" : "off")}
+                title={keyOn ? t.providerKeyOn : t.providerKeyOff}
+              />
+              <span className="tree-label">{p.name}</span>
+              <span className="profile-mode">{p.source}</span>
+              <span className="tree-meta mono">
+                {t.providerModels.replace("{count}", String(Object.keys(p.models ?? {}).length))}
+              </span>
+              <button onClick={() => onEditKey(p)}>
+                {keyOn ? t.providerKeyReplace : t.providerKeySet}
+              </button>
+              {keyOn && (
+                <button className="danger" onClick={() => setConfirming(p)}>
+                  {t.providerKeyDelete}
+                </button>
+              )}
+            </div>
+          )
+        })}
+      </div>
+      {confirming && (
+        <ConfirmDialog
+          title={t.providerKeyDeleteConfirmTitle.replace("{name}", confirming.name)}
+          message={t.providerKeyDeleteConfirmBody}
+          confirmLabel={t.providerKeyDelete}
+          cancelLabel={t.cancel}
+          danger
+          onConfirm={() => {
+            const target = confirming
+            setConfirming(null)
+            void realOps
+              .removeKey(target.id)
+              .then(() => reload())
+              .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+          }}
+          onClose={() => setConfirming(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+/** provider key 表单（SettingsDialog 层视图，同 ProfileFormView 结构；review P2）：
+ *  保存成功后 ProviderSettings 重挂自动重拉列表 */
+export function ProviderKeyForm({
+  provider,
+  ops,
+  onCancel,
+  onSaved,
+}: {
+  provider: ProviderInfo
+  ops?: ProviderOps
+  onCancel: () => void
+  onSaved: () => void
+}) {
+  const store = useStore()
+  const { t } = useI18n()
+  const realOps = ops ?? defaultProviderOps(store)
+  const [keyDraft, setKeyDraft] = useState("")
+  const [saving, setSaving] = useState(false)
+  const [editError, setEditError] = useState<string | null>(null)
+
+  return (
+    <>
+      <div className="dialog-body">
+        <label className="form-label">
+          {t.providerKeyFor.replace("{name}", provider.name)}
+          <input
+            type="password"
+            autoFocus
+            value={keyDraft}
+            onChange={(e) => setKeyDraft(e.target.value)}
+          />
+        </label>
+        {editError && <div className="form-note">{editError}</div>}
+      </div>
+      <div className="dialog-actions">
+        <button onClick={onCancel}>{t.cancel}</button>
+        <button
+          className="btn-primary"
+          disabled={saving || !keyDraft.trim()}
+          onClick={() => {
+            setSaving(true)
+            setEditError(null)
+            void realOps
+              .setKey(provider.id, keyDraft.trim())
+              .then(() => onSaved())
+              .catch((e: unknown) => {
+                setEditError(e instanceof Error && e.message !== "not connected" ? e.message : t.connectFirst)
+              })
+              .finally(() => setSaving(false))
+          }}
+        >
           {t.save}
         </button>
       </div>

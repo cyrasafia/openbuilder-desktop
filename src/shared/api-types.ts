@@ -497,3 +497,25 @@ export interface GlobalEventEnvelope {
   workspace?: string
   payload: OpencodeEvent | { type: "sync"; syncEvent: unknown }
 }
+
+// ============ Provider 目录（design-provider-config，GET /provider 实测契约） ============
+
+/**
+ * Provider 目录项。**key 为明文 API key**（server 响应原样）——传输层保留，
+ * 消费侧只可做布尔判定（已配置/未配置），不得展示/记录/持久化。
+ */
+export interface ProviderInfo {
+  id: string
+  name: string
+  source: string
+  env?: string[]
+  key?: string | null
+  models: Record<string, unknown>
+}
+
+/** GET /provider 响应：全目录 + 各 provider 默认模型 + 已连接 id 集 */
+export interface ProviderCatalog {
+  all: ProviderInfo[]
+  default: Record<string, string>
+  connected: string[]
+}

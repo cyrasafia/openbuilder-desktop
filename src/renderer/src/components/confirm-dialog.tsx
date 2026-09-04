@@ -54,7 +54,12 @@ export function ConfirmDialog({
   }
 
   const onKeyDown = (e: ReactKeyboardEvent) => {
-    if (e.key === "Escape" && !loading) onClose()
+    if (e.key === "Escape" && !loading) {
+      // 嵌套在带 Esc handler 的弹窗内（如设置的 provider 删除确认，review P2）：
+      // Esc 只关确认框，不冒泡到外层把宿主弹窗一起关掉
+      e.stopPropagation()
+      onClose()
+    }
   }
 
   return (
