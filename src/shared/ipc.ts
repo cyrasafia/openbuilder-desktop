@@ -45,7 +45,7 @@ export interface StoreShape {
 export interface ConnectionProfile {
   id: string
   name: string
-  /** attach: server 基地地址，如 http://127.0.0.1:15120 */
+  /** attach: server 基地址，如 http://127.0.0.1:15120 */
   baseUrl: string
   /** 可选 basic auth */
   username?: string

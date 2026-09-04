@@ -21,14 +21,17 @@
 5. `/opt/homebrew/bin`（Apple Silicon Homebrew）
 6. `/usr/local/bin`（Intel Homebrew / 手动安装惯例）
 
-每目录探测文件名 `opencode`（win32 额外探测 `opencode.exe` / `opencode.cmd`——npm Windows 落点），`fs.access` X_OK 判可执行。命中后 `fs.realpath` 去重（`~/.opencode/bin` 常为指向版本目录的 symlink，与 PATH/落点重复的只留一个，保留先序出现者）。
+每目录探测文件名 `opencode`（win32 额外探测 `opencode.exe` / `opencode.cmd`——npm Windows 落点），`fs.access` X_OK + `stat().isFile()` 双重判定（POSIX 下目录恒 X_OK 可执行，单用 access 会把同名目录收进候选）。命中后 `fs.realpath` 去重（`~/.opencode/bin` 常为指向版本目录的 symlink，与 PATH/落点重复的只留一个，保留先序出现者）。
+
+win32 特别处理：npm global bin 免 spawn `npm`（npm 本身即 `.cmd`，见下），直接取标准落点 `%APPDATA%\npm`（bin 直接在 prefix 下、无 `/bin` 后缀）；`.cmd` 候选的 `--version` 探测经 `cmd.exe /d /s /c` 包裹（`windowsVerbatimArguments: true` 保引号原样）——Node 的 CVE-2024-27980 加固拒绝无 shell 直接 spawn `.bat/.cmd`。
 
 ### 2.2 版本探测
 
-- 逐项 `execFile(bin, ["--version"])`，**3s 超时**（并行，`runLimited` 限 4——快但不起几十个进程）
+- 逐项 `execFile(bin, ["--version"])`，**3s 超时**（并发 4，**按发现序定位写入结果**——并发完成序不定，推荐项 = `results[0]` 必须稳定）
 - 版本 = stdout 首行 trim（实测 `opencode --version` 输出裸版本串如 `1.18.20`）
 - 失败/超时 → `version: null`（候选仍保留，用户可手动选用；不可执行的候选没有意义，不进列表）
 - 子进程 env 用 `sanitizedChildEnv`（复用 linux-open-with.ts：防 dev 模式 NODE_ENV 泄漏破坏子进程行为）
+- 扫描整体 10s 兜底截止：到点后未发起的探测以 `version: null` 保留候选（不整项丢弃），在途的等待收束
 
 ### 2.3 结果
 
@@ -36,7 +39,7 @@
 interface BinaryCandidate { path: string; version: string | null }
 ```
 
-按发现序返回（PATH 序优先 = 推荐项即首项）；整体扫描 10s 上限兜底。
+按发现序返回（PATH 序优先 = 推荐项即首项）。
 
 ## 3. server 扫描（scanServers）
 
@@ -47,10 +50,11 @@ interface BinaryCandidate { path: string; version: string | null }
 
 ### 3.2 mDNS 发现
 
-- **bonjour-service@1.3.0**（与 opencode server 发布侧同库同版本，天然互通）浏览 `_http._tcp`（`find({ type: "http" })`）
+- **bonjour-service ^1.3.0**（与 opencode server 发布侧同库、允许 1.x——仓库 `^` 惯例）浏览 `_http._tcp`（`find({ type: "http" })`）
 - 服务名过滤 `^opencode-\d+$`：server 侧发布格式为 `name: opencode-{port}`、`type: http`、`txt: { path: "/" }`，且仅 `--mdns` 且非 loopback hostname 才发布（server 源码 `mdns.ts` / `server.ts` setupMdns 核实）
 - **浏览窗口 4s** 后收束：窗口内 `service-up` 事件累积候选，随后 `bonjour.destroy()` 释放（dgram socket 不残留）
-- **URL 构造必须用 `service.addresses` 的 IP**（A/AAAA 记录）：Node fetch 的 DNS 解析不走 mDNS，`opencode.local` 这类 host 名解析不开；IPv6 地址按 RFC 3986 加方括号（`http://[fe80::1]:4096`）。addresses 空的 service 无法构造 URL，丢弃
+- **URL 构造必须用 `service.addresses` 的 IP**（A/AAAA 记录）：Node fetch 的 DNS 解析不走 mDNS，`opencode.local` 这类 host 名解析不开；**IPv4 优先**（AAAA 在前且 v6 不可达时候选不因首选地址而整条丢失）；IPv6 地址按 RFC 3986 加方括号（`http://[fe80::1]:4096`）。addresses 空的 service 无法构造 URL，丢弃
+- **error 事件兜底（review P1）**：bonjour-service 1.3.0 的 dgram socket bind 失败（EACCES / 5353 被占）时 multicast-dns 向底层 emit `"error"`，无监听者 = uncaughtException 崩主进程——真实 factory 创建后对 `server.mdns` 挂 no-op error 监听（upstream 未暴露公开入口，经内部结构访问并注明），使 mDNS 静默降级为纯 loopback
 
 ### 3.3 验证与去重
 

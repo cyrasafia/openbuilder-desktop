@@ -79,7 +79,8 @@ describe("mdnsServiceUrl", () => {
   it("v6 地址加方括号（RFC 3986）", () => {
     expect(mdnsServiceUrl(["fe80::1"], 4096)).toBe("http://[fe80::1]:4096")
   })
-  it("多地址取首个", () => {
+  it("多地址 IPv4 优先（AAAA 在前不让候选整条丢失）", () => {
+    expect(mdnsServiceUrl(["fe80::1", "192.168.1.5"], 4096)).toBe("http://192.168.1.5:4096")
     expect(mdnsServiceUrl(["192.168.1.5", "10.0.0.2"], 4096)).toBe("http://192.168.1.5:4096")
   })
   it("无地址/无端口 = null", () => {
@@ -116,6 +117,7 @@ describe("scanBinaries（桩）", () => {
       if (p === "/usr/bin/opencode" || p === "/custom/opencode") return
       throw new Error("ENOENT")
     },
+    stat: async () => ({ isFile: () => true }),
     realpath: async (p: string) => p,
   } satisfies Partial<ScanDeps>
 
@@ -132,6 +134,36 @@ describe("scanBinaries（桩）", () => {
       { path: "/usr/bin/opencode", version: "1.18.20" },
       { path: "/custom/opencode", version: "0.9.9" },
     ])
+  })
+
+  it("并发探测完成序不影响发现序（首个候选慢时仍排首）", async () => {
+    const results = await scanBinaries({
+      ...base,
+      exec: async (cmd) => {
+        if (cmd === "/usr/bin/opencode") {
+          // PATH 首候选慢（超时路径等价），次候选先完成
+          await new Promise((r) => setTimeout(r, 30))
+          return { stdout: "1.0.0", stderr: "" }
+        }
+        if (cmd === "/custom/opencode") return { stdout: "0.9.9", stderr: "" }
+        throw new Error(`unexpected exec: ${cmd}`)
+      },
+    })
+    expect(results.map((r) => r.path)).toEqual(["/usr/bin/opencode", "/custom/opencode"])
+    expect(results[0]?.version).toBe("1.0.0")
+  })
+
+  it("目录命中的名字被 stat isFile 过滤（POSIX 目录恒 X_OK）", async () => {
+    const results = await scanBinaries({
+      ...base,
+      access: async (p: string) => {
+        if (p === "/usr/bin/opencode") return
+        throw new Error("ENOENT")
+      },
+      stat: async (p: string) => ({ isFile: () => p !== "/usr/bin/opencode" }),
+      exec: stubExec({ npm: new Error("no npm") }),
+    })
+    expect(results).toEqual([])
   })
 
   it("版本探测失败仍保留候选（version null）；~/.opencode/bin 命中且 realpath 去重", async () => {
@@ -171,6 +203,33 @@ describe("scanBinaries（桩）", () => {
       },
     })
     expect(results).toEqual([{ path: "/npm-global/bin/opencode", version: "2.0.0" }])
+  })
+
+  it("win32：探测 opencode.exe/opencode.cmd，npm 落点取 %APPDATA%\\npm（免 spawn npm）", async () => {
+    const probed: string[] = []
+    const accessLog: string[] = []
+    const results = await scanBinaries({
+      ...base,
+      env: { PATH: "C:\\bin", APPDATA: "C:\\Users\\t\\AppData\\Roaming" },
+      platform: "win32",
+      delimiter: ";",
+      access: async (p: string) => {
+        accessLog.push(p)
+        // 只命中 windows 风格的两个落点（PATH 的 C:\bin 与 %APPDATA%\npm）；
+        // 其余固定落点（~/.opencode/bin 等）不可达
+        if (p.includes("C:") && p.endsWith("opencode.cmd")) return
+        throw new Error("ENOENT")
+      },
+      exec: async (cmd) => {
+        probed.push(cmd)
+        return { stdout: "1.2.3", stderr: "" }
+      },
+    })
+    // PATH 落点与 %APPDATA%\npm 落点都被探测到 .cmd；无 npm spawn
+    expect(probed.length).toBe(2)
+    expect(probed).not.toContain("npm")
+    expect(accessLog.some((p) => p.endsWith("opencode.exe"))).toBe(true)
+    expect(results.every((r) => r.version === "1.2.3")).toBe(true)
   })
 })
 
@@ -254,5 +313,44 @@ describe("scanServers（桩）", () => {
     })
     // mDNS 声明 addresses=[127.0.0.1] 构造出的 URL 与 loopback 探测同址 → 去重为一条 loopback
     expect(results).toEqual([{ url: LOOPBACK_PROBE_URL, version: "1.0.0", source: "loopback" }])
+  })
+
+  it("find 同步抛错 = mDNS 空集（不整体失败，仍 destroy）；窗口后迟到事件不进结果", async () => {
+    // find 同步 throw：bonjourFactory 正常返回，find 抛
+    const bonjThrow = {
+      find() {
+        throw new Error("bad find")
+      },
+      destroyed: false,
+      destroy() {
+        bonjThrow.destroyed = true
+      },
+    }
+    const r1 = await scanServers({
+      bonjourFactory: () => bonjThrow as unknown as BonjourLike,
+      mdnsWindowMs: 20,
+      fetch: async () => ok({ healthy: true, version: "1.0.0" }),
+    })
+    expect(r1).toEqual([{ url: LOOPBACK_PROBE_URL, version: "1.0.0", source: "loopback" }])
+    expect(bonjThrow.destroyed).toBe(true)
+
+    // 迟到事件：事件在窗口结束后才回调——结果只含 loopback
+    let lateUp: ((s: unknown) => void) | undefined
+    const bonjLate = {
+      find(_o: unknown, onup?: (s: unknown) => void) {
+        lateUp = onup
+        return {}
+      },
+      destroy() {},
+    }
+    const r2 = await scanServers({
+      bonjourFactory: () => bonjLate as unknown as BonjourLike,
+      mdnsWindowMs: 20,
+      fetch: async () => ok({ healthy: true, version: "1.0.0" }),
+    })
+    expect(r2).toEqual([{ url: LOOPBACK_PROBE_URL, version: "1.0.0", source: "loopback" }])
+    // 窗口外到达的事件（即便格式正确）不影响已返回的结果
+    lateUp?.({ name: "opencode-4096", port: 4096, addresses: ["192.168.1.7"] })
+    expect(r2).toEqual([{ url: LOOPBACK_PROBE_URL, version: "1.0.0", source: "loopback" }])
   })
 })
