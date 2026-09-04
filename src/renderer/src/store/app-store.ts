@@ -688,6 +688,9 @@ export class AppStore {
     // 代际递增作废在途 doConnect（review 第二轮）：其各 await 边界校验后整段放弃，
     // 不会把 client/tabs 落回已拆除的状态之上
     this.connectEpoch++
+    // 排队 connect 一并作废（review 第二轮 P2）：否则 finally 冲刷会在用户明确
+    // 断开后重新 spawn managed server 并重连
+    this.connectQueued = false
     if (this.activeProfile?.mode === "managed") {
       await window.desktop.managedStop()
     }

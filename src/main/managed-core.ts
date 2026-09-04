@@ -136,10 +136,16 @@ export class ManagedServerController {
     }
   }
 
+  /** 主动杀掉的 child 集合（review 第二轮 P2）：intentionalStop 是控制器级全局、
+   *  会被下一次 start() 复位——旧 child 的 SIGTERM exit 晚到时须按 per-child
+   *  标记判定，否则误发 exit 事件（renderer 重新挂"异常退出"提示） */
+  private killedChildren = new WeakSet<ChildProcess>()
+
   private killChild() {
     const c = this.child
     this.child = null
     if (c && !c.killed) {
+      this.killedChildren.add(c)
       try {
         c.kill("SIGTERM")
       } catch {
@@ -154,8 +160,16 @@ export class ManagedServerController {
     if (version === null) {
       return { ok: false, error: `无法执行 ${bin} --version（不存在或不可执行）` }
     }
+    // doStart 自身 await 边界校验（review 第二轮 P2）：stop() 落在探测/找端口
+    // 窗口时 killChild 是 no-op（child 未 spawn），不校验会继续 spawn 出孤儿 server
+    if (this.intentionalStop) {
+      return { ok: false, error: "已停止" }
+    }
     this.version = version
     const port = await this.deps.findFreePort()
+    if (this.intentionalStop) {
+      return { ok: false, error: "已停止" }
+    }
     const password = this.deps.randomPassword()
     const baseUrl = `http://127.0.0.1:${port}`
     const healthTimeout = this.deps.healthTimeoutMs ?? 20000
@@ -208,20 +222,26 @@ export class ManagedServerController {
         }
       })
       child.on("exit", (code, signal) => {
-        // 主动停止不发 exit（review P2）：SIGTERM 的退出不是"异常退出"，
-        // 发了会被 renderer 重新置上误导性提示
-        if (!this.intentionalStop) {
+        // per-child 主动停止判定（review 第二轮 P2）：stop→快速 start 会复位全局
+        // intentionalStop，旧 child 的 SIGTERM exit 晚到时按 killedChildren 判定
+        const intentional = this.killedChildren.has(child)
+        // 主动停止不发 exit：SIGTERM 的退出不是"异常退出"（review 第一轮 P2）
+        if (!intentional) {
           this.deps.emit({ event: "exit", data: { code, signal } })
         }
         if (this.child === child) this.child = null
-        // 未成活即退出：fail-fast 携带退出码（不等 20s 健康超时——秒崩场景
-        // "启动超时"的报错既误导又拖慢重启节奏，review P3）
-        if (!this.established && !this.intentionalStop) {
-          fail(`opencode serve 启动即退出（code=${code} signal=${signal}）。stderr 尾部:\n${stderrTail}`)
+        // 未成活即退出：fail-fast（不等 20s 健康超时——秒崩场景"启动超时"的报错
+        // 既误导又拖慢重启节奏；主动停止的退出文案区分，review 第一/二轮）
+        if (!this.established) {
+          if (intentional) {
+            fail("已停止")
+          } else {
+            fail(`opencode serve 启动即退出（code=${code} signal=${signal}）。stderr 尾部:\n${stderrTail}`)
+          }
           return
         }
         // 主动停止或已 fail 的退出不进重启环
-        if (this.intentionalStop || !this.established) return
+        if (intentional) return
         this.scheduleRestart()
       })
 
@@ -229,9 +249,14 @@ export class ManagedServerController {
         .waitHealthy(baseUrl, healthTimeout, basicAuthHeader("opencode", password))
         .then(() => {
           if (settled) return
-          // TOCTOU 防御（review P3）：健康 200 返回时进程可能已退出（exit 已
-          // 走 fail/重启分支）——不再按成活 resolve
-          if (this.child !== child) return
+          // TOCTOU 防御（review 第一轮 P3 → 第二轮 P1）：健康 200 返回时进程可能
+          // 已退出/已被停止——不按成活 resolve，但**必须 settle**（裸 return 会让
+          // start promise 永悬挂、startInFlight 永不清空，后续 start 全部不可用）
+          if (this.child !== child) {
+            settled = true
+            resolve({ ok: false, error: "已停止" })
+            return
+          }
           settled = true
           this.established = true
           this.baseUrl = baseUrl
@@ -255,6 +280,9 @@ export class ManagedServerController {
         this.startInFlight = null
       })
       void attempt.then((res) => {
+        // 停止后迟到的失败不再发 restart-error/restart（review 第二轮 P3）：
+        // renderer 已清空 notice，纯展示层噪音
+        if (!res.ok && this.intentionalStop) return
         if (res.ok) {
           this.restartAttempt = 0
           this.deps.emit({

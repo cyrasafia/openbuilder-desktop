@@ -82,6 +82,8 @@ describe("ManagedServerController", () => {
     expect(res.password).toBeTruthy()
     expect(spawnArgs[0]?.bin).toBe("/custom/opencode")
     expect(spawnArgs[0]?.env.OPENCODE_SERVER_PASSWORD).toBe(res.password)
+    // username 钉死（review 第二轮）：用户 shell 残留 OPENCODE_SERVER_USERNAME 防永久 401
+    expect(spawnArgs[0]?.env.OPENCODE_SERVER_USERNAME).toBe("opencode")
     expect(c.alive).toBe(true)
     expect(events).toEqual([])
   })
@@ -249,5 +251,79 @@ describe("ManagedServerController", () => {
     expect(spawns.length).toBe(1)
     expect(second.baseUrl).toBe(first.baseUrl)
     expect(second.password).toBe(first.password)
+  })
+})
+
+describe("ManagedServerController（review 第二轮回归）", () => {
+  // 文件级 beforeEach 启用 fake timers（会劫持 queueMicrotask——fakeChild 的
+  // kill→exit 微任务不跑）：本组用真实定时器（真实微任务 + 无退避等待）
+  beforeEach(() => vi.useRealTimers())
+
+  it("stop 落在健康在途窗口且健康随后成功：promise 必 settle（不悬挂），后续 start 可用", async () => {
+    let releaseHealthy!: () => void
+    let firstHealth = true
+    const { deps, spawns } = makeDeps({
+      waitHealthy: () => {
+        // 仅首次门控（后续 start 的健康检查直通）
+        if (!firstHealth) return Promise.resolve()
+        firstHealth = false
+        return new Promise<void>((r) => {
+          releaseHealthy = r
+        })
+      },
+    })
+    const c = new ManagedServerController(deps)
+    const p = c.start()
+    // 冲刷微任务让 spawn + waitHealthy 调用落地
+    for (let i = 0; i < 10 && !spawns.length; i++) await Promise.resolve()
+    expect(spawns.length).toBe(1)
+    // 健康在途时 stop（SIGTERM 优雅关闭期间在途 200 完全可能）
+    c.stop()
+    releaseHealthy()
+    const res = await p
+    expect(res.ok).toBe(false)
+    expect(res.error).toContain("已停止")
+    // startInFlight 已清空：后续 start 正常走新流程
+    const r2 = await c.start()
+    expect(r2.ok).toBe(true)
+    expect(spawns.length).toBe(2)
+  })
+
+  it("stop 落在版本探测窗口：不 spawn 孤儿 server", async () => {
+    let releaseProbe!: () => void
+    const { deps, spawns } = makeDeps({
+      probeVersion: () =>
+        new Promise<string | null>((r) => {
+          releaseProbe = () => r("1.18.20")
+        }),
+    })
+    const c = new ManagedServerController(deps)
+    const p = c.start()
+    c.stop()
+    releaseProbe()
+    const res = await p
+    expect(res.ok).toBe(false)
+    expect(spawns.length).toBe(0) // 无孤儿
+  })
+
+  it("stop → 快速 start：旧 child 的 SIGTERM exit 晚到不误发 exit 事件", async () => {
+    vi.useFakeTimers()
+    try {
+      const { deps, events, spawns } = makeDeps()
+      const c = new ManagedServerController(deps)
+      await c.start()
+      // 手动摘掉 killChild 的同步 exit（模拟 SIGTERM 优雅关闭期间 exit 晚到）：
+      // 直接置 intentionalStop=false 前提下让旧 child exit
+      const oldChild = spawns[0]!
+      c.stop()
+      // 立刻重新 start（复位 intentionalStop）
+      await c.start()
+      // 旧 child 的 exit 此刻才到达（per-child killed 判定生效）
+      oldChild.emit("exit", null, "SIGTERM")
+      expect(events.filter((e) => e.event === "exit")).toEqual([])
+      expect(spawns.length).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
