@@ -38,7 +38,7 @@ export function binarySearchDirs(
   env: NodeJS.ProcessEnv,
   home: string,
   npmGlobalBin: string | null,
-  delimiter = pathDelimiter,
+  delimiter: string = pathDelimiter,
 ): string[] {
   const dirs: string[] = []
   const push = (d: string) => {
