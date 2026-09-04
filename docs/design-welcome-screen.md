@@ -33,24 +33,24 @@
 ## 5. 连接成功后的 provider 检查（引导视图）
 
 - 触发：`connectionState === "streaming" && welcomeOpen` 时执行一次（effect 守卫防重入）
-- 检查内容（数据源 `GET /provider`（listProviderCatalog）的 `connected` 集——与 spec 写的 `/config/providers` 等价信息且形状更净：两者都只反映已配置 auth 的 provider；connected 空 ⇔ 无任何已配置 key。directory 用 server cwd instance（无参）——尚未开项目无作用域可查，全局 auth 判空足够）：
+- 检查内容（数据源 `GET /provider`（listProviderCatalog）的 `connected` 集——与 spec 写的 `/config/providers` 等价信息且形状更净：两者都只反映已配置 auth 的 provider；connected 空 ⇔ 无任何已配置 key。directory 传 `/`（rest-client 签名必填；对全局 auth.json 判空无作用域影响——尚未开项目，config 文件级 provider 的精确作用域检查见 §9 取舍）：
   1. `connected.length === 0` → **provider 引导视图**：说明文案 + 「配置 Provider」（`openSettings("providers")`）+「跳过」
   2. 有 key 但 `model.defaults[profileKey].model` 未设 → **默认模型引导**：文案 + 「设置默认模型」（`openSettings("defaults")`）+「跳过」
   3. 均正常 → 直接关闭欢迎屏进主界面
-- 引导视图非阻塞：用户可 Esc/「跳过」/点遮罩外跳过（closeWelcome）——设置弹窗在欢迎屏之上正常打开
+- 引导视图非阻塞：「跳过」按钮（closeWelcome）——设置弹窗在欢迎屏之上正常打开（App 欢迎分支提供 SettingsDialog 宿主）
 - provider/默认模型配置完不自动判定（用户手动跳过或设置后关闭弹窗回欢迎屏再跳过/连接）——保持一屏简单，不做向导状态机
 - **spec 语义对齐**：「稍后配置」跳过向导 + 引导页保留入口；provider 引导「可跳过」
 
 ## 6. 中栏引导页入口（跳过后）
 
-- GuideView 顶部（`!store.getActiveClient()` 时）：「连接服务器」按钮 → `openWelcome()`（回欢迎屏）；旁边「打开设置」次级入口（既有 sidebar 齿轮仍在）
+- GuideView 会话区（`!store.getActiveClient()` 时）：「连接服务器」按钮 → `openWelcome()`（回欢迎屏）；打开设置的入口由既有 sidebar 齿轮承担
 
 ## 7. 实现落点
 
 | 文件 | 内容 |
 |---|---|
 | `src/renderer/src/components/welcome-screen.tsx` | WelcomeScreen（choose/managed/attach/guidance 四视图内部状态机；扫描/表单/连接动作） |
-| `src/renderer/src/store/app-store.ts` | `welcomeOpen` + `openWelcome/closeWelcome`；doInit 初始化；doConnect 成功尾段自动关；`openSettings(tab?)` 初始页签提示字段 |
+| `src/renderer/src/store/app-store.ts` | `welcomeOpen` + `openWelcome/closeWelcome`；doInit 初始化；连接成功不自动关（检查完成后 WelcomeScreen 自行关，§1/§5）；`openSettings(tab?)` 初始页签提示字段 |
 | `src/renderer/src/app.tsx` | ready 后分支渲染 WelcomeScreen / Shell |
 | `src/renderer/src/components/workspace.tsx` | GuideView 未连接时的「连接服务器」入口 |
 | `src/renderer/src/components/settings-dialog.tsx` | `openSettings(tab)` 消费（useState 初始值） |
@@ -71,6 +71,7 @@
 - provider 检查用 server cwd instance 的 auth 集（未开项目无作用域）；config 文件级 provider（随项目 directory 变化）的精确作用域检查留待实际需要
 - 引导视图不自动感知配置完成（避免向导状态机）；用户跳过即进主界面，设置内可再来
 - 欢迎屏期间 managed 崩溃重启等事件照常（状态行不可见但 connect 串行化兜底；日志在设置内可见）
+- 欢迎流程建档的 profile 名在创建时本地化固化（切语言后存量名与新语言混排，接受）
 
 ## 10. E2E 实测记录（2026-09-05，GNOME/Wayland + 本机 opencode 1.18.20，CDP 驱动）
 

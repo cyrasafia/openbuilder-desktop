@@ -46,13 +46,13 @@ export function App() {
     // emit 合帧（2026-09-04）：一次作用域切换的同步段/快照落地/二段恢复各发
     // emit，逐次全树渲染是切换卡顿主源（实测每按键 ~5 次）——订阅侧 rAF 批处
     // 理，一帧内任意次 emit 只渲染一次。store 保持同步通知（测试与顺序语义不
-    // 变）；jsdom 无 rAF 时退化为 setTimeout(0)
+    // 变）；无 rAF 环境由安全网定时器兜底
     //
-    // 安全网（2026-09-05，design-welcome-screen E2E 实测）：隐藏/被遮挡窗口的
-    // rAF 会被 Chromium 节流至停（实测连 disable-features=CalculateNativeWin
-    // Occlusion 都不保证恢复）——只挂 rAF 时 scheduled 卡死 true，此后一切
-    // emit 短路、UI 永久停在旧态。补一路 setTimeout 兜底：可见窗口 rAF 先到
-    // 双清无感；不可见窗口后台节流（≥1s）也保证最终渲染
+    // 安全网（2026-09-05，design-welcome-screen §10 E2E 实测）：隐藏/被遮挡
+    // 窗口的 rAF 会被 Chromium 节流至停（实测连 disable-features=Calculate
+    // NativeWinOcclusion 都不保证恢复）——只挂 rAF 时 scheduled 卡死 true，
+    // 此后一切 emit 短路、UI 永久停在旧态。补一路 setTimeout 兜底：可见窗口
+    // rAF 先到双清无感；不可见窗口后台节流（≥1s）也保证最终渲染
     let scheduled = false
     let handle: number | null = null
     let timerHandle: ReturnType<typeof setTimeout> | null = null

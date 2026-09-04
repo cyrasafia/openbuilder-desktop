@@ -127,8 +127,11 @@ function ManagedBranch({ onBack }: { onBack: () => void }) {
     try {
       const list = await window.desktop.scanBinaries()
       setCandidates(list)
-      // 默认选首候选（有版本者优先——扫描已按发现序，PATH 序即推荐序）
-      setSelected((prev) => prev ?? list.find((c) => c.version)?.path ?? list[0]?.path ?? null)
+      // 选中项回落（review P3）：重扫后旧选中可能已卸载——不在新列表则回落首候选
+      setSelected((prev) => {
+        if (prev && list.some((c) => c.path === prev)) return prev
+        return list.find((c) => c.version)?.path ?? list[0]?.path ?? null
+      })
     } catch {
       setCandidates([])
     } finally {
@@ -264,20 +267,20 @@ function AttachBranch({ onBack }: { onBack: () => void }) {
     try {
       const client = new RestClient({ baseUrl: url, username: username || undefined, password: password || undefined })
       await client.health()
+      await connectWithProfile(store, {
+        id: "welcome-attach",
+        name: url,
+        baseUrl: url,
+        mode: "attach",
+        ...(username ? { username } : {}),
+        ...(password ? { password } : {}),
+      })
     } catch (e) {
+      // health 失败可读展示；建档/连接异常也不悬挂 testing 态（review P3）
       setError(e instanceof ApiError ? `${t.testFailed} (${e.message})` : e instanceof Error ? e.message : String(e))
+    } finally {
       setTesting(false)
-      return
     }
-    await connectWithProfile(store, {
-      id: "welcome-attach",
-      name: url,
-      baseUrl: url,
-      mode: "attach",
-      ...(username ? { username } : {}),
-      ...(password ? { password } : {}),
-    })
-    setTesting(false)
   }
 
   return (

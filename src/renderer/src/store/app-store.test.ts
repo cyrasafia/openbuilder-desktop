@@ -4370,3 +4370,25 @@ describe("applyManagedEvent disconnected 闸门（review 第三轮）", () => {
     expect(store.managedNotice).toBeNull()
   })
 })
+
+// ============ 欢迎屏触发（design-welcome-screen §1） ============
+
+describe("welcomeOpen 生命周期", () => {
+  it("doInit 无激活 profile 置 welcomeOpen；connect 成功后由组件侧关闭（store 不代劳）", async () => {
+    ;(window as unknown as { desktop: unknown }).desktop = {
+      ...((window as unknown as { desktop: Record<string, unknown> }).desktop ?? {}),
+      storeGet: async () => null,
+      storeSet: async () => {},
+      onBrowserViewState: () => () => {},
+      onManagedEvent: () => () => {},
+    }
+    const s = new AppStore()
+    await s.init()
+    expect(s.welcomeOpen).toBe(true)
+    // closeWelcome 由 WelcomeScreen 检查完成后调用（此处直测开关语义）
+    s.closeWelcome()
+    expect(s.welcomeOpen).toBe(false)
+    s.openWelcome()
+    expect(s.welcomeOpen).toBe(true)
+  })
+})

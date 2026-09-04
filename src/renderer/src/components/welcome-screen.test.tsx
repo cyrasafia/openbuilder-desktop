@@ -88,7 +88,10 @@ beforeEach(() => {
   })
 })
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 describe("WelcomeScreen", () => {
   it("入口二选一 + 稍后配置关闭欢迎屏", async () => {
@@ -162,6 +165,33 @@ describe("WelcomeScreen", () => {
       ),
     )
     vi.unstubAllGlobals()
+  })
+
+  it("attach health 失败：错误展示、不建档", async () => {
+    const fetchMock = vi.fn(async () => new Response("nope", { status: 503 }))
+    vi.stubGlobal("fetch", fetchMock)
+    render(<WelcomeScreen />)
+    fireEvent.click(screen.getByText("连接已有 server（attach）"))
+    await waitFor(() => expect(screen.getByLabelText("服务器地址")).toBeTruthy())
+    fireEvent.change(screen.getByLabelText("服务器地址"), {
+      target: { value: "http://127.0.0.1:4096" },
+    })
+    fireEvent.click(screen.getByText("连接"))
+    await waitFor(() => expect(screen.getByText(/连接失败/)).toBeTruthy())
+    expect(storeState.current.saveProfiles).not.toHaveBeenCalled()
+  })
+
+  it("connectWithProfile 固定 id upsert：重试不堆 profile", async () => {
+    render(<WelcomeScreen />)
+    fireEvent.click(screen.getByText("本机启动（managed）"))
+    await waitFor(() => expect(screen.getByText("/usr/bin/opencode")).toBeTruthy())
+    fireEvent.click(screen.getByText("启动并连接"))
+    await waitFor(() => expect(storeState.current.saveProfiles).toHaveBeenCalledTimes(1))
+    // 二次点击（重试）
+    fireEvent.click(screen.getByText("启动并连接"))
+    await waitFor(() => expect(storeState.current.saveProfiles).toHaveBeenCalledTimes(2))
+    const lastCall = (storeState.current.saveProfiles as ReturnType<typeof vi.fn>).mock.calls.at(-1)
+    expect(lastCall![0]).toHaveLength(1)
   })
 
   it("provider 引导：连接成功且无任何已配置 provider → 引导视图；跳过关闭欢迎屏", async () => {
