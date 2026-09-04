@@ -59,7 +59,6 @@ vi.mock("../app", () => ({
       serverLogCopy: "复制日志",
       providerSearch: "搜索 provider（全部目录）…",
       providerRefresh: "刷新",
-      scanRescanning: "扫描中…",
       providerKeyHint: "API key 存于 server 侧",
       providerNoneConnected: "尚无已配置的 provider",
       providerModels: "模型 {count}",
@@ -156,6 +155,7 @@ describe("ProfileFormView 模式分化", () => {
 
 // ============ Provider 页签（design-provider-config） ============
 
+import { filterProviders } from "./settings-dialog"
 
 describe("filterProviders 纯函数", () => {
   const all: ProviderInfo[] = [
