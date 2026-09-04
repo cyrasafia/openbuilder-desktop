@@ -13,11 +13,12 @@ app.commandLine.appendSwitch("enable-wayland-ime")
 
 // E2E 钩子（env 门控，生产无害）：被遮挡/后台窗口的 rAF 会被 Chromium 节流至
 // 停——app.tsx 的 emit 合帧（rAF）驱动的渲染在 CDP 驱动的无人值守窗口里停摆，
-// DOM 停在旧态。禁用遮挡节流使 UI 状态在 E2E 中可观察
+// DOM 停在旧态。禁用遮挡节流 + Wayland 原生窗口遮挡计算使 UI 状态可观察
 if (process.env.OB_E2E === "1") {
   app.commandLine.appendSwitch("disable-backgrounding-occluded-windows")
   app.commandLine.appendSwitch("disable-renderer-backgrounding")
   app.commandLine.appendSwitch("disable-background-timer-throttling")
+  app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion")
 }
 
 if (process.env.NODE_ENV === "development") {

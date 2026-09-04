@@ -260,6 +260,9 @@ export class AppStore {
   reconciling = false
   connectionError: string | null = null
   managedBaseUrl: string | null = null
+  /** 欢迎屏（design-welcome-screen §1）：启动无激活 profile 时展开；连接成功
+   *  自动关闭；稍后配置/引导页入口显式控制 */
+  welcomeOpen = false
   /** connect 串行化（review 2026-09-04）：在途标记 + 排队标记——并发 connect
    *  双 teardown/双恢复竞态的根治（restarted 事件 vs 用户 activate 等） */
   private connectInFlight = false
@@ -533,6 +536,8 @@ export class AppStore {
     if (this.activeProfileId) {
       await this.connect()
     }
+    // 欢迎屏触发（design-welcome-screen §1）：启动时无激活 profile
+    this.welcomeOpen = !this.activeProfileId
     this.emit()
   }
 
@@ -681,6 +686,8 @@ export class AppStore {
     // 连接成功清 managed 退避提示：主进程侧显式 start() 取代排队重启时不发
     // restarted 事件，notice 会残留（崩溃 → 排队 → 用户动作触发 connect 的路径）
     this.managedNotice = null
+    // 注意：welcomeOpen 不在此关闭——provider/默认模型检查须在 WelcomeScreen
+    // 仍挂载时进行（design-welcome-screen §5），检查完成（或失败）后由其自行关闭
     this.emit()
   }
 
@@ -4790,14 +4797,32 @@ export class AppStore {
 
   // ============ 设置 ============
 
-  openSettings() {
+  /** 设置弹窗打开时请求聚焦的页签（design-welcome-screen §5：provider/默认模型
+   *  引导直达；一次性提示，closeSettings 后回落 connection） */
+  settingsInitialTab: "connection" | "providers" | "appearance" | "defaults" = "connection"
+
+  openSettings(tab?: "connection" | "providers" | "appearance" | "defaults") {
+    if (tab) this.settingsInitialTab = tab
     this.settingsOpen = true
     this.pushOverlay()
   }
 
   closeSettings() {
     this.settingsOpen = false
+    this.settingsInitialTab = "connection"
     this.popOverlay()
+  }
+
+  // ============ 欢迎屏（design-welcome-screen） ============
+
+  openWelcome() {
+    this.welcomeOpen = true
+    this.emit()
+  }
+
+  closeWelcome() {
+    this.welcomeOpen = false
+    this.emit()
   }
 
   openProjectPicker() {

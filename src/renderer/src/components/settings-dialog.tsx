@@ -14,7 +14,10 @@ import { ModelSwitcherBar } from "./model-switcher"
 export function SettingsDialog() {
   const store = useStore()
   const { t } = useI18n()
-  const [tab, setTab] = useState<"connection" | "providers" | "appearance" | "defaults">("connection")
+  const [tab, setTab] = useState<"connection" | "providers" | "appearance" | "defaults">(
+    // 引导直达页签（design-welcome-screen §5：openSettings(tab) 一次性提示）
+    store.settingsInitialTab,
+  )
   // 非空 = 弹窗内跳转到服务器表单视图（丢弃 tabs 视图，草稿随视图卸载）
   const [editing, setEditing] = useState<{ profile: ConnectionProfile; isNew: boolean } | null>(null)
   // 非空 = 弹窗内跳转到 provider key 表单视图（review P2：与 profile 表单同层，

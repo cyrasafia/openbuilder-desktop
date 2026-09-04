@@ -3375,6 +3375,172 @@
   background: var(--outline-variant);
 }
 
+/* ---------- 欢迎屏（design-welcome-screen） ---------- */
+
+.welcome-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  background: var(--surface);
+}
+
+.welcome-card {
+  width: 520px;
+  max-width: calc(100% - 48px);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-dialog);
+  background: var(--surface-container);
+  box-shadow:
+    0 8px 28px rgba(0, 0, 0, 0.24),
+    0 2px 8px rgba(0, 0, 0, 0.18);
+  padding-bottom: 12px;
+}
+
+.welcome-title {
+  font-size: 24px;
+  font-weight: 300;
+  text-align: center;
+  margin-top: 28px;
+}
+
+.welcome-sub {
+  text-align: center;
+  color: var(--on-surface-variant);
+  font-size: var(--text-sm);
+  margin: 8px 24px 20px;
+}
+
+.welcome-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 24px;
+}
+
+.welcome-entry {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-card);
+  background: transparent;
+  color: var(--on-surface);
+  text-align: left;
+  cursor: pointer;
+}
+
+.welcome-entry:hover,
+.welcome-entry:focus-visible {
+  background: var(--surface-container-high);
+}
+
+.welcome-entry-name {
+  font-weight: 600;
+}
+
+.welcome-entry-badge {
+  font-size: var(--text-xs);
+  color: var(--primary);
+  border: 1px solid var(--primary);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.welcome-entry-desc {
+  grid-column: 1 / -1;
+  color: var(--on-surface-variant);
+  font-size: var(--text-sm);
+}
+
+.welcome-later {
+  display: block;
+  margin: 16px auto 4px;
+  background: none;
+  border: none;
+  color: var(--outline);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.welcome-later:hover {
+  color: var(--on-surface-variant);
+  text-decoration: underline;
+}
+
+.welcome-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 24px 12px;
+}
+
+.welcome-action {
+  margin-top: 8px;
+  align-self: stretch;
+}
+
+.welcome-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.welcome-link {
+  background: none;
+  border: none;
+  color: var(--primary);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  padding: 0;
+}
+
+.welcome-link:hover {
+  text-decoration: underline;
+}
+
+.welcome-copied {
+  color: var(--primary);
+  font-size: var(--text-sm);
+}
+
+.install-cmd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-chip);
+}
+
+.install-cmd-label {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  color: var(--outline);
+  width: 88px;
+}
+
+.install-cmd-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+  user-select: text;
+}
+
+.guide-connect-row {
+  display: flex;
+  justify-content: center;
+  margin: 12px 0;
+}
+
 .mono {
   font-family: var(--font-mono);
 }
