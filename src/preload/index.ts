@@ -9,6 +9,8 @@ const api = {
     ipcRenderer.invoke("store:set", key, value),
   managedStart: () => ipcRenderer.invoke("managed:start"),
   managedStop: () => ipcRenderer.invoke("managed:stop"),
+  scanBinaries: () => ipcRenderer.invoke("scan:binaries"),
+  scanServers: () => ipcRenderer.invoke("scan:servers"),
   onManagedEvent: (cb: (payload: string) => void) => {
     const listener = (_e: unknown, payload: string) => cb(payload)
     ipcRenderer.on("managed:event", listener)

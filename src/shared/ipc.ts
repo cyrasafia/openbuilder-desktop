@@ -54,6 +54,20 @@ export interface ConnectionProfile {
   mode: "attach" | "managed"
 }
 
+/** 自动扫描（design-auto-scan）：managed 二进制候选 */
+export interface BinaryCandidate {
+  path: string
+  /** `opencode --version` 输出；探测失败 = null（候选仍保留） */
+  version: string | null
+}
+
+/** 自动扫描（design-auto-scan）：attach server 候选（健康验证通过） */
+export interface ServerCandidate {
+  url: string
+  version: string | null
+  source: "loopback" | "mdns"
+}
+
 /** 运行平台：main 进程 process.platform 的字面量集；纯浏览器 shim 为 "browser" */
 export type DesktopPlatform = "linux" | "darwin" | "win32" | "browser"
 
@@ -89,6 +103,11 @@ export interface DesktopApi {
   }>
   managedStop(): Promise<void>
   onManagedEvent(cb: (payload: string) => void): () => void
+  /** 自动扫描（design-auto-scan）：managed 二进制候选（PATH + 常见安装落点） */
+  scanBinaries(): Promise<BinaryCandidate[]>
+  /** 自动扫描（design-auto-scan）：attach server 候选（loopback 默认端口 + mDNS；
+   *  单次收束，含健康验证与版本） */
+  scanServers(): Promise<ServerCandidate[]>
   openPathPicker(): Promise<string | null>
   /** 选 HTML 文件（浏览器 Tab「打开本地文件」，design-browser-tab §1.3） */
   openHtmlFilePicker(): Promise<string | null>
