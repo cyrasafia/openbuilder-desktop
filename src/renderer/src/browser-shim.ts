@@ -24,6 +24,13 @@ function createBrowserDesktopApi(): DesktopApi {
     onManagedEvent() {
       return () => {}
     },
+    // 自动扫描要 spawn 子进程/UDP 多播，纯浏览器环境不可用（空候选）
+    async scanBinaries() {
+      return []
+    },
+    async scanServers() {
+      return []
+    },
     async openPathPicker() {
       return null
     },

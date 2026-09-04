@@ -4,6 +4,7 @@ import { readFile, writeFile, mkdir } from "node:fs/promises"
 import { join, dirname } from "node:path"
 import type { StoreShape } from "../shared/ipc"
 import { startManagedServer, stopManagedServer, killManagedSync } from "./managed-server"
+import { scanBinaries, scanServers } from "./scan"
 import {
   listOpenWithApps,
   mimeOf,
@@ -65,6 +66,27 @@ export function registerIpc() {
 
   ipcMain.handle("managed:start", () => startManagedServer())
   ipcMain.handle("managed:stop", () => stopManagedServer())
+
+  // 自动扫描（design-auto-scan §4）：单次收束 + in-flight 去重（StrictMode 双触发
+  // 不重复 spawn 一串 --version 子进程/开两条 mDNS 浏览）
+  let binariesInFlight: Promise<unknown> | null = null
+  ipcMain.handle("scan:binaries", () => {
+    if (!binariesInFlight) {
+      binariesInFlight = scanBinaries().finally(() => {
+        binariesInFlight = null
+      })
+    }
+    return binariesInFlight
+  })
+  let serversInFlight: Promise<unknown> | null = null
+  ipcMain.handle("scan:servers", () => {
+    if (!serversInFlight) {
+      serversInFlight = scanServers().finally(() => {
+        serversInFlight = null
+      })
+    }
+    return serversInFlight
+  })
 
   ipcMain.handle("dialog:openPath", async () => {
     const result = await dialog.showOpenDialog({
