@@ -5,7 +5,7 @@
  * 快照落点用手动 deferred 控制。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { AppStore, diffTabKey, FILE_WATCH_DEBOUNCE_MS } from "./app-store"
+import { AppStore, diffTabKey, FILE_WATCH_DEBOUNCE_MS, SCOPE_CYCLE_WINDOW_MS } from "./app-store"
 import { ApiError } from "@shared/rest-client"
 import { SseSubscriber } from "@shared/sse-subscriber"
 import { globalEntryKey } from "@shared/project-entries"
@@ -2663,6 +2663,52 @@ describe("快捷键支撑（design-keyboard-shortcuts）", () => {
       expect(store.currentProject?.id).toBe("proj1")
       expect(store.scopeQuery.directory).toBe(ROOT)
     })
+  })
+
+  it("cycleScopeEntry 连按渲染抑制（§21）：首击立即单步，窗口内只累计净步数（无中间切换），停顿后一次跳目标；鼠标入口作废窗口", async () => {
+    vi.useFakeTimers()
+    try {
+      const proj2 = { ...project(), id: "proj2", worktree: "/other", sandboxes: ["/other/wt9"] }
+      store.projects = [project(), proj2]
+      store.projectStates = {
+        default: { opened: ["proj1", "proj2"], currentProjectId: "proj1", currentWorkspaceId: null },
+      }
+      store.sessionsByProject = new Map()
+      // 行序：entry:proj1(0) → ws:WT1(1) → ws:WT2(2) → entry:proj2(3) → ws:/other/wt9(4)
+
+      // 首击（leading）：立即单步到 WT1
+      store.cycleScopeEntry(1)
+      expect(store.scopeQuery.directory).toBe(WT1)
+      // 窗口内连按两下：累计 +2，不发生中间切换（停在首击位置）
+      store.cycleScopeEntry(1)
+      store.cycleScopeEntry(1)
+      expect(store.scopeQuery.directory).toBe(WT1)
+      // 停顿越窗：净 +2 一次跳到 entry:proj2（idx 3）
+      await vi.advanceTimersByTimeAsync(SCOPE_CYCLE_WINDOW_MS + 20)
+      expect(store.currentProject?.id).toBe("proj2")
+      expect(store.scopeQuery.directory).toBe("/other")
+
+      // 窗口已清：下一击重新 leading → /other/wt9（idx 4）
+      store.cycleScopeEntry(1)
+      expect(store.scopeQuery.directory).toBe("/other/wt9")
+      // 反向混合：↓↓↑ 净 -1 → 停顿后回 idx 3
+      store.cycleScopeEntry(-1)
+      store.cycleScopeEntry(-1)
+      store.cycleScopeEntry(1)
+      await vi.advanceTimersByTimeAsync(SCOPE_CYCLE_WINDOW_MS + 20)
+      expect(store.scopeQuery.directory).toBe("/other")
+
+      // 鼠标介入作废窗口：连按累计未停顿即 openEntry，累计步数作废不越权跳
+      store.cycleScopeEntry(1) // leading → /other/wt9
+      store.cycleScopeEntry(1) // pending +1
+      store.cycleScopeEntry(1) // pending +2
+      void store.openEntry("proj1")
+      await vi.advanceTimersByTimeAsync(SCOPE_CYCLE_WINDOW_MS + 20)
+      expect(store.currentProject?.id).toBe("proj1")
+      expect(store.scopeQuery.directory).toBe(ROOT)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("restoreClosedTab 跨作用域：diff 栈项先切回所属作用域再开 Tab", async () => {

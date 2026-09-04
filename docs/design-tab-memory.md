@@ -314,3 +314,17 @@ file/diff/terminal/browser Tab、任意 kind 激活、全 kind 混排顺序的�
 **验证**：CDP 实测 dev 模式同场景（5 次连按）long task 4→0、CPU 忙时占比 ~68%→~6%（剩余为 SSE 后台流量）；vitest 640→642 用例（新增连按 latest-wins：同函数越代快照不发起 + 跨函数共享代际 openProject→setCurrentWorkspace 全量轮放弃）、typecheck 双侧全绿。
 
 **遗留**（未做，按需再启）：分域订阅（useSyncExternalStore + selector，各面板只重渲染自身切片，根治全树渲染）；消息页缓存（切回作用域不重拉 listMessagesPage，参考 openbuilder 消息累积经验）。
+
+## 21. 连按渲染抑制：遍历防抖直达（2026-09-04）
+
+**问题**（§20 之后续）：emit 合帧把每按键渲染收到 ≤1 次/帧，但连按（Alt+↑/↓ 键重复 ~30ms/次）期间每帧仍有一次全树渲染，且中间作用域虽已无请求，同步段（文件树重置/记忆 Tab 恢复）仍逐次执行——用户仍感卡顿。需求：连按遍历时中间不渲染，停下后再渲染；鼠标点击行为不变。
+
+**方案（leading + trailing 防抖，`cycleScopeEntry` 内置）**：
+
+- **首击立即单步**（leading）：单次按压零延迟跟手、有即时反馈；随后开启 `SCOPE_CYCLE_WINDOW_MS`（200ms）连按窗口
+- **窗口内只累计净步数**（`scopeCyclePending ±`）：零状态改动、零渲染、零请求——中间作用域完全不经过（比 §20 的 latest-wins 更省：连断路都省了）
+- **停顿越窗后按净步数一次跳到目标行**（`jumpScopeBy(net)`，stepwise 环游；虚拟边界语义与单步一致）。混合方向净额结算（↓↓↑ = -1）
+- **鼠标介入作废窗口**：`openEntry`/`openProject`/`setCurrentWorkspace`/`closeEntry`/`closeProject` 入口先 `cancelScopeCycle()`——连按未停顿即点击时累计步数作废，不越权跳转（leading 路径先跳后武装，入口处的 cancel 恒为 no-op，无时序冲突）
+- 键重复间隔 ~30ms、窗口 200ms：快速连按稳定落入窗口；刻意慢按（>200ms 间隔）逐击可见，符合直觉
+
+**验证**：vitest 642→643（新增：首击立即/窗口内冻结/净步数直达/反向混合/鼠标作废，fake timers 驱动）；既有遍历测试不改自过（waitFor 轮询容忍 200ms 窗口）；typecheck 双侧全绿。
