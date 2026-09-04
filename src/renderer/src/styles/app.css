@@ -3245,6 +3245,86 @@
   margin: 8px 0;
 }
 
+/* ---------- managed 配置（design-managed-config）：表单分化 + 扫描候选 + 日志 ---------- */
+
+.binary-path-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.binary-path-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.scan-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.scan-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--text-sm);
+  color: var(--on-surface-variant);
+}
+
+.scan-candidate {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-chip);
+  background: transparent;
+  color: var(--on-surface);
+  text-align: left;
+  cursor: pointer;
+}
+
+.scan-candidate:hover,
+.scan-candidate:focus-visible {
+  background: var(--surface-container-high);
+}
+
+.scan-candidate.selected {
+  border-color: var(--primary);
+  background: var(--surface-container-highest);
+}
+
+.scan-candidate-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+}
+
+.server-log-section {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.server-log-tail {
+  max-height: 180px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-card);
+  background: var(--surface-container);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+  user-select: text;
+}
+
 .mono {
   font-family: var(--font-mono);
 }

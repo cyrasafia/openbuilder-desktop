@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react"
 import { ArrowLeft, Pencil, X } from "lucide-react"
 import { useI18n, useStore } from "../app"
-import type { ConnectionProfile } from "@shared/ipc"
+import type { BinaryCandidate, ConnectionProfile, ManagedNotice } from "@shared/ipc"
+import { MIN_SERVER_VERSION } from "@shared/semver"
 import { ApiError, RestClient } from "@shared/rest-client"
+import { managedNoticeText } from "./managed-notice"
 import { ModelSwitcherBar } from "./model-switcher"
 
 /** 设置弹窗（dialog-lg）。模态不重叠（DESIGN.md §标准弹窗）：添加/编辑服务器
@@ -119,6 +121,7 @@ function ConnectionSettings({
   const { t } = useI18n()
   const profiles = store.profiles
   const activeId = store.activeProfileId
+  const activeManaged = store.activeProfile?.mode === "managed"
 
   const activate = async (id: string) => {
     // 先断开（此时旧 profile 仍激活，managed 模式才能正确 stop 旧进程）
@@ -154,14 +157,28 @@ function ConnectionSettings({
     }
   }
 
+  const copyLogs = () => {
+    void navigator.clipboard?.writeText(store.managedLogLines.join(""))?.catch(() => {})
+  }
+
   return (
     <div className="settings-connection">
+      {store.serverVersionWarning && (
+        <div className="form-note">
+          {t.serverVersionWarn
+            .replace("{version}", store.serverVersionWarning.version)
+            .replace(/\{min\}/g, MIN_SERVER_VERSION)}
+        </div>
+      )}
+      {activeManaged && store.managedNotice && (
+        <div className="form-note">{managedNoticeText(store.managedNotice, t)}</div>
+      )}
       <div className="profile-list">
         {profiles.map((p) => (
           <div key={p.id} className={"profile-row" + (p.id === activeId ? " active" : "")}>
             <span className="profile-mode">{p.mode}</span>
-            <span className="tree-label">{p.name || p.baseUrl}</span>
-            <span className="tree-meta mono">{p.baseUrl}</span>
+            <span className="tree-label">{p.name || (p.mode === "managed" ? p.binaryPath || "opencode" : p.baseUrl)}</span>
+            <span className="tree-meta mono">{p.mode === "managed" ? "managed" : p.baseUrl}</span>
             <button disabled={p.id === activeId} onClick={() => void activate(p.id)}>
               {p.id === activeId ? t.activeProfile : t.activateProfile}
             </button>
@@ -179,12 +196,29 @@ function ConnectionSettings({
           {t.addProfile}
         </button>
       </div>
+      {activeManaged && (
+        <div className="server-log-section">
+          <div className="scan-section-title">
+            <span>{t.serverLogTitle}</span>
+            <button type="button" disabled={store.managedLogLines.length === 0} onClick={copyLogs}>
+              {t.serverLogCopy}
+            </button>
+          </div>
+          {store.managedLogLines.length === 0 ? (
+            <div className="form-note">{t.serverLogEmpty}</div>
+          ) : (
+            <pre className="server-log-tail mono">{store.managedLogLines.join("")}</pre>
+          )}
+        </div>
+      )}
     </div>
   )
 }
 
 /** 添加/编辑服务器视图：渲染 dialog-body + dialog-actions（标题行的返回/关闭
- *  钮由 SettingsDialog 提供）；取消 = 丢弃草稿返回列表，保存 = upsert 落盘 */
+ *  钮由 SettingsDialog 提供）；取消 = 丢弃草稿返回列表，保存 = upsert 落盘。
+ *  表单按模式分化（design-managed-config §1）：managed 隐藏 URL/凭据（随机端口
+ *  + 自动凭据），新增二进制路径（自动扫描候选 + 浏览手选）；attach 字段不变 */
 function ProfileFormView({
   profile,
   onCancel,
@@ -198,6 +232,30 @@ function ProfileFormView({
   const [draft, setDraft] = useState<ConnectionProfile>(profile)
   const [testResult, setTestResult] = useState<string | null>(null)
   const [testing, setTesting] = useState(false)
+  // managed 扫描候选（design-auto-scan）：进入 managed 表单自动跑一轮 + 手动重扫
+  const [candidates, setCandidates] = useState<BinaryCandidate[] | null>(null)
+  const [scanning, setScanning] = useState(false)
+
+  const runScan = async () => {
+    setScanning(true)
+    try {
+      setCandidates(await window.desktop.scanBinaries())
+    } catch {
+      setCandidates([])
+    } finally {
+      setScanning(false)
+    }
+  }
+
+  useEffect(() => {
+    if (draft.mode === "managed" && candidates === null && !scanning) void runScan()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft.mode])
+
+  const browseBinary = async () => {
+    const p = await window.desktop.openBinaryPicker()
+    if (p) setDraft({ ...draft, binaryPath: p })
+  }
 
   const test = async () => {
     setTesting(true)
@@ -226,13 +284,62 @@ function ProfileFormView({
     </label>
   )
 
+  const managed = draft.mode === "managed"
+
   return (
     <>
       <div className="dialog-body">
         {field("name", t.profileName, "text", true)}
-        {field("baseUrl", t.profileUrl)}
-        {field("username", t.profileUser)}
-        {field("password", t.profilePassword, "password")}
+        {managed ? (
+          <>
+            <label className="form-label">
+              {t.profileBinaryPath}
+              <div className="binary-path-row">
+                <input
+                  value={draft.binaryPath ?? ""}
+                  placeholder={t.profileBinaryPathHint}
+                  onChange={(e) => setDraft({ ...draft, binaryPath: e.target.value })}
+                />
+                <button type="button" onClick={() => void browseBinary()}>
+                  {t.browseBinary}
+                </button>
+              </div>
+            </label>
+            <div className="form-note">{t.managedCredsHint}</div>
+            <div className="scan-section">
+              <div className="scan-section-title">
+                <span>{t.scanCandidatesTitle}</span>
+                <button type="button" disabled={scanning} onClick={() => void runScan()}>
+                  {scanning ? t.scanRescanning : t.scanRescan}
+                </button>
+              </div>
+              {candidates === null || scanning ? (
+                <div className="form-note">{t.scanRescanning}</div>
+              ) : candidates.length === 0 ? (
+                <div className="form-note">{t.scanNone}</div>
+              ) : (
+                candidates.map((c) => (
+                  <button
+                    key={c.path}
+                    type="button"
+                    className={"scan-candidate" + (draft.binaryPath === c.path ? " selected" : "")}
+                    title={c.path}
+                    onClick={() => setDraft({ ...draft, binaryPath: c.path })}
+                  >
+                    <span className="mono scan-candidate-path">{c.path}</span>
+                    <span className="tree-meta mono">{c.version ?? "—"}</span>
+                  </button>
+                ))
+              )}
+            </div>
+          </>
+        ) : (
+          <>
+            {field("baseUrl", t.profileUrl)}
+            {field("username", t.profileUser)}
+            {field("password", t.profilePassword, "password")}
+          </>
+        )}
         <label className="form-label">
           {t.profileMode}
           <select
@@ -243,13 +350,15 @@ function ProfileFormView({
             <option value="managed">{t.modeManaged}</option>
           </select>
         </label>
-        {testResult && <div className="form-note">{testResult}</div>}
+        {!managed && testResult && <div className="form-note">{testResult}</div>}
       </div>
       <div className="dialog-actions">
         <button onClick={onCancel}>{t.cancel}</button>
-        <button disabled={testing} onClick={() => void test()}>
-          {t.testConnection}
-        </button>
+        {!managed && (
+          <button disabled={testing} onClick={() => void test()}>
+            {t.testConnection}
+          </button>
+        )}
         <button className="btn-primary" onClick={() => onSave(draft)}>
           {t.save}
         </button>

@@ -5,6 +5,8 @@ import { ConfirmDialog } from "./confirm-dialog"
 import { relativeTime } from "../i18n"
 import { GLOBAL_PROJECT_ID, globalEntryKey } from "@shared/project-entries"
 import type { Project, Session } from "@shared/api-types"
+import { MIN_SERVER_VERSION } from "@shared/semver"
+import { managedNoticeText } from "./managed-notice"
 import { PanelResizeHandle } from "./panel-resize"
 
 /** server icon.color 命名色 → --avatar-* token（与 openbuilder ProjectAvatar.namedColor 同源，mint 与 green 同色） */
@@ -145,7 +147,18 @@ function ServerStatus() {
         ? "pending"
         : "error"
 
-  const title = [store.activeProfile?.name, store.baseUrl, store.connectionError]
+  const title = [
+    store.activeProfile?.name,
+    store.baseUrl,
+    store.connectionError,
+    // 版本下限提示与 managed 崩溃重启提示（design-managed-config §2/§3.2）
+    store.serverVersionWarning
+      ? t.serverVersionWarn
+          .replace("{version}", store.serverVersionWarning.version)
+          .replace(/\{min\}/g, MIN_SERVER_VERSION)
+      : null,
+    store.managedNotice ? managedNoticeText(store.managedNotice, t) : null,
+  ]
     .filter(Boolean)
     .join("\n")
 

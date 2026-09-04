@@ -21,6 +21,9 @@ function createBrowserDesktopApi(): DesktopApi {
       return { ok: false, error: "managed 模式仅在 Electron 内可用" }
     },
     async managedStop() {},
+    async openBinaryPicker() {
+      return null
+    },
     onManagedEvent() {
       return () => {}
     },

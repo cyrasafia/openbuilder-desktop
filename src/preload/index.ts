@@ -7,8 +7,9 @@ const api = {
   storeGet: <K extends keyof StoreShape>(key: K) => ipcRenderer.invoke("store:get", key),
   storeSet: <K extends keyof StoreShape>(key: K, value: StoreShape[K]) =>
     ipcRenderer.invoke("store:set", key, value),
-  managedStart: () => ipcRenderer.invoke("managed:start"),
+  managedStart: (opts?: { binaryPath?: string }) => ipcRenderer.invoke("managed:start", opts ?? {}),
   managedStop: () => ipcRenderer.invoke("managed:stop"),
+  openBinaryPicker: () => ipcRenderer.invoke("dialog:openBinaryFile") as Promise<string | null>,
   scanBinaries: () => ipcRenderer.invoke("scan:binaries"),
   scanServers: () => ipcRenderer.invoke("scan:servers"),
   onManagedEvent: (cb: (payload: string) => void) => {
