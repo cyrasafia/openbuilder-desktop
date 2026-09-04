@@ -264,6 +264,10 @@ export class AppStore {
    *  双 teardown/双恢复竞态的根治（restarted 事件 vs 用户 activate 等） */
   private connectInFlight = false
   private connectQueued = false
+  /** 连接代际（review 第二轮）：disconnect/切 profile 与在途 doConnect 的竞态——
+   *  disconnect 拆掉正在 restore 的状态后，doConnect 的后续段会把 client/tabs
+   *  重新落到"已断开"状态之上。doConnect 各 await 边界校验代际，越代整段放弃 */
+  private connectEpoch = 0
   /** server 版本低于最低要求（design-managed-config §2）：仅提示不阻断；
    *  结构化存版本号，文案在 UI 层 i18n；达标/无法解析 = null */
   serverVersionWarning: { version: string } | null = null
@@ -570,10 +574,15 @@ export class AppStore {
   private async doConnect() {
     const profile = this.activeProfile
     if (!profile) return
+    // 代际校验（review 第二轮）：disconnect/切 profile 后本段作废
+    const epoch = this.connectEpoch
+    const stale = () => epoch !== this.connectEpoch
     // 连接前先拆干净旧连接（SSE、域数据、Tab）——防跨 profile 状态串台
     this.teardownConnection()
     this.connectionState = "connecting"
     this.connectionError = null
+    // 版本提示随新连接重算（review 第二轮：断开后不再残留上一台的告警）
+    this.serverVersionWarning = null
     this.emit()
 
     let baseUrl = profile.baseUrl
@@ -581,6 +590,7 @@ export class AppStore {
     let password = profile.password
     if (profile.mode === "managed") {
       const res = await window.desktop.managedStart({ binaryPath: profile.binaryPath || undefined })
+      if (stale()) return
       if (!res.ok || !res.baseUrl) {
         this.connectionState = "disconnected"
         this.connectionError = res.error ?? "managed 启动失败"
@@ -599,6 +609,7 @@ export class AppStore {
     try {
       // 连通性探针（快照前的快速失败；版本信息仅设置弹窗"测试连接"时按需拉取）
       const health = await client.health()
+      if (stale()) return
       // 版本下限校验（design-managed-config §2）：低于 1.0.66（单全局 SSE 要求）
       // 仅提示不阻断，attach/managed 同口径
       this.serverVersionWarning = belowMinServerVersion(health.version)
@@ -606,11 +617,13 @@ export class AppStore {
         : null
       projects = await client.listProjects()
     } catch (e) {
+      if (stale()) return
       this.connectionState = "disconnected"
       this.connectionError = e instanceof Error ? e.message : String(e)
       this.emit()
       return
     }
+    if (stale()) return
 
     // 全部快照成功后才暴露 client（失败路径不悬挂）
     this.client = client
@@ -628,12 +641,15 @@ export class AppStore {
     try {
       // global 拆分发现快照：ensureDefaultProjects 的"最近活跃 global 目录"依赖它
       await this.refreshGlobalSessions()
+      if (stale()) return
 
       // 首次连接默认打开 current + 最近活跃 1 个（design-layout）
       await this.ensureDefaultProjects()
+      if (stale()) return
 
       // 打开项目的快照 + 订阅
       await this.refreshAllOpenedProjects()
+      if (stale()) return
       // 启动恢复（design-tab-memory §8 + design-tab-session-restore §3）：逐作用域按记忆
       // 重建 chat Tab（不动激活）→ 会话层恢复非 chat 实体 + 模板序合并 + scopeActive
       // 播种 → 当前作用域含激活规则（规则 1.5 消费播种记录——任意 kind/引导页跨重启）。
@@ -650,6 +666,7 @@ export class AppStore {
           }
         }
         await this.restoreTabSession()
+        if (stale()) return
         this.restoreScopeTabs(this.scopeDirectory(), true)
       }
     } finally {
@@ -668,6 +685,9 @@ export class AppStore {
   }
 
   async disconnect() {
+    // 代际递增作废在途 doConnect（review 第二轮）：其各 await 边界校验后整段放弃，
+    // 不会把 client/tabs 落回已拆除的状态之上
+    this.connectEpoch++
     if (this.activeProfile?.mode === "managed") {
       await window.desktop.managedStop()
     }
@@ -676,6 +696,7 @@ export class AppStore {
     // managed 可观察状态随连接结束清空（design-managed-config §4）
     this.managedNotice = null
     this.managedLogLines = []
+    this.serverVersionWarning = null
     this.emit()
   }
 
@@ -743,7 +764,8 @@ export class AppStore {
   }
 
   /** 拆除连接相关的一切运行时状态（SSE、域数据、Tab、managed 地址） */
-  private teardownConnection() {    // 会话层修剪输入捕获（design-tab-session-restore §6）：须在下方清空 live 态之前——
+  private teardownConnection() {
+    // 会话层修剪输入捕获（design-tab-session-restore §6）：须在下方清空 live 态之前——
     // 有 terminal Tab / browser view = pty 将被杀 / view 将被 dispose（不可恢复）；
     // 空 live（刷新路径的新 store teardown）两者皆空 → 不动持久层。
     // browser view 计数只认 browser Tab 的注册（PDF 文件 Tab 视图同用注册表——它们

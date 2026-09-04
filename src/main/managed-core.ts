@@ -103,7 +103,9 @@ export class ManagedServerController {
   }
 
   start(opts: { binaryPath?: string } = {}): Promise<ManagedStartResult> {
-    if (this.child) return Promise.resolve(this.currentInfo())
+    // 仅已成活（健康通过）的 child 才直接返回现行信息：重启尝试在途时 child
+    // 存在但未成活，返回其 baseUrl 是过期地址（review P3）——改返回在途 promise
+    if (this.child && this.established) return Promise.resolve(this.currentInfo())
     if (this.startInFlight) return this.startInFlight
     // 显式启动取代退避排队（用户动作优先于定时器），attempt 归零
     this.cancelRestartTimer()
@@ -170,6 +172,9 @@ export class ManagedServerController {
             env: {
               ...sanitizedServerEnv(this.deps.env),
               OPENCODE_SERVER_PASSWORD: password,
+              // 钉死 username（review P3）：用户 shell 若设 OPENCODE_SERVER_USERNAME，
+              // spawn 出的 server 会按它鉴权 → renderer 用 "opencode" 永久 401
+              OPENCODE_SERVER_USERNAME: "opencode",
             },
           },
         )
@@ -203,9 +208,19 @@ export class ManagedServerController {
         }
       })
       child.on("exit", (code, signal) => {
-        this.deps.emit({ event: "exit", data: { code, signal } })
+        // 主动停止不发 exit（review P2）：SIGTERM 的退出不是"异常退出"，
+        // 发了会被 renderer 重新置上误导性提示
+        if (!this.intentionalStop) {
+          this.deps.emit({ event: "exit", data: { code, signal } })
+        }
         if (this.child === child) this.child = null
-        // 主动停止（stop/killSync）或未成活的退出（fail 路径已 resolve 错误）不进重启环
+        // 未成活即退出：fail-fast 携带退出码（不等 20s 健康超时——秒崩场景
+        // "启动超时"的报错既误导又拖慢重启节奏，review P3）
+        if (!this.established && !this.intentionalStop) {
+          fail(`opencode serve 启动即退出（code=${code} signal=${signal}）。stderr 尾部:\n${stderrTail}`)
+          return
+        }
+        // 主动停止或已 fail 的退出不进重启环
         if (this.intentionalStop || !this.established) return
         this.scheduleRestart()
       })
@@ -214,6 +229,9 @@ export class ManagedServerController {
         .waitHealthy(baseUrl, healthTimeout, basicAuthHeader("opencode", password))
         .then(() => {
           if (settled) return
+          // TOCTOU 防御（review P3）：健康 200 返回时进程可能已退出（exit 已
+          // 走 fail/重启分支）——不再按成活 resolve
+          if (this.child !== child) return
           settled = true
           this.established = true
           this.baseUrl = baseUrl

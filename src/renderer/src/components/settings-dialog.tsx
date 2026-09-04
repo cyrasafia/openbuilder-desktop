@@ -158,7 +158,7 @@ function ConnectionSettings({
   }
 
   const copyLogs = () => {
-    void navigator.clipboard?.writeText(store.managedLogLines.join("")).catch(() => {})
+    void navigator.clipboard?.writeText(store.managedLogLines.join(""))?.catch(() => {})
   }
 
   return (

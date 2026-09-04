@@ -4219,3 +4219,125 @@ describe("Tab 会话持久层（design-tab-session-restore）", () => {
     expect(writes().at(-1)!.default.scopeActive[ROOT]).toBeUndefined()
   })
 })
+
+// ============ managed 配置完善（design-managed-config）：事件应用 + connect 串行化 ============
+
+describe("applyManagedEvent", () => {
+  const fire = (payload: unknown) =>
+    (store as unknown as { applyManagedEvent: (p: string) => void }).applyManagedEvent(
+      JSON.stringify(payload),
+    )
+
+  it("log 事件进 ring，容量 300 超出丢头", () => {
+    for (let i = 0; i < 305; i++) {
+      fire({ event: "log", data: `line-${i}\n` })
+    }
+    expect(store.managedLogLines).toHaveLength(300)
+    expect(store.managedLogLines[0]).toBe("line-5\n")
+    expect(store.managedLogLines.at(-1)).toBe("line-304\n")
+  })
+
+  it("exit/restart/restart-error 依次更新 notice；坏 JSON 静默", () => {
+    fire({ event: "exit", data: { code: 1, signal: null } })
+    expect(store.managedNotice).toEqual({ kind: "exit", code: 1, signal: null })
+    fire({ event: "restart", data: { attempt: 2, delayMs: 2000 } })
+    expect(store.managedNotice).toEqual({ kind: "restart", attempt: 2, delayMs: 2000 })
+    fire({ event: "restart-error", data: { attempt: 2, error: "boom" } })
+    expect(store.managedNotice).toEqual({ kind: "restart-error", attempt: 2, error: "boom" })
+    expect(() => fire("not json")).not.toThrow()
+    expect(store.managedNotice?.kind).toBe("restart-error")
+  })
+
+  it("restarted 清 notice；managed 激活 profile 触发 connect（排队不并发）", async () => {
+    const managedStart = vi.fn(async () => ({
+      ok: false,
+      error: "probe stub",
+    }))
+    ;(window as unknown as { desktop: unknown }).desktop = {
+      ...(window as unknown as { desktop: Record<string, unknown> }).desktop,
+      managedStart,
+      managedStop: async () => {},
+      onManagedEvent: () => () => {},
+    }
+    store.profiles = [
+      { id: "p1", name: "m", baseUrl: "", mode: "managed", binaryPath: "/bin/opencode" },
+    ]
+    store.activeProfileId = "p1"
+    store.managedNotice = { kind: "restart", attempt: 1, delayMs: 1000 }
+
+    fire({ event: "restarted", data: { baseUrl: "http://127.0.0.1:1", username: "opencode", password: "x", version: "1.0.0" } })
+    expect(store.managedNotice).toBeNull()
+    // connect 已排队执行（microtask 后落地）
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+    expect(managedStart).toHaveBeenCalledWith({ binaryPath: "/bin/opencode" })
+  })
+
+  it("restarted 时 attach profile 不触发 connect", async () => {
+    const managedStart = vi.fn()
+    ;(window as unknown as { desktop: unknown }).desktop = {
+      ...(window as unknown as { desktop: Record<string, unknown> }).desktop,
+      managedStart,
+    }
+    store.profiles = [{ id: "p1", name: "a", baseUrl: "http://x", mode: "attach" }]
+    store.activeProfileId = "p1"
+    fire({ event: "restarted", data: { baseUrl: "http://127.0.0.1:1", username: "opencode", password: "x", version: "1.0.0" } })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(managedStart).not.toHaveBeenCalled()
+  })
+})
+
+describe("connect 串行化与代际（review 第二轮）", () => {
+  function managedDesktop(startFn: () => Promise<unknown>) {
+    ;(window as unknown as { desktop: unknown }).desktop = {
+      ...(window as unknown as { desktop: Record<string, unknown> }).desktop,
+      managedStart: startFn,
+      managedStop: async () => {},
+      onManagedEvent: () => () => {},
+    }
+    store.profiles = [{ id: "p1", name: "m", baseUrl: "", mode: "managed" }]
+    store.activeProfileId = "p1"
+  }
+
+  it("在途 connect 期间的再次 connect 排队，完成后串行重跑（不并发双 teardown）", async () => {
+    let calls = 0
+    let release!: () => void
+    const gate = new Promise<void>((r) => {
+      release = r
+    })
+    managedDesktop(async () => {
+      calls++
+      if (calls === 1) await gate
+      return { ok: false, error: "stop here" }
+    })
+    const p1 = store.connect()
+    const p2 = store.connect()
+    expect(calls).toBe(1) // 第二次未并发进入
+    release()
+    await Promise.all([p1, p2])
+    await new Promise((r) => setTimeout(r, 0))
+    expect(calls).toBe(2) // 排队的重跑落地
+  })
+
+  it("disconnect 递增代际：在途 doConnect 的后续段整段放弃（不落 client/状态）", async () => {
+    let release!: () => void
+    const gate = new Promise<void>((r) => {
+      release = r
+    })
+    managedDesktop(async () => {
+      await gate
+      return { ok: true, baseUrl: "http://127.0.0.1:9", username: "opencode", password: "x", version: "1.0.0" }
+    })
+    const connecting = store.connect()
+    await new Promise((r) => setTimeout(r, 0))
+    await store.disconnect()
+    expect(store.connectionState).toBe("disconnected")
+    release()
+    await connecting
+    await new Promise((r) => setTimeout(r, 0))
+    // 越代：managedStart 结果被丢弃，client 未暴露，状态不被连接中覆盖
+    expect(store.connectionState).toBe("disconnected")
+    expect((store as unknown as { client: unknown }).client).toBeNull()
+    expect(store.managedBaseUrl).toBeNull()
+  })
+})
