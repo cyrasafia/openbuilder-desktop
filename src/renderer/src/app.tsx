@@ -12,6 +12,8 @@ import { Sidebar } from "./components/sidebar"
 import { Workspace } from "./components/workspace"
 import { FilePanel } from "./components/file-panel"
 import { TitleBar } from "./components/title-bar"
+import { WelcomeScreen } from "./components/welcome-screen"
+import { SettingsDialog } from "./components/settings-dialog"
 import { useShortcuts } from "./components/shortcuts"
 
 const StoreContext = createContext<AppStore | null>(null)
@@ -45,18 +47,32 @@ export function App() {
     // emit，逐次全树渲染是切换卡顿主源（实测每按键 ~5 次）——订阅侧 rAF 批处
     // 理，一帧内任意次 emit 只渲染一次。store 保持同步通知（测试与顺序语义不
     // 变）；jsdom 无 rAF 时退化为 setTimeout(0)
+    //
+    // 安全网（2026-09-05，design-welcome-screen E2E 实测）：隐藏/被遮挡窗口的
+    // rAF 会被 Chromium 节流至停（实测连 disable-features=CalculateNativeWin
+    // Occlusion 都不保证恢复）——只挂 rAF 时 scheduled 卡死 true，此后一切
+    // emit 短路、UI 永久停在旧态。补一路 setTimeout 兜底：可见窗口 rAF 先到
+    // 双清无感；不可见窗口后台节流（≥1s）也保证最终渲染
     let scheduled = false
     let handle: number | null = null
+    let timerHandle: ReturnType<typeof setTimeout> | null = null
     const flush = () => {
+      if (!scheduled) return
       scheduled = false
+      if (handle != null) {
+        if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(handle)
+        else clearTimeout(handle)
+      }
       handle = null
+      if (timerHandle != null) clearTimeout(timerHandle)
+      timerHandle = null
       force((n) => n + 1)
     }
     const unsub = store.subscribe(() => {
       if (scheduled) return
       scheduled = true
       if (typeof requestAnimationFrame === "function") handle = requestAnimationFrame(flush)
-      else handle = setTimeout(flush, 0)
+      timerHandle = setTimeout(flush, 250)
     })
     store.mountReconciler()
     void store.init().finally(() => setReady(true))
@@ -76,6 +92,7 @@ export function App() {
         if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(handle)
         else clearTimeout(handle)
       }
+      if (timerHandle != null) clearTimeout(timerHandle)
     }
   }, [store])
 
@@ -110,7 +127,18 @@ export function App() {
   return (
     <StoreContext.Provider value={store}>
       <I18nContext.Provider value={i18nValue}>
-        <Shell />
+        {/* 欢迎屏（design-welcome-screen）：启动无激活 profile 时替代三栏 Shell；
+            TitleBar 保留（frameless 拖拽区/窗口控制不可缺）；设置弹窗同样有宿主
+            （provider/默认模型引导会从欢迎屏打开设置） */}
+        {store.welcomeOpen ? (
+          <div className="app-root">
+            <TitleBar />
+            <WelcomeScreen />
+            {store.settingsOpen && <SettingsDialog />}
+          </div>
+        ) : (
+          <Shell />
+        )}
       </I18nContext.Provider>
     </StoreContext.Provider>
   )

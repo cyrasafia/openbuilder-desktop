@@ -97,6 +97,7 @@ beforeEach(() => {
     scopeQuery: { directory: null },
     pushOverlay: () => {},
     popOverlay: () => {},
+    settingsInitialTab: "connection",
   }
   Object.defineProperty(window, "desktop", {
     configurable: true,

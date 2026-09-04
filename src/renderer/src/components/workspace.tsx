@@ -560,6 +560,14 @@ function GuidePage() {
         <div className="guide-session">
           <div className="hero">{scopeName}</div>
           <div className="guide-hint">{t.guideHint}</div>
+          {/* 未连接时的「连接服务器」入口（design-welcome-screen §6：回欢迎屏） */}
+          {!store.getActiveClient() && (
+            <div className="guide-connect-row">
+              <button className="btn-primary" onClick={() => store.openWelcome()}>
+                {t.welcomeConnectServer}
+              </button>
+            </div>
+          )}
           <div className="guide-composer" {...refInput.dragProps}>
             {refInput.chips}
             <textarea
