@@ -93,8 +93,27 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
     // 不可占用，故需 Shift 区分。attachCustomKeyEventHandler 返回 false 即
     // 吞掉 xterm 默认处理（仅命中组合键），返回 true 则放行其余键不受影响。
     const mac = window.desktop.platform === "darwin"
+    // 无 live 连接（连接中/重连中/已退出/已断开——无 OPEN 的 WS）时不消费
+    // Ctrl/⌘ 系组合与裸 Alt+↑/↓（非 mac 作用域遍历，shortcuts §3）：xterm 对
+    // 这类键 preventDefault+stopPropagation（textarea 上 capture），全局分发
+    // （shortcuts.ts）收不到事件，Ctrl+W/Tab/Shift+Tab 等被无声吞掉而按键本就
+    // 无处可去（onData 只发 OPEN 态 WS）；返回 true = 释放给应用快捷键。覆盖含
+    // Shift 的 mod 组合（Ctrl+Shift+Tab 也释放），仅复制/粘贴组合例外——断开态
+    // 仍可复制回滚选区（§1.4）。无修饰键不释放（键盘滚动等 xterm 默认行为保留，
+    // 产生的 onData 发不出去无害）
+    const deadRelease = (ev: KeyboardEvent): boolean => {
+      const altArrow =
+        ev.altKey && !ev.ctrlKey && !ev.metaKey && (ev.key === "ArrowUp" || ev.key === "ArrowDown")
+      if (!ev.ctrlKey && !ev.metaKey && !altArrow) return false
+      const ws = wsRef.current
+      if (ws && ws.readyState === WebSocket.OPEN) return false
+      const isCopyKey = ev.code === "KeyC" || ev.key === "C" || ev.key === "c"
+      const isPasteKey = ev.code === "KeyV" || ev.key === "V" || ev.key === "v"
+      return !isCopyKey && !isPasteKey
+    }
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true
+      if (deadRelease(ev)) return false
       const mod = mac ? ev.metaKey && !ev.ctrlKey : ev.ctrlKey && ev.shiftKey
       if (!mod) return true
       if (ev.code === "KeyC" || ev.key === "C" || ev.key === "c") {

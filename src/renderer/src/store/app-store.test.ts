@@ -5,7 +5,7 @@
  * 快照落点用手动 deferred 控制。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { AppStore, diffTabKey, FILE_WATCH_DEBOUNCE_MS } from "./app-store"
+import { AppStore, diffTabKey, FILE_WATCH_DEBOUNCE_MS, SCOPE_CYCLE_WINDOW_MS } from "./app-store"
 import { ApiError } from "@shared/rest-client"
 import { SseSubscriber } from "@shared/sse-subscriber"
 import { globalEntryKey } from "@shared/project-entries"
@@ -150,6 +150,67 @@ describe("先切换后加载：setCurrentWorkspace", () => {
     expect(store.currentWorkspace).toBeNull()
     expect(store.tabs.filter((t) => t.directory === WT2)).toHaveLength(0)
     expect(store.tabMemory.default?.[WT2]).toBeUndefined()
+  })
+
+  it("连按 latest-wins（switchEpoch）：中间切换的异步段整段放弃——快照刷新不发起，最终态收敛", async () => {
+    const listCalls: string[] = []
+    ;(store as unknown as { client: unknown }).client = {
+      listSessions: async (dir: string) => {
+        listCalls.push(dir)
+        return snapshots.get(dir) ?? []
+      },
+      listSessionStatus: async () => ({}),
+      listProjects: async () => [project()],
+      listPendingPermissions: async () => [],
+      listPendingQuestions: async () => [],
+    }
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+
+    // 连按两下（第一下不 await 即切第二下）：中间切换的 refresh 不发起
+    const p1 = store.setCurrentWorkspace(WT1)
+    const p2 = store.setCurrentWorkspace(WT2)
+    await Promise.all([p1, p2])
+
+    expect(store.currentWorkspace?.directory).toBe(WT2)
+    // 只剩最终切换那一轮快照（本作用域 = 本项目全部目录 ROOT/WT1/WT2 各一次）
+    expect(listCalls.slice().sort()).toEqual([ROOT, WT1, WT2].sort())
+    expect(store.projectStates.default.currentWorkspaceId).toBe(WT2)
+  })
+
+  it("连按 latest-wins 跨函数共享代际：openProject 被 setCurrentWorkspace 越代 → refreshAllOpenedProjects 整轮放弃，仅最终作用域拉快照", async () => {
+    const OTHER = "/other"
+    const WT9 = "/other/wt9"
+    const proj2: Project = { id: "proj2", worktree: OTHER, time: { created: 0, updated: 0 }, sandboxes: [WT9] }
+    const listCalls: string[] = []
+    ;(store as unknown as { client: unknown }).client = {
+      listSessions: async (dir: string) => {
+        listCalls.push(dir)
+        return snapshots.get(dir) ?? []
+      },
+      listSessionStatus: async () => ({}),
+      listProjects: async () => [project(), proj2],
+      listPendingPermissions: async () => [],
+      listPendingQuestions: async () => [],
+    }
+    store.projects = [project(), proj2]
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+    snapshots.set(OTHER, [])
+    snapshots.set(WT9, [])
+
+    // 跨项目行 → 紧接其工作区行（cycleScopeEntry 一步直达语义）：openProject
+    // 的 refreshAllOpenedProjects（全 opened 项目）被 setCurrentWorkspace 越代
+    const p1 = store.openProject("proj2")
+    const p2 = store.setCurrentWorkspace(WT9)
+    await Promise.all([p1, p2])
+
+    expect(store.currentWorkspace?.directory).toBe(WT9)
+    // 只剩最终切换那一轮（setCurrentWorkspace 本项目 = OTHER/WT9 各一次）；
+    // proj1 的 ROOT/WT1/WT2 不出现在任何一轮（openProject 的全量轮已放弃）
+    expect(listCalls.slice().sort()).toEqual([OTHER, WT9].sort())
   })
 
   it("记忆外可见会话补开（§17，kind-engine 场景）：切走期间他端新建，切回即补开、active 保持", async () => {
@@ -2602,6 +2663,52 @@ describe("快捷键支撑（design-keyboard-shortcuts）", () => {
       expect(store.currentProject?.id).toBe("proj1")
       expect(store.scopeQuery.directory).toBe(ROOT)
     })
+  })
+
+  it("cycleScopeEntry 连按渲染抑制（§21）：首击立即单步，窗口内只累计净步数（无中间切换），停顿后一次跳目标；鼠标入口作废窗口", async () => {
+    vi.useFakeTimers()
+    try {
+      const proj2 = { ...project(), id: "proj2", worktree: "/other", sandboxes: ["/other/wt9"] }
+      store.projects = [project(), proj2]
+      store.projectStates = {
+        default: { opened: ["proj1", "proj2"], currentProjectId: "proj1", currentWorkspaceId: null },
+      }
+      store.sessionsByProject = new Map()
+      // 行序：entry:proj1(0) → ws:WT1(1) → ws:WT2(2) → entry:proj2(3) → ws:/other/wt9(4)
+
+      // 首击（leading）：立即单步到 WT1
+      store.cycleScopeEntry(1)
+      expect(store.scopeQuery.directory).toBe(WT1)
+      // 窗口内连按两下：累计 +2，不发生中间切换（停在首击位置）
+      store.cycleScopeEntry(1)
+      store.cycleScopeEntry(1)
+      expect(store.scopeQuery.directory).toBe(WT1)
+      // 停顿越窗：净 +2 一次跳到 entry:proj2（idx 3）
+      await vi.advanceTimersByTimeAsync(SCOPE_CYCLE_WINDOW_MS + 20)
+      expect(store.currentProject?.id).toBe("proj2")
+      expect(store.scopeQuery.directory).toBe("/other")
+
+      // 窗口已清：下一击重新 leading → /other/wt9（idx 4）
+      store.cycleScopeEntry(1)
+      expect(store.scopeQuery.directory).toBe("/other/wt9")
+      // 反向混合：↓↓↑ 净 -1 → 停顿后回 idx 3
+      store.cycleScopeEntry(-1)
+      store.cycleScopeEntry(-1)
+      store.cycleScopeEntry(1)
+      await vi.advanceTimersByTimeAsync(SCOPE_CYCLE_WINDOW_MS + 20)
+      expect(store.scopeQuery.directory).toBe("/other")
+
+      // 鼠标介入作废窗口：连按累计未停顿即 openEntry，累计步数作废不越权跳
+      store.cycleScopeEntry(1) // leading → /other/wt9
+      store.cycleScopeEntry(1) // pending +1
+      store.cycleScopeEntry(1) // pending +2
+      void store.openEntry("proj1")
+      await vi.advanceTimersByTimeAsync(SCOPE_CYCLE_WINDOW_MS + 20)
+      expect(store.currentProject?.id).toBe("proj1")
+      expect(store.scopeQuery.directory).toBe(ROOT)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("restoreClosedTab 跨作用域：diff 栈项先切回所属作用域再开 Tab", async () => {

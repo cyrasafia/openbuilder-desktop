@@ -41,7 +41,23 @@ export function App() {
   }, [store])
 
   useEffect(() => {
-    const unsub = store.subscribe(() => force((n) => n + 1))
+    // emit 合帧（2026-09-04）：一次作用域切换的同步段/快照落地/二段恢复各发
+    // emit，逐次全树渲染是切换卡顿主源（实测每按键 ~5 次）——订阅侧 rAF 批处
+    // 理，一帧内任意次 emit 只渲染一次。store 保持同步通知（测试与顺序语义不
+    // 变）；jsdom 无 rAF 时退化为 setTimeout(0)
+    let scheduled = false
+    let handle: number | null = null
+    const flush = () => {
+      scheduled = false
+      handle = null
+      force((n) => n + 1)
+    }
+    const unsub = store.subscribe(() => {
+      if (scheduled) return
+      scheduled = true
+      if (typeof requestAnimationFrame === "function") handle = requestAnimationFrame(flush)
+      else handle = setTimeout(flush, 0)
+    })
     store.mountReconciler()
     void store.init().finally(() => setReady(true))
     const onFocus = () => {
@@ -54,6 +70,12 @@ export function App() {
     return () => {
       unsub()
       window.removeEventListener("focus", onFocus)
+      // 卸载后不再触发渲染（React 18+ 对卸载后 setState 已是 no-op，此处取消
+      // 只为整洁）
+      if (handle != null) {
+        if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(handle)
+        else clearTimeout(handle)
+      }
     }
   }, [store])
 

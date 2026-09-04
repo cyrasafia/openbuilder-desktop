@@ -49,6 +49,7 @@
 ### 1.4 复制/粘贴
 
 - **快捷键**（2026-09-03 修订：按平台区分修饰键）：`Ctrl+Shift+C` 复制选区到剪贴板、`Ctrl+Shift+V` 粘贴剪贴板到 pty（linux/win32/浏览器开发态——裸 `Ctrl+C` 是 SIGINT 不可占用，故需 Shift 区分）；**macOS 依系统习惯用 `⌘C`/`⌘V`**（`window.desktop.platform === "darwin"`，修饰键判定 `metaKey && !ctrlKey`；mac 下不再拦截 Ctrl+Shift+C/V，Control 系组合归终端/PTY）。经 `term.attachCustomKeyEventHandler` 拦截：命中组合键时 `ev.preventDefault()` + `return false`（吞掉 xterm 默认处理），其余键 `return true` 放行。复制键**无选区时不拦截**——保留终端对该组合键的默认处理（用户自定义 shell 键绑定等）。
+- **断开态不拦截应用快捷键**（2026-09-04 修订）：live 态终端聚焦时 Ctrl/⌘ 系组合归 pty（xterm 对这类键 preventDefault+stopPropagation 且监听挂 textarea capture——全局分发 shortcuts.ts 收不到事件，Ctrl+W/Tab 被吞，是既定语义）；但**无 OPEN 的 WS 时**（连接中/重连中/已退出/已断开）按键无处可去（onData 只发 OPEN 态），拦截只剩副作用——customKeyEventHandler 对带 Ctrl/⌘ 的组合与裸 Alt+↑/↓（非 mac 作用域遍历，shortcuts §3）`return false` 释放给应用快捷键（Ctrl+W 关 Tab、Ctrl+Tab / **Ctrl+Shift+Tab** 切 Tab、Ctrl+B 面板开关等生效——含 Shift 的组合也释放；关 Tab 免确认判定 §1.1 早备）。唯二例外是复制/粘贴组合（C/V）——断开态仍走拦截（可复制回滚选区）。无修饰键仍归 xterm（键盘滚动等默认行为保留）。
 - **右键菜单**：`.terminal-view` `onContextMenu` 阻止 xterm 默认（其内置无菜单），弹出复制/粘贴菜单。复用 `FileContextMenu` 模式（首帧隐藏测量钳制到视口 + capture 阶段 mousedown/Escape/wheel/blur 四触发关闭 + `pushOverlay` z-order 计数 + 键盘 ↑↓ 导航）。
   - 复制项按选区有无启用/禁用（`term.hasSelection()`，菜单打开瞬间快照）
   - 粘贴读 `navigator.clipboard.readText()` → `term.paste(text)`（xterm paste 走其 bracketed-paste 模式，安全）
@@ -80,12 +81,12 @@ ptyRuntimes = new Map<string, { exited: boolean; disconnected: boolean; title: s
 | `src/shared/api-types.ts` | `Pty` / `PtyShell` / `PtyTicket` 类型 |
 | `src/shared/rest-client.ts` | `listShells/createPty/updatePtySize/deletePty/ptyConnectToken`（后两者错误静默约定；connect-token 带 `x-opencode-ticket: 1` 头） |
 | `src/renderer/src/store/app-store.ts` | TabKind 扩 terminal；openTerminalTab/ptyRuntimes/closeTerminalTab/restoreClosedTab terminal 分支/ptyConnectUrl（cursor 参数 + 三态返回）/cycleTab 无需改（directory 过滤通用）/卸载路径 DELETE |
-| `src/renderer/src/components/terminal-view.tsx` | xterm 终端组件（WS 生命周期/fit/深色/自动聚焦/已退出 buffer 缓存 serialize 还原/复制粘贴快捷键+右键菜单/§1.2a 断线自动重连：cursor 锚点追踪 + 退避 + focus kick） |
+| `src/renderer/src/components/terminal-view.tsx` | xterm 终端组件（WS 生命周期/fit/深色/自动聚焦/已退出 buffer 缓存 serialize 还原/复制粘贴快捷键+右键菜单/断开态释放 Ctrl/⌘ 组合给应用快捷键（§1.4）/§1.2a 断线自动重连：cursor 锚点追踪 + 退避 + focus kick） |
 | `src/renderer/src/components/workspace.tsx` | Tab 内容分发 terminal 分支；引导页终端入口解禁；关闭走 closeTabInteractive（terminal 确认文案） |
 | `src/renderer/src/components/tab-actions.ts` | terminal 关闭确认 + closeTerminalTab |
 | `src/renderer/src/styles/app.css` | `.terminal-view`（深色固定 + 已退出/已断开/重连中叠加态） |
 | `src/renderer/src/i18n/index.ts` | confirmCloseTerminal / terminalExited / terminalDisconnected / terminalReconnecting / terminalCopy / terminalPaste 等 |
-| 测试 | store（创建/关闭/恢复/卸载 DELETE/teardown 杀序/ptyConnectUrl 三态）；rest-client pty 端点 URL/头/方法断言；TerminalView 用注入 WS 假类测生命周期（open/write/控制帧锚点/close code 三分：1000·4404 终态、其余重连/退避重连带 cursor/无锚点 reset/gone 终态/focus kick/卸载清定时器） |
+| 测试 | store（创建/关闭/恢复/卸载 DELETE/teardown 杀序/ptyConnectUrl 三态）；rest-client pty 端点 URL/头/方法断言；TerminalView 用注入 WS 假类测生命周期（open/write/控制帧锚点/close code 三分：1000·4404 终态、其余重连/退避重连带 cursor/无锚点 reset/gone 终态/focus kick/卸载清定时器/断开态 Ctrl 系释放与复制不受影响） |
 
 ## 5. 验收（对齐 spec #5）
 

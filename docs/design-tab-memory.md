@@ -301,3 +301,30 @@ file/diff/terminal/browser Tab、任意 kind 激活、全 kind 混排顺序的�
 - §18 "冷启动不恢复" 的不变量随上条解除；运行期语义（切换不关不归档、关项目随关）全部不变
 - §7 规则 1.5 的 `scopeActiveKeys` 由纯内存改为冷启动播种（跨重启），规则本身与 mem.active
   的 chat-only 约束不变
+
+## 20. 切换连按性能：latest-wins + emit 合帧（2026-09-04）
+
+**问题**（Alt+↑/↓ 作用域遍历上线后实测，CDP + CPU profiler）：一次切换的同步段/快照落地/二段恢复/backfill 各自发 emit，每次 emit 触发 App 全树渲染（单一订阅点 force-update，无分域订阅）——每按键 ~5 次全树渲染；dev 模式每按 1 个 52–315ms long task（React DEV 运行时校验放大；生产 0 long task 但渲染风暴同在）。连按时中间切换的异步段（持久化/快照刷新/二段恢复）纯浪费。
+
+**方案**（两层，均在切换链路上，不动订阅架构）：
+
+- **switchEpoch 代际（latest-wins）**：`openProject`/`openGlobalDirectory`/`setCurrentWorkspace` 同步段自增私有计数；异步段在每个 await 后校验代际，越代整段放弃。语义：只有最终停留的作用域做完整加载；中间作用域快照不拉取（下次真正切入再取，与首开语义一致）；持久化不可跳过但无需跳过——同步段逐次改写 projectStates、IPC 同信道有序，末次落盘即终态。**跳过范围注意**：越代的 openProject 连带跳过 refreshAllOpenedProjects，其他已打开项目少一次切换时重快照（openProject 被 setCurrentWorkspace 越代亦然）——SSE 常驻订阅 + reconciler 对账兜底，良性。原有 projectId/scope 闸门保留在代际闸门之后（非切换流不增代际，仍由旧闸门覆盖）。
+- **emit 合帧（app.tsx 订阅侧 rAF）**：一帧内任意次 emit 只 force 一次渲染；store 保持同步通知（测试计数与顺序语义不变）；jsdom 无 rAF 退化 setTimeout(0)；卸载时取消在途帧回调。合帧先例：design-pdf-preview 的 ResizeObserver + rAF 合帧。
+
+**验证**：CDP 实测 dev 模式同场景（5 次连按）long task 4→0、CPU 忙时占比 ~68%→~6%（剩余为 SSE 后台流量）；vitest 640→642 用例（新增连按 latest-wins：同函数越代快照不发起 + 跨函数共享代际 openProject→setCurrentWorkspace 全量轮放弃）、typecheck 双侧全绿。
+
+**遗留**（未做，按需再启）：分域订阅（useSyncExternalStore + selector，各面板只重渲染自身切片，根治全树渲染）；消息页缓存（切回作用域不重拉 listMessagesPage，参考 openbuilder 消息累积经验）。
+
+## 21. 连按渲染抑制：遍历防抖直达（2026-09-04）
+
+**问题**（§20 之后续）：emit 合帧把每按键渲染收到 ≤1 次/帧，但连按（Alt+↑/↓ 键重复 ~30ms/次）期间每帧仍有一次全树渲染，且中间作用域虽已无请求，同步段（文件树重置/记忆 Tab 恢复）仍逐次执行——用户仍感卡顿。需求：连按遍历时中间不渲染，停下后再渲染；鼠标点击行为不变。
+
+**方案（leading + trailing 防抖，`cycleScopeEntry` 内置）**：
+
+- **首击立即单步**（leading）：单次按压零延迟跟手、有即时反馈；随后开启 `SCOPE_CYCLE_WINDOW_MS`（200ms）连按窗口
+- **窗口内只累计净步数**（`scopeCyclePending ±`）：零状态改动、零渲染、零请求——中间作用域完全不经过（比 §20 的 latest-wins 更省：连断路都省了）
+- **停顿越窗后按净步数一次跳到目标行**（`jumpScopeBy(net)`，stepwise 环游；虚拟边界语义与单步一致）。混合方向净额结算（↓↓↑ = -1）
+- **鼠标介入作废窗口**：`openEntry`/`openProject`/`setCurrentWorkspace`/`closeEntry`/`closeProject` 入口先 `cancelScopeCycle()`——连按未停顿即点击时累计步数作废，不越权跳转（leading 路径先跳后武装，入口处的 cancel 恒为 no-op，无时序冲突）
+- 键重复间隔 ~30ms、窗口 200ms：快速连按稳定落入窗口；刻意慢按（>200ms 间隔）逐击可见，符合直觉
+
+**验证**：vitest 642→643（新增：首击立即/窗口内冻结/净步数直达/反向混合/鼠标作废，fake timers 驱动）；既有遍历测试不改自过（waitFor 轮询容忍 200ms 窗口）；typecheck 双侧全绿。

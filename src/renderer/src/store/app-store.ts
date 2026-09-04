@@ -105,6 +105,10 @@ export const DIFF_TAB_TYPES: readonly DiffTabType[] = ["round", "uncommitted", "
 /** 文件监听失效去抖窗口（design-file-watcher §3.1/§3.2） */
 export const FILE_WATCH_DEBOUNCE_MS = 300
 
+/** 作用域遍历连按窗口（design-tab-memory §21）：窗口内后续按压只累计净步数，
+ *  停顿后一次跳到目标行——中间作用域零进入（无状态改动/渲染/请求） */
+export const SCOPE_CYCLE_WINDOW_MS = 200
+
 /** 面板宽度约束（design-layout §2 / design-layout-collapse） */
 const PANEL_LIMITS = {
   left: { min: 200, max: 360, def: 260 },
@@ -1500,6 +1504,22 @@ export class AppStore {
     return this.activeProfileId ?? "default"
   }
 
+  /**
+   * 切换代际（latest-wins，2026-09-04）：每次作用域切换的同步段自增。切换的
+   * 异步段（持久化/快照刷新/二段恢复）在每个 await 后校验代际，连按（Alt+↑/↓
+   * 遍历）时中间切换的后台工作直接放弃——只有最终停留的作用域做完整加载；
+   * 状态收敛由最终切换的持久化保证（同步段逐次改写 projectStates，末次落盘
+   * 即终态）。跳过范围注意：越代的 openProject 连带跳过 refreshAllOpenedProjects
+   * ——其他已打开项目少一次切换时重快照（openProject 被 setCurrentWorkspace
+   * 越代时也如此）；SSE 常驻订阅 + reconciler 对账兜底，良性，见
+   * design-tab-memory §16 第五轮。
+   */
+  private switchEpoch = 0
+
+  /** 连按窗口定时器与累计净步数（design-tab-memory §21，见 cycleScopeEntry） */
+  private scopeCycleTimer: number | null = null
+  private scopeCyclePending = 0
+
   private async persistProjectState() {
     this.projectStates[this.profileKey()] = this.projectStateFor()
     await window.desktop.storeSet("project.state", this.projectStates)
@@ -1511,9 +1531,12 @@ export class AppStore {
    * 同步段：作用域状态立即生效并渲染——左栏高亮/中栏标题即时跟手；文件树同步清空
    * （FilePanel 侦听 workspace 变化即刻重载右栏）、SSE 重订到新 scope、有记忆的作用域
    * 即时恢复 Tab（immediate 模式：无记忆只清算激活，首次全量打开等快照落地）。
-   * 异步段：持久化 + 快照刷新，落地后完整恢复（闸门：在途时用户可能已切走）。
+   * 异步段：持久化 + 快照刷新，落地后完整恢复（闸门：在途时用户可能已切走——
+   * 代际校验见 switchEpoch，连按时中间切换整段放弃）。
    */
   async openProject(projectId: string, workspaceDirectory?: string) {
+    this.cancelScopeCycle() // 作用域操作介入：作废连按窗口（§21）
+    const epoch = ++this.switchEpoch
     const ps = this.projectStateFor()
     if (!ps.opened.includes(projectId)) ps.opened.push(projectId)
     ps.currentProjectId = projectId
@@ -1528,15 +1551,18 @@ export class AppStore {
     this.resetFileTree()
     this.restoreScopeTabs(expectedDir, true, true)
     this.emit()
-    // SSE 连接不动（单全局流）；快照刷新在后台
+    // SSE 连接不动（单全局流）；快照刷新在后台（latest-wins）
     await this.persistProjectState()
+    if (epoch !== this.switchEpoch) return
     await this.refreshAllOpenedProjects()
+    if (epoch !== this.switchEpoch) return
     if (this.currentProject?.id !== projectId || this.scopeDirectory() !== expectedDir) return
     this.restoreScopeTabs(expectedDir, true)
   }
 
   /** 打开左栏 entry（普通项目 id 或 `global\0<directory>`）并切换作用域 */
   async openEntry(key: string) {
+    this.cancelScopeCycle() // 作用域操作介入：作废连按窗口（§21）
     const dir = globalDirectoryOfKey(key)
     if (dir == null) return this.openProject(key)
     return this.openGlobalDirectory(dir)
@@ -1544,6 +1570,7 @@ export class AppStore {
 
   /** 关闭左栏 entry（global 目录 = 关闭该目录作用域；普通项目走 closeProject） */
   async closeEntry(key: string) {
+    this.cancelScopeCycle() // 同 openEntry
     const dir = globalDirectoryOfKey(key)
     if (dir == null) return this.closeProject(key)
     return this.closeGlobalDirectory(dir)
@@ -1587,6 +1614,7 @@ export class AppStore {
    * 置 null，作用域经 worktree 兜底到 `/`），与普通项目主工作区行一致。
    */
   private async openGlobalDirectory(directory: string) {
+    const epoch = ++this.switchEpoch
     const key = globalEntryKey(directory)
     const ps = this.projectStateFor()
     if (!ps.opened.includes(key)) ps.opened.push(key)
@@ -1594,14 +1622,16 @@ export class AppStore {
     const rootDir = this.globalProject?.worktree ?? "/"
     ps.currentWorkspaceId = directory === rootDir ? null : directory
     // 先切换后加载（同 openProject，7c43827）：同步段立即登记 + 渲染，
-    // 快照与 Tab 恢复转后台——切换跟手
+    // 快照与 Tab 恢复转后台——切换跟手（latest-wins 见 switchEpoch）
     this.projectStates[this.profileKey()] = ps
     const expectedDir = this.scopeDirectory()
     this.resetFileTree()
     this.restoreScopeTabs(expectedDir, true, true)
     this.emit()
     await this.persistProjectState()
+    if (epoch !== this.switchEpoch) return
     await this.refreshAllOpenedProjects()
+    if (epoch !== this.switchEpoch) return
     if (this.scopeDirectory() !== expectedDir) return
     this.restoreScopeTabs(expectedDir, true)
     void this.backfillPending()
@@ -1747,6 +1777,7 @@ export class AppStore {
   }
 
   async closeProject(projectId: string) {
+    this.cancelScopeCycle() // 作用域操作介入：作废连按窗口（§21）
     const ps = this.projectStateFor()
     ps.opened = ps.opened.filter((id) => id !== projectId)
     if (ps.currentProjectId === projectId) {
@@ -1840,6 +1871,7 @@ export class AppStore {
   /** 切工作区（先切换后加载，同 openProject）：参数是 worktree directory（null = 主工作区）。
    *  同值早退（不刷新不恢复）——需要重同步作用域时须先切走再切回 */
   async setCurrentWorkspace(directory: string | null) {
+    this.cancelScopeCycle() // 作用域操作介入：作废连按窗口（§21；首击 leading 路径先跳后武装，此处为 no-op）
     const project = this.currentProject
     if (!project) return
     // 幻影 directory 防御（同 openProject）：不在 sandboxes 内的目录视为主工作区，
@@ -1856,6 +1888,7 @@ export class AppStore {
           : null
     const ps = this.projectStateFor()
     if (ps.currentWorkspaceId === valid) return
+    const epoch = ++this.switchEpoch
     ps.currentWorkspaceId = valid
     const expectedDir = this.scopeDirectory()
     this.resetFileTree()
@@ -1864,9 +1897,12 @@ export class AppStore {
     void this.backfillPending()
     this.emit()
     // 再加载：持久化 + 本项目快照刷新（WT-1：worktree 会话只有逐目录快照可达）。
-    // SSE 连接不动（单全局流，闸门集合无变化——目录本就属于打开项目）
+    // SSE 连接不动（单全局流，闸门集合无变化——目录本就属于打开项目）；
+    // latest-wins 见 switchEpoch
     await this.persistProjectState()
+    if (epoch !== this.switchEpoch) return
     await this.refreshSessionsForProject(project)
+    if (epoch !== this.switchEpoch) return
     if (this.currentProject?.id !== project.id || this.scopeDirectory() !== expectedDir) return
     this.restoreScopeTabs(expectedDir, true)
   }
@@ -4282,11 +4318,43 @@ export class AppStore {
   }
 
   /**
-   * Ctrl+Alt+↑/↓：左栏项目/工作区行按显示顺序遍历（design-keyboard-shortcuts §3）。
+   * Alt+↑/↓（mac ⌘⌥↑/↓）：左栏项目/工作区行按显示顺序遍历
+   * （design-keyboard-shortcuts §3，2026-09-04 修订替换 Ctrl+Alt+↑/↓——
+   * 被 GNOME/KDE 合成器抢作工作区切换）。
    * 平铺序列 = openedEntries 行 +（普通项目）其 worktree 行；当前位置 = worktree
    * 激活命中的工作区行，否则激活 entry 行；±1 循环。激活复用侧栏点击语义。
+   *
+   * 连按渲染抑制（design-tab-memory §21，leading + trailing）：首击立即单步
+   * （单次按压跟手、有即时反馈）；SCOPE_CYCLE_WINDOW_MS 窗口内的后续按压只
+   * 累计净步数——零状态改动零渲染，停顿后按净步数一次跳到目标行（中间作用域
+   * 不经过：无文件树重置/Tab 恢复/快照请求）。鼠标点击走 openEntry/
+   * setCurrentWorkspace 等入口（不经此路径），且这些入口先 cancelScopeCycle——
+   * 连按窗口内的鼠标介入作废累计步数，不越权跳转。
    */
   cycleScopeEntry(dir: 1 | -1) {
+    if (this.scopeCycleTimer != null) this.scopeCyclePending += dir
+    else this.jumpScopeBy(dir)
+    if (this.scopeCycleTimer != null) window.clearTimeout(this.scopeCycleTimer)
+    this.scopeCycleTimer = window.setTimeout(() => {
+      this.scopeCycleTimer = null
+      const pending = this.scopeCyclePending
+      this.scopeCyclePending = 0
+      if (pending !== 0) this.jumpScopeBy(pending)
+    }, SCOPE_CYCLE_WINDOW_MS)
+  }
+
+  /** 作废连按窗口（累计步数与定时器）：用户鼠标等其他作用域操作介入时调用 */
+  private cancelScopeCycle() {
+    if (this.scopeCycleTimer != null) {
+      window.clearTimeout(this.scopeCycleTimer)
+      this.scopeCycleTimer = null
+    }
+    this.scopeCyclePending = 0
+  }
+
+  /** 按净步数跳作用域行（正=向下，stepwise 环游）；虚拟边界（当前行瞬态消失）
+   *  语义与单步一致——首步 dir=1 落首行、dir=-1 落末行 */
+  private jumpScopeBy(net: number) {
     type NavRow =
       | { kind: "entry"; key: string }
       | { kind: "ws"; projectId: string; directory: string }
@@ -4308,12 +4376,15 @@ export class AppStore {
       )
     }
     if (idx < 0) idx = rows.findIndex((r) => r.kind === "entry" && this.isEntryActive(r.key))
-    // 当前行未命中（瞬态：作用域行刚消失）时按"虚拟边界"取值——dir=1 落首行、
-    // dir=-1 落末行（直接模运算会把 -1 当末行算成倒数第二行）
-    const target =
-      idx < 0
-        ? rows[dir === 1 ? 0 : rows.length - 1]!
-        : rows[(idx + dir + rows.length) % rows.length]!
+    // 当前行未命中（瞬态：作用域行刚消失）时按"虚拟边界"起步——dir=1 落首行、
+    // dir=-1 落末行（直接模运算会把 -1 当末行算成倒数第二行），后续步环游
+    const sign = net > 0 ? 1 : -1
+    const steps = Math.abs(net)
+    let i = idx < 0 ? (sign > 0 ? 0 : rows.length - 1) : idx
+    for (let k = idx < 0 ? 1 : 0; k < steps; k++) {
+      i = (i + sign + rows.length) % rows.length
+    }
+    const target = rows[i]!
     if (target.kind === "entry") {
       if (!this.isEntryActive(target.key)) void this.openEntry(target.key)
     } else if (target.projectId === this.currentProject?.id) {

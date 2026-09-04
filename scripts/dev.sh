@@ -4,7 +4,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-npm install
+# --no-audit/--no-fund：audit 是向 registry 的 bulk POST，本机网络下会长时间
+# 无响应把启动卡死在 install 尾声（debug log 停在 "silly audit"）；启动脚本
+# 只装依赖，审计/资助信息无消费方，直接关闭
+npm install --no-audit --no-fund
 
 # electron 的 postinstall 可能被跳过（如 ignore-scripts 或安装中断），导致 dist/path.txt
 # 缺失、electron-vite 启动报 "Electron uninstall"。检测到缺失时补跑下载。

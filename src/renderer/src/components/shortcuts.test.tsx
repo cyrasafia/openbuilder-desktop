@@ -125,12 +125,16 @@ describe("useShortcuts 分发", () => {
     expect(actions.cycleTab).toHaveBeenCalledTimes(4)
   })
 
-  it("Ctrl+Alt+↑/↓ → 左栏作用域遍历", () => {
+  it("Alt+↑/↓ → 左栏作用域遍历（非 mac）；原 Ctrl+Alt+↑/↓ 废弃不吞", () => {
     render(<Harness />)
-    press({ key: "ArrowDown", ctrlKey: true, altKey: true })
+    press({ key: "ArrowDown", altKey: true })
     expect(actions.cycleScopeEntry).toHaveBeenCalledWith(1)
-    press({ key: "ArrowUp", ctrlKey: true, altKey: true })
+    press({ key: "ArrowUp", altKey: true })
     expect(actions.cycleScopeEntry).toHaveBeenCalledWith(-1)
+    // 原 Ctrl+Alt+↑/↓ 是 GNOME/KDE 合成器工作区切换（应用收不到），废弃不消费
+    const old = press({ key: "ArrowDown", ctrlKey: true, altKey: true })
+    expect(old.defaultPrevented).toBe(false)
+    expect(actions.cycleScopeEntry).toHaveBeenCalledTimes(2)
   })
 
   it("macOS 切 Tab 惯例键：⌘⌥←/→ 与 ⌘⇧[/]（按 code 匹配）；linux 不绑这两组", () => {
@@ -163,6 +167,9 @@ describe("useShortcuts 分发", () => {
     expect(actions.toggleLeftPanel).toHaveBeenCalledTimes(1)
     press({ key: "ArrowDown", metaKey: true, altKey: true })
     expect(actions.cycleScopeEntry).toHaveBeenCalledWith(1)
+    // mac 裸 ⌥↑/↓ 不劫持（NSText 段落首/尾移动惯例，输入框打字要用）
+    const bareAlt = press({ key: "ArrowDown", altKey: true })
+    expect(bareAlt.defaultPrevented).toBe(false)
     // 浏览器视图转发路径同分发（code 随载荷）
     shortcutCb?.({ key: "{", code: "BracketLeft", control: false, meta: true, shift: true, alt: false })
     expect(actions.cycleTab).toHaveBeenCalledWith(-1)
@@ -191,7 +198,8 @@ describe("useShortcuts 分发", () => {
     expect(shortcutCb).not.toBeNull()
     shortcutCb?.({ key: "t", code: "", control: true, meta: false, shift: false, alt: false })
     expect(actions.showGuidePage).toHaveBeenCalledTimes(1)
-    shortcutCb?.({ key: "ArrowDown", code: "", control: true, meta: false, shift: false, alt: true })
+    // 裸 Alt+↓（非 mac 作用域遍历）经转发路径同分发（browser-views 过滤已扩）
+    shortcutCb?.({ key: "ArrowDown", code: "", control: false, meta: false, shift: false, alt: true })
     expect(actions.cycleScopeEntry).toHaveBeenCalledWith(1)
     shortcutCb?.({ key: "Tab", code: "", control: true, meta: false, shift: true, alt: false })
     expect(actions.cycleTab).toHaveBeenCalledWith(-1)

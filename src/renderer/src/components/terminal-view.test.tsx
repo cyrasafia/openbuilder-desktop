@@ -429,27 +429,31 @@ describe("TerminalView", () => {
   })
 
   it("复制/粘贴快捷键（linux）：Ctrl+Shift+C 复制选区 / Ctrl+Shift+V 粘贴；⌘C 不拦截", async () => {
-    render(<TerminalView ptyID="pty_1" />)
-    await waitFor(() => expect(FakeWS.instances.length).toBe(1))
+    vi.useFakeTimers()
+    await bootLive()
     expect(keyHandler).toBeTruthy()
     lastTerm!.getSelection = () => "SELECTED"
     const evC = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, shiftKey: true, code: "KeyC" })
     expect(keyHandler!(evC)).toBe(false)
     expect(evC.defaultPrevented).toBe(true)
     expect(clipboard.writeText).toHaveBeenCalledWith("SELECTED")
-    // ⌘C 在非 darwin 平台放行（修饰键判定按 platform 区分）
+    // ⌘C 在非 darwin 平台放行（修饰键判定按 platform 区分；live 态归 xterm）
     const evCmdC = new KeyboardEvent("keydown", { cancelable: true, metaKey: true, code: "KeyC" })
     expect(keyHandler!(evCmdC)).toBe(true)
     expect(evCmdC.defaultPrevented).toBe(false)
     const evV = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, shiftKey: true, code: "KeyV" })
     expect(keyHandler!(evV)).toBe(false)
-    await waitFor(() => expect(lastTerm!.paste).toHaveBeenCalledWith("PASTED"))
+    // fake timers 下 waitFor 不推进：flush microtask（clipboard.readText promise）
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(lastTerm!.paste).toHaveBeenCalledWith("PASTED")
   })
 
   it("复制/粘贴快捷键（macOS）：⌘C 复制选区 / ⌘V 粘贴；无选区 ⌘C 放行；Ctrl+Shift+C 放行", async () => {
+    vi.useFakeTimers()
     platform = "darwin"
-    render(<TerminalView ptyID="pty_1" />)
-    await waitFor(() => expect(FakeWS.instances.length).toBe(1))
+    await bootLive()
     // ⌘C 有选区 → 拦截复制
     lastTerm!.getSelection = () => "SELECTED"
     const evCmdC = new KeyboardEvent("keydown", { cancelable: true, metaKey: true, code: "KeyC" })
@@ -462,10 +466,99 @@ describe("TerminalView", () => {
     // ⌘V → 粘贴剪贴板
     const evCmdV = new KeyboardEvent("keydown", { cancelable: true, metaKey: true, code: "KeyV" })
     expect(keyHandler!(evCmdV)).toBe(false)
-    await waitFor(() => expect(lastTerm!.paste).toHaveBeenCalledWith("PASTED"))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(lastTerm!.paste).toHaveBeenCalledWith("PASTED")
     // mac 下 Ctrl+Shift+C 放行（Control 系组合归终端/PTY）
     lastTerm!.getSelection = () => "SELECTED"
     const evCsC = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, shiftKey: true, code: "KeyC" })
     expect(keyHandler!(evCsC)).toBe(true)
+  })
+
+  it("live 态 Ctrl 系组合仍归 xterm（Ctrl+W 归 pty、Ctrl+Tab/Ctrl+Shift+Tab 归 pty，事件被 xterm 消费）", async () => {
+    vi.useFakeTimers()
+    await bootLive()
+    const evW = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, code: "KeyW" })
+    expect(keyHandler!(evW)).toBe(true)
+    const evTab = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, key: "Tab" })
+    expect(keyHandler!(evTab)).toBe(true)
+    const evTabS = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, shiftKey: true, key: "Tab" })
+    expect(keyHandler!(evTabS)).toBe(true)
+    const evAlt = new KeyboardEvent("keydown", { cancelable: true, altKey: true, key: "ArrowDown" })
+    expect(keyHandler!(evAlt)).toBe(true)
+  })
+
+  it("断开态不拦截应用快捷键：已退出后 Ctrl+W/Ctrl+Tab/Ctrl+Shift+Tab 返回 false（不 preventDefault，事件冒泡到全局分发）；无修饰键仍归 xterm", async () => {
+    vi.useFakeTimers()
+    const { ws } = await bootLive()
+    act(() => {
+      ws.onclose?.({ code: 1000 })
+    })
+    expect(screen.getByText("终端已退出")).toBeTruthy()
+    const evW = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, code: "KeyW" })
+    expect(keyHandler!(evW)).toBe(false)
+    expect(evW.defaultPrevented).toBe(false)
+    const evTab = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, key: "Tab" })
+    expect(keyHandler!(evTab)).toBe(false)
+    expect(evTab.defaultPrevented).toBe(false)
+    // Ctrl+Shift+Tab 带 Shift（linux 下命中 mod 分支）也必须释放——切 Tab 反向
+    const evTabS = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, shiftKey: true, key: "Tab" })
+    expect(keyHandler!(evTabS)).toBe(false)
+    expect(evTabS.defaultPrevented).toBe(false)
+    // ⌘ 系同释放（mac ⌘W）；裸 Alt+↑/↓（非 mac 作用域遍历）也释放；
+    // 无修饰键仍 true（xterm 键盘滚动等默认行为保留）
+    const evCmdW = new KeyboardEvent("keydown", { cancelable: true, metaKey: true, code: "KeyW" })
+    expect(keyHandler!(evCmdW)).toBe(false)
+    const evAlt = new KeyboardEvent("keydown", { cancelable: true, altKey: true, key: "ArrowDown" })
+    expect(keyHandler!(evAlt)).toBe(false)
+    expect(evAlt.defaultPrevented).toBe(false)
+    const evPlain = new KeyboardEvent("keydown", { cancelable: true, code: "KeyA" })
+    expect(keyHandler!(evPlain)).toBe(true)
+  })
+
+  it("重连中（异常断开）同样释放 Ctrl 系快捷键；重连成功恢复拦截", async () => {
+    vi.useFakeTimers()
+    const { ws } = await bootLive()
+    ws.onmessage?.({ data: metaFrame(10) })
+    act(() => {
+      ws.onclose?.({ code: 1006 })
+    })
+    expect(screen.getByText("重连中")).toBeTruthy()
+    const evW = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, code: "KeyW" })
+    expect(keyHandler!(evW)).toBe(false)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    const ws2 = FakeWS.instances[1]!
+    ws2.readyState = 1
+    act(() => {
+      ws2.onopen?.()
+    })
+    const evW2 = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, code: "KeyW" })
+    expect(keyHandler!(evW2)).toBe(true)
+  })
+
+  it("断开态复制快捷键不受释放影响：Ctrl+Shift+C 有选区仍拦截复制", async () => {
+    vi.useFakeTimers()
+    const { ws } = await bootLive()
+    act(() => {
+      ws.onclose?.({ code: 1000 })
+    })
+    lastTerm!.getSelection = () => "SELECTED"
+    const evC = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, shiftKey: true, code: "KeyC" })
+    expect(keyHandler!(evC)).toBe(false)
+    expect(evC.defaultPrevented).toBe(true)
+    expect(clipboard.writeText).toHaveBeenCalledWith("SELECTED")
+  })
+
+  it("已退出 pty 重挂载（不建 WS）即释放 Ctrl 系快捷键", async () => {
+    runtimeObj.exited = true
+    runtimeObj.buffer = "CACHED"
+    render(<TerminalView ptyID="pty_1" />)
+    await screen.findByText("终端已退出")
+    expect(FakeWS.instances.length).toBe(0)
+    const evW = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, code: "KeyW" })
+    expect(keyHandler!(evW)).toBe(false)
   })
 })

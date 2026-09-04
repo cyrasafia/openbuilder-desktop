@@ -1063,7 +1063,7 @@ function ChatView({ sessionID }: { sessionID: string }) {
             if (refInput.onKeyDown(e)) return
             // 命令菜单打开且有匹配：↑/↓ 移动、Enter/Tab 选中补全、Esc 关闭。
             // 修饰键组合（Ctrl/Meta/Alt）是全局快捷键域（Ctrl+Tab 切 Tab、
-            // Ctrl+Alt+↑/↓ 遍历作用域），不在此拦截（design-keyboard-shortcuts）
+            // Alt+↑/↓ 遍历作用域），不在此拦截（design-keyboard-shortcuts）
             if (cmdMode && matches.length > 0) {
               const noMod = !e.ctrlKey && !e.metaKey && !e.altKey
               if (noMod && (e.key === "ArrowDown" || e.key === "ArrowUp")) {

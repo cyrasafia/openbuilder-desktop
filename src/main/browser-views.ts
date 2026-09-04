@@ -63,9 +63,11 @@ export function registerBrowserViewIpc() {
     })
     // 页面聚焦后快捷键转发（design-browser-tab 评审 M5）：原生 webContents 抢走
     // 键盘焦点，renderer 的 window keydown 收不到——Ctrl 系快捷键经主窗口转发，
-    // shortcuts hook 订阅后走同一分发（非 Ctrl 组合不转发，页面自行消费）
+    // shortcuts hook 订阅后走同一分发（非 Ctrl 组合不转发，页面自行消费；例外
+    // 裸 Alt+↑/↓——非 mac 作用域遍历，2026-09-04，见 design-keyboard-shortcuts §3）
     wc.on("before-input-event", (_e, input) => {
-      if (input.type !== "keyDown" || !(input.control || input.meta)) return
+      const altArrow = input.alt && (input.key === "ArrowUp" || input.key === "ArrowDown")
+      if (input.type !== "keyDown" || !(input.control || input.meta || altArrow)) return
       mainWindow?.webContents.send("browser:shortcut", {
         key: input.key,
         code: input.code,
