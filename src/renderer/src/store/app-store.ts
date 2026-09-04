@@ -1500,6 +1500,18 @@ export class AppStore {
     return this.activeProfileId ?? "default"
   }
 
+  /**
+   * 切换代际（latest-wins，2026-09-04）：每次作用域切换的同步段自增。切换的
+   * 异步段（持久化/快照刷新/二段恢复）在每个 await 后校验代际，连按（Alt+↑/↓
+   * 遍历）时中间切换的后台工作直接放弃——只有最终停留的作用域做完整加载；
+   * 状态收敛由最终切换的持久化保证（同步段逐次改写 projectStates，末次落盘
+   * 即终态）。跳过范围注意：越代的 openProject 连带跳过 refreshAllOpenedProjects
+   * ——其他已打开项目少一次切换时重快照（openProject 被 setCurrentWorkspace
+   * 越代时也如此）；SSE 常驻订阅 + reconciler 对账兜底，良性，见
+   * design-tab-memory §16 第五轮。
+   */
+  private switchEpoch = 0
+
   private async persistProjectState() {
     this.projectStates[this.profileKey()] = this.projectStateFor()
     await window.desktop.storeSet("project.state", this.projectStates)
@@ -1511,9 +1523,11 @@ export class AppStore {
    * 同步段：作用域状态立即生效并渲染——左栏高亮/中栏标题即时跟手；文件树同步清空
    * （FilePanel 侦听 workspace 变化即刻重载右栏）、SSE 重订到新 scope、有记忆的作用域
    * 即时恢复 Tab（immediate 模式：无记忆只清算激活，首次全量打开等快照落地）。
-   * 异步段：持久化 + 快照刷新，落地后完整恢复（闸门：在途时用户可能已切走）。
+   * 异步段：持久化 + 快照刷新，落地后完整恢复（闸门：在途时用户可能已切走——
+   * 代际校验见 switchEpoch，连按时中间切换整段放弃）。
    */
   async openProject(projectId: string, workspaceDirectory?: string) {
+    const epoch = ++this.switchEpoch
     const ps = this.projectStateFor()
     if (!ps.opened.includes(projectId)) ps.opened.push(projectId)
     ps.currentProjectId = projectId
@@ -1528,9 +1542,11 @@ export class AppStore {
     this.resetFileTree()
     this.restoreScopeTabs(expectedDir, true, true)
     this.emit()
-    // SSE 连接不动（单全局流）；快照刷新在后台
+    // SSE 连接不动（单全局流）；快照刷新在后台（latest-wins）
     await this.persistProjectState()
+    if (epoch !== this.switchEpoch) return
     await this.refreshAllOpenedProjects()
+    if (epoch !== this.switchEpoch) return
     if (this.currentProject?.id !== projectId || this.scopeDirectory() !== expectedDir) return
     this.restoreScopeTabs(expectedDir, true)
   }
@@ -1587,6 +1603,7 @@ export class AppStore {
    * 置 null，作用域经 worktree 兜底到 `/`），与普通项目主工作区行一致。
    */
   private async openGlobalDirectory(directory: string) {
+    const epoch = ++this.switchEpoch
     const key = globalEntryKey(directory)
     const ps = this.projectStateFor()
     if (!ps.opened.includes(key)) ps.opened.push(key)
@@ -1594,14 +1611,16 @@ export class AppStore {
     const rootDir = this.globalProject?.worktree ?? "/"
     ps.currentWorkspaceId = directory === rootDir ? null : directory
     // 先切换后加载（同 openProject，7c43827）：同步段立即登记 + 渲染，
-    // 快照与 Tab 恢复转后台——切换跟手
+    // 快照与 Tab 恢复转后台——切换跟手（latest-wins 见 switchEpoch）
     this.projectStates[this.profileKey()] = ps
     const expectedDir = this.scopeDirectory()
     this.resetFileTree()
     this.restoreScopeTabs(expectedDir, true, true)
     this.emit()
     await this.persistProjectState()
+    if (epoch !== this.switchEpoch) return
     await this.refreshAllOpenedProjects()
+    if (epoch !== this.switchEpoch) return
     if (this.scopeDirectory() !== expectedDir) return
     this.restoreScopeTabs(expectedDir, true)
     void this.backfillPending()
@@ -1856,6 +1875,7 @@ export class AppStore {
           : null
     const ps = this.projectStateFor()
     if (ps.currentWorkspaceId === valid) return
+    const epoch = ++this.switchEpoch
     ps.currentWorkspaceId = valid
     const expectedDir = this.scopeDirectory()
     this.resetFileTree()
@@ -1864,9 +1884,12 @@ export class AppStore {
     void this.backfillPending()
     this.emit()
     // 再加载：持久化 + 本项目快照刷新（WT-1：worktree 会话只有逐目录快照可达）。
-    // SSE 连接不动（单全局流，闸门集合无变化——目录本就属于打开项目）
+    // SSE 连接不动（单全局流，闸门集合无变化——目录本就属于打开项目）；
+    // latest-wins 见 switchEpoch
     await this.persistProjectState()
+    if (epoch !== this.switchEpoch) return
     await this.refreshSessionsForProject(project)
+    if (epoch !== this.switchEpoch) return
     if (this.currentProject?.id !== project.id || this.scopeDirectory() !== expectedDir) return
     this.restoreScopeTabs(expectedDir, true)
   }

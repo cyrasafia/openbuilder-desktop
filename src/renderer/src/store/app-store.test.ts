@@ -152,6 +152,67 @@ describe("先切换后加载：setCurrentWorkspace", () => {
     expect(store.tabMemory.default?.[WT2]).toBeUndefined()
   })
 
+  it("连按 latest-wins（switchEpoch）：中间切换的异步段整段放弃——快照刷新不发起，最终态收敛", async () => {
+    const listCalls: string[] = []
+    ;(store as unknown as { client: unknown }).client = {
+      listSessions: async (dir: string) => {
+        listCalls.push(dir)
+        return snapshots.get(dir) ?? []
+      },
+      listSessionStatus: async () => ({}),
+      listProjects: async () => [project()],
+      listPendingPermissions: async () => [],
+      listPendingQuestions: async () => [],
+    }
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+
+    // 连按两下（第一下不 await 即切第二下）：中间切换的 refresh 不发起
+    const p1 = store.setCurrentWorkspace(WT1)
+    const p2 = store.setCurrentWorkspace(WT2)
+    await Promise.all([p1, p2])
+
+    expect(store.currentWorkspace?.directory).toBe(WT2)
+    // 只剩最终切换那一轮快照（本作用域 = 本项目全部目录 ROOT/WT1/WT2 各一次）
+    expect(listCalls.slice().sort()).toEqual([ROOT, WT1, WT2].sort())
+    expect(store.projectStates.default.currentWorkspaceId).toBe(WT2)
+  })
+
+  it("连按 latest-wins 跨函数共享代际：openProject 被 setCurrentWorkspace 越代 → refreshAllOpenedProjects 整轮放弃，仅最终作用域拉快照", async () => {
+    const OTHER = "/other"
+    const WT9 = "/other/wt9"
+    const proj2: Project = { id: "proj2", worktree: OTHER, time: { created: 0, updated: 0 }, sandboxes: [WT9] }
+    const listCalls: string[] = []
+    ;(store as unknown as { client: unknown }).client = {
+      listSessions: async (dir: string) => {
+        listCalls.push(dir)
+        return snapshots.get(dir) ?? []
+      },
+      listSessionStatus: async () => ({}),
+      listProjects: async () => [project(), proj2],
+      listPendingPermissions: async () => [],
+      listPendingQuestions: async () => [],
+    }
+    store.projects = [project(), proj2]
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+    snapshots.set(OTHER, [])
+    snapshots.set(WT9, [])
+
+    // 跨项目行 → 紧接其工作区行（cycleScopeEntry 一步直达语义）：openProject
+    // 的 refreshAllOpenedProjects（全 opened 项目）被 setCurrentWorkspace 越代
+    const p1 = store.openProject("proj2")
+    const p2 = store.setCurrentWorkspace(WT9)
+    await Promise.all([p1, p2])
+
+    expect(store.currentWorkspace?.directory).toBe(WT9)
+    // 只剩最终切换那一轮（setCurrentWorkspace 本项目 = OTHER/WT9 各一次）；
+    // proj1 的 ROOT/WT1/WT2 不出现在任何一轮（openProject 的全量轮已放弃）
+    expect(listCalls.slice().sort()).toEqual([OTHER, WT9].sort())
+  })
+
   it("记忆外可见会话补开（§17，kind-engine 场景）：切走期间他端新建，切回即补开、active 保持", async () => {
     const s1 = session("s1", WT1, { created: 1, updated: 1 })
     const s2 = session("s2", WT1, { created: 2, updated: 20 }) // 切走期间他端新建

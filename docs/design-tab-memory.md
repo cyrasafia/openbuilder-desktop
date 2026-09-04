@@ -301,3 +301,16 @@ file/diff/terminal/browser Tab、任意 kind 激活、全 kind 混排顺序的�
 - §18 "冷启动不恢复" 的不变量随上条解除；运行期语义（切换不关不归档、关项目随关）全部不变
 - §7 规则 1.5 的 `scopeActiveKeys` 由纯内存改为冷启动播种（跨重启），规则本身与 mem.active
   的 chat-only 约束不变
+
+## 20. 切换连按性能：latest-wins + emit 合帧（2026-09-04）
+
+**问题**（Alt+↑/↓ 作用域遍历上线后实测，CDP + CPU profiler）：一次切换的同步段/快照落地/二段恢复/backfill 各自发 emit，每次 emit 触发 App 全树渲染（单一订阅点 force-update，无分域订阅）——每按键 ~5 次全树渲染；dev 模式每按 1 个 52–315ms long task（React DEV 运行时校验放大；生产 0 long task 但渲染风暴同在）。连按时中间切换的异步段（持久化/快照刷新/二段恢复）纯浪费。
+
+**方案**（两层，均在切换链路上，不动订阅架构）：
+
+- **switchEpoch 代际（latest-wins）**：`openProject`/`openGlobalDirectory`/`setCurrentWorkspace` 同步段自增私有计数；异步段在每个 await 后校验代际，越代整段放弃。语义：只有最终停留的作用域做完整加载；中间作用域快照不拉取（下次真正切入再取，与首开语义一致）；持久化不可跳过但无需跳过——同步段逐次改写 projectStates、IPC 同信道有序，末次落盘即终态。**跳过范围注意**：越代的 openProject 连带跳过 refreshAllOpenedProjects，其他已打开项目少一次切换时重快照（openProject 被 setCurrentWorkspace 越代亦然）——SSE 常驻订阅 + reconciler 对账兜底，良性。原有 projectId/scope 闸门保留在代际闸门之后（非切换流不增代际，仍由旧闸门覆盖）。
+- **emit 合帧（app.tsx 订阅侧 rAF）**：一帧内任意次 emit 只 force 一次渲染；store 保持同步通知（测试计数与顺序语义不变）；jsdom 无 rAF 退化 setTimeout(0)；卸载时取消在途帧回调。合帧先例：design-pdf-preview 的 ResizeObserver + rAF 合帧。
+
+**验证**：CDP 实测 dev 模式同场景（5 次连按）long task 4→0、CPU 忙时占比 ~68%→~6%（剩余为 SSE 后台流量）；vitest 640→642 用例（新增连按 latest-wins：同函数越代快照不发起 + 跨函数共享代际 openProject→setCurrentWorkspace 全量轮放弃）、typecheck 双侧全绿。
+
+**遗留**（未做，按需再启）：分域订阅（useSyncExternalStore + selector，各面板只重渲染自身切片，根治全树渲染）；消息页缓存（切回作用域不重拉 listMessagesPage，参考 openbuilder 消息累积经验）。
