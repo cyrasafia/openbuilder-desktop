@@ -166,6 +166,8 @@ const zh = {
   providerKeyFor: "{name} 的 API key",
   providerKeyDeleteConfirmTitle: "删除 {name} 的凭据",
   providerKeyDeleteConfirmBody: "删除后该 provider 的模型将不可用，直到重新配置。",
+  providerNoMatch: "无匹配 provider",
+  providerReloading: "刷新中…",
   // 服务器连接状态（左栏底部）
   statusStreaming: "实时",
   statusDegraded: "重连中",
@@ -398,6 +400,8 @@ const en: typeof zh = {
   providerKeyFor: "API key for {name}",
   providerKeyDeleteConfirmTitle: "Remove credentials for {name}",
   providerKeyDeleteConfirmBody: "Models from this provider will stop working until reconfigured.",
+  providerNoMatch: "No matching providers",
+  providerReloading: "Refreshing…",
   statusStreaming: "Live",
   statusDegraded: "Reconnecting",
   statusOffline: "Offline",

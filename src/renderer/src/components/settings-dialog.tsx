@@ -17,6 +17,9 @@ export function SettingsDialog() {
   const [tab, setTab] = useState<"connection" | "providers" | "appearance" | "defaults">("connection")
   // 非空 = 弹窗内跳转到服务器表单视图（丢弃 tabs 视图，草稿随视图卸载）
   const [editing, setEditing] = useState<{ profile: ConnectionProfile; isNew: boolean } | null>(null)
+  // 非空 = 弹窗内跳转到 provider key 表单视图（review P2：与 profile 表单同层，
+  // Esc 退回列表、标题行返回钮、actions 钉底）
+  const [providerEdit, setProviderEdit] = useState<ProviderInfo | null>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
 
   const close = () => {
@@ -48,9 +51,11 @@ export function SettingsDialog() {
         onKeyDown={(e) => {
           // IME 组合中的 Escape 是取消候选词，不能顺手关弹窗（同项目选择器）
           if (e.nativeEvent.isComposing) return
-          // Esc 分层：表单视图先退回列表（丢弃草稿），列表视图才关弹窗
+          // Esc 分层（review P2）：profile 表单 / provider key 表单先退回列表
+          //（丢弃草稿），列表视图才关弹窗
           if (e.key === "Escape") {
             if (editing) setEditing(null)
+            else if (providerEdit) setProviderEdit(null)
             else close()
           }
         }}
@@ -79,6 +84,30 @@ export function SettingsDialog() {
               onSave={saveProfile}
             />
           </>
+        ) : providerEdit ? (
+          <>
+            <div className="dialog-title dialog-title-row">
+              <div className="dialog-title-side">
+                <button
+                  className="icon-btn"
+                  title={t.back}
+                  aria-label={t.back}
+                  onClick={() => setProviderEdit(null)}
+                >
+                  <ArrowLeft size={14} aria-hidden />
+                </button>
+                <span>{t.providerKeyFor.replace("{name}", providerEdit.name)}</span>
+              </div>
+              <button className="icon-btn" title={t.close} aria-label={t.close} onClick={close}>
+                <X size={14} aria-hidden />
+              </button>
+            </div>
+            <ProviderKeyForm
+              provider={providerEdit}
+              onCancel={() => setProviderEdit(null)}
+              onSaved={() => setProviderEdit(null)}
+            />
+          </>
         ) : (
           <>
             <div className="dialog-title dialog-title-row">
@@ -105,7 +134,7 @@ export function SettingsDialog() {
               {tab === "connection" ? (
                 <ConnectionSettings onEdit={setEditing} />
               ) : tab === "providers" ? (
-                <ProviderSettings />
+                <ProviderSettings onEditKey={setProviderEdit} />
               ) : tab === "appearance" ? (
                 <AppearanceSettings />
               ) : (
@@ -408,38 +437,45 @@ export function filterProviders(all: ProviderInfo[], query: string): ProviderInf
   return out
 }
 
-/** Provider 页签（design-provider-config）：已连接组 + 全目录搜索 + key 设置/删除。
- *  ops 注入供测试；组件导出仅为测试直挂（Fast Refresh 兼容：组件导出） */
-export function ProviderSettings({ ops }: { ops?: ProviderOps }) {
+/** Provider 页签（design-provider-config）：已连接组 + 全目录搜索 + key 删除；
+ *  key 设置经 onEditKey 提升到 SettingsDialog 层的表单视图（review P2：Esc 分层
+ *  与 ProfileFormView 一致、actions 钉底）。ops 注入供测试 */
+export function ProviderSettings({
+  ops,
+  onEditKey,
+}: {
+  ops?: ProviderOps
+  onEditKey: (p: ProviderInfo) => void
+}) {
   const store = useStore()
   const { t } = useI18n()
   const directory = store.scopeQuery.directory
   const connected = !!store.getActiveClient()
-  // 目录可能随作用域变化：进入页签/作用域变化时重拉
   const [catalog, setCatalog] = useState<ProviderCatalog | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState("")
-  // key 设置视图（弹窗内跳转，同 profile 表单模式）
-  const [editing, setEditing] = useState<ProviderInfo | null>(null)
-  const [keyDraft, setKeyDraft] = useState("")
-  const [saving, setSaving] = useState(false)
-  const [editError, setEditError] = useState<string | null>(null)
   // 删除二次确认
   const [confirming, setConfirming] = useState<ProviderInfo | null>(null)
   const realOps = ops ?? defaultProviderOps(store)
+  // 请求序号（review P3）：作用域/连接态变化重拉时，迟到的旧响应不覆盖新结果
+  const reloadSeq = useRef(0)
 
   const reload = async () => {
     if (!connected || !directory) return
+    const seq = ++reloadSeq.current
     setLoading(true)
     setError(null)
     try {
-      setCatalog(await realOps.list(directory))
+      const next = await realOps.list(directory)
+      if (seq !== reloadSeq.current) return
+      setCatalog(next)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-      setCatalog(null)
+      if (seq !== reloadSeq.current) return
+      // 错误不清已渲染列表（review P3：瞬态网络错误不白屏）
+      setError(e instanceof Error && e.message !== "not connected" ? e.message : t.connectFirst)
     } finally {
-      setLoading(false)
+      if (seq === reloadSeq.current) setLoading(false)
     }
   }
 
@@ -456,59 +492,13 @@ export function ProviderSettings({ ops }: { ops?: ProviderOps }) {
     )
   }
 
-  if (editing) {
-    return (
-      <>
-        <div className="dialog-body">
-          <label className="form-label">
-            {t.providerKeyFor.replace("{name}", editing.name)}
-            <input
-              type="password"
-              autoFocus
-              value={keyDraft}
-              onChange={(e) => setKeyDraft(e.target.value)}
-            />
-          </label>
-          {editError && <div className="form-note">{editError}</div>}
-        </div>
-        <div className="dialog-actions">
-          <button
-            onClick={() => {
-              setEditing(null)
-              setKeyDraft("")
-              setEditError(null)
-            }}
-          >
-            {t.cancel}
-          </button>
-          <button
-            className="btn-primary"
-            disabled={saving || !keyDraft.trim()}
-            onClick={() => {
-              setSaving(true)
-              setEditError(null)
-              void realOps
-                .setKey(editing.id, keyDraft.trim())
-                .then(() => {
-                  setEditing(null)
-                  setKeyDraft("")
-                  void reload()
-                })
-                .catch((e: unknown) => {
-                  setEditError(e instanceof Error ? e.message : String(e))
-                })
-                .finally(() => setSaving(false))
-            }}
-          >
-            {t.save}
-          </button>
-        </div>
-      </>
-    )
-  }
-
+  // 默认视图 = 已配置（key 非空 **或** 在 connected 集——多 env 候选的 provider
+  // key 合并为 undefined 但已连接，review P2：漏掉会误显示"尚无已配置"）
+  const connectedIds = new Set(catalog?.connected ?? [])
   const searchResults = filterProviders(catalog?.all ?? [], query)
-  const rows = query.trim() ? searchResults : (catalog?.all ?? []).filter((p) => !!p.key)
+  const rows = query.trim()
+    ? searchResults
+    : (catalog?.all ?? []).filter((p) => !!p.key || connectedIds.has(p.id))
 
   return (
     <div className="settings-providers">
@@ -520,7 +510,7 @@ export function ProviderSettings({ ops }: { ops?: ProviderOps }) {
           onChange={(e) => setQuery(e.target.value)}
         />
         <button type="button" disabled={loading} onClick={() => void reload()}>
-          {loading ? t.scanRescanning : t.providerRefresh}
+          {loading ? t.providerReloading : t.providerRefresh}
         </button>
       </div>
       {error && <div className="form-note">{error}</div>}
@@ -528,25 +518,33 @@ export function ProviderSettings({ ops }: { ops?: ProviderOps }) {
         <div className="provider-key-hint form-note">{t.providerKeyHint}</div>
       )}
       {!loading && catalog && rows.length === 0 && (
-        <div className="form-note">{query.trim() ? t.noProjectMatch : t.providerNoneConnected}</div>
+        <div className="form-note">{query.trim() ? t.providerNoMatch : t.providerNoneConnected}</div>
       )}
       <div className="provider-list">
-        {rows.map((p) => (
-          <div key={p.id} className="provider-row">
-            <span className={"provider-key-dot " + (p.key ? "on" : "off")} title={p.key ? t.providerKeyOn : t.providerKeyOff} />
-            <span className="tree-label">{p.name}</span>
-            <span className="profile-mode">{p.source}</span>
-            <span className="tree-meta mono">
-              {t.providerModels.replace("{count}", String(Object.keys(p.models ?? {}).length))}
-            </span>
-            <button onClick={() => setEditing(p)}>{p.key ? t.providerKeyReplace : t.providerKeySet}</button>
-            {p.key && (
-              <button className="danger" onClick={() => setConfirming(p)}>
-                {t.providerKeyDelete}
+        {rows.map((p) => {
+          const keyOn = !!p.key || connectedIds.has(p.id)
+          return (
+            <div key={p.id} className="provider-row">
+              <span
+                className={"provider-key-dot " + (keyOn ? "on" : "off")}
+                title={keyOn ? t.providerKeyOn : t.providerKeyOff}
+              />
+              <span className="tree-label">{p.name}</span>
+              <span className="profile-mode">{p.source}</span>
+              <span className="tree-meta mono">
+                {t.providerModels.replace("{count}", String(Object.keys(p.models ?? {}).length))}
+              </span>
+              <button onClick={() => onEditKey(p)}>
+                {keyOn ? t.providerKeyReplace : t.providerKeySet}
               </button>
-            )}
-          </div>
-        ))}
+              {keyOn && (
+                <button className="danger" onClick={() => setConfirming(p)}>
+                  {t.providerKeyDelete}
+                </button>
+              )}
+            </div>
+          )
+        })}
       </div>
       {confirming && (
         <ConfirmDialog
@@ -567,6 +565,64 @@ export function ProviderSettings({ ops }: { ops?: ProviderOps }) {
         />
       )}
     </div>
+  )
+}
+
+/** provider key 表单（SettingsDialog 层视图，同 ProfileFormView 结构；review P2）：
+ *  保存成功后 ProviderSettings 重挂自动重拉列表 */
+export function ProviderKeyForm({
+  provider,
+  ops,
+  onCancel,
+  onSaved,
+}: {
+  provider: ProviderInfo
+  ops?: ProviderOps
+  onCancel: () => void
+  onSaved: () => void
+}) {
+  const store = useStore()
+  const { t } = useI18n()
+  const realOps = ops ?? defaultProviderOps(store)
+  const [keyDraft, setKeyDraft] = useState("")
+  const [saving, setSaving] = useState(false)
+  const [editError, setEditError] = useState<string | null>(null)
+
+  return (
+    <>
+      <div className="dialog-body">
+        <label className="form-label">
+          {t.providerKeyFor.replace("{name}", provider.name)}
+          <input
+            type="password"
+            autoFocus
+            value={keyDraft}
+            onChange={(e) => setKeyDraft(e.target.value)}
+          />
+        </label>
+        {editError && <div className="form-note">{editError}</div>}
+      </div>
+      <div className="dialog-actions">
+        <button onClick={onCancel}>{t.cancel}</button>
+        <button
+          className="btn-primary"
+          disabled={saving || !keyDraft.trim()}
+          onClick={() => {
+            setSaving(true)
+            setEditError(null)
+            void realOps
+              .setKey(provider.id, keyDraft.trim())
+              .then(() => onSaved())
+              .catch((e: unknown) => {
+                setEditError(e instanceof Error && e.message !== "not connected" ? e.message : t.connectFirst)
+              })
+              .finally(() => setSaving(false))
+          }}
+        >
+          {t.save}
+        </button>
+      </div>
+    </>
   )
 }
 

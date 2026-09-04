@@ -5,7 +5,7 @@
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { ProviderSettings, SettingsDialog, type ProviderOps } from "./settings-dialog"
+import { ProviderKeyForm, ProviderSettings, SettingsDialog, type ProviderOps } from "./settings-dialog"
 import type { ProviderCatalog, ProviderInfo } from "@shared/api-types"
 
 const scanBinaries = vi.fn(async () => [
@@ -184,6 +184,7 @@ describe("filterProviders 纯函数", () => {
 
 
 describe("ProviderSettings 组件", () => {
+  const onEditKey = vi.fn()
   const cat: ProviderCatalog = {
     all: [
       { id: "deepseek", name: "DeepSeek", source: "api", env: [], key: "k1", models: { a: {}, b: {} } },
@@ -212,7 +213,7 @@ describe("ProviderSettings 组件", () => {
   it("默认视图只显示已配置 key 的 provider（名称/source/模型数）；搜索切全目录", async () => {
     connectStore()
     const { ops, list } = mkOps()
-    render(<ProviderSettings ops={ops} />)
+    render(<ProviderSettings ops={ops} onEditKey={onEditKey} />)
     await waitFor(() => expect(screen.getByText("DeepSeek")).toBeTruthy())
     expect(screen.queryByText("Anthropic")).toBeNull()
     expect(list).toHaveBeenCalledWith("/repo")
@@ -226,30 +227,44 @@ describe("ProviderSettings 组件", () => {
     expect(screen.getByText("设置 key")).toBeTruthy()
   })
 
-  it("设置 key：视图跳转 → 输入 → 保存调用并重拉列表", async () => {
+  it("设置 key：onEditKey 提升到弹窗层（ProviderSettings 不再自持编辑态）", async () => {
     connectStore()
-    const { ops, setKey, list } = mkOps()
-    render(<ProviderSettings ops={ops} />)
+    const { ops } = mkOps()
+    render(<ProviderSettings ops={ops} onEditKey={onEditKey} />)
     await waitFor(() => expect(screen.getByText("DeepSeek")).toBeTruthy())
     fireEvent.change(screen.getByPlaceholderText(/搜索 provider/), {
       target: { value: "anthropic" },
     })
     await waitFor(() => expect(screen.getByText("设置 key")).toBeTruthy())
     fireEvent.click(screen.getByText("设置 key"))
+    expect(onEditKey).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "anthropic", name: "Anthropic" }),
+    )
+  })
+
+  it("ProviderKeyForm：输入 → 保存调用 setKey → onSaved；空 key 禁保存", async () => {
+    connectStore()
+    const { ops, setKey } = mkOps()
+    const onSaved = vi.fn()
+    const anthropic = cat.all[1]!
+    render(
+      <ProviderKeyForm provider={anthropic} ops={ops} onCancel={vi.fn()} onSaved={onSaved} />,
+    )
+    expect(screen.getByText("保存")).toBeTruthy()
+    fireEvent.click(screen.getByText("保存"))
+    expect(setKey).not.toHaveBeenCalled() // 空 key 禁用
     fireEvent.change(screen.getByLabelText("Anthropic 的 API key"), {
       target: { value: "sk-new" },
     })
     fireEvent.click(screen.getByText("保存"))
     await waitFor(() => expect(setKey).toHaveBeenCalledWith("anthropic", "sk-new"))
-    await waitFor(() => expect(list.mock.calls.length).toBeGreaterThanOrEqual(2))
-    // 搜索词残留（未清除）：视图回列表仍按 anthropic 过滤
-    await waitFor(() => expect(screen.getByText("Anthropic")).toBeTruthy())
+    await waitFor(() => expect(onSaved).toHaveBeenCalled())
   })
 
   it("删除 key：二次确认后调用并重拉", async () => {
     connectStore()
     const { ops, removeKey, list } = mkOps()
-    render(<ProviderSettings ops={ops} />)
+    render(<ProviderSettings ops={ops} onEditKey={onEditKey} />)
     await waitFor(() => expect(screen.getByText("DeepSeek")).toBeTruthy())
     const callsBefore = list.mock.calls.length
     fireEvent.click(screen.getByText("删除"))
@@ -264,9 +279,25 @@ describe("ProviderSettings 组件", () => {
     await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(callsBefore))
   })
 
+  it("默认视图并入 connected 集（多 env provider key 合并为 undefined 仍可见）", async () => {
+    connectStore()
+    const cat2: ProviderCatalog = {
+      all: [
+        { id: "deepseek", name: "DeepSeek", source: "api", env: [], key: "k1", models: {} },
+        { id: "google", name: "Google", source: "env", env: [], key: undefined, models: {} },
+      ],
+      default: {},
+      connected: ["deepseek", "google"],
+    }
+    const list = vi.fn(async (): Promise<ProviderCatalog> => cat2)
+    render(<ProviderSettings ops={{ list, setKey: vi.fn(), removeKey: vi.fn() }} onEditKey={onEditKey} />)
+    await waitFor(() => expect(screen.getByText("Google")).toBeTruthy())
+    expect(screen.getAllByText("更换 key")).toHaveLength(2)
+  })
+
   it("无连接：connectFirst 引导态", async () => {
     const { ops, list } = mkOps()
-    render(<ProviderSettings ops={ops} />)
+    render(<ProviderSettings ops={ops} onEditKey={onEditKey} />)
     await waitFor(() => expect(screen.getByText("请先连接服务器")).toBeTruthy())
     expect(list).not.toHaveBeenCalled()
   })
