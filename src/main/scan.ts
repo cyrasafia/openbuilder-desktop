@@ -131,10 +131,12 @@ const defaultDeps = (): ScanDeps => ({
   delimiter: pathDelimiter,
   exec: (cmd, args, opts) => {
     // win32：Node 的 CVE-2024-27980 加固拒绝无 shell 直接 spawn .cmd/.bat——
-    // 经 cmd.exe /d /s /c 包裹（windowsVerbatimArguments 保引号原样传递）
+    // 经 cmd.exe /d /s /c 包裹（windowsVerbatimArguments 保引号原样传递）。
+    // 无条件加引号：空格无需但 &/^ 等 cmd 元字符需要；cmd.exe 取 ComSpec（默认
+    // System32）防 PATH 解析被劫持
     if (process.platform === "win32" && /\.(cmd|bat)$/i.test(cmd)) {
-      const line = [cmd.includes(" ") ? `"${cmd}"` : cmd, ...args].join(" ")
-      return execFile("cmd.exe", ["/d", "/s", "/c", line], {
+      const line = [`"${cmd}"`, ...args].join(" ")
+      return execFile(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", line], {
         timeout: opts.timeout,
         env: opts.env,
         windowsVerbatimArguments: true,

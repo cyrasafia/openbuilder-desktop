@@ -31,7 +31,7 @@ win32 特别处理：npm global bin 免 spawn `npm`（npm 本身即 `.cmd`，见
 - 版本 = stdout 首行 trim（实测 `opencode --version` 输出裸版本串如 `1.18.20`）
 - 失败/超时 → `version: null`（候选仍保留，用户可手动选用；不可执行的候选没有意义，不进列表）
 - 子进程 env 用 `sanitizedChildEnv`（复用 linux-open-with.ts：防 dev 模式 NODE_ENV 泄漏破坏子进程行为）
-- 扫描整体 10s 兜底截止：到点后未发起的探测以 `version: null` 保留候选（不整项丢弃），在途的等待收束
+- 扫描**探测阶段** 10s 兜底截止（版本探测发起前起算）：到点后未发起的探测以 `version: null` 保留候选（不整项丢弃），在途的等待收束；此前的目录探测/realpath 阶段无独立超时（网络挂载 PATH 目录理论可长挂，现实罕见，接受）
 
 ### 2.3 结果
 
@@ -71,7 +71,7 @@ interface ServerCandidate {
 }
 ```
 
-整体耗时上界 ≈ 4s（mDNS 窗口）+ 2s（验证）= 6s；无 mDNS 网络时 bonjour 仍能在窗口内正常收束（无事件即空集）。mDNS 库异常（多播不可用等）捕获后降级为纯 loopback，不让扫描整体失败。
+整体耗时上界 ≈ 4s（mDNS 窗口）+ 2s（验证）；无 mDNS 网络时 bonjour 仍能在窗口内正常收束（无事件即空集）。mDNS 库异常（多播不可用等）捕获后降级为纯 loopback，不让扫描整体失败。验证阶段复用并发 4、无独立整体 deadline——候选数 n 全不可达时 ≈ ceil(n/4)×2s（同网段 opencode server 数量小，接受）。
 
 ## 4. IPC 面
 
