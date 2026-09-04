@@ -71,6 +71,7 @@ vi.mock("../app", () => ({
       providerKeyDeleteConfirmTitle: "删除 {name} 的凭据",
       providerKeyDeleteConfirmBody: "删除后该 provider 的模型将不可用。",
       connectFirst: "请先连接服务器",
+      providerNoProject: "打开项目后可在此配置 provider（列表按项目作用域查询）",
       noProjectMatch: "无匹配",
     },
     locale: "zh" as const,
@@ -299,6 +300,18 @@ describe("ProviderSettings 组件", () => {
     const { ops, list } = mkOps()
     render(<ProviderSettings ops={ops} onEditKey={onEditKey} />)
     await waitFor(() => expect(screen.getByText("请先连接服务器")).toBeTruthy())
+    expect(list).not.toHaveBeenCalled()
+  })
+
+  it("已连接但无项目：providerNoProject 文案（与未连接区分）", async () => {
+    storeState.current = {
+      ...storeState.current,
+      getActiveClient: () => ({}),
+      scopeQuery: { directory: "" },
+    }
+    const { ops, list } = mkOps()
+    render(<ProviderSettings ops={ops} onEditKey={onEditKey} />)
+    await waitFor(() => expect(screen.getByText(/打开项目后/)).toBeTruthy())
     expect(list).not.toHaveBeenCalled()
   })
 })

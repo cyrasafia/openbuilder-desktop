@@ -26,10 +26,11 @@ export function SettingsDialog() {
     store.closeSettings()
   }
 
-  // 列表视图聚焦弹窗容器（Esc keydown 有落脚点，表单视图焦点在首输入框）
+  // 列表视图聚焦弹窗容器（Esc keydown 有落脚点，review 第二轮：providerEdit
+  // 返回路径同样需要——否则焦点回落 body，Esc 分层最后一跳静默失效）
   useEffect(() => {
-    if (!editing) dialogRef.current?.focus()
-  }, [editing])
+    if (!editing && !providerEdit) dialogRef.current?.focus()
+  }, [editing, providerEdit])
 
   // 保存 = upsert 直落 store（弹窗内视图跳转后 ConnectionSettings 卸载重挂，
   // 列表从 store 直读，无本地镜像；持久化用计算出的 next 列表）
@@ -417,9 +418,11 @@ function defaultProviderOps(store: ReturnType<typeof useStore>): ProviderOps {
     return c
   }
   return {
-    list: (directory) => client().listProviderCatalog(directory),
-    setKey: (id, key) => client().setProviderKey(id, key),
-    removeKey: (id) => client().deleteProviderKey(id),
+    // 全 async 包装（review 第二轮 P3）：client() 的同步 throw 若在调用点直接
+    // 冒出会逃逸 .catch 链（saving 卡死/静默失败）——async 化后走 rejection
+    list: async (directory) => client().listProviderCatalog(directory),
+    setKey: async (id, key) => client().setProviderKey(id, key),
+    removeKey: async (id) => client().deleteProviderKey(id),
   }
 }
 
@@ -473,7 +476,11 @@ export function ProviderSettings({
     } catch (e) {
       if (seq !== reloadSeq.current) return
       // 错误不清已渲染列表（review P3：瞬态网络错误不白屏）
-      setError(e instanceof Error && e.message !== "not connected" ? e.message : t.connectFirst)
+      setError(
+        e instanceof Error && e.message !== "not connected"
+          ? e.message
+          : t.connectFirst,
+      )
     } finally {
       if (seq === reloadSeq.current) setLoading(false)
     }
@@ -484,10 +491,19 @@ export function ProviderSettings({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected, directory])
 
-  if (!connected || !directory) {
+  if (!connected) {
     return (
       <div className="settings-providers">
         <div className="form-note">{t.connectFirst}</div>
+      </div>
+    )
+  }
+  if (!directory) {
+    // 已连接但未打开项目（review 第二轮 P3：无作用域目录不可查目录级配置，
+    // 与未连接的文案分开）
+    return (
+      <div className="settings-providers">
+        <div className="form-note">{t.providerNoProject}</div>
       </div>
     )
   }
