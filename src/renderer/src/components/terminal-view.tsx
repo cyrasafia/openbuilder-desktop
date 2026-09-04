@@ -96,7 +96,20 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true
       const mod = mac ? ev.metaKey && !ev.ctrlKey : ev.ctrlKey && ev.shiftKey
-      if (!mod) return true
+      if (!mod) {
+        // 无 live 连接（连接中/重连中/已退出/已断开——无 OPEN 的 WS）时不消费
+        // Ctrl/⌘ 系组合：xterm 对这类键 preventDefault+stopPropagation（textarea
+        // 上 capture），全局分发（shortcuts.ts）收不到事件，Ctrl+W/Tab 等被无声
+        // 吞掉而按键本就无处可去（onData 只发 OPEN 态 WS）；返回 false 释放给
+        // 应用快捷键。无修饰键仍归 xterm（键盘滚动等默认行为保留，产生的
+        // onData 发不出去无害）。复制/粘贴走下方 mod 分支不受影响——断开态
+        // 仍可复制回滚选区（§1.4）
+        if (ev.ctrlKey || ev.metaKey) {
+          const ws = wsRef.current
+          if (!ws || ws.readyState !== WebSocket.OPEN) return false
+        }
+        return true
+      }
       if (ev.code === "KeyC" || ev.key === "C" || ev.key === "c") {
         const sel = term.getSelection()
         if (sel) {
