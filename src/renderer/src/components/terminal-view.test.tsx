@@ -9,15 +9,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { TerminalView } from "./terminal-view"
 import { ResizeObserverStub } from "./resize-observer-stub"
 
-// xterm mock：记录 write/onData/dispose/reset
+// xterm mock：记录 write/onData/dispose/reset；keyHandler/lastTerm 挂载时捕获
+// （复制/粘贴快捷键用例直接调 handler、访问实例上的 getSelection/paste mock）
 const writes: string[] = []
 let resetCount = 0
 let dataHandler: ((d: string) => void) | null = null
+let keyHandler: ((ev: KeyboardEvent) => boolean) | null = null
+let lastTerm: { getSelection: () => string; paste: (text: string) => void } | null = null
 vi.mock("@xterm/xterm", () => {
   // class 而非 vi.fn+箭头 impl：`new Terminal()` 需要可构造体
   class FakeTerminal {
     rows = 24
     cols = 80
+    constructor() {
+      lastTerm = this
+    }
     loadAddon = vi.fn()
     open = vi.fn()
     focus = vi.fn()
@@ -36,7 +42,10 @@ vi.mock("@xterm/xterm", () => {
       dataHandler = cb
       return { dispose: vi.fn() }
     })
-    attachCustomKeyEventHandler = vi.fn(() => true)
+    attachCustomKeyEventHandler = vi.fn((h: (ev: KeyboardEvent) => boolean) => {
+      keyHandler = h
+      return true
+    })
     hasSelection = vi.fn(() => false)
     getSelection = vi.fn(() => "")
     paste = vi.fn()
@@ -87,6 +96,17 @@ const runtimeObj: { exited: boolean; disconnected: boolean; title: string; buffe
   disconnected: false,
   title: "bash",
 }
+
+/** platform 可变的 window.desktop 假体（复制/粘贴快捷键按 platform 区分修饰键） */
+let platform: "linux" | "win32" | "darwin" | "browser" = "linux"
+Object.defineProperty(window, "desktop", { get: () => ({ platform }), configurable: true })
+
+/** navigator.clipboard 假体（复制写入/粘贴读取断言） */
+const clipboard = {
+  writeText: vi.fn(async (_text: string) => {}),
+  readText: vi.fn(async () => "PASTED"),
+}
+Object.defineProperty(navigator, "clipboard", { get: () => clipboard, configurable: true })
 const actions = {
   ptyConnectUrl: vi.fn(
     async (): Promise<{ url: string } | { gone: true } | null> => ({
@@ -157,6 +177,12 @@ beforeEach(() => {
   runtimeObj.exited = false
   runtimeObj.disconnected = false
   runtimeObj.buffer = undefined
+  platform = "linux"
+  keyHandler = null
+  lastTerm = null
+  clipboard.writeText.mockClear()
+  clipboard.readText.mockClear()
+  clipboard.readText.mockResolvedValue("PASTED")
   ;(globalThis as unknown as { WebSocket: unknown }).WebSocket = FakeWS
 })
 
@@ -400,5 +426,46 @@ describe("TerminalView", () => {
     await screen.findByText("粘贴")
     fireEvent.keyDown(window, { key: "Escape" })
     await waitFor(() => expect(screen.queryByText("粘贴")).toBeNull())
+  })
+
+  it("复制/粘贴快捷键（linux）：Ctrl+Shift+C 复制选区 / Ctrl+Shift+V 粘贴；⌘C 不拦截", async () => {
+    render(<TerminalView ptyID="pty_1" />)
+    await waitFor(() => expect(FakeWS.instances.length).toBe(1))
+    expect(keyHandler).toBeTruthy()
+    lastTerm!.getSelection = () => "SELECTED"
+    const evC = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, shiftKey: true, code: "KeyC" })
+    expect(keyHandler!(evC)).toBe(false)
+    expect(evC.defaultPrevented).toBe(true)
+    expect(clipboard.writeText).toHaveBeenCalledWith("SELECTED")
+    // ⌘C 在非 darwin 平台放行（修饰键判定按 platform 区分）
+    const evCmdC = new KeyboardEvent("keydown", { cancelable: true, metaKey: true, code: "KeyC" })
+    expect(keyHandler!(evCmdC)).toBe(true)
+    expect(evCmdC.defaultPrevented).toBe(false)
+    const evV = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, shiftKey: true, code: "KeyV" })
+    expect(keyHandler!(evV)).toBe(false)
+    await waitFor(() => expect(lastTerm!.paste).toHaveBeenCalledWith("PASTED"))
+  })
+
+  it("复制/粘贴快捷键（macOS）：⌘C 复制选区 / ⌘V 粘贴；无选区 ⌘C 放行；Ctrl+Shift+C 放行", async () => {
+    platform = "darwin"
+    render(<TerminalView ptyID="pty_1" />)
+    await waitFor(() => expect(FakeWS.instances.length).toBe(1))
+    // ⌘C 有选区 → 拦截复制
+    lastTerm!.getSelection = () => "SELECTED"
+    const evCmdC = new KeyboardEvent("keydown", { cancelable: true, metaKey: true, code: "KeyC" })
+    expect(keyHandler!(evCmdC)).toBe(false)
+    expect(clipboard.writeText).toHaveBeenCalledWith("SELECTED")
+    // ⌘C 无选区 → 放行（保留默认处理）
+    lastTerm!.getSelection = () => ""
+    const evCmdC2 = new KeyboardEvent("keydown", { cancelable: true, metaKey: true, code: "KeyC" })
+    expect(keyHandler!(evCmdC2)).toBe(true)
+    // ⌘V → 粘贴剪贴板
+    const evCmdV = new KeyboardEvent("keydown", { cancelable: true, metaKey: true, code: "KeyV" })
+    expect(keyHandler!(evCmdV)).toBe(false)
+    await waitFor(() => expect(lastTerm!.paste).toHaveBeenCalledWith("PASTED"))
+    // mac 下 Ctrl+Shift+C 放行（Control 系组合归终端/PTY）
+    lastTerm!.getSelection = () => "SELECTED"
+    const evCsC = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, shiftKey: true, code: "KeyC" })
+    expect(keyHandler!(evCsC)).toBe(true)
   })
 })

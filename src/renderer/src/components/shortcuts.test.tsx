@@ -36,7 +36,10 @@ function press(init: KeyboardEventInit): KeyboardEvent {
   return ev
 }
 
-let shortcutCb: ((input: { key: string; control: boolean; meta: boolean; shift: boolean; alt: boolean }) => void) | null = null
+let shortcutCb: ((input: { key: string; code: string; control: boolean; meta: boolean; shift: boolean; alt: boolean }) => void) | null = null
+
+/** platform 可变（macOS 专属切 Tab 键用例切 darwin 验证） */
+let platform: "linux" | "darwin" = "linux"
 
 beforeEach(() => {
   for (const fn of Object.values(actions)) {
@@ -45,9 +48,13 @@ beforeEach(() => {
   actions.activeTab = null
   actions.isSessionActive.mockReturnValue(false)
   vi.spyOn(window, "confirm").mockReturnValue(true)
+  platform = "linux"
   const cur = (window as unknown as { desktop?: Record<string, unknown> }).desktop
   ;(window as unknown as { desktop: unknown }).desktop = {
     ...(cur ?? {}),
+    get platform() {
+      return platform
+    },
     onBrowserShortcut: (cb: typeof shortcutCb) => {
       shortcutCb = cb
       return () => {
@@ -126,32 +133,69 @@ describe("useShortcuts 分发", () => {
     expect(actions.cycleScopeEntry).toHaveBeenCalledWith(-1)
   })
 
-  it("Ctrl+[ / Ctrl+] → 左/右栏收起/展开（翻转）；Shift/Alt 组合放行（AltGr 防误触）", () => {
+  it("macOS 切 Tab 惯例键：⌘⌥←/→ 与 ⌘⇧[/]（按 code 匹配）；linux 不绑这两组", () => {
     render(<Harness />)
-    const left = press({ key: "[", ctrlKey: true })
+    // linux：Ctrl+Alt+←/→ 是 GNOME/KDE 工作区切换、Ctrl+Shift+[/] 维持放行——不吞
+    const arrow = press({ key: "ArrowLeft", ctrlKey: true, altKey: true })
+    expect(arrow.defaultPrevented).toBe(false)
+    const bracket = press({ key: "{", code: "BracketLeft", ctrlKey: true, shiftKey: true })
+    expect(bracket.defaultPrevented).toBe(false)
+    expect(actions.cycleTab).not.toHaveBeenCalled()
+
+    platform = "darwin"
+    // mac 下 Ctrl+Tab / ⌘PgDn 不绑定（切 Tab 仅惯例键，用户决策 2026-09-04）
+    const tab = press({ key: "Tab", ctrlKey: true })
+    expect(tab.defaultPrevented).toBe(false)
+    const pgdn = press({ key: "PageDown", metaKey: true })
+    expect(pgdn.defaultPrevented).toBe(false)
+    const right = press({ key: "ArrowRight", metaKey: true, altKey: true })
+    expect(right.defaultPrevented).toBe(true)
+    expect(actions.cycleTab).toHaveBeenCalledWith(1)
+    press({ key: "ArrowLeft", metaKey: true, altKey: true })
+    expect(actions.cycleTab).toHaveBeenCalledWith(-1)
+    // ⌘⇧[ / ⌘⇧]：US 布局 shift+[ 的 key 是 "{"，按 code 匹配
+    press({ key: "{", code: "BracketLeft", metaKey: true, shiftKey: true })
+    expect(actions.cycleTab).toHaveBeenCalledWith(-1)
+    press({ key: "}", code: "BracketRight", metaKey: true, shiftKey: true })
+    expect(actions.cycleTab).toHaveBeenCalledWith(1)
+    // mac 下 ⌘B 仍是左栏收起/展开；⌘⌥↑/↓ 仍是作用域遍历（与 ←/→ 轴不冲突）
+    press({ key: "b", code: "KeyB", metaKey: true })
+    expect(actions.toggleLeftPanel).toHaveBeenCalledTimes(1)
+    press({ key: "ArrowDown", metaKey: true, altKey: true })
+    expect(actions.cycleScopeEntry).toHaveBeenCalledWith(1)
+    // 浏览器视图转发路径同分发（code 随载荷）
+    shortcutCb?.({ key: "{", code: "BracketLeft", control: false, meta: true, shift: true, alt: false })
+    expect(actions.cycleTab).toHaveBeenCalledWith(-1)
+  })
+
+  it("Ctrl+B / Ctrl+Alt+B → 左/右栏收起/展开（VS Code 系）；Shift 组合放行；⌥⌘B 按 code 匹配", () => {
+    render(<Harness />)
+    const left = press({ key: "b", code: "KeyB", ctrlKey: true })
     expect(left.defaultPrevented).toBe(true)
     expect(actions.toggleLeftPanel).toHaveBeenCalledTimes(1)
     expect(actions.toggleRightPanel).not.toHaveBeenCalled()
-    press({ key: "]", ctrlKey: true })
+    const right = press({ key: "b", code: "KeyB", ctrlKey: true, altKey: true })
+    expect(right.defaultPrevented).toBe(true)
     expect(actions.toggleRightPanel).toHaveBeenCalledTimes(1)
-    expect(actions.toggleLeftPanel).toHaveBeenCalledTimes(1)
-    // Shift+Ctrl+[（US 布局 e.key="{"}）与 Ctrl+Alt+[（欧陆 AltGr 产生 [）未映射，不吞
-    const shifted = press({ key: "{", ctrlKey: true, shiftKey: true })
+    // Ctrl+Shift+B 未映射不吞
+    const shifted = press({ key: "B", code: "KeyB", ctrlKey: true, shiftKey: true })
     expect(shifted.defaultPrevented).toBe(false)
-    const alted = press({ key: "[", ctrlKey: true, altKey: true })
-    expect(alted.defaultPrevented).toBe(false)
+    // mac ⌥⌘B：Option 产特殊字符（key "∫"），按 code 匹配走右栏
+    const macRight = press({ key: "∫", code: "KeyB", metaKey: true, altKey: true })
+    expect(macRight.defaultPrevented).toBe(true)
+    expect(actions.toggleRightPanel).toHaveBeenCalledTimes(2)
   })
 
   it("浏览器视图快捷键转发（onBrowserShortcut）走同一分发", () => {
     render(<Harness />)
     expect(shortcutCb).not.toBeNull()
-    shortcutCb?.({ key: "t", control: true, meta: false, shift: false, alt: false })
+    shortcutCb?.({ key: "t", code: "", control: true, meta: false, shift: false, alt: false })
     expect(actions.showGuidePage).toHaveBeenCalledTimes(1)
-    shortcutCb?.({ key: "ArrowDown", control: true, meta: false, shift: false, alt: true })
+    shortcutCb?.({ key: "ArrowDown", code: "", control: true, meta: false, shift: false, alt: true })
     expect(actions.cycleScopeEntry).toHaveBeenCalledWith(1)
-    shortcutCb?.({ key: "Tab", control: true, meta: false, shift: true, alt: false })
+    shortcutCb?.({ key: "Tab", code: "", control: true, meta: false, shift: true, alt: false })
     expect(actions.cycleTab).toHaveBeenCalledWith(-1)
-    shortcutCb?.({ key: "]", control: true, meta: false, shift: false, alt: false })
+    shortcutCb?.({ key: "b", code: "KeyB", control: true, meta: false, shift: false, alt: true })
     expect(actions.toggleRightPanel).toHaveBeenCalledTimes(1)
   })
 

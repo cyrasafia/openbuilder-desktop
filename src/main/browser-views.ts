@@ -68,6 +68,7 @@ export function registerBrowserViewIpc() {
       if (input.type !== "keyDown" || !(input.control || input.meta)) return
       mainWindow?.webContents.send("browser:shortcut", {
         key: input.key,
+        code: input.code,
         control: input.control,
         meta: input.meta,
         shift: input.shift,

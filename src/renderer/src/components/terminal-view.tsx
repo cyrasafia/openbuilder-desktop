@@ -88,12 +88,16 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
     term.loadAddon(fit)
     term.open(host)
 
-    // 复制/粘贴快捷键（design-terminal-tab §1.4）：Ctrl+Shift+C 复制选区、
-    // Ctrl+Shift+V 粘贴剪贴板。attachCustomKeyEventHandler 返回 false 即
-    // 吞掉 xterm 默认处理（仅这两个组合键），返回 true 则放行其余键不受影响。
+    // 复制/粘贴快捷键（design-terminal-tab §1.4）：macOS 依系统习惯 ⌘C/⌘V；
+    // 其余平台（linux/win32/浏览器开发态）Ctrl+Shift+C/V——裸 Ctrl+C 是 SIGINT
+    // 不可占用，故需 Shift 区分。attachCustomKeyEventHandler 返回 false 即
+    // 吞掉 xterm 默认处理（仅命中组合键），返回 true 则放行其余键不受影响。
+    const mac = window.desktop.platform === "darwin"
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true
-      if (ev.ctrlKey && ev.shiftKey && (ev.code === "KeyC" || ev.key === "C" || ev.key === "c")) {
+      const mod = mac ? ev.metaKey && !ev.ctrlKey : ev.ctrlKey && ev.shiftKey
+      if (!mod) return true
+      if (ev.code === "KeyC" || ev.key === "C" || ev.key === "c") {
         const sel = term.getSelection()
         if (sel) {
           ev.preventDefault()
@@ -103,7 +107,7 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
         // 无选区时不拦截：保留终端对该组合键的默认处理（用户自定义 shell 键绑定等）
         return true
       }
-      if (ev.ctrlKey && ev.shiftKey && (ev.code === "KeyV" || ev.key === "V" || ev.key === "v")) {
+      if (ev.code === "KeyV" || ev.key === "V" || ev.key === "v") {
         ev.preventDefault()
         void navigator.clipboard?.readText().then((text) => {
           if (text) term.paste(text)

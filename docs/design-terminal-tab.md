@@ -48,7 +48,7 @@
 
 ### 1.4 复制/粘贴
 
-- **快捷键**：`Ctrl+Shift+C` 复制选区到剪贴板、`Ctrl+Shift+V` 粘贴剪贴板到 pty。经 `term.attachCustomKeyEventHandler` 拦截：命中组合键时 `ev.preventDefault()` + `return false`（吞掉 xterm 默认处理），其余键 `return true` 放行。Ctrl+Shift+C **无选区时不拦截**——保留终端对该组合键的默认处理（用户自定义 shell 键绑定等）。
+- **快捷键**（2026-09-03 修订：按平台区分修饰键）：`Ctrl+Shift+C` 复制选区到剪贴板、`Ctrl+Shift+V` 粘贴剪贴板到 pty（linux/win32/浏览器开发态——裸 `Ctrl+C` 是 SIGINT 不可占用，故需 Shift 区分）；**macOS 依系统习惯用 `⌘C`/`⌘V`**（`window.desktop.platform === "darwin"`，修饰键判定 `metaKey && !ctrlKey`；mac 下不再拦截 Ctrl+Shift+C/V，Control 系组合归终端/PTY）。经 `term.attachCustomKeyEventHandler` 拦截：命中组合键时 `ev.preventDefault()` + `return false`（吞掉 xterm 默认处理），其余键 `return true` 放行。复制键**无选区时不拦截**——保留终端对该组合键的默认处理（用户自定义 shell 键绑定等）。
 - **右键菜单**：`.terminal-view` `onContextMenu` 阻止 xterm 默认（其内置无菜单），弹出复制/粘贴菜单。复用 `FileContextMenu` 模式（首帧隐藏测量钳制到视口 + capture 阶段 mousedown/Escape/wheel/blur 四触发关闭 + `pushOverlay` z-order 计数 + 键盘 ↑↓ 导航）。
   - 复制项按选区有无启用/禁用（`term.hasSelection()`，菜单打开瞬间快照）
   - 粘贴读 `navigator.clipboard.readText()` → `term.paste(text)`（xterm paste 走其 bracketed-paste 模式，安全）
