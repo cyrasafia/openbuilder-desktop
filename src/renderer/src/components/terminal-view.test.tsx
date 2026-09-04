@@ -485,6 +485,8 @@ describe("TerminalView", () => {
     expect(keyHandler!(evTab)).toBe(true)
     const evTabS = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, shiftKey: true, key: "Tab" })
     expect(keyHandler!(evTabS)).toBe(true)
+    const evAlt = new KeyboardEvent("keydown", { cancelable: true, altKey: true, key: "ArrowDown" })
+    expect(keyHandler!(evAlt)).toBe(true)
   })
 
   it("断开态不拦截应用快捷键：已退出后 Ctrl+W/Ctrl+Tab/Ctrl+Shift+Tab 返回 false（不 preventDefault，事件冒泡到全局分发）；无修饰键仍归 xterm", async () => {
@@ -504,9 +506,13 @@ describe("TerminalView", () => {
     const evTabS = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, shiftKey: true, key: "Tab" })
     expect(keyHandler!(evTabS)).toBe(false)
     expect(evTabS.defaultPrevented).toBe(false)
-    // ⌘ 系同释放（mac ⌘W）；无修饰键仍 true（xterm 键盘滚动等默认行为保留）
+    // ⌘ 系同释放（mac ⌘W）；裸 Alt+↑/↓（非 mac 作用域遍历）也释放；
+    // 无修饰键仍 true（xterm 键盘滚动等默认行为保留）
     const evCmdW = new KeyboardEvent("keydown", { cancelable: true, metaKey: true, code: "KeyW" })
     expect(keyHandler!(evCmdW)).toBe(false)
+    const evAlt = new KeyboardEvent("keydown", { cancelable: true, altKey: true, key: "ArrowDown" })
+    expect(keyHandler!(evAlt)).toBe(false)
+    expect(evAlt.defaultPrevented).toBe(false)
     const evPlain = new KeyboardEvent("keydown", { cancelable: true, code: "KeyA" })
     expect(keyHandler!(evPlain)).toBe(true)
   })

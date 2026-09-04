@@ -4282,7 +4282,9 @@ export class AppStore {
   }
 
   /**
-   * Ctrl+Alt+↑/↓：左栏项目/工作区行按显示顺序遍历（design-keyboard-shortcuts §3）。
+   * Alt+↑/↓（mac ⌘⌥↑/↓）：左栏项目/工作区行按显示顺序遍历
+   * （design-keyboard-shortcuts §3，2026-09-04 修订替换 Ctrl+Alt+↑/↓——
+   * 被 GNOME/KDE 合成器抢作工作区切换）。
    * 平铺序列 = openedEntries 行 +（普通项目）其 worktree 行；当前位置 = worktree
    * 激活命中的工作区行，否则激活 entry 行；±1 循环。激活复用侧栏点击语义。
    */

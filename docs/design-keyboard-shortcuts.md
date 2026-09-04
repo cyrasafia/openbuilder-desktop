@@ -1,6 +1,6 @@
 # 快捷键体系 — 设计文档
 
-> 对应 spec-v0.3 #2。Tab 新建/关闭/切换、关闭栈恢复（Ctrl+Shift+T）、左栏作用域遍历（Ctrl+Alt+↑/↓）。纯 renderer 改动。
+> 对应 spec-v0.3 #2。Tab 新建/关闭/切换、关闭栈恢复（Ctrl+Shift+T）、左栏作用域遍历（非 mac `Alt+↑/↓` / mac `⌘⌥↑/↓`，2026-09-04 修订）。纯 renderer 改动（浏览器视图转发过滤在 main，见 §3）。
 >
 > 参考先例：按 AGENTS.md 约定检索 `../openbuilder/docs/design-*.md`——移动端无硬件键盘快捷键体系（TUI 无从借鉴），无同类设计。
 
@@ -16,13 +16,13 @@
 | Ctrl+Shift+Tab / Ctrl+PageUp | 上一个可见 Tab（循环；Shift+PgUp/PgDn 同样反转；**仅非 macOS**） |
 | ⌘⌥→ / ⌘⌥←（macOS） | 下/上一个可见 Tab（2026-09-03 修订：macOS 浏览器惯例主键；⌘Tab/⌘⇧Tab 是系统应用切换器，永远到不了应用） |
 | ⌘⇧] / ⌘⇧[（macOS） | 下/上一个可见 Tab（浏览器惯例别名；**按 code 匹配** `BracketRight`/`BracketLeft`——US 布局 shift+[ 的 key 是 `"{"`，code 布局无关。浏览器视图转发载荷因此增加 `code` 字段） |
-| Ctrl+Alt+↓ / Ctrl+Alt+↑ | 左栏项目/工作区行按显示顺序向下/上切换作用域（§3，循环） |
+| Alt+↓ / Alt+↑（mac ⌘⌥↓ / ⌘⌥↑） | 左栏项目/工作区行按显示顺序向下/上切换作用域（§3，循环）。2026-09-04 修订替换原 `Ctrl+Alt+↑/↓`——GNOME/KDE 合成器抢作工作区切换（Wayland 下应用收不到，gsettings `switch-to-workspace-up/down` 实测），`Ctrl+Alt+Shift+↑/↓` 亦被 GNOME `move-to-workspace` 占用；mac 不用裸 ⌥↑/↓（NSText 段落首/尾移动惯例，劫持破坏输入框打字），维持 ⌘⌥↑/↓ |
 | Ctrl+B（mac ⌘B） | 收起/展开**左栏**（翻转，与标题栏开关同路径 `toggleLeftPanel()`；2026-09-04 修订替换原 Ctrl+[） |
 | Ctrl+Alt+B（mac ⌥⌘B） | 收起/展开**右栏**（翻转，`toggleRightPanel()`；替换原 Ctrl+]） |
 
 - 注册：Shell 内 `useShortcuts()`，window keydown（bubble）；`e.isComposing` 守卫（fcitx5）；已 preventDefault 的事件不再处理
 - **无激活 Tab 的 Ctrl+W 也消费**（2026-08-29 修订，推翻原"无加速键冲突"断言）：Electron 默认菜单并未因 autoHideMenuBar 消失，其 role:close 的 Ctrl+W 加速键对 **renderer 未消费**的按键生效（Chromium 对 renderer 未处理的键回调 `HandleKeyboardEvent` 触发加速键）——实测无 Tab 时 Ctrl+W 直接把窗口关掉。故 dispatch 对无激活 Tab 的 Ctrl+W 返回"已消费"（preventDefault、不动作）；其余未映射组合仍放行。Ctrl+数字跳转不做（用户决策，系统/输入法易冲突）
-- 修饰键判定以 ctrlKey 为准（macOS 开发态 Cmd 亦生效——metaKey 等价 Ctrl，成本零）；Ctrl+Alt+↑/↓ 与 AltGr 的组合风险仅限"AltGr+方向键产生字符"的场景，不存在（方向键非字符键）
+- 修饰键判定以 ctrlKey 为准（macOS 开发态 Cmd 亦生效——metaKey 等价 Ctrl，成本零）；Alt+↑/↓ 与 AltGr 的组合风险仅限"AltGr+方向键产生字符"的场景，不存在（方向键非字符键）；裸 Alt 组合仅方向键进分发（`useShortcuts` 入口守卫放行 alt+arrow），Alt+字母仍页面/输入框自用
 - **macOS 切 Tab 仅惯例键**（2026-09-03 修订 + 2026-09-04 用户决策，`window.desktop.platform === "darwin"`）：darwin 只绑 ⌘⌥←/→ 与 ⌘⇧[/]，**Ctrl+Tab / ⌘PgUp/PgDn 不绑定**——mac 下切 Tab 不留非惯例组合；linux 上 Ctrl+Alt+←/→ 是 GNOME/KDE 工作区切换（不可占用），Ctrl+Shift+[/] 维持原放行语义；macOS 上 ⌘⌥↑/↓（作用域遍历）与 ⌘⌥←/→（切 Tab）按轴分工，与浏览器惯例一致
 - **面板开关键冲突核查结论**（2026-09-04 修订：全平台统一 VS Code 系 `Ctrl+B` / `Ctrl+Alt+B`，替换原 `Ctrl+[/]`——mac ⌘[ 是浏览器后退惯例且 BrowserView 内与面板开关双触发，⌘B/⌥⌘B 无此冲突；原"欧陆 AltGr 产生 `[` 上报 ctrl+alt"的误触顾虑对新键不成立，B 无常见 AltGr 字符映射，VS Code 同绑定先例）：Electron 默认菜单加速键无 `B` 系（无 Ctrl+W 式放行风险）；Chromium 在 Linux/Win/mac 均无 Ctrl+B/⌘B 绑定（富文本编辑器的加粗是页面内行为）；**按 code `KeyB` 匹配**——mac ⌥B 的 key 是 `"∫"`（Option 产特殊字符），key 不可靠，code 布局无关；code-view 只装 searchKeymap 无 defaultKeymap，无 Mod-B 冲突。**终端 Tab 聚焦时 xterm 在 textarea capture 监听器内 `cancel(e, force)` → preventDefault+stopPropagation 抢先消费 Ctrl+B（STX 0x02 归 pty，readline backward-char）**，事件到不了 window 分发——快捷键在终端内不生效，与 Ctrl+T/W 同行为，属预期而非缺陷，且保住了终端用户习惯
 
@@ -48,7 +48,9 @@ private closedTabs: ClosedTabEntry[] = []   // push 尾 / pop 尾，上限 20（
 2. 属其他**已打开** entry（`openedEntries` 按 projectId + directory/sandboxes 匹配）：entry 根/global 目录 → `openEntry(key)`；**普通项目的 worktree 一步直达 `setCurrentProject(projectId, dir)`**（= `openProject` 单次切换，同步段即落位 worktree——先 openEntry 再补 setCurrentWorkspace 的两段式会把 Tab 开在项目根作用域）
 3. 所属项目/entry 已关闭 → 不可达，跳过该栈项
 
-## 3. Ctrl+Alt+↑/↓ 作用域遍历
+## 3. Alt+↑/↓（mac ⌘⌥↑/↓）作用域遍历
+
+> 2026-09-04 修订：原 `Ctrl+Alt+↑/↓` 在 GNOME/KDE 被合成器抢作工作区切换（Wayland 下应用收不到 keydown，等价绑定不存在），`Ctrl+Alt+Shift+↑/↓` 亦被 GNOME `move-to-workspace` 占用——核查后改绑裸 `Alt+↑/↓`（GNOME/KDE/Chromium/CodeMirror/fcitx5 均无占用；live 终端照旧归 pty 属既定语义，断开终端经 deadRelease 释放，见 design-terminal-tab §1.4）；mac 维持 `⌘⌥↑/↓`（裸 ⌥↑/↓ 是 NSText 段落移动惯例）。浏览器 Tab 聚焦时的转发过滤（browser-views.ts）相应从"仅 Ctrl/⌘"扩为"Ctrl/⌘ + 裸 Alt+↑/↓"。
 
 - 平铺序列 = 左栏显示顺序：每个 `openedEntries` 行 +（普通项目）其 `workspacesOfProject` 行
 - 当前位置：worktree 激活命中工作区行（projectId + directory 双匹配），否则命中激活 entry 行；序列空则 no-op
@@ -79,5 +81,5 @@ private closedTabs: ClosedTabEntry[] = []   // push 尾 / pop 尾，上限 20（
 
 ## 7. 验收
 
-- spec-v0.3 #2 验收行全过：Ctrl+T/W/Tab/Shift+Tab/PgUp/PgDn、Ctrl+Shift+T 依次恢复（chat 取消归档、已删会话跳过）、Ctrl+Alt+↑/↓ 循环切换
+- spec-v0.3 #2 验收行全过：Ctrl+T/W/Tab/Shift+Tab/PgUp/PgDn、Ctrl+Shift+T 依次恢复（chat 取消归档、已删会话跳过）、Alt+↑/↓（mac ⌘⌥↑/↓）循环切换
 - `npm run test` / `typecheck` / `build` 全绿

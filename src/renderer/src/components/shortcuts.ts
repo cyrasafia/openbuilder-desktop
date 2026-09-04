@@ -7,7 +7,9 @@ import { closeTabInteractive } from "./tab-actions"
  * 浏览器视图聚焦时原生 webContents 抢走键盘，经 main 的 before-input-event
  * 转发（onBrowserShortcut，design-browser-tab 评审 M5）走同一分发。
  * IME 组合中（fcitx5 上屏）不触发；已 preventDefault 的事件不重复处理。
- * Ctrl+O/T/W、Ctrl+Shift+T、Ctrl+Alt+↑/↓、Ctrl(+Shift)+Tab（非 mac）、Ctrl+PgUp/PgDn（非 mac）；
+ * Ctrl+O/T/W、Ctrl+Shift+T、Ctrl(+Shift)+Tab（非 mac）、Ctrl+PgUp/PgDn（非 mac）；
+ * 作用域遍历非 mac 绑裸 Alt+↑/↓（2026-09-04 修订，原 Ctrl+Alt+↑/↓ 被 GNOME/KDE
+ * 合成器抢作工作区切换，Wayland 下应用收不到；mac 维持 ⌘⌥↑/↓）；
  * 面板开关全平台 VS Code 系：Ctrl+B / Ctrl+Alt+B（mac 经 metaKey 等价即 ⌘B / ⌥⌘B）。
  * macOS 切 Tab 仅惯例键 ⌘⌥←/→ 与 ⌘⇧[/]（⌘Tab/⌘⇧Tab 是系统应用切换器到不了应用，
  * Ctrl+Tab/PgUp/PgDn 亦不绑定——用户决策 2026-09-04）。
@@ -26,8 +28,12 @@ function dispatch(
   code: string,
 ): boolean {
   const mac = window.desktop.platform === "darwin"
-  // Ctrl+Alt+↑/↓：左栏作用域遍历
-  if (ctrl && alt && (key === "ArrowDown" || key === "ArrowUp")) {
+  // 作用域遍历（design-keyboard-shortcuts §3，2026-09-04 修订）：非 mac 绑裸
+  // Alt+↑/↓——原 Ctrl+Alt+↑/↓ 是 GNOME/KDE 合成器的工作区切换（Wayland 下应用
+  // 收不到，实测 gsettings switch-to-workspace-up/down），Ctrl+Alt+Shift+↑/↓ 亦被
+  // GNOME move-to-workspace 占用；mac 维持 ⌘⌥↑/↓——裸 ⌥↑/↓ 是 NSText 段落
+  // 首/尾移动惯例，绑定会劫持聊天输入框的打字
+  if (alt && !shift && (key === "ArrowDown" || key === "ArrowUp") && (mac ? ctrl : !ctrl)) {
     store.cycleScopeEntry(key === "ArrowDown" ? 1 : -1)
     return true
   }
@@ -98,7 +104,9 @@ export function useShortcuts() {
       if (e.isComposing || e.defaultPrevented) return
       // Cmd 视同 Ctrl（macOS 开发态惯例；Linux 主环境无影响）
       const ctrl = e.ctrlKey || e.metaKey
-      if (!ctrl) return
+      // 裸 Alt+↑/↓（非 mac 作用域遍历）无 Ctrl 也进分发
+      const altArrow = e.altKey && !ctrl && (e.key === "ArrowUp" || e.key === "ArrowDown")
+      if (!ctrl && !altArrow) return
       // 消费才吞（未映射组合放行——Ctrl+S 浏览器保存；Ctrl+W 无激活 Tab 也吞，见 dispatch）
       if (dispatch(store, t, e.key, ctrl, e.shiftKey, e.altKey, e.code)) e.preventDefault()
     }
