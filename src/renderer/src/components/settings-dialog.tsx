@@ -1,13 +1,30 @@
 import { useEffect, useRef, useState } from "react"
-import { ArrowLeft, Pencil, X } from "lucide-react"
+import { ArrowLeft, Pencil, RefreshCw, X } from "lucide-react"
 import { useI18n, useStore } from "../app"
-import type { BinaryCandidate, ConnectionProfile, ManagedNotice } from "@shared/ipc"
+import type { BinaryCandidate, ConnectionProfile, ManagedNotice, ServerCandidate } from "@shared/ipc"
 import { MIN_SERVER_VERSION } from "@shared/semver"
 import { ApiError, RestClient } from "@shared/rest-client"
 import type { ProviderCatalog, ProviderInfo } from "@shared/api-types"
 import { ConfirmDialog } from "./confirm-dialog"
 import { managedNoticeText } from "./managed-notice"
 import { ModelSwitcherBar } from "./model-switcher"
+
+/** 弹窗内视图状态（design-guided-add-server）：非空 = 丢弃 tabs 视图跳入
+ *  服务器子视图。新增走「发现 → 手动」两步：点「添加」先落 discover，发现
+ *  候选一键建档；「手动配置」→ manual 表单。编辑既有 profile 直落 manual。 */
+type EditingState =
+  | { view: "discover" }
+  | { view: "manual"; profile: ConnectionProfile; isNew: boolean }
+
+/** 添加服务器默认草稿（design-guided-add-server §3） */
+function newProfileDraft(): ConnectionProfile {
+  return {
+    id: `prof_${Date.now()}`,
+    name: "",
+    baseUrl: "http://127.0.0.1:4096",
+    mode: "attach",
+  }
+}
 
 /** 设置弹窗（dialog-lg）。模态不重叠（DESIGN.md §标准弹窗）：添加/编辑服务器
  *  在弹窗内跳转视图（标题行左置返回钮），不叠加二级弹窗 */
@@ -18,8 +35,8 @@ export function SettingsDialog() {
     // 引导直达页签（design-welcome-screen §5：openSettings(tab) 一次性提示）
     store.settingsInitialTab,
   )
-  // 非空 = 弹窗内跳转到服务器表单视图（丢弃 tabs 视图，草稿随视图卸载）
-  const [editing, setEditing] = useState<{ profile: ConnectionProfile; isNew: boolean } | null>(null)
+  // 非空 = 弹窗内跳转到服务器子视图（丢弃 tabs 视图，草稿随视图卸载）
+  const [editing, setEditing] = useState<EditingState | null>(null)
   // 非空 = 弹窗内跳转到 provider key 表单视图（review P2：与 profile 表单同层，
   // Esc 退回列表、标题行返回钮、actions 钉底）
   const [providerEdit, setProviderEdit] = useState<ProviderInfo | null>(null)
@@ -29,10 +46,14 @@ export function SettingsDialog() {
     store.closeSettings()
   }
 
-  // 列表视图聚焦弹窗容器（Esc keydown 有落脚点，review 第二轮：providerEdit
-  // 返回路径同样需要——否则焦点回落 body，Esc 分层最后一跳静默失效）
+  // 列表/发现视图聚焦弹窗容器（Esc keydown 有落脚点，review 第二轮：providerEdit
+  // 返回路径同样需要——否则焦点回落 body，Esc 分层最后一跳静默失效）。
+  // 发现视图同样需要（guided review 修订）：它无 autoFocus 元素，进入时焦点
+  // 随「添加」按钮卸载回落 body。manual/provider 表单由各自 autoFocus 输入框
+  // 落焦点，不在聚焦范围（条件须含 !providerEdit——否则抢走 provider key 表单
+  // 的 autoFocus）
   useEffect(() => {
-    if (!editing && !providerEdit) dialogRef.current?.focus()
+    if ((!editing && !providerEdit) || editing?.view === "discover") dialogRef.current?.focus()
   }, [editing, providerEdit])
 
   // 保存 = upsert 直落 store（弹窗内视图跳转后 ConnectionSettings 卸载重挂，
@@ -45,6 +66,21 @@ export function SettingsDialog() {
     setEditing(null)
   }
 
+  // 子视图标题行（返回钮 + 视图标题 + 关闭钮），discover/manual 共用骨架
+  const editingTitle =
+    editing?.view === "discover"
+      ? t.addProfileTitle
+      : editing?.view === "manual"
+        ? editing.isNew
+          ? t.addProfileManualTitle
+          : t.editProfileTitle
+        : null
+  // Esc/返回钮：manual → discover（新增时）或列表（编辑时）；discover → 列表
+  const editingBack = () => {
+    if (editing?.view === "manual" && editing.isNew) setEditing({ view: "discover" })
+    else setEditing(null)
+  }
+
   return (
     <div className="dialog-mask" onClick={close}>
       <div
@@ -55,10 +91,11 @@ export function SettingsDialog() {
         onKeyDown={(e) => {
           // IME 组合中的 Escape 是取消候选词，不能顺手关弹窗（同项目选择器）
           if (e.nativeEvent.isComposing) return
-          // Esc 分层（review P2）：profile 表单 / provider key 表单先退回列表
-          //（丢弃草稿），列表视图才关弹窗
+          // Esc 分层（review P2 + design-guided-add-server §2）：manual（新增）
+          // / provider 表单先退回上一层，其余退回列表
           if (e.key === "Escape") {
-            if (editing) setEditing(null)
+            if (editing?.view === "manual" && editing.isNew) setEditing({ view: "discover" })
+            else if (editing) setEditing(null)
             else if (providerEdit) setProviderEdit(null)
             else close()
           }
@@ -72,21 +109,28 @@ export function SettingsDialog() {
                   className="icon-btn"
                   title={t.back}
                   aria-label={t.back}
-                  onClick={() => setEditing(null)}
+                  onClick={editingBack}
                 >
                   <ArrowLeft size={14} aria-hidden />
                 </button>
-                <span>{editing.isNew ? t.addProfileTitle : t.editProfileTitle}</span>
+                <span>{editingTitle}</span>
               </div>
               <button className="icon-btn" title={t.close} aria-label={t.close} onClick={close}>
                 <X size={14} aria-hidden />
               </button>
             </div>
-            <ProfileFormView
-              profile={editing.profile}
-              onCancel={() => setEditing(null)}
-              onSave={saveProfile}
-            />
+            {editing.view === "discover" ? (
+              <DiscoverView
+                onManual={() => setEditing({ view: "manual", profile: newProfileDraft(), isNew: true })}
+                onPick={(p) => saveProfile(p)}
+              />
+            ) : (
+              <ProfileFormView
+                profile={editing.profile}
+                onCancel={editingBack}
+                onSave={saveProfile}
+              />
+            )}
           </>
         ) : providerEdit ? (
           <>
@@ -155,7 +199,7 @@ export function SettingsDialog() {
 function ConnectionSettings({
   onEdit,
 }: {
-  onEdit: (editing: { profile: ConnectionProfile; isNew: boolean }) => void
+  onEdit: (editing: EditingState) => void
 }) {
   const store = useStore()
   const { t } = useI18n()
@@ -171,17 +215,8 @@ function ConnectionSettings({
     await store.connect()
   }
 
-  const addProfile = () => {
-    onEdit({
-      profile: {
-        id: `prof_${Date.now()}`,
-        name: "",
-        baseUrl: "http://127.0.0.1:4096",
-        mode: "attach",
-      },
-      isNew: true,
-    })
-  }
+  // 引导式（design-guided-add-server §2）：点「添加」先进发现视图
+  const addProfile = () => onEdit({ view: "discover" })
 
   const remove = async (p: ConnectionProfile) => {
     // 删除的是当前连接的 profile：先断开（managed stop 命中旧进程）
@@ -222,7 +257,7 @@ function ConnectionSettings({
             <button disabled={p.id === activeId} onClick={() => void activate(p.id)}>
               {p.id === activeId ? t.activeProfile : t.activateProfile}
             </button>
-            <button title={t.editProfile} aria-label={t.editProfile} onClick={() => onEdit({ profile: p, isNew: false })}>
+            <button title={t.editProfile} aria-label={t.editProfile} onClick={() => onEdit({ view: "manual", profile: p, isNew: false })}>
               <Pencil size={12} aria-hidden />
             </button>
             <button className="danger" title={t.removeProfile} aria-label={t.removeProfile} onClick={() => void remove(p)}>
@@ -255,10 +290,138 @@ function ConnectionSettings({
   )
 }
 
-/** 添加/编辑服务器视图：渲染 dialog-body + dialog-actions（标题行的返回/关闭
- *  钮由 SettingsDialog 提供）；取消 = 丢弃草稿返回列表，保存 = upsert 落盘。
- *  表单按模式分化（design-managed-config §1）：managed 隐藏 URL/凭据（随机端口
- *  + 自动凭据），新增二进制路径（自动扫描候选 + 浏览手选）；attach 字段不变 */
+/** 发现视图（design-guided-add-server §2）：进入即同时跑 scanServers + scanBinaries，
+ *  两路各自落地（先到先列，不互相等）；attach 候选一键建档（含 health 已验证），
+ *  managed 候选一键建档（binaryPath = 候选路径）；手动入口常驻底部。
+ *  扫描在 main 侧 in-flight 去重，重入（StrictMode 双触发/重搜）安全 */
+function DiscoverView({
+  onManual,
+  onPick,
+}: {
+  onManual: () => void
+  onPick: (p: ConnectionProfile) => void
+}) {
+  const { t } = useI18n()
+  const [servers, setServers] = useState<ServerCandidate[] | null>(null)
+  const [binaries, setBinaries] = useState<BinaryCandidate[] | null>(null)
+  // 显式搜索中（guided review 修订）：rescan 时两路已非 null，null 判据给不出
+  // 反馈——重搜置 true、双路落地清 false；初始 true 覆盖首扫
+  const [scanning, setScanning] = useState(true)
+  // 请求代际（防迟到响应覆盖新一轮搜索结果；rescan 递增）
+  const seq = useRef(0)
+
+  const runScan = async () => {
+    const cur = ++seq.current
+    const guard = () => cur === seq.current
+    // 双路并行、各自落地（§2：不互相等）；全落地才清 scanning（进行中提示
+    // 覆盖到双路收束，重搜期间禁用按钮）
+    let pending = 2
+    const settle = () => {
+      if (--pending === 0 && guard()) setScanning(false)
+    }
+    setScanning(true)
+    void window.desktop
+      .scanServers()
+      .then((list) => {
+        if (guard()) setServers(list)
+      })
+      .catch(() => {
+        if (guard()) setServers([])
+      })
+      .finally(settle)
+    void window.desktop
+      .scanBinaries()
+      .then((list) => {
+        if (guard()) setBinaries(list)
+      })
+      .catch(() => {
+        if (guard()) setBinaries([])
+      })
+      .finally(settle)
+  }
+
+  useEffect(() => {
+    void runScan()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const searching = scanning || servers === null || binaries === null
+  const hasAny = (servers?.length ?? 0) + (binaries?.length ?? 0) > 0
+
+  return (
+    <>
+      <div className="dialog-body">
+        <div className="scan-section-title">
+          <span>{t.discoverServersTitle}</span>
+        </div>
+        {(servers ?? []).map((c) => (
+          <button
+            key={c.url}
+            type="button"
+            className="discover-candidate"
+            title={c.url}
+            onClick={() =>
+              onPick({
+                id: `prof_${Date.now()}`,
+                name: c.url,
+                baseUrl: c.url,
+                mode: "attach",
+              })
+            }
+          >
+            <span className="discover-candidate-main">
+              <span className="mono discover-candidate-path">{c.url}</span>
+              <span className="profile-mode">{c.source === "loopback" ? t.discoverSourceLoopback : t.discoverSourceMdns}</span>
+            </span>
+            <span className="tree-meta mono">{c.version ?? "—"}</span>
+          </button>
+        ))}
+        <div className="scan-section-title discover-second-title">
+          <span>{t.discoverBinariesTitle}</span>
+        </div>
+        {(binaries ?? []).map((c) => (
+          <button
+            key={c.path}
+            type="button"
+            className="discover-candidate"
+            title={c.path}
+            onClick={() =>
+              onPick({
+                id: `prof_${Date.now()}`,
+                name: "",
+                baseUrl: "",
+                mode: "managed",
+                binaryPath: c.path,
+              })
+            }
+          >
+            <span className="mono discover-candidate-path">{c.path}</span>
+            <span className="tree-meta mono">{c.version ?? "—"}</span>
+          </button>
+        ))}
+        {searching && <div className="form-note">{t.discoverScanning}</div>}
+        {!searching && !hasAny && <div className="form-note">{t.discoverNoResult}</div>}
+      </div>
+      <div className="dialog-actions discover-actions">
+        <button type="button" disabled={searching} onClick={() => void runScan()}>
+          <RefreshCw size={12} aria-hidden />
+          {t.discoverRescan}
+        </button>
+        <button type="button" className="btn-primary" onClick={onManual}>
+          {t.discoverManualEntry}
+        </button>
+      </div>
+    </>
+  )
+}
+
+/** 手动配置/编辑服务器视图：渲染 dialog-body + dialog-actions（标题行的返回/关闭
+ *  钮由 SettingsDialog 提供）；取消 = 丢弃草稿返回上一层（新增回发现视图，
+ *  编辑回列表），保存 = upsert 落盘。
+ *  模式选择置顶为 segment control（design-guided-add-server §3）+ 两模式一句话
+ *  说明；表单按模式分化（design-managed-config §1）：managed 隐藏 URL/凭据
+ *  （随机端口 + 自动凭据），新增二进制路径（自动扫描候选 + 浏览手选）；attach
+ *  字段不变 */
 function ProfileFormView({
   profile,
   onCancel,
@@ -329,6 +492,26 @@ function ProfileFormView({
   return (
     <>
       <div className="dialog-body">
+        {/* 模式段置顶（design-guided-add-server §3）：segment control + 一句话说明 */}
+        <div className="form-label">
+          {t.profileMode}
+          <div className="ms-segmented profile-mode-seg" role="group" aria-label={t.profileMode}>
+            {(["attach", "managed"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                aria-pressed={draft.mode === m}
+                className={"ms-seg" + (draft.mode === m ? " active" : "")}
+                onClick={() => setDraft({ ...draft, mode: m })}
+              >
+                {m === "attach" ? t.modeAttach : t.modeManaged}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="form-note profile-mode-desc">
+          {managed ? t.modeManagedDesc : t.modeAttachDesc}
+        </div>
         {field("name", t.profileName, "text", true)}
         {managed ? (
           <>
@@ -380,16 +563,6 @@ function ProfileFormView({
             {field("password", t.profilePassword, "password")}
           </>
         )}
-        <label className="form-label">
-          {t.profileMode}
-          <select
-            value={draft.mode}
-            onChange={(e) => setDraft({ ...draft, mode: e.target.value as ConnectionProfile["mode"] })}
-          >
-            <option value="attach">{t.modeAttach}</option>
-            <option value="managed">{t.modeManaged}</option>
-          </select>
-        </label>
         {!managed && testResult && <div className="form-note">{testResult}</div>}
       </div>
       <div className="dialog-actions">

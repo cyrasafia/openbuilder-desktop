@@ -1,6 +1,8 @@
 /**
- * profile 表单按模式分化（design-managed-config §1）：managed 隐藏 URL/凭据、
- * 显示二进制路径与扫描候选；attach 字段齐全。mock desktop.scanBinaries。
+ * 添加服务器引导式（design-guided-add-server）：点「添加」先搜索（servers +
+ * binaries 并行、先到先列），候选一键建档；手动入口进 manual 表单。
+ * manual 表单按模式分化（design-managed-config §1）：模式段置顶（segment），
+ * managed 隐藏 URL/凭据、显示二进制路径与扫描候选；attach 字段齐全。
  * Provider 页签（design-provider-config）：已连接组/搜索/设删 key（ops 注入）。
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
@@ -11,6 +13,9 @@ import type { ProviderCatalog, ProviderInfo } from "@shared/api-types"
 const scanBinaries = vi.fn(async () => [
   { path: "/usr/bin/opencode", version: "1.18.20" },
   { path: "/home/t/.opencode/bin/opencode", version: null },
+])
+const scanServers = vi.fn(async () => [
+  { url: "http://127.0.0.1:4096", version: "1.0.0", source: "loopback" as const },
 ])
 const openBinaryPicker = vi.fn(async (): Promise<string | null> => null)
 
@@ -31,6 +36,7 @@ vi.mock("../app", () => ({
       save: "保存",
       addProfile: "添加",
       addProfileTitle: "添加服务器",
+      addProfileManualTitle: "手动配置服务器",
       editProfileTitle: "编辑服务器",
       editProfile: "编辑",
       removeProfile: "删除",
@@ -41,8 +47,18 @@ vi.mock("../app", () => ({
       profileUser: "用户名（可选）",
       profilePassword: "密码（可选）",
       profileMode: "模式",
-      modeAttach: "attach（连接现有服务）",
-      modeManaged: "managed（本机启动）",
+      modeAttach: "连接现有服务",
+      modeManaged: "本机启动",
+      modeAttachDesc: "attach 说明",
+      modeManagedDesc: "managed 说明",
+      discoverServersTitle: "发现的服务器",
+      discoverBinariesTitle: "本机 opencode",
+      discoverScanning: "正在搜索…",
+      discoverSourceLoopback: "本机",
+      discoverSourceMdns: "局域网",
+      discoverNoResult: "未发现",
+      discoverRescan: "重新搜索",
+      discoverManualEntry: "手动配置…",
       testConnection: "测试连接",
       testOk: "连接正常（版本 {version}）",
       testFailed: "连接失败",
@@ -81,7 +97,17 @@ vi.mock("../app", () => ({
 
 beforeEach(() => {
   scanBinaries.mockClear()
+  scanServers.mockClear()
   openBinaryPicker.mockClear()
+  // mockReturnValue 会跨 mockClear 存留：逐用例覆写（如悬挂 Promise）后须在此复位
+  scanBinaries.mockImplementation(async () => [
+    { path: "/usr/bin/opencode", version: "1.18.20" },
+    { path: "/home/t/.opencode/bin/opencode", version: null },
+  ])
+  scanServers.mockImplementation(async () => [
+    { url: "http://127.0.0.1:4096", version: "1.0.0", source: "loopback" },
+  ])
+  openBinaryPicker.mockImplementation(async () => null)
   storeState.current = {
     profiles: [],
     activeProfileId: null,
@@ -101,24 +127,163 @@ beforeEach(() => {
   }
   Object.defineProperty(window, "desktop", {
     configurable: true,
-    get: () => ({ scanBinaries, openBinaryPicker }),
+    get: () => ({ scanBinaries, scanServers, openBinaryPicker }),
   })
 })
 
 afterEach(cleanup)
 
-describe("ProfileFormView 模式分化", () => {
-  it("managed 模式：隐藏 URL/凭据，显示二进制路径 + 扫描候选，点击候选填入", async () => {
-    render(
-      <SettingsDialog />,
-    )
-    // 打开"添加服务器"表单
+describe("添加服务器引导式（design-guided-add-server）", () => {
+  it("点「添加」进发现视图：双扫描并行启动，server 与 binary 候选混排列出", async () => {
+    render(<SettingsDialog />)
     fireEvent.click(screen.getByText("添加"))
-    // 切到 managed
-    fireEvent.change(screen.getByDisplayValue("attach（连接现有服务）"), {
-      target: { value: "managed" },
-    })
-    // URL/凭据字段消失
+    expect(scanServers).toHaveBeenCalled()
+    expect(scanBinaries).toHaveBeenCalled()
+    // 两类候选都出现（attach 候选带来源徽标「本机」）
+    await waitFor(() => expect(screen.getByText("http://127.0.0.1:4096")).toBeTruthy())
+    expect(screen.getByText("/usr/bin/opencode")).toBeTruthy()
+    expect(screen.getByText("本机")).toBeTruthy()
+    // 手动入口常驻
+    expect(screen.getByText("手动配置…")).toBeTruthy()
+  })
+
+  it("一路先回一路未回：先回的立即列出，保持搜索中提示", async () => {
+    // servers 悬挂不回；binaries 立即回
+    scanServers.mockReturnValue(new Promise(() => []))
+    render(<SettingsDialog />)
+    fireEvent.click(screen.getByText("添加"))
+    await waitFor(() => expect(screen.getByText("/usr/bin/opencode")).toBeTruthy())
+    expect(screen.getByText("正在搜索…")).toBeTruthy()
+    expect(screen.queryByText("未发现")).toBeNull()
+  })
+
+  it("全部完成且无候选：空态文案 + 手动入口", async () => {
+    scanServers.mockResolvedValue([])
+    scanBinaries.mockResolvedValue([])
+    render(<SettingsDialog />)
+    fireEvent.click(screen.getByText("添加"))
+    await waitFor(() => expect(screen.getByText("未发现")).toBeTruthy())
+    expect(screen.getByText("手动配置…")).toBeTruthy()
+  })
+
+  it("点击 server 候选：一键建档（attach profile + baseUrl），弹窗退回列表", async () => {
+    render(<SettingsDialog />)
+    fireEvent.click(screen.getByText("添加"))
+    await waitFor(() => expect(screen.getByText("http://127.0.0.1:4096")).toBeTruthy())
+    fireEvent.click(screen.getByText("http://127.0.0.1:4096"))
+    await waitFor(() =>
+      expect(storeState.current.saveProfiles).toHaveBeenCalledWith(
+        [expect.objectContaining({ baseUrl: "http://127.0.0.1:4096", mode: "attach" })],
+        null,
+      ),
+    )
+    // 建档后退回列表视图（「添加」按钮回到视野）
+    await waitFor(() => expect(screen.getByText("添加")).toBeTruthy())
+  })
+
+  it("点击 binary 候选：一键建档（managed profile + binaryPath）", async () => {
+    scanServers.mockResolvedValue([])
+    render(<SettingsDialog />)
+    fireEvent.click(screen.getByText("添加"))
+    await waitFor(() => expect(screen.getByText("/usr/bin/opencode")).toBeTruthy())
+    fireEvent.click(screen.getByText("/usr/bin/opencode"))
+    await waitFor(() =>
+      expect(storeState.current.saveProfiles).toHaveBeenCalledWith(
+        [expect.objectContaining({ mode: "managed", binaryPath: "/usr/bin/opencode" })],
+        null,
+      ),
+    )
+  })
+
+  it("「手动配置…」进 manual 表单：模式段置顶默认 attach，字段齐全，不再触发扫描", async () => {
+    render(<SettingsDialog />)
+    fireEvent.click(screen.getByText("添加"))
+    await waitFor(() => expect(screen.getByText("手动配置…")).toBeTruthy())
+    fireEvent.click(screen.getByText("手动配置…"))
+    // 标题切手动配置；模式段置顶 + 一句话说明
+    expect(screen.getByText("手动配置服务器")).toBeTruthy()
+    expect(screen.getByText("连接现有服务")).toBeTruthy()
+    expect(screen.getByText("本机启动")).toBeTruthy()
+    expect(screen.getByText("attach 说明")).toBeTruthy()
+    expect(screen.getByLabelText("服务器地址")).toBeTruthy()
+    expect(screen.getByLabelText("用户名（可选）")).toBeTruthy()
+    expect(screen.getByLabelText("密码（可选）")).toBeTruthy()
+    expect(screen.queryByLabelText("二进制路径")).toBeNull()
+    // manual（attach）不触发二进制扫描（仅发现视图那次）
+    expect(scanBinaries).toHaveBeenCalledTimes(1)
+  })
+
+  it("重新搜索按钮：再次触发双扫描，重搜期间按钮禁用 + 搜索中提示回归", async () => {
+    // servers 慢回（悬挂），验证 rescan 反馈（guided review 修订：rescan 时
+    // 两路已非 null，null 判据给不出反馈——须显式 scanning 态）
+    scanServers.mockImplementation(
+      () => new Promise((r) => setTimeout(() => r([{ url: "http://127.0.0.1:4096", version: "1.0.0", source: "loopback" }]), 50)),
+    )
+    render(<SettingsDialog />)
+    fireEvent.click(screen.getByText("添加"))
+    const rescanBtn = () => screen.getByText("重新搜索").closest("button") as HTMLButtonElement
+    // 首扫完成（快路 binaries 已列、慢路 servers 50ms 后回）→ 可重搜
+    await waitFor(() => expect(rescanBtn().disabled).toBe(false))
+    fireEvent.click(screen.getByText("重新搜索"))
+    await waitFor(() => expect(scanServers).toHaveBeenCalledTimes(2))
+    expect(scanBinaries).toHaveBeenCalledTimes(2)
+    // 重搜期间：按钮禁用 + 搜索中提示（不闪空态文案）
+    expect(screen.getByText("正在搜索…")).toBeTruthy()
+    expect(rescanBtn().disabled).toBe(true)
+    expect(screen.queryByText("未发现")).toBeNull()
+    await waitFor(() => expect(rescanBtn().disabled).toBe(false))
+  })
+
+  it("发现视图焦点落弹窗容器（真 focus 语义：Esc 分层第一跳不失效）", async () => {
+    // guided review 修复回归：fireEvent.keyDown 直派 dialog 元素会绕过真实
+    // focus 语义——此处用真 focus 位置断言（进入发现视图时「添加」按钮卸载，
+    // 焦点须由 effect 拉回 dialog 容器，否则 Esc 冒泡到 body 静默失效）
+    const { container } = render(<SettingsDialog />)
+    fireEvent.click(screen.getByText("添加"))
+    await waitFor(() => expect(screen.getByText("手动配置…")).toBeTruthy())
+    expect(document.activeElement).toBe(container.querySelector(".dialog"))
+    // manual（无 autoFocus 落焦时同理）返回发现视图后焦点回容器
+    fireEvent.click(screen.getByText("手动配置…"))
+    await waitFor(() => expect(screen.getByText("手动配置服务器")).toBeTruthy())
+    fireEvent.click(screen.getByTitle("返回"))
+    await waitFor(() => expect(screen.getByText("手动配置…")).toBeTruthy())
+    expect(document.activeElement).toBe(container.querySelector(".dialog"))
+  })
+
+  it("新增路径 Esc 分层：manual 表单先退回发现视图，再退关弹窗", async () => {
+    const { container } = render(<SettingsDialog />)
+    fireEvent.click(screen.getByText("添加"))
+    await waitFor(() => expect(screen.getByText("手动配置…")).toBeTruthy())
+    fireEvent.click(screen.getByText("手动配置…"))
+    expect(screen.getByText("手动配置服务器")).toBeTruthy()
+    // Esc 1：退回发现视图
+    fireEvent.keyDown(container.querySelector(".dialog")!, { key: "Escape" })
+    await waitFor(() => expect(screen.getByText("手动配置…")).toBeTruthy())
+    // Esc 2：退回列表
+    fireEvent.keyDown(container.querySelector(".dialog")!, { key: "Escape" })
+    await waitFor(() => expect(screen.getByText("添加")).toBeTruthy())
+    // Esc 3：关闭弹窗
+    fireEvent.keyDown(container.querySelector(".dialog")!, { key: "Escape" })
+    expect(storeState.current.closeSettings).toHaveBeenCalled()
+  })
+})
+
+describe("ProfileFormView 模式分化", () => {
+  /** 进 manual 表单（经发现视图——引导路径已在上组覆盖） */
+  const goManual = async () => {
+    fireEvent.click(screen.getByText("添加"))
+    await waitFor(() => expect(screen.getByText("手动配置…")).toBeTruthy())
+    fireEvent.click(screen.getByText("手动配置…"))
+    await waitFor(() => expect(screen.getByText("手动配置服务器")).toBeTruthy())
+  }
+
+  it("managed 模式：模式段切换后隐藏 URL/凭据，显示二进制路径 + 扫描候选，点击候选填入", async () => {
+    render(<SettingsDialog />)
+    await goManual()
+    // 切到 managed（模式段按钮）
+    fireEvent.click(screen.getByText("本机启动"))
+    // 说明切换 + URL/凭据字段消失
+    expect(screen.getByText("managed 说明")).toBeTruthy()
     expect(screen.queryByLabelText("服务器地址")).toBeNull()
     expect(screen.queryByLabelText("用户名（可选）")).toBeNull()
     expect(screen.queryByLabelText("密码（可选）")).toBeNull()
@@ -131,27 +296,44 @@ describe("ProfileFormView 模式分化", () => {
     expect(input.value).toBe("/usr/bin/opencode")
   })
 
-  it("attach 模式：URL/凭据字段齐全，无二进制路径，不触发扫描", async () => {
+  it("attach 模式：URL/凭据字段齐全，无二进制路径", async () => {
     render(<SettingsDialog />)
-    fireEvent.click(screen.getByText("添加"))
+    await goManual()
     expect(screen.getByLabelText("服务器地址")).toBeTruthy()
     expect(screen.getByLabelText("用户名（可选）")).toBeTruthy()
     expect(screen.getByLabelText("密码（可选）")).toBeTruthy()
     expect(screen.queryByLabelText("二进制路径")).toBeNull()
-    expect(scanBinaries).not.toHaveBeenCalled()
   })
 
   it("浏览按钮选择路径填入", async () => {
     openBinaryPicker.mockResolvedValue("/picked/opencode")
     render(<SettingsDialog />)
-    fireEvent.click(screen.getByText("添加"))
-    fireEvent.change(screen.getByDisplayValue("attach（连接现有服务）"), {
-      target: { value: "managed" },
-    })
+    await goManual()
+    fireEvent.click(screen.getByText("本机启动"))
     fireEvent.click(screen.getByText("浏览…"))
     await waitFor(() => {
       expect((screen.getByLabelText("二进制路径") as HTMLInputElement).value).toBe("/picked/opencode")
     })
+  })
+
+  it("编辑既有 profile 直落 manual 表单（跳过发现视图），保存 upsert", async () => {
+    storeState.current.profiles = [{ id: "p1", name: "srv", baseUrl: "http://x:1", mode: "attach" }]
+    render(<SettingsDialog />)
+    // 编辑钮是 icon-btn（Pencil 图标，无文字），按 title 取
+    fireEvent.click(screen.getByTitle("编辑"))
+    // 编辑标题（非手动配置标题），发现视图未出现
+    expect(screen.getByText("编辑服务器")).toBeTruthy()
+    expect(screen.queryByText("手动配置…")).toBeNull()
+    expect((screen.getByLabelText("服务器地址") as HTMLInputElement).value).toBe("http://x:1")
+    fireEvent.click(screen.getByText("保存"))
+    await waitFor(() =>
+      expect(storeState.current.saveProfiles).toHaveBeenCalledWith(
+        [expect.objectContaining({ id: "p1", baseUrl: "http://x:1" })],
+        null,
+      ),
+    )
+    // 保存后退回列表（编辑按钮回到视野）
+    await waitFor(() => expect(screen.getByTitle("编辑")).toBeTruthy())
   })
 })
 
