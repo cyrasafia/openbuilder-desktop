@@ -1,6 +1,8 @@
 /**
  * 中栏无项目空状态测试（design-layout §4 末）：未打开任何项目时中栏只渲染
- * 「打开项目」引导（提示 + 按钮）；未连接服务器时按钮改为「连接服务器」。
+ * 「打开项目」引导（提示 + 按钮）；无激活 client（有 profile 但连接未建立）
+ * 时按钮改为「打开设置」。无 profile（无服务器）时 Shell 不渲染（欢迎屏
+ * 语义修订 2026-09-05），不会走到该空状态。
  */
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -11,7 +13,7 @@ vi.mock("../app", () => ({
     t: {
       noProjectOpenHint: "打开一个项目后即可开始会话",
       openProject: "打开项目…",
-      welcomeConnectServer: "连接服务器",
+      openSettings: "打开设置",
     },
     locale: "zh" as const,
   }),
@@ -32,7 +34,7 @@ function makeStore(overrides: Record<string, unknown> = {}): Record<string, unkn
     syncBrowserViewVisibility: vi.fn(),
     getActiveClient: vi.fn(() => ({})),
     openProjectPicker: vi.fn(),
-    openWelcome: vi.fn(),
+    openSettings: vi.fn(),
     ...overrides,
   }
 }
@@ -46,14 +48,14 @@ describe("Workspace 无项目空状态", () => {
     expect(screen.getByText("打开一个项目后即可开始会话")).toBeTruthy()
     fireEvent.click(screen.getByText("打开项目…"))
     expect(storeStub.openProjectPicker).toHaveBeenCalledTimes(1)
-    expect(storeStub.openWelcome).not.toHaveBeenCalled()
+    expect(storeStub.openSettings).not.toHaveBeenCalled()
   })
 
-  it("未连接服务器：按钮改为「连接服务器」，点击回欢迎屏", () => {
+  it("无激活 client（连接未建立）：按钮改为「打开设置」，点击开设置弹窗", () => {
     storeStub = makeStore({ getActiveClient: vi.fn(() => null) })
     render(<Workspace />)
-    fireEvent.click(screen.getByText("连接服务器"))
-    expect(storeStub.openWelcome).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByText("打开设置"))
+    expect(storeStub.openSettings).toHaveBeenCalledWith("connection")
     expect(storeStub.openProjectPicker).not.toHaveBeenCalled()
   })
 })

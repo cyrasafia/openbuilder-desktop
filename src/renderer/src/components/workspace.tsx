@@ -147,7 +147,9 @@ export function Workspace() {
       : tabs
 
   // 无项目空状态（design-layout §4 末）：未打开任何项目时中栏只有「打开项目」
-  // 引导（左栏树为空、右栏无文件树）；未连接服务器则先引导连接（同引导页惯例）
+  // 引导（左栏树为空、右栏无文件树）；无激活 profile（无服务器）时 Shell 不渲染
+  // （2026-09-05 欢迎屏修订），此分支只见于「有 profile 但连接未建立」——引导
+  // 打开设置（连接页签），同 sidebar 空态惯例
   if (store.openedProjects.length === 0) {
     return (
       <main className="workspace">
@@ -159,8 +161,8 @@ export function Workspace() {
               {t.openProject}
             </button>
           ) : (
-            <button className="btn-primary" onClick={() => store.openWelcome()}>
-              {t.welcomeConnectServer}
+            <button className="btn-primary" onClick={() => store.openSettings("connection")}>
+              {t.openSettings}
             </button>
           )}
         </div>
