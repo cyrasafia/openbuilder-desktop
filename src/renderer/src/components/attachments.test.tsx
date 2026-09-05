@@ -36,7 +36,7 @@ beforeEach(() => {
   currentAttachments = []
   Object.defineProperty(window, "desktop", {
     configurable: true,
-    get: () => ({ openFilesPicker: async () => [] }),
+    get: () => ({ openFilesPicker: async () => ({ accepted: [], rejected: [] }) }),
   })
 })
 

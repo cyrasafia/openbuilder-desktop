@@ -954,8 +954,7 @@ function ChatView({ sessionID }: { sessionID: string }) {
     if (text.startsWith("/") && attachments.length > 0) {
       const slashDir = store.findSession(sessionID)?.directory ?? null
       await store.refreshCommands(slashDir)
-      const rest = text.slice(1)
-      const token = (rest.slice(0, rest.search(/\s/) === -1 ? undefined : rest.search(/\s/))).toLowerCase()
+      const { token } = parseSlash(text)
       const matched = (slashDir ? store.commandsFor(slashDir) : []).some(
         (c) => c.name.toLowerCase() === token,
       )
@@ -981,10 +980,22 @@ function ChatView({ sessionID }: { sessionID: string }) {
   }
 
   /**
+   * 斜杠命令 token/args 解析（守卫与分流共用，review 第二轮 P3：单一来源防漂移）。
+   * 命令名与参数以任意空白分隔（空格/换行/Tab——Shift+Enter 多行参数可达）。
+   */
+  const parseSlash = (text: string): { token: string; args: string } => {
+    const rest = text.slice(1)
+    const sep = rest.search(/\s/)
+    return {
+      token: (sep === -1 ? rest : rest.slice(0, sep)).toLowerCase(),
+      args: sep === -1 ? "" : rest.slice(sep + 1).trim(),
+    }
+  }
+
+  /**
    * 斜杠命令分流：发送前强制重拉注册表（最新命令集），命中才走
    * POST /session/:id/command（服务端展开）；未注册的 /xxx 按字面文本
    * 走 prompt（服务端不会展开模板）。
-   * 命令名与参数以任意空白分隔（空格/换行/Tab——Shift+Enter 多行参数可达）。
    */
   const sendSlash = async (
     text: string,
@@ -993,15 +1004,12 @@ function ChatView({ sessionID }: { sessionID: string }) {
   ): Promise<{ ok: boolean; error?: string }> => {
     const slashDir = store.findSession(sessionID)?.directory ?? null
     await store.refreshCommands(slashDir)
-    const rest = text.slice(1)
-    const sep = rest.search(/\s/)
-    const token = (sep === -1 ? rest : rest.slice(0, sep)).toLowerCase()
+    const { token, args } = parseSlash(text)
     const matched = (slashDir ? store.commandsFor(slashDir) : []).find(
       (c) => c.name.toLowerCase() === token,
     )
     // 未注册命令按字面文本走 prompt（引用/附件 parts 同样携带）；命中走 command（parts 契约同）
     if (!matched) return store.sendPrompt(sessionID, text, refs, attachments)
-    const args = sep === -1 ? "" : rest.slice(sep + 1).trim()
     return store.sendCommand(sessionID, matched.name, args, refs, attachments)
   }
 

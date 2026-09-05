@@ -105,15 +105,18 @@ export function registerIpc() {
     const accepted: Array<{ name: string; type: string | null; bytes: Uint8Array }> = []
     const rejected: Array<{ name: string; reason: string }> = []
     if (result.canceled || result.filePaths.length === 0) return { accepted, rejected }
+    // 批次总量上限（review 第二轮 P3）：多选 N×128MB 并发驻留的封顶
+    let batchTotal = 0
     for (const p of result.filePaths) {
       const name = p.split(/[\\/]/).pop() ?? p
       try {
         const st = await stat(p)
-        if (st.size > OPEN_FILES_MAX_BYTES) {
+        if (st.size > OPEN_FILES_MAX_BYTES || batchTotal + st.size > OPEN_FILES_MAX_BYTES * 2) {
           rejected.push({ name, reason: "too_large" })
           continue
         }
         const buf = await readFile(p)
+        batchTotal += st.size
         accepted.push({ name, type: mimeFromName(p), bytes: new Uint8Array(buf) })
       } catch {
         // 单个文件 stat/读取失败跳过（不阻断其余）
