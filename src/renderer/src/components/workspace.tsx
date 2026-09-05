@@ -60,6 +60,7 @@ import { closeTabInteractive } from "./tab-actions"
 import { TerminalView } from "./terminal-view"
 import { BrowserTabView } from "./browser-tab-view"
 import { FileRefChips, useFileRefInput, userFileChipItems } from "./file-ref"
+import { AttachmentChips, AttachmentThumb, useAttachmentInput, userImageParts } from "./attachments"
 
 export function Workspace() {
   const store = useStore()
@@ -520,12 +521,15 @@ function GuidePage() {
     },
   })
   const guideRefs = store.fileRefsFor(directory)
+  // 会话附件输入接线（design-session-attachments §3）：粘贴/拖拽/按钮 → 管线 → store
+  const attachInput = useAttachmentInput(directory)
 
   const send = async () => {
     const text = draft.trim()
-    // 空守卫：文本与引用全空才拒绝（纯引用发送合法，design-file-reference §4）
+    // 空守卫：文本/引用/附件全空才拒绝（纯附件发送合法，design-session-attachments §2）
     const refs = store.fileRefsFor(directory)
-    if ((!text && refs.length === 0) || sending) return
+    const attachments = store.attachmentsFor(directory)
+    if ((!text && refs.length === 0 && attachments.length === 0) || sending) return
     setSending(true)
     if (!pendingSession.current) {
       // openTab:false——首条消息发送成功才开 Tab 激活（引导页退出）
@@ -536,8 +540,8 @@ function GuidePage() {
       }
       pendingSession.current = session
     }
-    // 引用随首条消息发送；发送成功 store 侧清（引导页卸载丢待定 effect，同草稿）
-    const res = await store.sendPrompt(pendingSession.current.id, text, refs)
+    // 引用/附件随首条消息发送；发送成功 store 侧清（引导页卸载丢待定 effect，同草稿）
+    const res = await store.sendPrompt(pendingSession.current.id, text, refs, attachments)
     setSending(false)
     if (res.ok) {
       // store 侧显式清：发送成功开 Tab → 引导页同 commit 卸载，React 丢弃卸载
@@ -547,6 +551,7 @@ function GuidePage() {
       setDraft("")
       store.setGuideDraft(directory, "")
       store.clearFileRefs(directory)
+      store.clearAttachments(directory)
       store.openChatTab(pendingSession.current)
       pendingSession.current = null
     }
@@ -568,10 +573,23 @@ function GuidePage() {
               </button>
             </div>
           )}
-          <div className="guide-composer" {...refInput.dragProps}>
+          <div
+            className="guide-composer"
+            onDragOver={(e) => {
+              refInput.dragProps.onDragOver(e)
+              attachInput.fileDragProps.onDragOver(e)
+            }}
+            onDrop={(e) => {
+              refInput.dragProps.onDrop(e)
+              attachInput.fileDragProps.onDrop(e)
+            }}
+            onDragLeave={refInput.dragProps.onDragLeave}
+          >
             {refInput.chips}
+            {attachInput.chips}
             <textarea
               ref={guideTaRef}
+              onPaste={attachInput.pasteProps.onPaste}
               value={draft}
               placeholder={t.guidePlaceholder}
               rows={1}
@@ -609,6 +627,7 @@ function GuidePage() {
             />
             {refInput.picker}
             <div className="composer-actions">
+              {attachInput.pickerButton}
               {/* pendingSession 时切会话绑定；会话记录从 store 重读（乐观补丁是新对象，
                   ref 持有的是创建时快照——AM-FIX-2：UI 不依赖父组件传参快照）。
                   目录用该会话自身的：引导页已按作用域 key 隔离（design-compose-draft §2），
@@ -626,7 +645,10 @@ function GuidePage() {
               />
               <button
                 className="btn-primary"
-                disabled={(!draft.trim() && guideRefs.length === 0) || sending}
+                disabled={
+                  (!draft.trim() && guideRefs.length === 0 && store.attachmentsFor(directory).length === 0) ||
+                  sending
+                }
                 onClick={() => void send()}
               >
                 {t.send}
@@ -761,6 +783,8 @@ function ChatView({ sessionID }: { sessionID: string }) {
       requestAnimationFrame(() => composerTaRef.current?.setSelectionRange(start, start))
     },
   })
+  // 会话附件输入接线（design-session-attachments §3）：粘贴/拖拽/按钮 → 管线 → store
+  const attachInput = useAttachmentInput(sessionID)
 
   // 滚动位置落 store（design-tab-state-memory §2.3）：卸载即切走——贴底删条目
   //（切回贴底是正确默认），否则存最后捕获值。cleanup 必随卸载执行，捕获在
@@ -918,9 +942,27 @@ function ChatView({ sessionID }: { sessionID: string }) {
 
   const send = async () => {
     const text = draft.trim()
-    // 引用（design-file-reference §4）：空守卫 = 文本与引用全空才拒绝（纯引用合法）
+    // 引用/附件（design-file-reference §4 + design-session-attachments §2）：
+    // 空守卫 = 文本、引用、附件全空才拒绝（纯附件合法）
     const refs = store.fileRefsFor(sessionID)
-    if (!text && refs.length === 0) return
+    const attachments = store.attachmentsFor(sessionID)
+    if (!text && refs.length === 0 && attachments.length === 0) return
+    // 斜杠命令 + 附件守卫（design-session-attachments review P2-2，移动端 AT-5
+    // 同型）：命中注册命令的 /cmd 是否消费 data URL 附件未经验证——阻止并提示，
+    // 文本/附件全部保留（去掉 / 前缀或清空附件后可发；未注册 /xxx 按字面
+    // prompt 走，附件合法）
+    if (text.startsWith("/") && attachments.length > 0) {
+      const slashDir = store.findSession(sessionID)?.directory ?? null
+      await store.refreshCommands(slashDir)
+      const { token } = parseSlash(text)
+      const matched = (slashDir ? store.commandsFor(slashDir) : []).some(
+        (c) => c.name.toLowerCase() === token,
+      )
+      if (matched) {
+        attachInput.notify(t.attachCmdBlocked)
+        return
+      }
+    }
     // busy 不拦（design-supplement-send）：进行中发送 = 补充消息，server 在
     // 当前 run 内吸收（不打断、不排队），乐观气泡按时间序排活跃流式下方
     // store 侧显式清（不依赖同步 effect，与引导页发送成功路径同构；失败回填
@@ -931,34 +973,44 @@ function ChatView({ sessionID }: { sessionID: string }) {
     pinnedToBottom.current = true
     scrollToBottom("smooth")
     const res = text.startsWith("/")
-      ? await sendSlash(text, refs)
-      : await store.sendPrompt(sessionID, text, refs)
+      ? await sendSlash(text, refs, attachments)
+      : await store.sendPrompt(sessionID, text, refs, attachments)
     // 失败回填草稿：文本不丢（乐观消息已在 store 侧撤回）
     if (!res.ok) setDraft(text)
+  }
+
+  /**
+   * 斜杠命令 token/args 解析（守卫与分流共用，review 第二轮 P3：单一来源防漂移）。
+   * 命令名与参数以任意空白分隔（空格/换行/Tab——Shift+Enter 多行参数可达）。
+   */
+  const parseSlash = (text: string): { token: string; args: string } => {
+    const rest = text.slice(1)
+    const sep = rest.search(/\s/)
+    return {
+      token: (sep === -1 ? rest : rest.slice(0, sep)).toLowerCase(),
+      args: sep === -1 ? "" : rest.slice(sep + 1).trim(),
+    }
   }
 
   /**
    * 斜杠命令分流：发送前强制重拉注册表（最新命令集），命中才走
    * POST /session/:id/command（服务端展开）；未注册的 /xxx 按字面文本
    * 走 prompt（服务端不会展开模板）。
-   * 命令名与参数以任意空白分隔（空格/换行/Tab——Shift+Enter 多行参数可达）。
    */
   const sendSlash = async (
     text: string,
     refs: ReturnType<typeof store.fileRefsFor>,
+    attachments: ReturnType<typeof store.attachmentsFor>,
   ): Promise<{ ok: boolean; error?: string }> => {
     const slashDir = store.findSession(sessionID)?.directory ?? null
     await store.refreshCommands(slashDir)
-    const rest = text.slice(1)
-    const sep = rest.search(/\s/)
-    const token = (sep === -1 ? rest : rest.slice(0, sep)).toLowerCase()
+    const { token, args } = parseSlash(text)
     const matched = (slashDir ? store.commandsFor(slashDir) : []).find(
       (c) => c.name.toLowerCase() === token,
     )
-    // 未注册命令按字面文本走 prompt（引用 parts 同样携带）；命中走 command（parts 契约同）
-    if (!matched) return store.sendPrompt(sessionID, text, refs)
-    const args = sep === -1 ? "" : rest.slice(sep + 1).trim()
-    return store.sendCommand(sessionID, matched.name, args, refs)
+    // 未注册命令按字面文本走 prompt（引用/附件 parts 同样携带）；命中走 command（parts 契约同）
+    if (!matched) return store.sendPrompt(sessionID, text, refs, attachments)
+    return store.sendCommand(sessionID, matched.name, args, refs, attachments)
   }
 
   // ---- 斜杠命令菜单（参考 openbuilder conversation_screen _CommandHints）----
@@ -1019,7 +1071,18 @@ function ChatView({ sessionID }: { sessionID: string }) {
         </div>
       </div>
       <ChatFooter sessionID={sessionID} />
-      <div className="composer" {...refInput.dragProps}>
+      <div
+        className="composer"
+        onDragOver={(e) => {
+          refInput.dragProps.onDragOver(e)
+          attachInput.fileDragProps.onDragOver(e)
+        }}
+        onDrop={(e) => {
+          refInput.dragProps.onDrop(e)
+          attachInput.fileDragProps.onDrop(e)
+        }}
+        onDragLeave={refInput.dragProps.onDragLeave}
+      >
         {/* 回滚暂存条（design-message-revert §3.4）：composer 内常驻一行，撤销入口 */}
         {revertMessageID && <RevertBar sessionID={sessionID} count={revertedCount} busy={busy} />}
         {/* 覆盖层：锚在 composer 上沿悬浮于消息流（不占布局、不顶起消息） */}
@@ -1033,10 +1096,12 @@ function ChatView({ sessionID }: { sessionID: string }) {
         )}
         {/* @ 引用浮层（design-file-reference §3.1）：同 CommandHints 锚定 */}
         {refInput.picker}
-        {/* 引用 chip 条（design-file-reference §5） */}
+        {/* 引用 chip 条（design-file-reference §5）+ 附件条（design-session-attachments §4） */}
         {refInput.chips}
+        {attachInput.chips}
         <textarea
           ref={composerTaRef}
+          onPaste={attachInput.pasteProps.onPaste}
           value={draft}
           placeholder={t.inputPlaceholder}
           rows={1}
@@ -1103,6 +1168,7 @@ function ChatView({ sessionID }: { sessionID: string }) {
           }}
         />
         <div className="composer-actions">
+          {attachInput.pickerButton}
           {/* busy 不禁切换：服务端 next 语义（下一条消息生效）是预期行为（设计"不做的事"） */}
           <ModelSwitcherBar
             directory={store.findSession(sessionID)?.directory ?? ""}
@@ -1117,10 +1183,14 @@ function ChatView({ sessionID }: { sessionID: string }) {
               {t.abort}
             </button>
           )}
-          {(!busy || draft.trim() || store.fileRefsFor(sessionID).length > 0) && (
+          {(!busy || draft.trim() || store.fileRefsFor(sessionID).length > 0 || store.attachmentsFor(sessionID).length > 0) && (
             <button
               className="btn-primary"
-              disabled={!draft.trim() && store.fileRefsFor(sessionID).length === 0}
+              disabled={
+                !draft.trim() &&
+                store.fileRefsFor(sessionID).length === 0 &&
+                store.attachmentsFor(sessionID).length === 0
+              }
               onClick={() => void send()}
             >
               {t.send}
@@ -1663,6 +1733,24 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
               onOpen={(item) => store.openFileTab(item.absolute!)}
             />
           )}
+          {/* 乐观附件（design-session-attachments §4，review P2-1 修订）：形态
+              镜像权威消息——非图片进只读 chip、图片走缩略图（不进 chip 条、无
+              删除钮），乐观→权威切换不跳变 */}
+          {entry.data.attachments && entry.data.attachments.length > 0 && (
+            <>
+              <AttachmentChips
+                items={entry.data.attachments.filter((a) => !a.isImage)}
+                readOnly
+              />
+              <div className="bubble-images">
+                {entry.data.attachments
+                  .filter((a) => a.isImage)
+                  .map((a) => (
+                    <AttachmentThumb key={a.id} url={a.dataUrl} filename={a.filename} />
+                  ))}
+              </div>
+            </>
+          )}
           <div className="bubble-pending">{t.sending}</div>
         </div>
       </div>
@@ -1687,6 +1775,9 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
   // 子会话（subagent）内禁用回滚（design-subagent-status §D2）
   const isChildSession = !!store.findSession(info.sessionID)?.parentID
   const refChipItems = info.role === "user" ? userFileChipItems(parts, sessionDir) : []
+  // 图片附件（design-session-attachments §4）：无 source + data: url + image mime →
+  // 缩略图（点击放大）；userFileChipItems 侧已排除这些 part（不重复画 chip）
+  const imageParts = info.role === "user" ? userImageParts(parts) : []
 
   if (info.role === "user") {
     // 回滚到此消息（design-message-revert §3.4）：busy 时确认后先停止再回滚
@@ -1726,6 +1817,13 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
               items={refChipItems}
               onOpen={(item) => store.openFileTab(item.absolute!)}
             />
+          )}
+          {imageParts.length > 0 && (
+            <div className="bubble-images">
+              {imageParts.map((img) => (
+                <AttachmentThumb key={img.id} url={img.url} filename={img.filename} />
+              ))}
+            </div>
           )}
           {subtasks.map((p) => {
             // 标签行 + 正文合并为单一 Markdown（openbuilder 二次评审结论：

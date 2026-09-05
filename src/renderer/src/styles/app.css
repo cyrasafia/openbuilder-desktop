@@ -3541,6 +3541,97 @@
   margin: 12px 0;
 }
 
+/* ---------- 会话附件（design-session-attachments §4） ---------- */
+
+.attach-chips {
+  gap: 6px;
+}
+
+.attach-thumb {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
+  border-radius: var(--radius-chip);
+  overflow: visible;
+}
+
+.attach-thumb img {
+  width: 48px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: var(--radius-chip);
+  display: block;
+  border: 1px solid var(--outline-variant);
+}
+
+.attach-thumb .ref-chip-x {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--surface-container-highest);
+  border: 1px solid var(--outline-variant);
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+
+.attach-thumb:hover .ref-chip-x {
+  opacity: 1;
+}
+
+.attach-notice {
+  margin-top: 2px;
+}
+
+.attach-pick {
+  align-self: flex-end;
+}
+
+/* 气泡缩略图（≤220 高圆角，点击放大） */
+.attach-bubble-thumb {
+  display: block;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: zoom-in;
+  border-radius: var(--radius-chip);
+  overflow: hidden;
+  max-height: 220px;
+}
+
+.attach-bubble-thumb img {
+  display: block;
+  max-height: 220px;
+  max-width: 100%;
+  object-fit: contain;
+  border-radius: var(--radius-chip);
+}
+
+.bubble-images {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.image-zoom {
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.78);
+}
+
+.image-zoom img {
+  max-width: 92vw;
+  max-height: 92vh;
+  object-fit: contain;
+}
+
 .mono {
   font-family: var(--font-mono);
 }

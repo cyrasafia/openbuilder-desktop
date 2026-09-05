@@ -10,6 +10,11 @@ const api = {
   managedStart: (opts?: { binaryPath?: string }) => ipcRenderer.invoke("managed:start", opts ?? {}),
   managedStop: () => ipcRenderer.invoke("managed:stop"),
   openBinaryPicker: () => ipcRenderer.invoke("dialog:openBinaryFile") as Promise<string | null>,
+  openFilesPicker: () =>
+    ipcRenderer.invoke("dialog:openFiles") as Promise<{
+      accepted: Array<{ name: string; type: string | null; bytes: Uint8Array }>
+      rejected: Array<{ name: string; reason: string }>
+    }>,
   scanBinaries: () => ipcRenderer.invoke("scan:binaries"),
   scanServers: () => ipcRenderer.invoke("scan:servers"),
   onManagedEvent: (cb: (payload: string) => void) => {

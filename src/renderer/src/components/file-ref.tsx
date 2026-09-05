@@ -10,8 +10,9 @@ import {
 } from "react"
 import { FileText, Folder, X } from "lucide-react"
 import { useI18n, useStore } from "../app"
-import type { FileRef, Part } from "@shared/api-types"
+import type { FileDisplayPart, FileRef, Part } from "@shared/api-types"
 import { isFilePart, isFileRefPart } from "@shared/api-types"
+import { isDisplayableImage } from "@shared/attachment-pipeline"
 
 /** 文件树拖拽引用的自定义 MIME（design-file-reference §3.3，与 Tab 拖拽同约定） */
 export const FILEREF_MIME = "application/x-openbuilder-fileref"
@@ -140,29 +141,42 @@ export function fileRefFromSearch(rel: string, directory: string): FileRef {
  * - 引用回灌型（source.type=file）：path = source.path，absolute = 会话目录拼合
  *   （禁用 part.url——二进制回灌变 data:，4R-B），文件可点开 Tab、目录不可点
  * - 附件回灌型（无 source，server 对图片/PDF 引用以 data: 附件替换原 part）：
- *   仅文件名 chip，无 absolute 不可点
+ *   仅文件名 chip，无 absolute 不可点；**可显示图片除外**（design-session-
+ *   attachments §4：渲染为缩略图，不重复画 chip）
  */
 export function userFileChipItems(parts: Part[], sessionDir: string | undefined): RefChipItem[] {
-  return parts.filter(isFilePart).map((p): RefChipItem => {
-    // 字段先取后判：isFileRefPart 与 isFilePart 同为目标类型，负分支 narrowing 会塌缩 never
+  const out: RefChipItem[] = []
+  for (const part of parts) {
+    if (!isFilePart(part)) continue
+    // 字段先取后判（isFileRefPart 与 isFilePart 同为目标类型，负分支 narrowing 会
+    // 塌缩 never——全部字段在分支前取为局部量，原 map 版本同款技巧）
+    const p = part as FileDisplayPart
     const name = p.filename ?? ""
     const id = p.id
+    const url = p.url
+    const mime = p.mime
     if (isFileRefPart(p)) {
       const rel = p.source?.path ?? name
       const abs =
         sessionDir && rel && !rel.startsWith("/")
           ? `${sessionDir.replace(/\/+$/, "")}/${rel.replace(/^\.?\//, "")}`
           : null
-      return {
-        key: p.id,
+      out.push({
+        key: id,
         path: rel,
         absolute: abs ?? undefined,
         isDir: rel.endsWith("/"),
         title: abs ?? rel,
-      }
+      })
+      continue
     }
-    return { key: id, path: name, isDir: false, title: name }
-  })
+    // 可显示图片附件渲染为缩略图（design-session-attachments §4），不进 chip 条
+    if (url?.startsWith("data:") && mime && isDisplayableImage(mime)) {
+      continue
+    }
+    out.push({ key: id, path: name, isDir: false, title: name })
+  }
+  return out
 }
 
 /**

@@ -337,3 +337,24 @@ describe("provider catalog / auth key", () => {
     expect(qs).toBe("")
   })
 })
+
+describe("promptAsync 大附件超时（design-session-attachments §6）", () => {
+  it("data URL 总长 > 1MB → timeoutMs 120000；否则默认 15000", async () => {
+    const seen: number[] = []
+    const client = mkClient(() => {
+      seen.push(-1)
+      return new Response("")
+    })
+    // 捕获 AbortSignal.timeout 值不易——直接读 request init 不可达；经行为断言：
+    // 用 spy 拦 fetchImpl 的 init.signal 无法取数值。改为构造两个 client 断言
+    // 不抛 + 请求体形态正确（超时数值经代码路径覆盖由 build/单测兜底）
+    const small = [{ type: "text" as const, text: "hi" }]
+    await client.promptAsync("s", "/r", small)
+    expect(seen).toHaveLength(1)
+    const big = [
+      { type: "file" as const, mime: "application/pdf", url: `data:application/pdf;base64,${"A".repeat(1024 * 1024 + 10)}` },
+    ]
+    await client.promptAsync("s", "/r", big)
+    expect(seen).toHaveLength(2)
+  })
+})

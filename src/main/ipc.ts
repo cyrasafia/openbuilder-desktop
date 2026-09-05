@@ -1,8 +1,9 @@
 import { ipcMain, dialog, app, shell, type BrowserWindow } from "electron"
 import { execFile, spawn } from "node:child_process"
-import { readFile, writeFile, mkdir } from "node:fs/promises"
+import { readFile, stat, writeFile, mkdir } from "node:fs/promises"
 import { join, dirname } from "node:path"
 import type { StoreShape } from "../shared/ipc"
+import { MIME_BY_EXT } from "../shared/attachment-pipeline"
 import { startManagedServer, stopManagedServer, killManagedSync } from "./managed-server"
 import { scanBinaries, scanServers } from "./scan"
 import {
@@ -44,6 +45,17 @@ function persistStore(): Promise<void> {
 
 let mainWindow: BrowserWindow | null = null
 
+/** 附件文件名 mime 推断（shared MIME_BY_EXT 单一来源，防双表漂移） */
+function mimeFromName(name: string): string | null {
+  const ext = name.toLowerCase().split(".").pop() ?? ""
+  return MIME_BY_EXT[ext] ?? null
+}
+
+/** 附件预读体积上限（review P2-3）：超限文件不读字节（全量 readFile + IPC
+ *  structured clone + renderer 多次拷贝，GB 级文件瞬时数 GB 内存/OOM），
+ *  直接以 rejected 条目返回（相机原图压缩留 128MB 余量） */
+const OPEN_FILES_MAX_BYTES = 128 * 1024 * 1024
+
 /** 绑定主窗口（createMainWindow 时调用；重建窗口后重新绑定） */
 export function bindMainWindow(win: BrowserWindow) {
   mainWindow = win
@@ -84,6 +96,34 @@ export function registerIpc() {
     return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0]
   })
 
+  // 会话附件文件选择（design-session-attachments §3）：多选 + main 读字节；
+  // 返回 { accepted, rejected }——超 128MB 预检拒绝（fstat，不读字节）
+  ipcMain.handle("dialog:openFiles", async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ["openFile", "multiSelections"],
+    })
+    const accepted: Array<{ name: string; type: string | null; bytes: Uint8Array }> = []
+    const rejected: Array<{ name: string; reason: string }> = []
+    if (result.canceled || result.filePaths.length === 0) return { accepted, rejected }
+    // 批次总量上限（review 第二轮 P3）：多选 N×128MB 并发驻留的封顶
+    let batchTotal = 0
+    for (const p of result.filePaths) {
+      const name = p.split(/[\\/]/).pop() ?? p
+      try {
+        const st = await stat(p)
+        if (st.size > OPEN_FILES_MAX_BYTES || batchTotal + st.size > OPEN_FILES_MAX_BYTES * 2) {
+          rejected.push({ name, reason: "too_large" })
+          continue
+        }
+        const buf = await readFile(p)
+        batchTotal += st.size
+        accepted.push({ name, type: mimeFromName(p), bytes: new Uint8Array(buf) })
+      } catch {
+        // 单个文件 stat/读取失败跳过（不阻断其余）
+      }
+    }
+    return { accepted, rejected }
+  })
   // 自动扫描（design-auto-scan §4）：单次收束 + in-flight 去重（StrictMode 双触发
   // 不重复 spawn 一串 --version 子进程/开两条 mDNS 浏览）
   let binariesInFlight: Promise<unknown> | null = null

@@ -116,6 +116,12 @@ export interface DesktopApi {
   onManagedEvent(cb: (payload: string) => void): () => void
   /** managed 二进制路径手选（design-managed-config §1）：系统文件选择器 */
   openBinaryPicker(): Promise<string | null>
+  /** 会话附件文件选择（design-session-attachments §3）：多选，main 侧读字节
+   *  返回（renderer 无法从路径构造 File）；>128MB 预检拒绝进 rejected；取消 = 全空 */
+  openFilesPicker(): Promise<{
+    accepted: Array<{ name: string; type: string | null; bytes: Uint8Array }>
+    rejected: Array<{ name: string; reason: string }>
+  }>
   /** 自动扫描（design-auto-scan）：managed 二进制候选（PATH + 常见安装落点） */
   scanBinaries(): Promise<BinaryCandidate[]>
   /** 自动扫描（design-auto-scan）：attach server 候选（loopback 默认端口 + mDNS；

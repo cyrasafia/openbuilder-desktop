@@ -4392,3 +4392,96 @@ describe("welcomeOpen 生命周期", () => {
     expect(s.welcomeOpen).toBe(true)
   })
 })
+
+// ============ 会话附件（design-session-attachments） ============
+
+describe("attachments + sendPrompt 附件扩展", () => {
+  const ref = (path: string, abs: string) => ({
+    path,
+    absolute: abs,
+    filename: abs.split("/").pop() ?? abs,
+    isDir: false,
+  })
+  const att = (id: string, mime: string, name: string, isImage: boolean) => ({
+    id,
+    mime,
+    filename: name,
+    dataUrl: `data:${mime};base64,AA==`,
+    isImage,
+  })
+
+  it("CRUD：追加/删除/清空；键位独立", () => {
+    store.addAttachments("s1", [att("a1", "image/png", "x.png", true)])
+    store.addAttachments("s1", [att("a2", "application/pdf", "y.pdf", false)])
+    expect(store.attachmentsFor("s1")).toHaveLength(2)
+    expect(store.attachmentsFor("s2")).toHaveLength(0)
+    store.removeAttachment("s1", "a1")
+    expect(store.attachmentsFor("s1").map((a) => a.id)).toEqual(["a2"])
+    store.clearAttachments("s1")
+    expect(store.attachmentsFor("s1")).toHaveLength(0)
+  })
+
+  it("sendPrompt parts：文本 + 引用 + 附件混排（附件无 source、data URL 内联）；成功清附件", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    let sentParts: unknown[] = []
+    ;(store as unknown as { client: unknown }).client = {
+      listSessions: async () => [],
+      promptAsync: async (_id: string, _dir: string, parts: unknown[]) => {
+        sentParts = parts
+      },
+    }
+    store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
+    store.addFileRef("s1", ref("a.ts", `${ROOT}/a.ts`))
+    store.addAttachments("s1", [att("a1", "image/png", "shot.png", true)])
+    const res = await store.sendPrompt("s1", "看图", store.fileRefsFor("s1"), store.attachmentsFor("s1"))
+    expect(res.ok).toBe(true)
+    expect(sentParts).toEqual([
+      { type: "text", text: "看图" },
+      {
+        type: "file",
+        mime: "text/plain",
+        url: `file://${ROOT}/a.ts`,
+        filename: "a.ts",
+        source: { type: "file", path: "a.ts", text: { value: "", start: 0, end: 0 } },
+      },
+      { type: "file", mime: "image/png", url: "data:image/png;base64,AA==", filename: "shot.png" },
+    ])
+    expect(store.attachmentsFor("s1")).toHaveLength(0)
+    // 乐观消息携带附件（气泡即见）
+    expect(store.optimisticBySession.get("s1")![0]!.attachments?.length).toBe(1)
+  })
+
+  it("纯附件发送合法（无文本无引用）；大附件走放宽超时（rest-client 内部，见其测试）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    let sentParts: unknown[] = []
+    ;(store as unknown as { client: unknown }).client = {
+      listSessions: async () => [],
+      promptAsync: async (_id: string, _dir: string, parts: unknown[]) => {
+        sentParts = parts
+      },
+    }
+    store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
+    const big = att("a1", "application/pdf", "big.pdf", false)
+    big.dataUrl = `data:application/pdf;base64,${"A".repeat(1024 * 1024 + 10)}`
+    store.addAttachments("s1", [big])
+    const res = await store.sendPrompt("s1", "", [], store.attachmentsFor("s1"))
+    expect(res.ok).toBe(true)
+    expect(sentParts).toHaveLength(1)
+    expect((sentParts[0] as { type: string }).type).toBe("file")
+  })
+
+  it("失败保留附件供重发", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    ;(store as unknown as { client: unknown }).client = {
+      listSessions: async () => [],
+      promptAsync: async () => {
+        throw new Error("boom")
+      },
+    }
+    store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
+    store.addAttachments("s1", [att("a1", "image/png", "x.png", true)])
+    const res = await store.sendPrompt("s1", "", [], store.attachmentsFor("s1"))
+    expect(res.ok).toBe(false)
+    expect(store.attachmentsFor("s1")).toHaveLength(1)
+  })
+})

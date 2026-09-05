@@ -4,6 +4,7 @@
  * 始终排最后，完成后才按 created 排序；乐观消息 created 用 maxCreated+1 只是
  * 第一道防线，排序层保底才是可靠防线。
  */
+import type { Attachment } from "./attachment-pipeline"
 import type { FileRef, Message, MessageWithParts, Part } from "./api-types"
 import { isSyntheticTextPart } from "./api-types"
 
@@ -14,6 +15,8 @@ export interface OptimisticMessage {
   createdAt: number
   /** 引用 chip（design-file-reference §4）：纯文本可能为空（纯引用发送） */
   refs?: FileRef[]
+  /** 附件（design-session-attachments §2）：图片缩略图/文件 chip 随乐观上屏 */
+  attachments?: Attachment[]
 }
 
 export type ChatEntry =
