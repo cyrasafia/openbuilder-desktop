@@ -4,7 +4,7 @@
  * 图片渲染直接用 `<img src=dataUrl>`（浏览器异步解码 = 惰性，无 Flutter isolate 问题）。
  */
 import { useCallback, useEffect, useRef, useState, type DragEvent as ReactDragEvent } from "react"
-import { FileText, Paperclip, X } from "lucide-react"
+import { FileText, Plus, X } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import { FILEREF_MIME } from "./file-ref"
 import {
@@ -263,7 +263,7 @@ export function useAttachmentInput(refKey: string): {
         })
       }}
     >
-      <Paperclip size={14} aria-hidden />
+      <Plus size={14} aria-hidden />
     </button>
   )
 

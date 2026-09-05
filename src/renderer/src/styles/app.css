@@ -682,27 +682,9 @@
   position: relative;
 }
 
-.guide-composer textarea {
-  width: 100%;
-  background: var(--surface-container-low);
-  border: 1px solid var(--outline-variant);
-  border-radius: var(--radius-chip);
-  padding: 10px 12px;
-  resize: none;
-  /* 高度随内容增长（软换行/手动换行一致），上限 200px 后内部滚动（与会话页一致） */
-  field-sizing: content;
-  overflow-y: auto;
-  min-height: 44px;
-  max-height: 200px;
-  font-size: var(--text-chat);
-  line-height: 1.5;
-  box-sizing: border-box;
-}
-
-.guide-composer textarea:focus {
-  outline: none;
-  border-color: var(--primary);
-}
+/* 引导页 textarea 样式上收至 .composer-input（与 chat composer 共用）；
+   引导页曾有 min-height 44px/padding 10px 12px 的加大形态，2026-09-05
+   附件按钮入框重构时与会话页统一（对齐 openbuilder 同一 compose 形态） */
 
 .guide-actions {
   display: flex;
@@ -1483,24 +1465,51 @@
   box-sizing: border-box;
 }
 
-.composer textarea {
+/* 输入框容器（design-session-attachments §3：附件按钮移入输入框，对齐 openbuilder
+   compose 的 prefixIcon 形态——圆角填充框 + 左侧 + 按钮；会话页/引导页 composer
+   共用，textarea 外框/背景样式在此上收） */
+.composer-input {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  box-sizing: border-box;
   background: var(--surface-container-low);
   border: 1px solid var(--outline-variant);
   border-radius: var(--radius-chip);
-  padding: 6px 10px;
+  padding: 5px 8px;
+}
+
+.composer-input:focus-within {
+  border-color: var(--primary);
+}
+
+.composer-input textarea {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 3px 2px;
   resize: none;
-  /* 高度随内容增长（软换行/手动换行一致），上限 200px 后内部滚动 */
+  /* 高度随内容增长（软换行/手动换行一致），上限 200px 后内部滚动（同前） */
   field-sizing: content;
   overflow-y: auto;
-  min-height: 32px;
+  min-height: 44px;
   max-height: 200px;
   font-size: var(--text-chat);
   line-height: 1.5;
+  box-sizing: border-box;
 }
 
-.composer textarea:focus {
-  outline: none;
-  border-color: var(--primary);
+/* 附件（+）按钮居输入框左侧，锚定首行（textarea 首行 21px + padding-top 3px，
+   22px 按钮 margin-top 2px 对齐；多行时不随内容下坠） */
+.composer-input .attach-pick {
+  align-self: flex-start;
+  margin-top: 2px;
+  flex-shrink: 0;
 }
 
 /* 会话页与引导页 composer 共用（引导页发送按钮行右对齐也依赖此规则） */
@@ -3588,10 +3597,6 @@
 
 .attach-notice {
   margin-top: 2px;
-}
-
-.attach-pick {
-  align-self: flex-end;
 }
 
 /* 气泡缩略图（≤220 高圆角，点击放大） */

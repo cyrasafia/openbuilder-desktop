@@ -587,47 +587,49 @@ function GuidePage() {
           >
             {refInput.chips}
             {attachInput.chips}
-            <textarea
-              ref={guideTaRef}
-              onPaste={attachInput.pasteProps.onPaste}
-              value={draft}
-              placeholder={t.guidePlaceholder}
-              rows={1}
-              autoFocus
-              onFocus={(e) => {
-                // 默认聚焦（autoFocus）时光标置于末尾，而非开头（有草稿时）
-                const el = e.currentTarget
-                requestAnimationFrame(() => {
-                  const len = el.value.length
-                  el.setSelectionRange(len, len)
-                })
-              }}
-              onChange={(e) => {
-                setDraft(e.target.value)
-                refInput.onTextChange(e.target.value, e.target.selectionStart)
-              }}
-              onKeyUp={(e) => {
-                if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
-                if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
-                  refInput.onTextChange(e.currentTarget.value, e.currentTarget.selectionStart)
-                }
-              }}
-              onKeyDown={(e) => {
-                // IME 组合中（如 fcitx5 上屏）不触发发送
-                if (e.nativeEvent.isComposing) return
-                // @ 浮层键盘交互优先（消费则终止）
-                if (refInput.onKeyDown(e)) return
-                if (e.key === "Enter") {
-                  // 修饰键组合（Ctrl/Shift/Alt/Meta）= 换行；裸 Enter = 发送（与聊天输入区一致）
-                  if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return
-                  e.preventDefault()
-                  void send()
-                }
-              }}
-            />
+            <div className="composer-input">
+              {attachInput.pickerButton}
+              <textarea
+                ref={guideTaRef}
+                onPaste={attachInput.pasteProps.onPaste}
+                value={draft}
+                placeholder={t.guidePlaceholder}
+                rows={1}
+                autoFocus
+                onFocus={(e) => {
+                  // 默认聚焦（autoFocus）时光标置于末尾，而非开头（有草稿时）
+                  const el = e.currentTarget
+                  requestAnimationFrame(() => {
+                    const len = el.value.length
+                    el.setSelectionRange(len, len)
+                  })
+                }}
+                onChange={(e) => {
+                  setDraft(e.target.value)
+                  refInput.onTextChange(e.target.value, e.target.selectionStart)
+                }}
+                onKeyUp={(e) => {
+                  if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
+                  if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
+                    refInput.onTextChange(e.currentTarget.value, e.currentTarget.selectionStart)
+                  }
+                }}
+                onKeyDown={(e) => {
+                  // IME 组合中（如 fcitx5 上屏）不触发发送
+                  if (e.nativeEvent.isComposing) return
+                  // @ 浮层键盘交互优先（消费则终止）
+                  if (refInput.onKeyDown(e)) return
+                  if (e.key === "Enter") {
+                    // 修饰键组合（Ctrl/Shift/Alt/Meta）= 换行；裸 Enter = 发送（与聊天输入区一致）
+                    if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return
+                    e.preventDefault()
+                    void send()
+                  }
+                }}
+              />
+            </div>
             {refInput.picker}
             <div className="composer-actions">
-              {attachInput.pickerButton}
               {/* pendingSession 时切会话绑定；会话记录从 store 重读（乐观补丁是新对象，
                   ref 持有的是创建时快照——AM-FIX-2：UI 不依赖父组件传参快照）。
                   目录用该会话自身的：引导页已按作用域 key 隔离（design-compose-draft §2），
@@ -1099,76 +1101,78 @@ function ChatView({ sessionID }: { sessionID: string }) {
         {/* 引用 chip 条（design-file-reference §5）+ 附件条（design-session-attachments §4） */}
         {refInput.chips}
         {attachInput.chips}
-        <textarea
-          ref={composerTaRef}
-          onPaste={attachInput.pasteProps.onPaste}
-          value={draft}
-          placeholder={t.inputPlaceholder}
-          rows={1}
-          autoFocus
-          onFocus={(e) => {
-            // 默认聚焦（autoFocus）时光标置于末尾，而非开头（有草稿时）
-            const el = e.currentTarget
-            requestAnimationFrame(() => {
-              const len = el.value.length
-              el.setSelectionRange(len, len)
-            })
-          }}
-          onChange={(e) => {
-            setDraft(e.target.value)
-            setCmdDismissed(false)
-            setSelIndex(0)
-            // @ 引用检测（光标处 @词 → 触发搜索浮层）
-            refInput.onTextChange(e.target.value, e.target.selectionStart)
-          }}
-          onKeyUp={(e) => {
-            // Esc 关闭后光标移回 @词 内重开浮层（无修饰键的移动类按键；
-            // Esc 自身不重开——onKeyDown 已消费）
-            if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
-            if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
-              refInput.onTextChange(e.currentTarget.value, e.currentTarget.selectionStart)
-            }
-          }}
-          onKeyDown={(e) => {
-            // IME 组合中（如 fcitx5 上屏）不触发发送与菜单选中
-            if (e.nativeEvent.isComposing) return
-            // @ 浮层键盘交互优先（↑/↓/Enter/Tab/Esc；消费则终止）
-            if (refInput.onKeyDown(e)) return
-            // 命令菜单打开且有匹配：↑/↓ 移动、Enter/Tab 选中补全、Esc 关闭。
-            // 修饰键组合（Ctrl/Meta/Alt）是全局快捷键域（Ctrl+Tab 切 Tab、
-            // Alt+↑/↓ 遍历作用域），不在此拦截（design-keyboard-shortcuts）
-            if (cmdMode && matches.length > 0) {
-              const noMod = !e.ctrlKey && !e.metaKey && !e.altKey
-              if (noMod && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
-                e.preventDefault()
-                const len = matches.length
-                setSelIndex(e.key === "ArrowDown" ? (sel + 1) % len : (sel - 1 + len) % len)
-                return
-              }
-              if (
-                (noMod && e.key === "Tab") ||
-                (e.key === "Enter" && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey)
-              ) {
-                e.preventDefault()
-                pickCommand(matches[sel])
-                return
-              }
-              if (e.key === "Escape") {
-                e.preventDefault()
-                setCmdDismissed(true)
-                return
-              }
-            }
-            if (e.key === "Enter") {
-              // 修饰键组合（Ctrl/Shift/Alt/Meta）= 换行；裸 Enter = 发送
-              if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return
-              e.preventDefault()
-              void send()
-            }
-          }}
-        />
-        <div className="composer-actions">
+        <div className="composer-input">
           {attachInput.pickerButton}
+          <textarea
+            ref={composerTaRef}
+            onPaste={attachInput.pasteProps.onPaste}
+            value={draft}
+            placeholder={t.inputPlaceholder}
+            rows={1}
+            autoFocus
+            onFocus={(e) => {
+              // 默认聚焦（autoFocus）时光标置于末尾，而非开头（有草稿时）
+              const el = e.currentTarget
+              requestAnimationFrame(() => {
+                const len = el.value.length
+                el.setSelectionRange(len, len)
+              })
+            }}
+            onChange={(e) => {
+              setDraft(e.target.value)
+              setCmdDismissed(false)
+              setSelIndex(0)
+              // @ 引用检测（光标处 @词 → 触发搜索浮层）
+              refInput.onTextChange(e.target.value, e.target.selectionStart)
+            }}
+            onKeyUp={(e) => {
+              // Esc 关闭后光标移回 @词 内重开浮层（无修饰键的移动类按键；
+              // Esc 自身不重开——onKeyDown 已消费）
+              if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
+              if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
+                refInput.onTextChange(e.currentTarget.value, e.currentTarget.selectionStart)
+              }
+            }}
+            onKeyDown={(e) => {
+              // IME 组合中（如 fcitx5 上屏）不触发发送与菜单选中
+              if (e.nativeEvent.isComposing) return
+              // @ 浮层键盘交互优先（↑/↓/Enter/Tab/Esc；消费则终止）
+              if (refInput.onKeyDown(e)) return
+              // 命令菜单打开且有匹配：↑/↓ 移动、Enter/Tab 选中补全、Esc 关闭。
+              // 修饰键组合（Ctrl/Meta/Alt）是全局快捷键域（Ctrl+Tab 切 Tab、
+              // Alt+↑/↓ 遍历作用域），不在此拦截（design-keyboard-shortcuts）
+              if (cmdMode && matches.length > 0) {
+                const noMod = !e.ctrlKey && !e.metaKey && !e.altKey
+                if (noMod && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+                  e.preventDefault()
+                  const len = matches.length
+                  setSelIndex(e.key === "ArrowDown" ? (sel + 1) % len : (sel - 1 + len) % len)
+                  return
+                }
+                if (
+                  (noMod && e.key === "Tab") ||
+                  (e.key === "Enter" && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey)
+                ) {
+                  e.preventDefault()
+                  pickCommand(matches[sel])
+                  return
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault()
+                  setCmdDismissed(true)
+                  return
+                }
+              }
+              if (e.key === "Enter") {
+                // 修饰键组合（Ctrl/Shift/Alt/Meta）= 换行；裸 Enter = 发送
+                if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return
+                e.preventDefault()
+                void send()
+              }
+            }}
+          />
+        </div>
+        <div className="composer-actions">
           {/* busy 不禁切换：服务端 next 语义（下一条消息生效）是预期行为（设计"不做的事"） */}
           <ModelSwitcherBar
             directory={store.findSession(sessionID)?.directory ?? ""}

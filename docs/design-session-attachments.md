@@ -40,7 +40,7 @@ export interface Attachment {
 |---|---|---|
 | 粘贴 | composer textarea `onPaste`：`clipboardData.files.length > 0` 时 preventDefault + resolveFiles | **文本粘贴不变**（无 files 不拦截）；clipboard 非图片文件（文件管理器复制）spec 范围外——`files` 里有就走（自然支持，无需特判） |
 | 拖拽外部文件 | composer dragProps 扩展：`types.includes("Files")` → preventDefault + drop 取 `dataTransfer.files` | **工作区文件树拖入仍是 source 引用**（FILEREF_MIME 自定义路径不动，spec 明确）；两种 MIME 互斥不冲突（types 判定顺序：FILEREF_MIME 优先） |
-| 附件按钮 | composer 工具区 `Paperclip` 按钮 → IPC `dialog:openFiles`（多选） | main `dialog.showOpenDialog({properties:["openFile","multiSelections"]})`；preload/shim 同模式 |
+| 附件按钮 | 输入框内（`.composer-input` 左侧）`Plus` 按钮 → IPC `dialog:openFiles`（多选） | 对齐 openbuilder compose `prefixIcon`（Icons.add）形态（2026-09-05 修订：原 composer 工具区 `Paperclip` 按钮）；main `dialog.showOpenDialog({properties:["openFile","multiSelections"]})`；preload/shim 同模式 |
 
 ## 4. 展示
 
@@ -56,9 +56,9 @@ export interface Attachment {
 |---|---|
 | `src/shared/attachment-pipeline.ts` | 新：Attachment 模型 + resolveFiles 管线 + guessMime/toDataUrl/base64Len/shrink 纯函数 + CanvasImageOps 注入面 |
 | `src/renderer/src/store/app-store.ts` | attachments Map + CRUD/清理；sendPrompt 扩参；乐观消息扩 attachments；斜杠命令 send 扩 |
-| `src/renderer/src/components/attachments.tsx` | 新：AttachmentChips（composer 条）+ AttachmentThumb（气泡缩略图 + 点击放大）+ useAttachmentDrop（Files MIME drop）|
+| `src/renderer/src/components/attachments.tsx` | 新：AttachmentChips（composer 条）+ AttachmentThumb（气泡缩略图 + 点击放大）+ useAttachmentDrop（Files MIME drop）+ pickerButton（Plus 按钮）|
 | `src/renderer/src/components/file-ref.tsx` | userFileChipItems 输出扩附件型条目（image 标记）；dragProps 接 Files 分支 |
-| `src/renderer/src/components/workspace.tsx` | composer 接线（onPaste/按钮/附件条）；user 气泡渲染分流 |
+| `src/renderer/src/components/workspace.tsx` | composer 接线（onPaste/附件条）；textarea 包入 `.composer-input`（+ 按钮居内，`pickerButton` 注入框内）；user 气泡渲染分流 |
 | `src/main/ipc.ts` + preload + shim + DesktopApi | `dialog:openFiles` |
 | i18n / app.css | 文案与样式（token 复用） |
 
