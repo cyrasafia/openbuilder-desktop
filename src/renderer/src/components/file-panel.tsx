@@ -49,9 +49,9 @@ export function FilePanel() {
   }, [hasLoaded, project?.id, store.currentWorkspace?.directory])
 
   if (!project) {
+    // 空态（design-layout §5）：无项目 = 右栏空白，打开项目的引导在中栏
     return (
       <aside className={"file-panel" + (collapsed ? " collapsed" : "")}>
-        <div className="sidebar-empty">{t.noProject}</div>
         {!collapsed && <PanelResizeHandle side="right" />}
       </aside>
     )

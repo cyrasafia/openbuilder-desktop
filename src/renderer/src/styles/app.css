@@ -501,6 +501,21 @@
   background: var(--surface);
 }
 
+/* 无项目空状态（design-layout §4 末）：中栏居中引导「打开项目」 */
+.workspace-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  color: var(--outline);
+}
+
+.workspace-empty-hint {
+  font-size: var(--text-sm);
+}
+
 .tabbar {
   display: flex;
   align-items: stretch;
