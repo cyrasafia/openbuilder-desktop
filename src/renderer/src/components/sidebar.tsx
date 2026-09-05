@@ -87,18 +87,11 @@ export function Sidebar() {
   const { t } = useI18n()
 
   return (
-    // 折叠 = display:none（design-layout-collapse §2.3）：组件仍挂载，文件树状态不因收起丢失
+    // 折叠 = display:none（design-layout-collapse §2.3）：组件仍挂载，文件树状态不因收起丢失。
+    // Shell 仅在 welcomeOpen=false（有激活 profile）时渲染（2026-09-05 欢迎屏修订），
+    // 无 profile 空态不会出现在左栏
     <aside className={"sidebar" + (store.layoutLeftCollapsed ? " collapsed" : "")}>
-      {store.activeProfile ? (
-        <ProjectTree />
-      ) : (
-        <div className="sidebar-empty">
-          <p>{t.connectFirst}</p>
-          <button className="btn-primary" onClick={() => store.openSettings()}>
-            {t.openSettings}
-          </button>
-        </div>
-      )}
+      <ProjectTree />
 
       {/* 服务器状态 + 设置行：置底常驻，不随项目区状态变化 */}
       <div className="sidebar-footer">

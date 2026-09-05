@@ -3457,7 +3457,7 @@
   font-size: var(--text-sm);
 }
 
-.welcome-later {
+.welcome-settings {
   display: block;
   margin: 16px auto 4px;
   background: none;
@@ -3467,7 +3467,7 @@
   cursor: pointer;
 }
 
-.welcome-later:hover {
+.welcome-settings:hover {
   color: var(--on-surface-variant);
   text-decoration: underline;
 }
@@ -3533,12 +3533,6 @@
   white-space: nowrap;
   font-size: var(--text-xs);
   user-select: text;
-}
-
-.guide-connect-row {
-  display: flex;
-  justify-content: center;
-  margin: 12px 0;
 }
 
 /* ---------- 会话附件（design-session-attachments §4） ---------- */

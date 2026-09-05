@@ -1,6 +1,6 @@
 /**
  * 欢迎屏（design-welcome-screen）：入口分支/managed 扫描与启动链/attach 测试与
- * 填入/provider 引导/稍后配置。mock ../app 与 window.desktop（scan/剪贴板桩）。
+ * 填入/provider 引导/设置入口。mock ../app 与 window.desktop（scan/剪贴板桩）。
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -37,7 +37,7 @@ vi.mock("../app", () => ({
       welcomeManagedDesc: "自动发现本机 opencode 并启动 server",
       welcomeAttach: "连接已有 server（attach）",
       welcomeAttachDesc: "局域网发现或手动填写地址",
-      welcomeLater: "稍后配置",
+      openSettings: "打开设置",
       welcomeManagedTitle: "本机启动",
       welcomeManagedProfileName: "本机 opencode",
       welcomeStartAndConnect: "启动并连接",
@@ -57,7 +57,6 @@ vi.mock("../app", () => ({
       welcomeModelHint: "尚未设置默认模型",
       welcomeGoDefaults: "去设置默认模型",
       welcomeSkip: "跳过，进入主界面",
-      welcomeConnectServer: "连接服务器",
     },
     locale: "zh" as const,
   }),
@@ -94,13 +93,14 @@ afterEach(() => {
 })
 
 describe("WelcomeScreen", () => {
-  it("入口二选一 + 稍后配置关闭欢迎屏", async () => {
+  it("入口二选一 + 底部打开设置（无「稍后进主界面」路径）", async () => {
     render(<WelcomeScreen />)
     expect(screen.getByText("欢迎使用 OpenBuilder")).toBeTruthy()
     expect(screen.getByText("本机启动（managed）")).toBeTruthy()
     expect(screen.getByText("连接已有 server（attach）")).toBeTruthy()
-    fireEvent.click(screen.getByText("稍后配置"))
-    expect(storeState.current.closeWelcome).toHaveBeenCalled()
+    fireEvent.click(screen.getByText("打开设置"))
+    expect(storeState.current.openSettings).toHaveBeenCalledWith()
+    expect(screen.queryByText("稍后配置")).toBeNull()
   })
 
   it("managed 分支：自动扫描显示路径+版本，启动并连接建档（managed profile + binaryPath）", async () => {

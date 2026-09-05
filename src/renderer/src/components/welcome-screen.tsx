@@ -1,7 +1,8 @@
 /**
- * 欢迎屏（design-welcome-screen）：启动无激活 profile 时的居中卡片向导。
+ * 欢迎屏（design-welcome-screen）：无激活 profile（无服务器）时的全页向导。
  * 入口二选一（managed 推荐 / attach）→ 连接成功后 provider/默认模型引导（可跳过）。
- * 替代 Shell 渲染（TitleBar 由 App 层保留）。
+ * 替代 Shell 渲染（TitleBar 由 App 层保留）；无「稍后进主界面」路径——三栏主
+ * 界面依赖服务器（2026-09-05 修订），底部保留设置入口。
  */
 import { useEffect, useRef, useState } from "react"
 import { ArrowLeft, Copy, RefreshCw } from "lucide-react"
@@ -93,8 +94,8 @@ function ChooseView({ onManaged, onAttach }: { onManaged: () => void; onAttach: 
           <span className="welcome-entry-desc">{t.welcomeAttachDesc}</span>
         </button>
       </div>
-      <button className="welcome-later" onClick={() => store.closeWelcome()}>
-        {t.welcomeLater}
+      <button className="welcome-settings" onClick={() => store.openSettings()}>
+        {t.openSettings}
       </button>
     </>
   )

@@ -261,8 +261,10 @@ export class AppStore {
   reconciling = false
   connectionError: string | null = null
   managedBaseUrl: string | null = null
-  /** 欢迎屏（design-welcome-screen §1）：启动无激活 profile 时展开；连接成功
-   *  自动关闭；稍后配置/引导页入口显式控制 */
+  /** 欢迎屏（design-welcome-screen §1，2026-09-05 修订）：无激活 profile（无服
+   *  务器）⇔ 展开——doInit 与 saveProfiles 清空激活时置 true；连接成功并完成
+   *  provider/默认模型检查后由 WelcomeScreen 关闭。无「稍后进主界面」路径：
+   *  三栏主界面依赖服务器，无服务器时是空壳（用户反馈 2026-09-05） */
   welcomeOpen = false
   /** connect 串行化（review 2026-09-04）：在途标记 + 排队标记——并发 connect
    *  双 teardown/双恢复竞态的根治（restarted 事件 vs 用户 activate 等） */
@@ -4876,11 +4878,6 @@ export class AppStore {
 
   // ============ 欢迎屏（design-welcome-screen） ============
 
-  openWelcome() {
-    this.welcomeOpen = true
-    this.emit()
-  }
-
   closeWelcome() {
     this.welcomeOpen = false
     this.emit()
@@ -4900,6 +4897,9 @@ export class AppStore {
   async saveProfiles(profiles: ConnectionProfile[], activeId: string | null) {
     this.profiles = profiles
     this.activeProfileId = activeId
+    // 激活 profile 清空（删光/取消激活）= 无服务器 ⇒ 回欢迎页（同一 emit 内
+    // 切换渲染分支，三栏空壳不闪现）
+    if (!activeId) this.welcomeOpen = true
     await window.desktop.storeSet("connection.profiles", { profiles, activeId })
     this.emit()
   }
