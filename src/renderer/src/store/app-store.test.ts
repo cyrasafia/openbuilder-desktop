@@ -4388,8 +4388,29 @@ describe("welcomeOpen 生命周期", () => {
     // closeWelcome 由 WelcomeScreen 检查完成后调用（此处直测开关语义）
     s.closeWelcome()
     expect(s.welcomeOpen).toBe(false)
-    s.openWelcome()
+  })
+
+  it("saveProfiles 清空激活 profile（删光）⇒ 回欢迎页（2026-09-05 修订：无服务器不得停留三栏主界面）", async () => {
+    ;(window as unknown as { desktop: unknown }).desktop = {
+      ...((window as unknown as { desktop: Record<string, unknown> }).desktop ?? {}),
+      storeGet: async () => null,
+      storeSet: async () => {},
+      onBrowserViewState: () => () => {},
+      onManagedEvent: () => () => {},
+    }
+    const s = new AppStore()
+    await s.init()
+    // 连接成功态（欢迎页已关）：删光 profile 即时回欢迎页
+    s.profiles = [{ id: "p1", name: "m", baseUrl: "", mode: "attach" }]
+    s.activeProfileId = "p1"
+    s.closeWelcome()
+    expect(s.welcomeOpen).toBe(false)
+    await s.saveProfiles([], null)
     expect(s.welcomeOpen).toBe(true)
+    // 激活 profile 存在时不强制回欢迎页（正常建档/切换路径不受扰）
+    s.closeWelcome()
+    await s.saveProfiles([{ id: "p2", name: "a", baseUrl: "http://x", mode: "attach" }], "p2")
+    expect(s.welcomeOpen).toBe(false)
   })
 })
 

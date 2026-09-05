@@ -4,10 +4,11 @@
 
 ## 1. 触发与生命周期
 
-- **触发 = 启动时 `activeProfileId` 为空**（首次安装或删光 profile 后均触发；"连过一次即不再出现"由 profile 落盘天然满足）。跳过不持久化"已看过"标志——重启后无 profile 仍会出现（spec 语义）
-- `store.welcomeOpen: boolean`，doInit 尾部置 `!activeProfileId`；`closeWelcome()`（稍后配置/检查完成）/`openWelcome()`（引导页入口）显式控制；**连接成功不自动关**——provider/默认模型检查须在 WelcomeScreen 挂载时进行（§5），检查完成（含失败静默路径）后由其自行 `closeWelcome()`
-- 渲染：`ready && welcomeOpen` 时 `WelcomeScreen` 替代 `Shell`（App.tsx 分支）；**TitleBar 照常渲染**（Linux frameless 下拖拽区/窗口控制不可缺）——欢迎屏 = 标题栏 + 居中卡片容器，非三栏
+- **触发 = 无激活 profile（无服务器）**（2026-09-05 修订，原"仅启动时判定"）：首次安装、删光 profile 后重启、**运行中删光/清空激活 profile**（`saveProfiles` activeId→null 时置 `welcomeOpen`，同一 emit 内切渲染分支）均触发。三栏主界面依赖服务器，无服务器时是空壳（左栏 connectFirst 空态/右栏空文件树）——该状态已随本次修订移除，"稍后配置"入口一并删除（其唯一作用正是进入空壳）
+- `store.welcomeOpen: boolean`，doInit 尾部置 `!activeProfileId`；`closeWelcome()`（检查完成后）显式关闭；**连接成功不自动关**——provider/默认模型检查须在 WelcomeScreen 挂载时进行（§5），检查完成（含失败静默路径）后由其自行 `closeWelcome()`
+- 渲染：`ready && welcomeOpen` 时 `WelcomeScreen` 全页替代 `Shell`（App.tsx 分支）；**TitleBar 照常渲染**（Linux frameless 下拖拽区/窗口控制不可缺）——欢迎屏 = 标题栏 + 居中卡片容器，非三栏
 - 连接失败走现有 `connectionError` 展示（欢迎屏卡片内错误行 + 重试），不弹独立错误弹窗
+- 连接态降级（有 profile 但 server 失联）**不**回欢迎页——走既有状态行 + 重连/设置路径（SSE 重连恢复体验不因欢迎屏中断）
 
 ## 2. 入口选择（choose 视图）
 
@@ -15,7 +16,7 @@
 
 - **managed（推荐标注）**：本机启动 opencode server → managed 分支
 - **attach**：连接已有 server → attach 分支
-- 底部「稍后配置」文字按钮 → `closeWelcome()` 进主界面（未连接态）
+- 底部「打开设置」文字按钮 → `openSettings()`（无连接时 settings 各页签自带引导态；原「稍后配置」随空壳状态移除，2026-09-05）
 
 ## 3. managed 分支
 
@@ -39,20 +40,20 @@
   3. 均正常 → 直接关闭欢迎屏进主界面
 - 引导视图非阻塞：「跳过」按钮（closeWelcome）——设置弹窗在欢迎屏之上正常打开（App 欢迎分支提供 SettingsDialog 宿主）
 - provider/默认模型配置完不自动判定（用户手动跳过或设置后关闭弹窗回欢迎屏再跳过/连接）——保持一屏简单，不做向导状态机
-- **spec 语义对齐**：「稍后配置」跳过向导 + 引导页保留入口；provider 引导「可跳过」
+- **spec 语义对齐**：provider 引导「可跳过」；「稍后配置」已随空壳移除（2026-09-05 修订，spec 同步）
 
-## 6. 中栏引导页入口（跳过后）
+## 6. ~~中栏引导页入口~~（已移除，2026-09-05）
 
-- GuideView 会话区（`!store.getActiveClient()` 时）：「连接服务器」按钮 → `openWelcome()`（回欢迎屏）；打开设置的入口由既有 sidebar 齿轮承担
+- 原设计：跳过后 GuideView「连接服务器」按钮回欢迎屏。随「稍后配置」删除，三栏 Shell 仅在有激活 profile 时渲染，该入口成为死代码——已移除（含 `openWelcome()` 与 `.guide-connect-row` 样式）。降级重连走状态行 + 设置
 
 ## 7. 实现落点
 
 | 文件 | 内容 |
 |---|---|
-| `src/renderer/src/components/welcome-screen.tsx` | WelcomeScreen（choose/managed/attach/guidance 四视图内部状态机；扫描/表单/连接动作） |
-| `src/renderer/src/store/app-store.ts` | `welcomeOpen` + `openWelcome/closeWelcome`；doInit 初始化；连接成功不自动关（检查完成后 WelcomeScreen 自行关，§1/§5）；`openSettings(tab?)` 初始页签提示字段 |
+| `src/renderer/src/components/welcome-screen.tsx` | WelcomeScreen（choose/managed/attach/guidance 四视图内部状态机；扫描/表单/连接动作；底部设置入口） |
+| `src/renderer/src/store/app-store.ts` | `welcomeOpen` + `closeWelcome`；doInit 无 profile 置位；`saveProfiles` 清空激活置位（回欢迎页）；连接成功不自动关（检查完成后 WelcomeScreen 自行关，§1/§5）；`openSettings(tab?)` 初始页签提示字段 |
 | `src/renderer/src/app.tsx` | ready 后分支渲染 WelcomeScreen / Shell |
-| `src/renderer/src/components/workspace.tsx` | GuideView 未连接时的「连接服务器」入口 |
+| `src/renderer/src/components/sidebar.tsx` | 无 profile 空态分支已移除（Shell 仅在有 profile 时渲染，2026-09-05） |
 | `src/renderer/src/components/settings-dialog.tsx` | `openSettings(tab)` 消费（useState 初始值） |
 | i18n / app.css | 文案与卡片样式（token 复用，无新色） |
 
@@ -63,8 +64,8 @@
   - managed：候选渲染（路径+版本）、启动并连接调用链（saveProfiles+connect with binaryPath）、无候选安装指引与复制
   - attach：候选一键填入、health 测试通过建档/失败展示
   - provider 引导：connected 空 → 引导视图；跳过 → closeWelcome；有 key 无默认模型 → 默认模型引导
-  - 稍后配置 → closeWelcome
-- store：doInit 无 profile 置 welcomeOpen、connect 成功关闭（现有 app-store.test 模式追加）
+  - 底部设置入口 → openSettings（无「稍后配置」路径）
+- store：doInit 无 profile 置 welcomeOpen；saveProfiles 清空激活置位（回欢迎页）；激活存在时不置位
 
 ## 9. 已知取舍
 
@@ -72,6 +73,8 @@
 - 引导视图不自动感知配置完成（避免向导状态机）；用户跳过即进主界面，设置内可再来
 - 欢迎屏期间 managed 崩溃重启等事件照常（状态行不可见但 connect 串行化兜底；日志在设置内可见）
 - 欢迎流程建档的 profile 名在创建时本地化固化（切语言后存量名与新语言混排，接受）
+- **无服务器 = 强制欢迎页**（2026-09-05 修订）：主题/语言等个性化设置在连接前仅经欢迎页「打开设置」可达——接受（连接一次即一劳永逸，且设置弹窗在欢迎页之上功能完整）
+- 连接态降级（有 profile，server 失联）不回欢迎页：SSE 重连恢复优先，欢迎页会打断自动重连（参考 openbuilder design-sse-reconnect-recovery 的教训：断线恢复不打断用户所在界面）
 
 ## 10. E2E 实测记录（2026-09-05，GNOME/Wayland + 本机 opencode 1.18.20，CDP 驱动）
 

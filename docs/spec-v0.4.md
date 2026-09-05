@@ -6,7 +6,7 @@
 
 | # | 功能 | 说明 |
 |---|------|------|
-| 1 | 欢迎屏（首次启动引导） | **触发条件：启动时无激活 profile**（`activeProfileId` 为空；首次安装或删光 profile 后均触发），连过一次即不再出现，连接失败走现有 `connectionError` 展示。居中卡片向导（非三栏主界面）：**入口二选一**——managed（推荐，本机启动）/ attach（连接已有 server）。managed 分支：自动扫描二进制（见 #3）→ 找到则显示路径+版本、一键「启动并连接」（spawn + 健康 + 建 profile + connect）；未找到则显示**安装指引文案 + 安装命令复制按钮**（不自动安装，见范围外）+「重新扫描」+「改用 attach」。attach 分支：自动扫描（见 #3）发现项一键填入 URL，或手填 URL + 可选凭据，测试通过后保存连接。连接成功后 **provider 检查**：`GET /config/providers` 无任何已配置 key 的 provider 时进入 provider 配置引导（见 #4，可跳过）→ 完成进入主界面。「稍后配置」可跳过向导进主界面，中栏引导页保留「连接服务器」入口（回欢迎屏/开设置） |
+| 1 | 欢迎屏（首次启动引导） | **触发条件：无激活 profile**（2026-09-05 修订，原"仅启动时判定"：`activeProfileId` 为空即触发——首次安装、删光 profile 后重启、**运行中删光/清空激活 profile** 均即时回欢迎屏；连接态降级即有 profile 但 server 失联不触发，走重连路径），连接失败走现有 `connectionError` 展示。**全页向导（非三栏主界面**，三栏依赖服务器，无服务器空壳状态已移除）：**入口二选一**——managed（推荐，本机启动）/ attach（连接已有 server）。managed 分支：自动扫描二进制（见 #3）→ 找到则显示路径+版本、一键「启动并连接」（spawn + 健康 + 建 profile + connect）；未找到则显示**安装指引文案 + 安装命令复制按钮**（不自动安装，见范围外）+「重新扫描」+「改用 attach」。attach 分支：自动扫描（见 #3）发现项一键填入 URL，或手填 URL + 可选凭据，测试通过后保存连接。连接成功后 **provider 检查**：`GET /config/providers` 无任何已配置 key 的 provider 时进入 provider 配置引导（见 #4，可跳过）→ 完成进入主界面。欢迎屏底部「打开设置」入口（原「稍后配置」跳过进主界面已随空壳移除） |
 | 2 | managed 模式配置流程完善 | ① profile 表单按模式分化：managed 隐藏 baseUrl/username/password（随机端口+自动凭据不变），新增**二进制路径**字段（默认自动发现，可手动指定/从扫描候选选择，取代 `OPENCODE_BIN` 环境变量 hack，env 仍优先生效）；attach 表单不变。② **版本检测**：扫描/spawn 前跑 `opencode --version` 展示；连接后 health 返回 version 校验最低版本（单全局 SSE 需 ≥ v1.0.66），低于**仅提示不阻断**。③ **崩溃自动重启**：managed server 非主动停止退出（现状：exit 事件发了但 renderer 没接）→ 主进程按退避自动重启（参考 design-terminal-tab §1.2a 退避思路，1s 起指数上封），重启成功通知 renderer 重连（走既有全量对账）；主动 stop（断开/切 profile/退出应用）不重启；重启期间连接状态可见（现有 connecting/disconnected 体系内表达 + 提示文案）。④ **日志可观察**：接入现有 `managed:event`（log/exit 当前无人订阅）——managed profile 的连接区/设置内提供 server 日志尾部只读查看（最近 N 行 + 复制），异常退出给可见提示 |
 | 3 | 自动扫描 | **managed 二进制扫描**（欢迎屏与 profile 表单共用）：PATH + 常见安装落点（`~/.opencode/bin`、`~/.local/bin`、npm global bin、`/opt/homebrew/bin`、`/usr/local/bin`）→ 去重候选列表，逐项 `--version` 展示。**attach server 扫描**（欢迎屏与 attach 表单共用）：loopback 探测（默认端口 4096；不做网段端口扫描）+ **mDNS 发现**（main 进程 bonjour-service 浏览 `_http._tcp`，按 server 原生发布格式过滤 `opencode-{port}` 服务名——server 侧 `--mdns` 且非 loopback hostname 才发布，与 opencode 同库互通）；每个候选 `GET /global/health` 验证并显示版本，一键填入 URL。扫描均手动触发（进入向导/表单时自动跑一轮 + 手动重扫按钮），不后台常驻 |
 | 4 | Provider/Model 配置 | 设置弹窗新增 **Provider 页签**：provider 列表（名称、source、key 配置状态、模型数，`GET /config/providers` 按当前作用域目录查）+ **API key 设置/删除**（`PUT /auth/{providerID}` `{type:"api", key}` / `DELETE /auth/{providerID}`，仅 API key 形态）。**Model 配置 = 默认模型选择**（复用现有「默认」页签 agent/model），provider key 配好而无默认模型时引导设置（欢迎流程内串接）。范围外见下（OAuth、config 编辑等） |
@@ -34,7 +34,7 @@
 
 ## 验收口径
 
-- [ ] 全新数据目录启动（无 profile）出现欢迎屏；managed 分支扫描到本机 opencode 显示路径+版本，一键启动连接进入主界面；删除全部 profile 后重启欢迎屏复现；已有激活 profile 启动不出现
+- [ ] 全新数据目录启动（无 profile）出现全页欢迎屏（无三栏）；managed 分支扫描到本机 opencode 显示路径+版本，一键启动连接进入主界面；删除全部 profile（重启或运行中）欢迎屏复现；已有激活 profile 启动不出现
 - [ ] 本机无 opencode 时欢迎屏给安装指引与命令复制，安装后「重新扫描」可继续；attach 分支手填 URL+凭据测试通过后保存并连接
 - [ ] attach 扫描发现：本机 `opencode serve`（默认端口）出现在候选并可一键填入连接；LAN 内他机 `opencode serve --mdns`（非 loopback hostname）被发现、验证、填入、可连接
 - [ ] managed profile 表单：URL/凭据字段隐藏，二进制路径可改且生效（改路径后连接用新二进制）；显示发现候选与版本

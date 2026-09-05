@@ -127,9 +127,10 @@ export function App() {
   return (
     <StoreContext.Provider value={store}>
       <I18nContext.Provider value={i18nValue}>
-        {/* 欢迎屏（design-welcome-screen）：启动无激活 profile 时替代三栏 Shell；
-            TitleBar 保留（frameless 拖拽区/窗口控制不可缺）；设置弹窗同样有宿主
-            （provider/默认模型引导会从欢迎屏打开设置） */}
+        {/* 欢迎屏（design-welcome-screen，2026-09-05 修订）：无激活 profile（无服
+            务器）时全页替代三栏 Shell，三栏空壳不再存在；TitleBar 保留（frameless
+            拖拽区/窗口控制不可缺）；设置弹窗同样有宿主（欢迎页与 provider/默认
+            模型引导都会打开设置） */}
         {store.welcomeOpen ? (
           <div className="app-root">
             <TitleBar />
