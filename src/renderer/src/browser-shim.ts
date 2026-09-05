@@ -24,6 +24,9 @@ function createBrowserDesktopApi(): DesktopApi {
     async openBinaryPicker() {
       return null
     },
+    async openFilesPicker() {
+      return []
+    },
     onManagedEvent() {
       return () => {}
     },

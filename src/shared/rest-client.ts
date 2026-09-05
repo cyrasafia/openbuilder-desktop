@@ -375,15 +375,21 @@ export class RestClient {
   }
 
   /** 异步发消息：立即返回，回复走 SSE 事件流（长回复不受 HTTP 超时影响）。
-   *  parts 支持文本与引用 file part（FilePartInput，design-file-reference §4） */
+   *  parts 支持文本/引用/附件 file part（FilePartInput）。**大附件放宽超时**
+   *  （design-session-attachments §6，移动端 AT-12 对应）：parts 内 data URL
+   *  总长 > 1MB base64 时 120s（默认 15s——上 MB 的 JSON 体弱网下 15s 不够） */
   promptAsync(
     sessionID: string,
     directory: string,
     parts: Array<{ type: "text"; text: string } | FilePartInput>,
   ): Promise<void> {
+    const dataUrlLen = parts.reduce(
+      (s, p) => s + (p.type === "file" && p.url.startsWith("data:") ? p.url.length : 0),
+      0,
+    )
     return this.request<void>(
       `/session/${encodeURIComponent(sessionID)}/prompt_async${RestClient.dirQuery(directory)}`,
-      { method: "POST", body: JSON.stringify({ parts }), timeoutMs: 15000 },
+      { method: "POST", body: JSON.stringify({ parts }), timeoutMs: dataUrlLen > 1024 * 1024 ? 120000 : 15000 },
     )
   }
 

@@ -44,6 +44,29 @@ function persistStore(): Promise<void> {
 
 let mainWindow: BrowserWindow | null = null
 
+/** 附件文件名 mime 推断（design-session-attachments §2 guessMime 同表精简） */
+function mimeFromName(name: string): string | null {
+  const ext = name.toLowerCase().split(".").pop() ?? ""
+  const table: Record<string, string> = {
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    webp: "image/webp",
+    svg: "image/svg+xml",
+    pdf: "application/pdf",
+    txt: "text/plain",
+    md: "text/markdown",
+    json: "application/json",
+    csv: "text/csv",
+    zip: "application/zip",
+    gz: "application/gzip",
+    mp3: "audio/mpeg",
+    mp4: "video/mp4",
+  }
+  return table[ext] ?? null
+}
+
 /** 绑定主窗口（createMainWindow 时调用；重建窗口后重新绑定） */
 export function bindMainWindow(win: BrowserWindow) {
   mainWindow = win
@@ -84,6 +107,27 @@ export function registerIpc() {
     return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0]
   })
 
+  // 会话附件文件选择（design-session-attachments §3）：多选 + main 读字节
+  ipcMain.handle("dialog:openFiles", async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ["openFile", "multiSelections"],
+    })
+    if (result.canceled || result.filePaths.length === 0) return []
+    const out: Array<{ name: string; type: string | null; bytes: Uint8Array }> = []
+    for (const p of result.filePaths) {
+      try {
+        const buf = await readFile(p)
+        out.push({
+          name: p.split(/[\\/]/).pop() ?? p,
+          type: mimeFromName(p),
+          bytes: new Uint8Array(buf),
+        })
+      } catch {
+        // 单个文件读取失败跳过（不阻断其余）
+      }
+    }
+    return out
+  })
   // 自动扫描（design-auto-scan §4）：单次收束 + in-flight 去重（StrictMode 双触发
   // 不重复 spawn 一串 --version 子进程/开两条 mDNS 浏览）
   let binariesInFlight: Promise<unknown> | null = null

@@ -198,6 +198,10 @@ const zh = {
   welcomeGoDefaults: "去设置默认模型",
   welcomeSkip: "跳过，进入主界面",
   welcomeConnectServer: "连接服务器",
+  // 会话附件（design-session-attachments）
+  attachPick: "添加附件",
+  attachProcessing: "处理附件中…",
+  attachTooLarge: "附件超过 4MB 上限（base64 后）：{names}",
   // 服务器连接状态（左栏底部）
   statusStreaming: "实时",
   statusDegraded: "重连中",
@@ -461,6 +465,9 @@ const en: typeof zh = {
   welcomeGoDefaults: "Set default model",
   welcomeSkip: "Skip and continue",
   welcomeConnectServer: "Connect server",
+  attachPick: "Attach files",
+  attachProcessing: "Processing attachments…",
+  attachTooLarge: "Attachment exceeds the 4MB limit (base64): {names}",
   statusStreaming: "Live",
   statusDegraded: "Reconnecting",
   statusOffline: "Offline",

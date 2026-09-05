@@ -65,6 +65,7 @@ import {
 import type { BrowserViewState, ConnectionProfile, ManagedNotice } from "@shared/ipc"
 import "@shared/ipc-global"
 import { belowMinServerVersion } from "@shared/semver"
+import type { Attachment } from "@shared/attachment-pipeline"
 import {
   applyCommandFetch,
   initialCommandCache,
@@ -391,6 +392,9 @@ export class AppStore {
    * teardown 全清 / 发送成功；失败保留供重发（移动端 6R-A 模式）
    */
   private fileRefs = new Map<string, FileRef[]>()
+  /** 会话附件（design-session-attachments §2）：key 与 fileRefs 同构；
+   *  纯内存（同草稿/引用），只存 dataUrl 一份 */
+  private attachments = new Map<string, Attachment[]>()
   /**
    * pty 运行时（design-terminal-tab §2，纯内存）：exited = 进程自然退出（只读态，
    * 仅 WS close code 1000 置位——异常断开不标，关闭 Tab 仍尝试 DELETE 防孤儿）。
@@ -816,8 +820,9 @@ export class AppStore {
     this.sessionPages.clear()
     this.pendingPartsMap.clear()
     this.optimisticBySession.clear()
-    // 引用全清（design-file-reference §2，与草稿同寿命）
+    // 引用全清（design-file-reference §2，与草稿同寿命）+ 附件（design-session-attachments §2）
     this.fileRefs.clear()
+    this.attachments.clear()
     this.sessionStatus.clear()
     this.statusSources.clear()
     this.retryHold.clear()
@@ -1847,6 +1852,7 @@ export class AppStore {
     // 目录卸载随清引导页草稿（目录失去订阅/展示，草稿同灭，design-compose-draft §3）
     this.guideDrafts.delete(directory)
     this.fileRefs.delete(directory)
+    this.attachments.delete(directory)
     this.killPtyInDirectory(directory)
     this.disposeBrowserViewsInDirectory(directory)
     // 该目录的 file/diff Tab 与 global 会话的 chat Tab 随之关闭（仅关 Tab，不归档——
@@ -1966,6 +1972,7 @@ export class AppStore {
         this.snapshottedDirs.delete(d)
         this.guideDrafts.delete(d)
         this.fileRefs.delete(d)
+        this.attachments.delete(d)
         this.killPtyInDirectory(d)
         this.disposeBrowserViewsInDirectory(d)
       }
@@ -2428,6 +2435,7 @@ export class AppStore {
     this.chatDrafts.delete(sessionID)
     // 引用同随会话卸载（design-file-reference §2 清理挂点）
     this.fileRefs.delete(sessionID)
+    this.attachments.delete(sessionID)
     // 任务列表同随会话卸载（design-task-list：纯展示，重开 Tab 由激活回填补齐）
     this.sessionTodos.delete(sessionID)
     // 消息流滚动位置同随会话卸载（design-tab-state-memory §3）
@@ -2602,6 +2610,7 @@ export class AppStore {
     // 目录已死，引导页草稿同灭（design-compose-draft §3）
     this.guideDrafts.delete(directory)
     this.fileRefs.delete(directory)
+    this.attachments.delete(directory)
     this.killPtyInDirectory(directory)
     this.disposeBrowserViewsInDirectory(directory)
     // 显式关闭该目录全部 live Tab：订阅即将拆除，chat 的 session.deleted 事件
@@ -3014,13 +3023,16 @@ export class AppStore {
     sessionID: string,
     text: string,
     refs?: FileRef[],
+    attachments?: Attachment[],
   ): Promise<{ ok: boolean; error?: string }> {
     if (!this.client) return { ok: false, error: "not connected" }
     const session = this.findSession(sessionID)
     if (!session) return { ok: false, error: "session not found" }
-    // 空守卫（design-file-reference §4，移动端 3R-A）：文本与引用全空才拒绝——
-    // 纯引用发送合法
-    if (!text && (!refs || refs.length === 0)) return { ok: false, error: "empty" }
+    // 空守卫（design-file-reference §4 + design-session-attachments §2）：文本、
+    // 引用、附件全空才拒绝——纯附件发送合法（移动端 3R-A）
+    if (!text && (!refs || refs.length === 0) && (!attachments || attachments.length === 0)) {
+      return { ok: false, error: "empty" }
+    }
     // 乐观消息（design-optimistic-messages：POST 不可信为已送达，真实 user 事件到达即清）
     const optimistic: OptimisticMessage = {
       optimistic: true,
@@ -3028,6 +3040,7 @@ export class AppStore {
       text,
       createdAt: Date.now(),
       ...(refs?.length ? { refs } : {}),
+      ...(attachments?.length ? { attachments } : {}),
     }
     this.optimisticBySession.set(sessionID, [
       ...(this.optimisticBySession.get(sessionID) ?? []),
@@ -3038,9 +3051,14 @@ export class AppStore {
       const parts: Array<{ type: "text"; text: string } | FilePartInput> = []
       if (text) parts.push({ type: "text", text })
       for (const ref of refs ?? []) parts.push(fileRefToFilePart(ref))
+      // 附件（design-session-attachments §2）：data URL 内联，无 source 字段
+      for (const a of attachments ?? []) {
+        parts.push({ type: "file", mime: a.mime, url: a.dataUrl, filename: a.filename })
+      }
       await this.client.promptAsync(sessionID, session.directory, parts)
-      // 发送成功引用即清（失败保留供重发，design-file-reference §2）
+      // 发送成功引用/附件即清（失败保留供重发，design-file-reference §2）
       this.clearFileRefs(sessionID)
+      this.clearAttachments(sessionID)
       // 乐观 busy（design-typing-indicator §4 来源 3）：不等 session.status 事件，
       // 消除首字节延迟——dots 于预留槽内立即出现。仅 idle 时写：busy 幂等可不写，
       // retry 态写入会把退避提示（attempt/message）覆写成 dots——server 每个
@@ -3324,12 +3342,14 @@ export class AppStore {
     return p
   }
 
-  /** 发送斜杠命令：乐观回显原始 `/cmd args`，真实 user 消息（subtask/展开文本）到达即清 */
+  /** 发送斜杠命令：乐观回显原始 `/cmd args`，真实 user 消息（subtask/展开文本）到达即清。
+   *  附件随 parts 携带（design-session-attachments §2，openapi command body 契约） */
   async sendCommand(
     sessionID: string,
     command: string,
     arguments_: string,
     refs?: FileRef[],
+    attachments?: Attachment[],
   ): Promise<{ ok: boolean; error?: string }> {
     if (!this.client) return { ok: false, error: "not connected" }
     const session = this.findSession(sessionID)
@@ -3341,6 +3361,7 @@ export class AppStore {
       text,
       createdAt: Date.now(),
       ...(refs?.length ? { refs } : {}),
+      ...(attachments?.length ? { attachments } : {}),
     }
     this.optimisticBySession.set(sessionID, [
       ...(this.optimisticBySession.get(sessionID) ?? []),
@@ -3350,15 +3371,25 @@ export class AppStore {
     // 回显标记：SSE 真实 user 消息到达时转记（正常路径在 POST await 期间消费）
     this.commandEchoPending.add(sessionID)
     try {
-      // 斜杠命令同样携带引用 parts（openapi command body 契约，移动端 6R-C）
+      // 斜杠命令同样携带引用/附件 parts（openapi command body 契约，移动端 6R-C）
+      const fileParts: FilePartInput[] = [
+        ...(refs ?? []).map(fileRefToFilePart),
+        ...(attachments ?? []).map((a) => ({
+          type: "file" as const,
+          mime: a.mime,
+          url: a.dataUrl,
+          filename: a.filename,
+        })),
+      ]
       await this.client.sendCommand(
         sessionID,
         session.directory,
         command,
         arguments_,
-        refs?.map(fileRefToFilePart),
+        fileParts.length > 0 ? fileParts : undefined,
       )
       this.clearFileRefs(sessionID)
+      this.clearAttachments(sessionID)
       // 同步端点返回即执行完毕：回显已在 await 期间到达并转记；SSE 断线窗口内未
       // 到达的（重连对账才补）不补标——接受该边缘（回滚到它仅误回填展开文本）
       this.commandEchoPending.delete(sessionID)
@@ -4259,7 +4290,10 @@ export class AppStore {
     // 路径只经 closeTab 不经 cleanupSessionState，须在此清，design-compose-draft §3）
     if (closed.kind === "chat") this.chatDrafts.delete(closed.key.slice(5))
     // 引用随 Tab 关闭终结（同草稿"关闭 = 决断"；死会话收敛只经 closeTab 须在此清）
-    if (closed.kind === "chat") this.fileRefs.delete(closed.key.slice(5))
+    if (closed.kind === "chat") {
+      this.fileRefs.delete(closed.key.slice(5))
+      this.attachments.delete(closed.key.slice(5))
+    }
     // 视图状态随 Tab 关闭终结（同草稿"关闭 = 决断"语义，design-tab-state-memory §3）：
     // chat 滚动位置、文件模式/滚动。死会话收敛只经 closeTab，须在此清
     if (closed.kind === "chat") this.chatScrollTops.delete(closed.key.slice(5))
@@ -4590,6 +4624,33 @@ export class AppStore {
 
   clearFileRefs(key: string) {
     if (this.fileRefs.delete(key)) this.emit()
+  }
+
+  // ============ 会话附件（design-session-attachments §2） ============
+
+  /** 附件读（无条目 = 空数组）；key 与引用/草稿同构（sessionID / 作用域目录） */
+  attachmentsFor(key: string): Attachment[] {
+    return this.attachments.get(key) ?? []
+  }
+
+  /** 附件写（追加；不去重——同名文件可能是不同内容，id 区分） */
+  addAttachments(key: string, list: Attachment[]) {
+    if (list.length === 0) return
+    this.attachments.set(key, [...(this.attachments.get(key) ?? []), ...list])
+    this.emit()
+  }
+
+  removeAttachment(key: string, id: string) {
+    const list = this.attachments.get(key)
+    if (!list) return
+    const next = list.filter((a) => a.id !== id)
+    if (next.length === 0) this.attachments.delete(key)
+    else this.attachments.set(key, next)
+    this.emit()
+  }
+
+  clearAttachments(key: string) {
+    if (this.attachments.delete(key)) this.emit()
   }
 
   // ============ Tab 状态记忆（design-tab-state-memory） ============

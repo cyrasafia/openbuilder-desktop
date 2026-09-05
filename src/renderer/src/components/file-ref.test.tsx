@@ -108,9 +108,10 @@ describe("userFileChipItems（user 消息 file parts → chip 条目）", () => 
     ])
   })
 
-  it("附件回灌（无 source）：仅文件名 chip，无 absolute 不可点", () => {
-    const items = userFileChipItems([attachPart("prt_a1", "logo.png")], "/repo")
-    expect(items).toEqual([{ key: "prt_a1", path: "logo.png", isDir: false, title: "logo.png" }])
+  it("附件回灌（无 source）：非图片仅文件名 chip；图片进缩略图不进 chip（design-session-attachments §4）", () => {
+    const pdf: Part = { ...attachPart("prt_a1", "doc.pdf"), mime: "application/pdf" }
+    const items = userFileChipItems([pdf, attachPart("prt_a2", "logo.png")], "/repo")
+    expect(items).toEqual([{ key: "prt_a1", path: "doc.pdf", isDir: false, title: "doc.pdf" }])
   })
 
   it("非 file part 不产出 chip；混合 parts 只取 file", () => {
