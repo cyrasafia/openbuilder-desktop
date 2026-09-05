@@ -76,11 +76,11 @@ describe("resolveOne", () => {
     expect(r).toEqual({ name: "big.bin", reason: "too_large" })
   })
 
-  it("图片：压缩循环至 base64 上限内、输出 image/jpeg", async () => {
-    // 首次 reencode 返回仍超限的大块，第二次返回小字节 → 走两步计划
+  it("图片超边：压缩循环至 base64 上限内、输出 image/jpeg", async () => {
+    // 超 2048 边触发压缩；首次 reencode 返回仍超限的大块，第二次小字节 → 两步计划
     let calls = 0
     const ops: ImageOps = {
-      decodeSize: async () => ({ width: 100, height: 100 }),
+      decodeSize: async () => ({ width: 4000, height: 3000 }),
       reencode: async () => {
         calls++
         return calls === 1 ? new Uint8Array(MAX_BASE64_BYTES) : tinyPng
@@ -95,18 +95,61 @@ describe("resolveOne", () => {
     }
   })
 
-  it("图片解码失败（HEIC 等）：按非图片透传原字节", async () => {
+  it("图片原始已合规（边内且限内）：原样无损透传不重编码", async () => {
+    let reencoded = 0
+    const ops: ImageOps = {
+      decodeSize: async () => ({ width: 800, height: 600 }),
+      reencode: async () => {
+        reencoded++
+        return tinyPng
+      },
+    }
+    const r = await resolveOne("shot.png", tinyPng, "image/png", ops)
+    expect("reason" in r).toBe(false)
+    if (!("reason" in r)) {
+      expect(r.mime).toBe("image/png") // 保留原格式（无损）
+      expect(r.isImage).toBe(true)
+      expect(reencoded).toBe(0)
+    }
+  })
+
+  it("压缩计划耗尽仍超限：拒绝（spec 口径）", async () => {
+    const huge = new Uint8Array(MAX_BASE64_BYTES) // 恒超限
+    const ops: ImageOps = {
+      decodeSize: async () => ({ width: 5000, height: 5000 }),
+      reencode: async () => huge,
+    }
+    const r = await resolveOne("noise.png", tinyPng, "image/png", ops)
+    expect(r).toEqual({ name: "noise.png", reason: "too_large" })
+  })
+
+  it("图片解码失败（HEIC 等）：按非图片透传且 isImage=false（review P2-4）", async () => {
     const ops: ImageOps = {
       decodeSize: async () => null,
       reencode: async () => {
         throw new Error("should not reencode")
       },
     }
-    const r = await resolveOne("photo.heic", tinyPng, null, ops)
+    const r = await resolveOne("photo.heic", tinyPng, "image/heic", ops)
     expect("reason" in r).toBe(false)
     if (!("reason" in r)) {
-      expect(r.mime).toBe("application/octet-stream")
+      expect(r.mime).toBe("image/heic") // mime 保留（模型侧可读性不受影响）
+      expect(r.isImage).toBe(false) // 渲染侧按文件 chip（浏览器解不了）
+    }
+  })
+
+  it("reencode 抛错不炸整批：按非图片透传（review P3）", async () => {
+    const ops: ImageOps = {
+      decodeSize: async () => ({ width: 4000, height: 3000 }),
+      reencode: async () => {
+        throw new Error("canvas OOM")
+      },
+    }
+    const r = await resolveOne("big.png", tinyPng, "image/png", ops)
+    expect("reason" in r).toBe(false)
+    if (!("reason" in r)) {
       expect(r.isImage).toBe(false)
+      expect(r.dataUrl.startsWith("data:image/png;base64,")).toBe(true)
     }
   })
 })

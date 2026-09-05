@@ -31,28 +31,30 @@ export function isDisplayableImage(mime: string): boolean {
   return mime.startsWith("image/") && mime !== "image/svg+xml"
 }
 
-/** 扩展名 mime 推断（file.type 缺失时兜底；常见集足够，未知回 octet-stream） */
+/** 扩展名 mime 表（main 的 dialog:openFiles 与 renderer 管线共用——单一来源防漂移） */
+export const MIME_BY_EXT: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+  pdf: "application/pdf",
+  txt: "text/plain",
+  md: "text/markdown",
+  json: "application/json",
+  csv: "text/csv",
+  zip: "application/zip",
+  gz: "application/gzip",
+  mp3: "audio/mpeg",
+  mp4: "video/mp4",
+}
+
+/** 扩展名 mime 推断（file.type 缺失时兜底；未知回 octet-stream） */
 export function guessMime(filename: string, declared: string | null): string {
   if (declared) return declared
   const ext = filename.toLowerCase().split(".").pop() ?? ""
-  const table: Record<string, string> = {
-    png: "image/png",
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    gif: "image/gif",
-    webp: "image/webp",
-    svg: "image/svg+xml",
-    pdf: "application/pdf",
-    txt: "text/plain",
-    md: "text/markdown",
-    json: "application/json",
-    csv: "text/csv",
-    zip: "application/zip",
-    gz: "application/gzip",
-    mp3: "audio/mpeg",
-    mp4: "video/mp4",
-  }
-  return table[ext] ?? "application/octet-stream"
+  return MIME_BY_EXT[ext] ?? "application/octet-stream"
 }
 
 /** 字节 → data URL（纯函数供单测） */
@@ -95,7 +97,12 @@ export interface ResolveResult {
   rejected: RejectedFile[]
 }
 
-/** 单文件解析（图片压缩 + base64 上限循环；非图片超限拒绝） */
+/**
+ * 单文件解析（图片压缩 + base64 上限循环；超限拒绝并提示——spec 口径）。
+ * **不可解码的图片（HEIC/TIFF 等）按非图片透传且 isImage=false**（review P2-4）：
+ * 管线已知浏览器解不了它——渲染为 <img> 只会破图（乐观/权威/缩略图三分叉全破），
+ * 文件 chip 是权威形态；mime 保留原值（模型侧能否读是另一回事）。
+ */
 export async function resolveOne(
   name: string,
   bytes: Uint8Array,
@@ -103,15 +110,48 @@ export async function resolveOne(
   ops: ImageOps,
 ): Promise<Attachment | RejectedFile> {
   const mime = guessMime(name, declaredMime)
+  const passthrough = (): Attachment | RejectedFile => {
+    if (base64Length(bytes) > MAX_BASE64_BYTES) {
+      return { name, reason: "too_large" }
+    }
+    return {
+      id: attachmentId(),
+      mime,
+      filename: name,
+      dataUrl: toDataUrl(mime, bytes),
+      isImage: false,
+    }
+  }
   if (isDisplayableImage(mime)) {
-    const size = await ops.decodeSize(bytes)
-    if (size) {
+    let size: { width: number; height: number } | null = null
+    try {
+      size = await ops.decodeSize(bytes)
+    } catch {
+      size = null
+    }
+    if (!size) return passthrough()
+    // 原始已合规（边内且 base64 限内）：原样透传无损（review P3——截图 PNG
+    // 无条件转 JPEG 有损化 + 透明通道糊黑，白费 CPU）
+    const withinEdge = Math.max(size.width, size.height) <= IMAGE_MAX_EDGE
+    if (withinEdge && base64Length(bytes) <= MAX_BASE64_BYTES) {
+      return {
+        id: attachmentId(),
+        mime,
+        filename: name,
+        dataUrl: toDataUrl(mime, bytes),
+        isImage: true,
+      }
+    }
+    try {
       let out = bytes
       for (const step of shrinkPlan()) {
         out = await ops.reencode(out, step.maxEdge, step.quality)
         if (base64Length(out) <= MAX_BASE64_BYTES) break
       }
-      // 仍超：接受（发送侧自然失败提示，AT-3 服务端兜底语义）
+      if (base64Length(out) > MAX_BASE64_BYTES) {
+        // 计划耗尽仍超限：拒绝并提示（spec 口径；512/q0.5 JPEG >4MB 实际不可达）
+        return { name, reason: "too_large" }
+      }
       return {
         id: attachmentId(),
         mime: COMPRESS_MIME,
@@ -119,22 +159,12 @@ export async function resolveOne(
         dataUrl: toDataUrl(COMPRESS_MIME, out),
         isImage: true,
       }
-    }
-    // 解码失败（HEIC 等）：按非图片透传原字节
-  }
-  if (base64Length(bytes) > MAX_BASE64_BYTES) {
-    return {
-      name,
-      reason: `too_large`,
+    } catch {
+      // canvas 失败（OOM 等）不炸整批：按非图片透传（review P3）
+      return passthrough()
     }
   }
-  return {
-    id: attachmentId(),
-    mime,
-    filename: name,
-    dataUrl: toDataUrl(mime, bytes),
-    isImage: mime.startsWith("image/"),
-  }
+  return passthrough()
 }
 
 /** 多文件聚合（入口统一） */

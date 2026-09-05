@@ -947,6 +947,23 @@ function ChatView({ sessionID }: { sessionID: string }) {
     const refs = store.fileRefsFor(sessionID)
     const attachments = store.attachmentsFor(sessionID)
     if (!text && refs.length === 0 && attachments.length === 0) return
+    // 斜杠命令 + 附件守卫（design-session-attachments review P2-2，移动端 AT-5
+    // 同型）：命中注册命令的 /cmd 是否消费 data URL 附件未经验证——阻止并提示，
+    // 文本/附件全部保留（去掉 / 前缀或清空附件后可发；未注册 /xxx 按字面
+    // prompt 走，附件合法）
+    if (text.startsWith("/") && attachments.length > 0) {
+      const slashDir = store.findSession(sessionID)?.directory ?? null
+      await store.refreshCommands(slashDir)
+      const rest = text.slice(1)
+      const token = (rest.slice(0, rest.search(/\s/) === -1 ? undefined : rest.search(/\s/))).toLowerCase()
+      const matched = (slashDir ? store.commandsFor(slashDir) : []).some(
+        (c) => c.name.toLowerCase() === token,
+      )
+      if (matched) {
+        attachInput.notify(t.attachCmdBlocked)
+        return
+      }
+    }
     // busy 不拦（design-supplement-send）：进行中发送 = 补充消息，server 在
     // 当前 run 内吸收（不打断、不排队），乐观气泡按时间序排活跃流式下方
     // store 侧显式清（不依赖同步 effect，与引导页发送成功路径同构；失败回填
@@ -1708,16 +1725,22 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
               onOpen={(item) => store.openFileTab(item.absolute!)}
             />
           )}
-          {/* 乐观附件（design-session-attachments §4）：图片缩略图 + 非图片 chip；
-              权威消息到达后经 file part 走同形态渲染（乐观→真实不闪烁） */}
+          {/* 乐观附件（design-session-attachments §4，review P2-1 修订）：形态
+              镜像权威消息——非图片进只读 chip、图片走缩略图（不进 chip 条、无
+              删除钮），乐观→权威切换不跳变 */}
           {entry.data.attachments && entry.data.attachments.length > 0 && (
             <>
-              <AttachmentChips items={entry.data.attachments} onRemove={() => {}} />
-              {entry.data.attachments
-                .filter((a) => a.isImage)
-                .map((a) => (
-                  <AttachmentThumb key={a.id} url={a.dataUrl} filename={a.filename} />
-                ))}
+              <AttachmentChips
+                items={entry.data.attachments.filter((a) => !a.isImage)}
+                readOnly
+              />
+              <div className="bubble-images">
+                {entry.data.attachments
+                  .filter((a) => a.isImage)
+                  .map((a) => (
+                    <AttachmentThumb key={a.id} url={a.dataUrl} filename={a.filename} />
+                  ))}
+              </div>
             </>
           )}
           <div className="bubble-pending">{t.sending}</div>

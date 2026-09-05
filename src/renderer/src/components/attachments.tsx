@@ -3,7 +3,7 @@
  * 文件 chip，可删）+ 气泡缩略图（点击放大）+ 入口接线 hook（粘贴/拖拽/按钮）。
  * 图片渲染直接用 `<img src=dataUrl>`（浏览器异步解码 = 惰性，无 Flutter isolate 问题）。
  */
-import { useCallback, useRef, useState, type DragEvent as ReactDragEvent } from "react"
+import { useCallback, useEffect, useRef, useState, type DragEvent as ReactDragEvent } from "react"
 import { FileText, Paperclip, X } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import { FILEREF_MIME } from "./file-ref"
@@ -60,27 +60,31 @@ export function canvasImageOps(): ImageOps {
   }
 }
 
-/** composer 附件条（design §4：图片 48px 缩略图 / 非图片引用 chip 同款） */
+/** 附件条（design §4：图片 48px 缩略图 / 非图片引用 chip 同款）。
+ *  readOnly = 展示形态（乐观气泡：非图片附件进 chip、无删除钮——与权威消息
+ *  形态一致，review P2-1；图片附件在气泡侧一律走 AttachmentThumb，不进本条） */
 export function AttachmentChips({
   items,
   onRemove,
+  readOnly = false,
 }: {
   items: Attachment[]
-  onRemove: (id: string) => void
+  onRemove?: (id: string) => void
+  readOnly?: boolean
 }) {
   const { t } = useI18n()
   if (items.length === 0) return null
   return (
     <div className="ref-chips attach-chips">
       {items.map((a) =>
-        a.isImage ? (
+        a.isImage && !readOnly ? (
           <span key={a.id} className="attach-thumb" title={a.filename}>
             <img src={a.dataUrl} alt={a.filename} decoding="async" />
             <button
               className="ref-chip-x"
               aria-label={t.fileRefRemove}
               title={t.fileRefRemove}
-              onClick={() => onRemove(a.id)}
+              onClick={() => onRemove?.(a.id)}
             >
               <X size={12} aria-hidden />
             </button>
@@ -89,14 +93,16 @@ export function AttachmentChips({
           <span key={a.id} className="ref-chip" title={a.filename}>
             <FileText size={12} aria-hidden />
             <span className="ref-chip-path mono">{a.filename}</span>
-            <button
-              className="ref-chip-x"
-              aria-label={t.fileRefRemove}
-              title={t.fileRefRemove}
-              onClick={() => onRemove(a.id)}
-            >
-              <X size={12} aria-hidden />
-            </button>
+            {!readOnly && (
+              <button
+                className="ref-chip-x"
+                aria-label={t.fileRefRemove}
+                title={t.fileRefRemove}
+                onClick={() => onRemove?.(a.id)}
+              >
+                <X size={12} aria-hidden />
+              </button>
+            )}
           </span>
         ),
       )}
@@ -104,24 +110,37 @@ export function AttachmentChips({
   )
 }
 
-/** 点击放大遮罩（Esc/点击关闭） */
-function ImageZoom({ url, onClose }: { url: string; onClose: () => void }) {
+/** 点击放大遮罩（Esc/点击关闭；Esc 走 window 监听——遮罩 div 不可聚焦，
+ *  挂 onKeyDown 永远收不到，review P3） */
+function ImageZoom({ url, filename, onClose }: { url: string; filename?: string; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose()
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [onClose])
   return (
-    <div
-      className="dialog-mask image-zoom"
-      onClick={onClose}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") onClose()
-      }}
-    >
-      <img src={url} alt="" decoding="async" onClick={(e) => e.stopPropagation()} />
+    <div className="dialog-mask image-zoom" onClick={onClose}>
+      <img src={url} alt={filename ?? ""} decoding="async" onClick={(e) => e.stopPropagation()} />
     </div>
   )
 }
 
-/** 气泡图片缩略图（最大高 220 圆角 + 点击放大；lazy/async 解码 = 惰性缩略图） */
+/** 气泡图片缩略图（最大高 220 圆角 + 点击放大；lazy/async 解码 = 惰性缩略图）。
+ *  解码失败（onError——他端客户端回灌的 image/tiff 等，本地管线不会产出这类
+ *  isImage part，review P2-4 防御）降级为文件名 chip */
 export function AttachmentThumb({ url, filename }: { url: string; filename?: string }) {
   const [zoom, setZoom] = useState(false)
+  const [broken, setBroken] = useState(false)
+  if (broken) {
+    return (
+      <span className="ref-chip" title={filename ?? url.slice(0, 60)}>
+        <FileText size={12} aria-hidden />
+        <span className="ref-chip-path mono">{filename || "image"}</span>
+      </span>
+    )
+  }
   return (
     <>
       <button
@@ -130,9 +149,15 @@ export function AttachmentThumb({ url, filename }: { url: string; filename?: str
         title={filename}
         onClick={() => setZoom(true)}
       >
-        <img src={url} alt={filename ?? ""} loading="lazy" decoding="async" />
+        <img
+          src={url}
+          alt={filename ?? ""}
+          loading="lazy"
+          decoding="async"
+          onError={() => setBroken(true)}
+        />
       </button>
-      {zoom && <ImageZoom url={url} onClose={() => setZoom(false)} />}
+      {zoom && <ImageZoom url={url} filename={filename} onClose={() => setZoom(false)} />}
     </>
   )
 }
@@ -168,6 +193,8 @@ export function useAttachmentInput(refKey: string): {
     onDrop: (e: ReactDragEvent<HTMLElement>) => void
   }
   pickerButton: React.ReactNode
+  /** 内联提示通道（拒绝/错误；斜杠守卫等外部场景复用，review P2-2） */
+  notify: (msg: string) => void
 } {
   const store = useStore()
   const { t } = useI18n()
@@ -222,11 +249,16 @@ export function useAttachmentInput(refKey: string): {
       aria-label={t.attachPick}
       disabled={processing}
       onClick={() => {
-        // main 侧读字节返回（renderer 无法从路径构造 File）
-        void window.desktop.openFilesPicker().then((files) => {
-          if (!files || files.length === 0) return
+        // main 侧读字节返回（renderer 无法从路径构造 File）；>128MB 预检拒绝
+        void window.desktop.openFilesPicker().then(({ accepted, rejected }) => {
+          if (rejected.length > 0) {
+            showNotice(t.attachTooLarge.replace("{names}", rejected.map((r) => r.name).join("、")))
+          }
+          if (accepted.length === 0) return
           void ingest(
-            files.map((f) => new File([f.bytes as unknown as BlobPart], f.name, { type: f.type ?? "" })),
+            accepted.map(
+              (f) => new File([f.bytes as unknown as BlobPart], f.name, { type: f.type ?? "" }),
+            ),
           )
         })
       }}
@@ -245,6 +277,7 @@ export function useAttachmentInput(refKey: string): {
         void ingest(files)
       },
     },
+    notify: showNotice,
     fileDragProps: {
       // 外部文件拖入（design §3）：FILEREF_MIME 优先（工作区文件树拖入仍是 source 引用）
       onDragOver: (e) => {

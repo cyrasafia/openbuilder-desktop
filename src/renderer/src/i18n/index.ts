@@ -202,6 +202,7 @@ const zh = {
   attachPick: "添加附件",
   attachProcessing: "处理附件中…",
   attachTooLarge: "附件超过 4MB 上限（base64 后）：{names}",
+  attachCmdBlocked: "斜杠命令不支持附件——请去掉 / 前缀或清空附件后发送",
   // 服务器连接状态（左栏底部）
   statusStreaming: "实时",
   statusDegraded: "重连中",
@@ -468,6 +469,7 @@ const en: typeof zh = {
   attachPick: "Attach files",
   attachProcessing: "Processing attachments…",
   attachTooLarge: "Attachment exceeds the 4MB limit (base64): {names}",
+  attachCmdBlocked: "Slash commands do not support attachments — remove the / prefix or clear attachments",
   statusStreaming: "Live",
   statusDegraded: "Reconnecting",
   statusOffline: "Offline",

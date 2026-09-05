@@ -25,7 +25,7 @@ function createBrowserDesktopApi(): DesktopApi {
       return null
     },
     async openFilesPicker() {
-      return []
+      return { accepted: [], rejected: [] }
     },
     onManagedEvent() {
       return () => {}

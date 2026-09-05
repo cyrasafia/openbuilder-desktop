@@ -135,12 +135,71 @@ describe("useAttachmentInput（粘贴入口）", () => {
     await waitFor(() => expect(addAttachments).toHaveBeenCalled())
     const list = addAttachments.mock.calls[0]![1] as Attachment[]
     expect(list[0]?.filename).toBe("shot.png")
-    expect(list[0]?.isImage).toBe(true) // mime 保持 image/png（未压缩透传——jsdom 无解码）
+    expect(list[0]?.isImage).toBe(false) // 解码失败透传按非图片（review P2-4：防破图）
   })
 
   it("纯文本粘贴不拦截（无 files）", () => {
     render(<Probe />)
     expect(firePaste([])).toBe(false)
     expect(addAttachments).not.toHaveBeenCalled()
+  })
+})
+
+describe("useAttachmentInput（拖拽入口，review P3-5）", () => {
+  let hook: ReturnType<typeof useAttachmentInput> | null = null
+  function Probe() {
+    hook = useAttachmentInput("s1")
+    return <div>{hook!.chips}</div>
+  }
+  const fireDragOver = (types: string[]): boolean => {
+    let prevented = false
+    hook!.fileDragProps.onDragOver({
+      dataTransfer: { types, dropEffect: "" },
+      preventDefault: () => {
+        prevented = true
+      },
+    } as unknown as React.DragEvent<HTMLElement>)
+    return prevented
+  }
+  const fireDrop = (types: string[], files: File[]): boolean => {
+    let prevented = false
+    hook!.fileDragProps.onDrop({
+      dataTransfer: { types, files },
+      preventDefault: () => {
+        prevented = true
+      },
+    } as unknown as React.DragEvent<HTMLElement>)
+    return prevented
+  }
+
+  it("Files 拖入 preventDefault；FILEREF_MIME（文件树引用）互斥不拦截", async () => {
+    render(<Probe />)
+    expect(fireDragOver(["Files"])).toBe(true)
+    expect(fireDragOver(["application/x-openbuilder-fileref"])).toBe(false)
+    expect(fireDragOver(["text/plain"])).toBe(false)
+    // drop：Files → 入库
+    const file = new File([new Uint8Array([9])], "a.txt", { type: "text/plain" })
+    expect(fireDrop(["Files"], [file])).toBe(true)
+    await waitFor(() => expect(addAttachments).toHaveBeenCalled())
+    // drop：引用 MIME → 不拦截（交由 refInput 处理）
+    expect(fireDrop(["application/x-openbuilder-fileref"], [])).toBe(false)
+    expect(addAttachments).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("乐观气泡附件形态（review P2-1 回归）", () => {
+  it("图片走缩略图、非图片走只读 chip（无删除钮）", async () => {
+    // MessageBlock 乐观分支经 workspace 渲染需要完整 store——此处直测组件组合
+    const { container } = render(
+      <>
+        <AttachmentChips items={[fileAtt]} readOnly />
+        <div className="bubble-images">
+          <AttachmentThumb url={imgAtt.dataUrl} filename={imgAtt.filename} />
+        </div>
+      </>,
+    )
+    // 只读 chip 无删除钮；缩略图存在
+    expect(container.querySelector(".ref-chip .ref-chip-x")).toBeNull()
+    expect(container.querySelector(".attach-bubble-thumb img")?.getAttribute("src")).toBe(imgAtt.dataUrl)
   })
 })
