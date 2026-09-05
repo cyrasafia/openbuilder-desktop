@@ -20,6 +20,7 @@ import {
   CircleHelp,
   CircleX,
   FileDiff,
+  FolderGit2,
   Globe,
   ListChecks,
   ListTree,
@@ -144,6 +145,28 @@ export function Workspace() {
     dragKey && dragIdx >= 0 && slot !== dragIdx
       ? [...base.slice(0, slot), tabs[dragIdx]!, ...base.slice(slot)]
       : tabs
+
+  // 无项目空状态（design-layout §4 末）：未打开任何项目时中栏只有「打开项目」
+  // 引导（左栏树为空、右栏无文件树）；未连接服务器则先引导连接（同引导页惯例）
+  if (store.openedProjects.length === 0) {
+    return (
+      <main className="workspace">
+        <div className="workspace-empty">
+          <FolderGit2 size={28} aria-hidden />
+          <div className="workspace-empty-hint">{t.noProjectOpenHint}</div>
+          {store.getActiveClient() ? (
+            <button className="btn-primary" onClick={() => store.openProjectPicker()}>
+              {t.openProject}
+            </button>
+          ) : (
+            <button className="btn-primary" onClick={() => store.openWelcome()}>
+              {t.welcomeConnectServer}
+            </button>
+          )}
+        </div>
+      </main>
+    )
+  }
 
   return (
     <main className="workspace">

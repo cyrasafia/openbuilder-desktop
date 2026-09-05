@@ -220,6 +220,7 @@ const zh = {
   expandRightPanel: "展开右栏",
   // 空态
   noProject: "先打开一个项目",
+  noProjectOpenHint: "打开一个项目后即可开始会话",
   connectFirst: "先配置服务器连接",
   openSettings: "打开设置",
   // 新 Tab 引导页
@@ -483,6 +484,7 @@ const en: typeof zh = {
   collapseRightPanel: "Hide file panel",
   expandRightPanel: "Show file panel",
   noProject: "Open a project first",
+  noProjectOpenHint: "Open a project to start a session",
   connectFirst: "Configure a server first",
   openSettings: "Open settings",
   guideHint: "Send a message to start a session, or restore an archived one below",
