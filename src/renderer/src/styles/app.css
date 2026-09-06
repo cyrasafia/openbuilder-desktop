@@ -3353,15 +3353,15 @@
 
 /* ---------- 添加服务器引导式（design-guided-add-server） ---------- */
 
-/* 发现视图候选行：与 .scan-candidate 同骨架，整行主信息居左、版本居右；
-   attach 行 URL 与来源徽标同组（徽标沿用 .profile-mode 形态） */
+/* 发现视图候选卡片（2026-09-06 修订：单行 → 多行，attach/managed 同一套样式）：
+    首行标题居左 + 版本居右，次行 mono 明细（attach = 地址:端口，managed = 路径） */
 .discover-candidate {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
   width: 100%;
-  padding: 4px 8px;
+  padding: 6px 8px;
   border: 1px solid var(--outline-variant);
   border-radius: var(--radius-chip);
   background: transparent;
@@ -3375,24 +3375,23 @@
   background: var(--surface-container-high);
 }
 
-.discover-candidate-main {
+.discover-candidate-head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  min-width: 0;
-  flex: 1;
 }
 
-.discover-candidate-path {
+.discover-candidate-title {
+  font-size: var(--text-sm);
+}
+
+.discover-candidate-detail {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: var(--text-xs);
-}
-
-/* 第二节标题（本机 opencode）与首节拉开间距 */
-.discover-second-title {
-  margin-top: 10px;
+  color: var(--outline);
 }
 
 /* 发现视图 actions：左「重新搜索」右「手动配置」（手动入口始终展示） */

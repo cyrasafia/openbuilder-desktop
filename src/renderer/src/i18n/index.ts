@@ -118,12 +118,12 @@ const zh = {
   addProfile: "添加",
   addProfileTitle: "添加服务器",
   editProfileTitle: "编辑服务器",
-  // 添加服务器引导式（design-guided-add-server）：点「添加」先进发现视图
-  discoverServersTitle: "发现的服务器",
-  discoverBinariesTitle: "本机 opencode",
+  // 添加服务器引导式（design-guided-add-server）：点「添加」先进发现视图；
+  //  候选单一列表混排（不按 attach/managed 分节，无段标题，2026-09-06 修订），
+  //  多行卡片标题文案按模式区分（来源徽标随修订取消）
+  discoverAttachTitle: "连接到现有 opencode 服务（attach 模式）",
+  discoverManagedTitle: "启动新的 opencode 进程（managed 模式）",
   discoverScanning: "正在搜索…",
-  discoverSourceLoopback: "本机",
-  discoverSourceMdns: "局域网",
   discoverNoResult: "未发现可连接的 server，也未找到本机 opencode——可重新搜索或手动配置。",
   discoverRescan: "重新搜索",
   discoverManualEntry: "手动配置…",
@@ -381,11 +381,9 @@ const en: typeof zh = {
   addProfile: "Add",
   addProfileTitle: "Add server",
   editProfileTitle: "Edit server",
-  discoverServersTitle: "Discovered servers",
-  discoverBinariesTitle: "Local opencode",
+  discoverAttachTitle: "Connect to a running opencode server (attach)",
+  discoverManagedTitle: "Start a new opencode process (managed)",
   discoverScanning: "Searching…",
-  discoverSourceLoopback: "Local",
-  discoverSourceMdns: "LAN",
   discoverNoResult:
     "No running server found, and no local opencode binary — search again or configure manually.",
   discoverRescan: "Search again",

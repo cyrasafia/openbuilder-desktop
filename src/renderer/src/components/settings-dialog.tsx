@@ -305,6 +305,15 @@ function ConnectionSettings({
   )
 }
 
+/** attach 候选明细（服务器地址:端口）：URL 解析失败回落原串 */
+function hostPort(url: string): string {
+  try {
+    return new URL(url).host || url
+  } catch {
+    return url
+  }
+}
+
 /** 发现视图（design-guided-add-server §2）：进入即同时跑 scanServers + scanBinaries，
  *  两路各自落地（先到先列，不互相等）；attach 候选一键建档（含 health 已验证），
  *  managed 候选一键建档（binaryPath = 候选路径）；手动入口常驻底部。
@@ -373,12 +382,13 @@ export function DiscoverView({
   return (
     <>
       <div className="dialog-body">
-        <div className="scan-section-title">
-          <span>{t.discoverServersTitle}</span>
-        </div>
+        {/* 单一列表混排（2026-09-06 修订）：不按 attach/managed 分节、无段标题，
+         *  候选多行卡片同一套样式——标题文案区分模式（attach=连接现有服务 /
+         *  managed=启动新进程），明细行 attach=地址:端口、managed=可执行路径，
+         *  版本居右 */}
         {(servers ?? []).map((c) => (
           <button
-            key={c.url}
+            key={`srv:${c.url}`}
             type="button"
             className="discover-candidate"
             title={c.url}
@@ -392,19 +402,16 @@ export function DiscoverView({
               })
             }
           >
-            <span className="discover-candidate-main">
-              <span className="mono discover-candidate-path">{c.url}</span>
-              <span className="profile-mode">{c.source === "loopback" ? t.discoverSourceLoopback : t.discoverSourceMdns}</span>
+            <span className="discover-candidate-head">
+              <span className="discover-candidate-title">{t.discoverAttachTitle}</span>
+              <span className="tree-meta mono">{c.version ?? "—"}</span>
             </span>
-            <span className="tree-meta mono">{c.version ?? "—"}</span>
+            <span className="mono discover-candidate-detail">{hostPort(c.url)}</span>
           </button>
         ))}
-        <div className="scan-section-title discover-second-title">
-          <span>{t.discoverBinariesTitle}</span>
-        </div>
         {(binaries ?? []).map((c) => (
           <button
-            key={c.path}
+            key={`bin:${c.path}`}
             type="button"
             className="discover-candidate"
             title={c.path}
@@ -419,8 +426,11 @@ export function DiscoverView({
               })
             }
           >
-            <span className="mono discover-candidate-path">{c.path}</span>
-            <span className="tree-meta mono">{c.version ?? "—"}</span>
+            <span className="discover-candidate-head">
+              <span className="discover-candidate-title">{t.discoverManagedTitle}</span>
+              <span className="tree-meta mono">{c.version ?? "—"}</span>
+            </span>
+            <span className="mono discover-candidate-detail">{c.path}</span>
           </button>
         ))}
         {searching && <div className="form-note">{t.discoverScanning}</div>}
