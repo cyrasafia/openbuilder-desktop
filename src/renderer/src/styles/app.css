@@ -2619,8 +2619,10 @@
 }
 
 /* 磁贴钮：大目标入口（引导页 Tab 入口等）。等宽 96px、5:4 比例，icon（20 =
-   --icon-toolbar）在上、名称（ui-sm）在磁贴内 icon 下方；禁用态名称随色继承置灰 */
+   --icon-toolbar）在上、名称（ui-sm）在磁贴内 icon 下方；禁用态名称随色继承置灰；
+   relative 供快捷键角标（.btn-tile-badge）绝对定位 */
 .btn-tile {
+  position: relative;
   width: 96px;
   aspect-ratio: 5 / 4;
   display: inline-flex;
@@ -2646,6 +2648,26 @@
 
 .btn-tile-label {
   font-size: var(--text-sm);
+}
+
+/* 快捷键角标（design-keyboard-shortcuts §1 Ctrl+1/2/3）：Ctrl 按住期间显示
+   对应数字提示，右上角小方 chip（同 diff-status-badge 几何，实心强调面对）；
+   禁用磁贴不渲染（快捷键同样不动作） */
+.btn-tile-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  background: var(--emphasis-bg);
+  color: var(--emphasis-fg);
 }
 
 /* ---------- 待处理卡片（授权/问题）---------- */

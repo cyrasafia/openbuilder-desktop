@@ -1,6 +1,6 @@
 # 快捷键体系 — 设计文档
 
-> 对应 spec-v0.3 #2。Tab 新建/关闭/切换、关闭栈恢复（Ctrl+Shift+T）、左栏作用域遍历（非 mac `Alt+↑/↓` / mac `⌘⌥↑/↓`，2026-09-04 修订）。纯 renderer 改动（浏览器视图转发过滤在 main，见 §3）。
+> 对应 spec-v0.3 #2。Tab 新建/关闭/切换、关闭栈恢复（Ctrl+Shift+T）、左栏作用域遍历（非 mac `Alt+↑/↓` / mac `⌘⌥↑/↓`，2026-09-04 修订）。纯 renderer 改动（浏览器视图转发过滤在 main，见 §3）。2026-09-06 增：引导页磁贴快捷键 Ctrl+1/2/3（页面局部，见 §1.1）。
 >
 > 参考先例：按 AGENTS.md 约定检索 `../openbuilder/docs/design-*.md`——移动端无硬件键盘快捷键体系（TUI 无从借鉴），无同类设计。
 
@@ -12,6 +12,7 @@
 | Ctrl+O | 打开项目选择器（与左栏 "+" 同路径 = `openProjectPicker()`；picker 开着时重复按下仅消费不动作，防 overlay 计数失衡） |
 | Ctrl+W | 关闭激活 Tab；**无激活 Tab 时仅消费不动作**（放行会命中默认菜单关窗，见 §1 修订）；chat Tab 流式中先 confirm（复用 `confirmCloseStreamingTab`），确认后 abort+归档——与 Tab 栏关闭按钮**同一代码路径**（§4 tab-actions） |
 | Ctrl+Shift+T | 恢复刚关闭的 Tab（§2 关闭栈） |
+| Ctrl+1 / Ctrl+2 / Ctrl+3（**仅引导页**，2026-09-06 增，§1.1） | 分别开 diff / 终端 / 网页 Tab（与引导页磁贴点击同路径、同禁用态）；Ctrl 按住期间磁贴右上角显示对应数字角标 |
 | Ctrl+Tab / Ctrl+PageDown | 下一个可见 Tab（作用域内循环；Shift 反转方向；**仅非 macOS**） |
 | Ctrl+Shift+Tab / Ctrl+PageUp | 上一个可见 Tab（循环；Shift+PgUp/PgDn 同样反转；**仅非 macOS**） |
 | ⌘⌥→ / ⌘⌥←（macOS） | 下/上一个可见 Tab（2026-09-03 修订：macOS 浏览器惯例主键；⌘Tab/⌘⇧Tab 是系统应用切换器，永远到不了应用） |
@@ -25,6 +26,14 @@
 - 修饰键判定以 ctrlKey 为准（macOS 开发态 Cmd 亦生效——metaKey 等价 Ctrl，成本零）；Alt+↑/↓ 与 AltGr 的组合风险仅限"AltGr+方向键产生字符"的场景，不存在（方向键非字符键）；裸 Alt 组合仅方向键进分发（`useShortcuts` 入口守卫放行 alt+arrow），Alt+字母仍页面/输入框自用
 - **macOS 切 Tab 仅惯例键**（2026-09-03 修订 + 2026-09-04 用户决策，`window.desktop.platform === "darwin"`）：darwin 只绑 ⌘⌥←/→ 与 ⌘⇧[/]，**Ctrl+Tab / ⌘PgUp/PgDn 不绑定**——mac 下切 Tab 不留非惯例组合；linux 上 Ctrl+Alt+←/→ 是 GNOME/KDE 工作区切换（不可占用），Ctrl+Shift+[/] 维持原放行语义；macOS 上 ⌘⌥↑/↓（作用域遍历）与 ⌘⌥←/→（切 Tab）按轴分工，与浏览器惯例一致
 - **面板开关键冲突核查结论**（2026-09-04 修订：全平台统一 VS Code 系 `Ctrl+B` / `Ctrl+Alt+B`，替换原 `Ctrl+[/]`——mac ⌘[ 是浏览器后退惯例且 BrowserView 内与面板开关双触发，⌘B/⌥⌘B 无此冲突；原"欧陆 AltGr 产生 `[` 上报 ctrl+alt"的误触顾虑对新键不成立，B 无常见 AltGr 字符映射，VS Code 同绑定先例）：Electron 默认菜单加速键无 `B` 系（无 Ctrl+W 式放行风险）；Chromium 在 Linux/Win/mac 均无 Ctrl+B/⌘B 绑定（富文本编辑器的加粗是页面内行为）；**按 code `KeyB` 匹配**——mac ⌥B 的 key 是 `"∫"`（Option 产特殊字符），key 不可靠，code 布局无关；code-view 只装 searchKeymap 无 defaultKeymap，无 Mod-B 冲突。**终端 Tab 聚焦时 xterm 在 textarea capture 监听器内 `cancel(e, force)` → preventDefault+stopPropagation 抢先消费 Ctrl+B（STX 0x02 归 pty，readline backward-char）**，事件到不了 window 分发——快捷键在终端内不生效，与 Ctrl+T/W 同行为，属预期而非缺陷，且保住了终端用户习惯
+
+### 1.1 引导页磁贴快捷键（2026-09-06 增）
+
+- **作用域 = 引导页存活期**：监听（window keydown/keyup/blur）挂 `GuidePage` 组件内，随页面挂载/卸载——**不经全局 `useShortcuts` 分发**（Ctrl+数字对全局仍是未映射组合，§5"跳 Tab 不做"决策不变；此为引导页局部开入口动作，非按序号切 Tab）
+- **动作与磁贴一致**：Ctrl+1 → `openDiffTab()`、Ctrl+2 → `openTerminalTab()`、Ctrl+3 → `openBrowserTab("about:blank")`，与磁贴点击同路径、**同禁用态**（无 activeProfile 时 2/3 不动作；browser shim 平台 3 不动作）
+- **角标提示**：Ctrl（或 macOS Cmd，metaKey 等价惯例）按住期间三个磁贴右上角显示数字角标（`.btn-tile-badge`）；禁用磁贴不显示（快捷键同样不动作）。keyup Control/Meta 或窗口失焦清（失焦后 keyup 不再派发，不清会残留）
+- **守卫**：`isComposing` 不触发（fcitx5）；已 preventDefault 的事件不处理（同全局 useShortcuts 约定，防未来内层组件消费后双触发）；Shift/Alt 组合不触发；`repeat` 不触发（终端每次调用新建 pty，按住不放不得连开）；按 code `Digit1/2/3` 匹配（布局无关）；消费即 preventDefault
+- **键冲突核查**：Chromium 对 renderer 未消费的 Ctrl+数字无默认行为（Linux 桌面快捷键是合成器层，应用收不到不构成劫持）；输入区聚焦时 Ctrl+数字无文本语义，劫持无损
 
 ## 2. 关闭栈与恢复
 
@@ -62,7 +71,7 @@ private closedTabs: ClosedTabEntry[] = []   // push 尾 / pop 尾，上限 20（
 
 ## 5. 不做的事
 
-- Ctrl+数字跳转（用户决策不做）
+- Ctrl+数字跳转 Tab（按序号切 Tab；用户决策不做，系统/输入法易冲突）——与 §1.1 引导页 Ctrl+1/2/3 开入口不冲突：后者是引导页局部动作且页面存活期绑定，不引入全局 Ctrl+数字语义
 - ~~Ctrl+B（用户决策不做）~~（2026-09-04 反转原决策：全平台统一 VS Code 系面板开关键 Ctrl+B / Ctrl+Alt+B，见 §1 修订）
 - MRU 切换顺序（Ctrl+Tab 用线性循环；浏览器 MRU 依赖"最近使用"栈，复杂度不值）
 - 快捷键自定义/冲突检测 UI
@@ -76,10 +85,12 @@ private closedTabs: ClosedTabEntry[] = []   // push 尾 / pop 尾，上限 20（
 | `src/renderer/src/components/shortcuts.ts` | 新：`useShortcuts()`（window keydown 分发表） |
 | `src/renderer/src/components/tab-actions.ts` | 新：`closeTabInteractive` |
 | `src/renderer/src/app.tsx` | Shell 挂 `useShortcuts()` |
-| `src/renderer/src/components/workspace.tsx` | Tab 关闭按钮改经 tab-actions |
-| 测试 | store（关闭栈入/弹/跳过/跨作用域/上限、cycleTab 循环、cycleScopeEntry 遍历）；shortcuts 按键分发表 |
+| `src/renderer/src/components/workspace.tsx` | Tab 关闭按钮改经 tab-actions；§1.1 引导页磁贴快捷键 + 角标（GuidePage 内监听） |
+| `src/renderer/src/styles/app.css` | §1.1 `.btn-tile` relative + `.btn-tile-badge` |
+| 测试 | store（关闭栈入/弹/跳过/跨作用域/上限、cycleTab 循环、cycleScopeEntry 遍历）；shortcuts 按键分发表；workspace-guide（§1.1 分发/禁用态/角标/卸载） |
 
 ## 7. 验收
 
 - spec-v0.3 #2 验收行全过：Ctrl+T/W/Tab/Shift+Tab/PgUp/PgDn、Ctrl+Shift+T 依次恢复（chat 取消归档、已删会话跳过）、Alt+↑/↓（mac ⌘⌥↑/↓）循环切换
+- §1.1：引导页 Ctrl+1/2/3 开 diff/终端/网页 Tab（禁用态不动作）；Ctrl 按住三磁贴显数字角标、松开/失焦消失；离开引导页后按键无动作
 - `npm run test` / `typecheck` / `build` 全绿
