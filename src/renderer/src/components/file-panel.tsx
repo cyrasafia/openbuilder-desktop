@@ -49,9 +49,14 @@ export function FilePanel() {
   }, [hasLoaded, project?.id, store.currentWorkspace?.directory])
 
   if (!project) {
-    // 空态（design-layout §5）：无项目 = 右栏空白，打开项目的引导在中栏
+    // 空态（design-layout §4 无项目空状态，2026-09-06 修订）：右栏保留「文件」
+    // 标题行、树区无内容——与左栏空态保留标题行对称（原"完全空白"弃用）；
+    // 打开项目的引导在中栏。无作用域根目录，不挂右键菜单
     return (
       <aside className={"file-panel" + (collapsed ? " collapsed" : "")}>
+        <div className="sidebar-heading">
+          <span>{t.filesTitle}</span>
+        </div>
         {!collapsed && <PanelResizeHandle side="right" />}
       </aside>
     )
