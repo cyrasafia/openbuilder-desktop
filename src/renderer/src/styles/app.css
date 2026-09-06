@@ -699,7 +699,8 @@
 
 /* 引导页 textarea 样式上收至 .composer-input（与 chat composer 共用）；
    引导页曾有 min-height 44px/padding 10px 12px 的加大形态，2026-09-05
-   附件按钮入框重构时与会话页统一（对齐 openbuilder 同一 compose 形态） */
+   附件按钮入框重构时与会话页统一（对齐 openbuilder 同一 compose 形态）；
+   2026-09-06 修正：统一时误留 44px 最小高（默认两行观感），回落单行 27px */
 
 .guide-actions {
   display: flex;
@@ -1512,7 +1513,8 @@
   /* 高度随内容增长（软换行/手动换行一致），上限 200px 后内部滚动（同前） */
   field-sizing: content;
   overflow-y: auto;
-  min-height: 44px;
+  /* 默认一行（14px × 1.5 + 上下 padding 3px = 27px），高度随内容增长 */
+  min-height: 27px;
   max-height: 200px;
   font-size: var(--text-chat);
   line-height: 1.5;
