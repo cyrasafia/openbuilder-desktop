@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 import { ArrowLeft, Pencil, RefreshCw, X } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import type { BinaryCandidate, ConnectionProfile, ManagedNotice, ServerCandidate } from "@shared/ipc"
@@ -16,8 +16,8 @@ type EditingState =
   | { view: "discover" }
   | { view: "manual"; profile: ConnectionProfile; isNew: boolean }
 
-/** 添加服务器默认草稿（design-guided-add-server §3） */
-function newProfileDraft(): ConnectionProfile {
+/** 添加服务器默认草稿（design-guided-add-server §3；欢迎屏手动页复用） */
+export function newProfileDraft(): ConnectionProfile {
   return {
     id: `prof_${Date.now()}`,
     name: "",
@@ -32,7 +32,7 @@ export function SettingsDialog() {
   const store = useStore()
   const { t } = useI18n()
   const [tab, setTab] = useState<"connection" | "providers" | "appearance" | "defaults">(
-    // 引导直达页签（design-welcome-screen §5：openSettings(tab) 一次性提示）
+    // 引导直达页签（openSettings(tab) 一次性提示；现存调用方仅 connection）
     store.settingsInitialTab,
   )
   // 非空 = 弹窗内跳转到服务器子视图（丢弃 tabs 视图，草稿随视图卸载）
@@ -293,13 +293,20 @@ function ConnectionSettings({
 /** 发现视图（design-guided-add-server §2）：进入即同时跑 scanServers + scanBinaries，
  *  两路各自落地（先到先列，不互相等）；attach 候选一键建档（含 health 已验证），
  *  managed 候选一键建档（binaryPath = 候选路径）；手动入口常驻底部。
- *  扫描在 main 侧 in-flight 去重，重入（StrictMode 双触发/重搜）安全 */
-function DiscoverView({
+ *  扫描在 main 侧 in-flight 去重，重入（StrictMode 双触发/重搜）安全。
+ *  欢迎屏复用（design-welcome-screen 2026-09-06）：busy = 连接进行中禁用候选
+ *  与动作；emptyContent = 双路皆空时覆盖默认空态文案（欢迎屏传首装安装指引）；
+ *  onPick 的建档/连接语义由调用方决定（设置弹窗仅建档，欢迎屏建档+激活+连接） */
+export function DiscoverView({
   onManual,
   onPick,
+  busy,
+  emptyContent,
 }: {
   onManual: () => void
   onPick: (p: ConnectionProfile) => void
+  busy?: boolean
+  emptyContent?: ReactNode
 }) {
   const { t } = useI18n()
   const [servers, setServers] = useState<ServerCandidate[] | null>(null)
@@ -360,6 +367,7 @@ function DiscoverView({
             type="button"
             className="discover-candidate"
             title={c.url}
+            disabled={busy}
             onClick={() =>
               onPick({
                 id: `prof_${Date.now()}`,
@@ -385,6 +393,7 @@ function DiscoverView({
             type="button"
             className="discover-candidate"
             title={c.path}
+            disabled={busy}
             onClick={() =>
               onPick({
                 id: `prof_${Date.now()}`,
@@ -400,14 +409,14 @@ function DiscoverView({
           </button>
         ))}
         {searching && <div className="form-note">{t.discoverScanning}</div>}
-        {!searching && !hasAny && <div className="form-note">{t.discoverNoResult}</div>}
+        {!searching && !hasAny && (emptyContent ?? <div className="form-note">{t.discoverNoResult}</div>)}
       </div>
       <div className="dialog-actions discover-actions">
-        <button type="button" disabled={searching} onClick={() => void runScan()}>
+        <button type="button" disabled={searching || busy} onClick={() => void runScan()}>
           <RefreshCw size={12} aria-hidden />
           {t.discoverRescan}
         </button>
-        <button type="button" className="btn-primary" onClick={onManual}>
+        <button type="button" className="btn-primary" disabled={busy} onClick={onManual}>
           {t.discoverManualEntry}
         </button>
       </div>
@@ -418,18 +427,26 @@ function DiscoverView({
 /** 手动配置/编辑服务器视图：渲染 dialog-body + dialog-actions（标题行的返回/关闭
  *  钮由 SettingsDialog 提供）；取消 = 丢弃草稿返回上一层（新增回发现视图，
  *  编辑回列表），保存 = upsert 落盘。
- *  模式选择置顶为 segment control（design-guided-add-server §3）+ 两模式一句话
- *  说明；表单按模式分化（design-managed-config §1）：managed 隐藏 URL/凭据
- *  （随机端口 + 自动凭据），新增二进制路径（自动扫描候选 + 浏览手选）；attach
- *  字段不变 */
-function ProfileFormView({
+ * 模式选择置顶为 segment control（design-guided-add-server §3）+ 两模式一句话
+ * 说明；表单按模式分化（design-managed-config §1）：managed 隐藏 URL/凭据
+ * （随机端口 + 自动凭据），新增二进制路径（自动扫描候选 + 浏览手选）；attach
+ * 字段不变
+ *
+ * 欢迎屏手动页复用（design-welcome-screen 2026-09-06 修订）：saveLabel 覆写
+ * 主按钮文案（连接/启动并连接）、busy 禁用动作（连接进行中）、onSave 由
+ * 「保存建档」换为「建档+激活+连接」（connectWithProfile） */
+export function ProfileFormView({
   profile,
   onCancel,
   onSave,
+  saveLabel,
+  busy,
 }: {
   profile: ConnectionProfile
   onCancel: () => void
   onSave: (p: ConnectionProfile) => void
+  saveLabel?: (mode: ConnectionProfile["mode"]) => string
+  busy?: boolean
 }) {
   const { t } = useI18n()
   const [draft, setDraft] = useState<ConnectionProfile>(profile)
@@ -568,12 +585,12 @@ function ProfileFormView({
       <div className="dialog-actions">
         <button onClick={onCancel}>{t.cancel}</button>
         {!managed && (
-          <button disabled={testing} onClick={() => void test()}>
+          <button disabled={testing || busy} onClick={() => void test()}>
             {t.testConnection}
           </button>
         )}
-        <button className="btn-primary" onClick={() => onSave(draft)}>
-          {t.save}
+        <button className="btn-primary" disabled={busy} onClick={() => onSave(draft)}>
+          {saveLabel ? saveLabel(draft.mode) : t.save}
         </button>
       </div>
     </>

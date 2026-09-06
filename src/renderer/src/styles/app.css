@@ -3510,50 +3510,6 @@
   margin: 8px 24px 20px;
 }
 
-.welcome-entries {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 0 24px;
-}
-
-.welcome-entry {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 14px;
-  border: 1px solid var(--outline-variant);
-  border-radius: var(--radius-card);
-  background: transparent;
-  color: var(--on-surface);
-  text-align: left;
-  cursor: pointer;
-}
-
-.welcome-entry:hover,
-.welcome-entry:focus-visible {
-  background: var(--surface-container-high);
-}
-
-.welcome-entry-name {
-  font-weight: 600;
-}
-
-.welcome-entry-badge {
-  font-size: var(--text-xs);
-  color: var(--primary);
-  border: 1px solid var(--primary);
-  border-radius: 4px;
-  padding: 0 4px;
-}
-
-.welcome-entry-desc {
-  grid-column: 1 / -1;
-  color: var(--on-surface-variant);
-  font-size: var(--text-sm);
-}
-
 .welcome-settings {
   display: block;
   margin: 16px auto 4px;
@@ -3569,36 +3525,21 @@
   text-decoration: underline;
 }
 
+/* 入口视图唯一动作：「添加服务器」满宽主按钮（welcome-body 为 column 布局） */
+.welcome-entry-btn {
+  align-self: stretch;
+}
+
+/* 连接中/连接错误行（视图体之外的卡片级反馈，两侧与卡片内边距对齐） */
+.welcome-error {
+  margin: 0 24px 8px;
+}
+
 .welcome-body {
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding: 8px 24px 12px;
-}
-
-.welcome-action {
-  margin-top: 8px;
-  align-self: stretch;
-}
-
-.welcome-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-top: 4px;
-}
-
-.welcome-link {
-  background: none;
-  border: none;
-  color: var(--primary);
-  cursor: pointer;
-  font-size: var(--text-sm);
-  padding: 0;
-}
-
-.welcome-link:hover {
-  text-decoration: underline;
 }
 
 .welcome-copied {
@@ -3613,6 +3554,9 @@
   padding: 4px 8px;
   border: 1px solid var(--outline-variant);
   border-radius: var(--radius-chip);
+  /* 多行命令现渲染在 .dialog-body（block 布局无 gap，作 DiscoverView 的
+     emptyContent）——行距在此自持，不依赖容器 */
+  margin-bottom: 6px;
 }
 
 .install-cmd-label {

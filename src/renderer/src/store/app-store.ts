@@ -4860,8 +4860,9 @@ export class AppStore {
 
   // ============ 设置 ============
 
-  /** 设置弹窗打开时请求聚焦的页签（design-welcome-screen §5：provider/默认模型
-   *  引导直达；一次性提示，closeSettings 后回落 connection） */
+  /** 设置弹窗打开时请求聚焦的页签（一次性提示，closeSettings 后回落 connection；
+   *  provider/默认模型引导直达已随欢迎屏检查移除（design-welcome-screen §4，
+   *  2026-09-06），现存调用方仅 connection（无项目空态）与无参 */
   settingsInitialTab: "connection" | "providers" | "appearance" | "defaults" = "connection"
 
   openSettings(tab?: "connection" | "providers" | "appearance" | "defaults") {
