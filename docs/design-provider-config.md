@@ -6,7 +6,7 @@
 
 | 端点 | 行为 |
 |---|---|
-| `GET /config/providers?directory=` | **只返回已配置的 provider**（无 key 的不出现在列表）——适合"有没有任何 key"判定（欢迎屏 #1 用），不适合完整列表 |
+| `GET /config/providers?directory=` | **只返回已配置的 provider**（无 key 的不出现在列表）——适合"有没有任何 key"判定（欢迎屏 #1 曾用，检查已随 2026-09-06 修订删除），不适合完整列表 |
 | `GET /provider?directory=` | `{all: Provider[], default: Record<pid, modelID>, connected: string[]}`——**全目录**（models.dev 212 项）+ 每项 `key` 字段（已配置时有值）+ 已连接 id 集 |
 | `PUT /auth/{providerID}` | body `{type:"api", key}`，**无 directory 参数**（auth 存储全局——auth.json），返回 boolean |
 | `DELETE /auth/{providerID}` | 无 directory；返回 boolean |
@@ -29,7 +29,7 @@
 ## 3. Model 配置
 
 - **复用现有「默认」页签**（ModelSwitcherBar agent/model，design-agent-model-switch）——spec 明确"Model 配置 = 默认模型选择"，不新增 UI
-- "provider key 配好而无默认模型时引导设置"：欢迎流程（#1）内串接——`model.defaults` 无 model 且存在已连接 provider 时欢迎屏给引导入口；本功能不涉及
+- ~~"provider key 配好而无默认模型时引导设置"：欢迎流程（#1）内串接~~（已移除，2026-09-06：欢迎屏 provider 检查删除——无项目作用域时配置页签本就不可用，引导徒增一跳；配置入口 = 主界面设置，见 design-welcome-screen §4）
 
 ## 4. 实现落点
 

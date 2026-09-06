@@ -6,7 +6,7 @@
 
 - 原流程：点「添加」直接落表单，扫描埋在 managed 模式的候选区里——attach 用户感知不到 mDNS 发现，managed 用户要先找到藏在底部的模式下拉。两个高价值入口（自动发现）都被表单字段挡住
 - 新流程把发现提到最前：多数场景用户点一下候选即完成配置（零表单、零输入）；手填降级为兜底入口
-- 交互形态参考欢迎屏（design-welcome-screen §3/§4 的扫描→候选→连接链路），但这里是**建档**（saveProfiles，不连接不激活）——设置弹窗内不引入连接副作用，激活仍走列表「启用」
+- 交互形态源自欢迎屏的扫描→候选→连接链路；**2026-09-06 反向统一：欢迎页只呈现「添加服务器」入口，点击后同源复用本设计的 DiscoverView + ProfileFormView**（design-welcome-screen §3，非复制），行为差异全部参数化（欢迎屏注入 busy/emptyContent/saveLabel/onPick 连接语义）
 
 ## 1. 视图状态机
 
@@ -41,7 +41,7 @@ type EditingState =
 - attach 候选：`{ id: prof_*, name: url, baseUrl: url, mode: "attach" }`——health 已在扫描侧验证（design-auto-scan §3.3），无需再测
 - managed 候选：`{ id: prof_*, name: "", baseUrl: "", mode: "managed", binaryPath: 候选路径 }`
 - 点击即调 `saveProfiles(next, store.activeProfileId)`（追加，不自动激活）→ 退回列表视图；用户在列表「启用」才连接
-- name 取 url/空串与欢迎屏「启动并连接」建档口径一致（welcome-managed 同为空名 → 列表回落展示 binaryPath）
+- name 取 url/空串与欢迎屏候选建档口径一致（2026-09-06 起两侧同源复用 DiscoverView/ProfileFormView——空名 managed → 列表回落展示 binaryPath）
 
 ### 2.3 手动入口常驻
 
@@ -64,7 +64,7 @@ type EditingState =
 
 | 文件 | 内容 |
 |---|---|
-| `settings-dialog.tsx` | `EditingState` 状态机；`DiscoverView`（双扫描并行 + 代际守卫 + 候选建档）；ProfileFormView 模式段置顶；Esc 分层扩展 |
+| `settings-dialog.tsx` | `EditingState` 状态机；`DiscoverView`（双扫描并行 + 代际守卫 + 候选建档；**导出供欢迎屏复用**，`busy`/`emptyContent` props，2026-09-06）；ProfileFormView 模式段置顶（**导出**，`saveLabel`/`busy` props）；Esc 分层扩展 |
 | i18n | `discover*` 8 键 + `addProfileManualTitle` + `modeAttachDesc`/`modeManagedDesc` + `modeAttach`/`modeManaged` 改短标签（zh/en） |
 | app.css | `.discover-candidate`（同 `.scan-candidate` 骨架 + main/徽标行内布局）、`.discover-actions`（space-between）、`.profile-mode-seg`/`.profile-mode-desc` |
 | 测试 | `settings-dialog.test.tsx`：发现视图组（并行启动、先到先列、悬挂一路保持搜索中、空态、server/binary 候选建档与退回、重新搜索、Esc 分层）+ manual 组（模式段切换、字段分化、编辑直落）；store mock 不变 |
