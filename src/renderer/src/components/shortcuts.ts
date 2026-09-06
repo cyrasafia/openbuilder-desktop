@@ -1,5 +1,6 @@
 import { useEffect } from "react"
 import { useI18n, useStore } from "../app"
+import type { MessageKey } from "../i18n"
 import { closeTabInteractive } from "./tab-actions"
 
 /**
@@ -122,3 +123,53 @@ export function useShortcuts() {
     })
   }, [store, t])
 }
+
+// ============ 设置页快捷键列表（§8） ============
+
+/** 单行：keys = 默认（非 mac）键位、macKeys = mac 键位（缺省回退 keys）；
+ *  only 标记平台专属行（mac 切 Tab 惯例键 / 非 mac Ctrl+Tab 系互斥展示），
+ *  only:"mac" 行不渲染非 mac 侧，keys 直接放 mac 键位即可 */
+export interface ShortcutRow {
+  keys: string
+  macKeys?: string
+  action: MessageKey
+  only?: "mac" | "non-mac"
+}
+
+export interface ShortcutGroup {
+  title: MessageKey
+  rows: ShortcutRow[]
+}
+
+/** 快捷键清单（设置页展示，§1 表的渲染数据）：与 dispatch 同文件维护防漂移；
+ *  另收各视图内局部键（聊天输入 Enter 系、code-view 搜索、终端复制/粘贴、
+ *  Esc 关闭——全局分发之外用户可感知的键） */
+export const SHORTCUT_GROUPS: ShortcutGroup[] = [
+  {
+    title: "scGroupGlobal",
+    rows: [
+      { keys: "Ctrl+T", macKeys: "⌘T", action: "newTab" },
+      { keys: "Ctrl+O", macKeys: "⌘O", action: "scOpenProject" },
+      { keys: "Ctrl+W", macKeys: "⌘W", action: "scCloseTab" },
+      { keys: "Ctrl+Shift+T", macKeys: "⌘⇧T", action: "scRestoreTab" },
+      { keys: "Ctrl+Tab / Ctrl+PageDown", action: "scNextTab", only: "non-mac" },
+      { keys: "Ctrl+Shift+Tab / Ctrl+PageUp", action: "scPrevTab", only: "non-mac" },
+      { keys: "⌘⌥→ / ⌘⇧]", action: "scNextTab", only: "mac" },
+      { keys: "⌘⌥← / ⌘⇧[", action: "scPrevTab", only: "mac" },
+      { keys: "Alt+↓ / Alt+↑", macKeys: "⌘⌥↓ / ⌘⌥↑", action: "scCycleScope" },
+      { keys: "Ctrl+B", macKeys: "⌘B", action: "scToggleLeft" },
+      { keys: "Ctrl+Alt+B", macKeys: "⌥⌘B", action: "scToggleRight" },
+    ],
+  },
+  {
+    title: "scGroupInput",
+    rows: [
+      { keys: "Enter", action: "scSend" },
+      { keys: "Shift+Enter", action: "scNewline" },
+      { keys: "Ctrl+F", macKeys: "⌘F", action: "scFileSearch" },
+      { keys: "Ctrl+Shift+C", macKeys: "⌘C", action: "scTermCopy" },
+      { keys: "Ctrl+Shift+V", macKeys: "⌘V", action: "scTermPaste" },
+      { keys: "Esc", action: "scDismiss" },
+    ],
+  },
+]

@@ -76,6 +76,7 @@ private closedTabs: ClosedTabEntry[] = []   // push 尾 / pop 尾，上限 20（
 - MRU 切换顺序（Ctrl+Tab 用线性循环；浏览器 MRU 依赖"最近使用"栈，复杂度不值）
 - 快捷键自定义/冲突检测 UI
 - 关闭栈持久化
+- 设置页快捷键列表的逐视图穷举（只收用户可感知的局部键：Enter 系/搜索/终端复制粘贴/Esc，见 §8；各弹窗内 ↑/↓/Enter 选择属通用 UI 惯例不列）
 
 ## 6. 涉及文件
 
@@ -94,3 +95,13 @@ private closedTabs: ClosedTabEntry[] = []   // push 尾 / pop 尾，上限 20（
 - spec-v0.3 #2 验收行全过：Ctrl+T/W/Tab/Shift+Tab/PgUp/PgDn、Ctrl+Shift+T 依次恢复（chat 取消归档、已删会话跳过）、Alt+↑/↓（mac ⌘⌥↑/↓）循环切换
 - §1.1：引导页 Ctrl+1/2/3 开 diff/终端/网页 Tab（禁用态不动作）；Ctrl 按住三磁贴显数字角标、松开/失焦消失；离开引导页后按键无动作
 - `npm run test` / `typecheck` / `build` 全绿
+
+## 8. 设置页快捷键列表（2026-09-06）
+
+> 可发现性补齐：快捷键体系已成型但无应用内入口，新用户无从得知。设置弹窗新增「快捷键」页签（现有四页签后追加）。移动端无硬件键盘（头部已述），无同类先例可参考。
+
+- **数据源单一**：渲染数据 `SHORTCUT_GROUPS` 定义在 `shortcuts.ts`（与 `dispatch` 同文件维护，防表-码漂移）；行结构 `{ keys, macKeys?, action(i18n key), only?: "mac" | "non-mac" }`，" / " 分隔的等效键拆独立 chip
+- **平台分支渲染**：`window.desktop.platform === "darwin"` 时显示 `macKeys`（缺省回退 `keys`）；`only` 行互斥——mac 切 Tab 惯例键（⌘⌥←/→、⌘⇧[/]）与非 mac Ctrl+Tab/PgUp/PgDn 系各只在本平台展示，与 §1 分发表绑定语义一致
+- **范围**：全局组 = §1 表全量；「输入与视图」组收分发之外的局部键——Enter/Shift+Enter（聊天输入）、Ctrl+F（code-view，CodeMirror searchKeymap）、终端复制/粘贴（Linux Ctrl+Shift+C/V、mac ⌘C/⌘V，键位随平台展示）、Esc（关闭弹窗/菜单）
+- 设置页签本地类型为 store `settingsInitialTab` 的超集（store 不加宽——无 shortcuts 直达调用方）
+- 样式：`.sc-row`（动作左、键位 chip 右）+ `.sc-kbd`（mono chip），组间 gap 呼吸，token 全复用（DESIGN.md 无新增 token）

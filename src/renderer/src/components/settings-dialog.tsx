@@ -8,6 +8,7 @@ import type { ProviderCatalog, ProviderInfo } from "@shared/api-types"
 import { ConfirmDialog } from "./confirm-dialog"
 import { managedNoticeText } from "./managed-notice"
 import { ModelSwitcherBar } from "./model-switcher"
+import { SHORTCUT_GROUPS } from "./shortcuts"
 
 /** 弹窗内视图状态（design-guided-add-server）：非空 = 丢弃 tabs 视图跳入
  *  服务器子视图。新增走「发现 → 手动」两步：点「添加」先落 discover，发现
@@ -31,7 +32,11 @@ export function newProfileDraft(): ConnectionProfile {
 export function SettingsDialog() {
   const store = useStore()
   const { t } = useI18n()
-  const [tab, setTab] = useState<"connection" | "providers" | "appearance" | "defaults">(
+  // 设置页签本地类型为 store settingsInitialTab 的超集（store 无 shortcuts
+  // 直达调用方，不加宽 store）
+  const [tab, setTab] = useState<
+    "connection" | "providers" | "appearance" | "defaults" | "shortcuts"
+  >(
     // 引导直达页签（openSettings(tab) 一次性提示；现存调用方仅 connection）
     store.settingsInitialTab,
   )
@@ -192,6 +197,9 @@ export function SettingsDialog() {
               <button className={tab === "defaults" ? "active" : ""} onClick={() => setTab("defaults")}>
                 {t.defaultsTitle}
               </button>
+              <button className={tab === "shortcuts" ? "active" : ""} onClick={() => setTab("shortcuts")}>
+                {t.shortcutsTitle}
+              </button>
             </div>
             <div className="dialog-body">
               {tab === "connection" ? (
@@ -200,6 +208,8 @@ export function SettingsDialog() {
                 <ProviderSettings onEditKey={setProviderEdit} />
               ) : tab === "appearance" ? (
                 <AppearanceSettings />
+              ) : tab === "shortcuts" ? (
+                <ShortcutsSettings />
               ) : (
                 <DefaultsSettings />
               )}
@@ -928,6 +938,37 @@ function DefaultsSettings() {
           </button>
         </>
       )}
+    </div>
+  )
+}
+
+/** 快捷键页签（design-keyboard-shortcuts §8）：数据源 SHORTCUT_GROUPS
+ *  （与分发同文件维护）；平台分支渲染——mac 显示 macKeys（缺省回退 keys），
+ *  only 行按平台过滤（mac 切 Tab 惯例键 / 非 mac Ctrl+Tab 系互斥） */
+function ShortcutsSettings() {
+  const { t } = useI18n()
+  const mac = window.desktop.platform === "darwin"
+  return (
+    <div className="settings-shortcuts">
+      {SHORTCUT_GROUPS.map((g) => (
+        <section key={g.title} className="sc-group">
+          <div className="sc-group-title">{t[g.title]}</div>
+          {g.rows
+            .filter((r) => !(r.only === "mac" && !mac) && !(r.only === "non-mac" && mac))
+            .map((r) => (
+              <div key={`${r.action}:${r.keys}`} className="sc-row">
+                <span className="sc-action">{t[r.action]}</span>
+                <span className="sc-keys">
+                  {(mac && r.macKeys ? r.macKeys : r.keys).split(" / ").map((k) => (
+                    <kbd key={k} className="sc-kbd">
+                      {k}
+                    </kbd>
+                  ))}
+                </span>
+              </div>
+            ))}
+        </section>
+      ))}
     </div>
   )
 }
