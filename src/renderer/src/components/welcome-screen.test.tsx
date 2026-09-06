@@ -54,12 +54,10 @@ vi.mock("../app", () => ({
       welcomeConnect: "连接",
       addProfileTitle: "添加服务器",
       addProfileManualTitle: "手动配置服务器",
-      discoverServersTitle: "发现的服务器",
-      discoverBinariesTitle: "本机 opencode",
+      discoverAttachTitle: "连接到现有 opencode 服务（attach 模式）",
+      discoverManagedTitle: "启动新的 opencode 进程（managed 模式）",
       discoverScanning: "正在搜索…",
       discoverNoResult: "未发现可连接目标",
-      discoverSourceLoopback: "本机",
-      discoverSourceMdns: "局域网",
       discoverRescan: "重新搜索",
       discoverManualEntry: "手动配置…",
     },
@@ -96,11 +94,12 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-/** 入口 → 发现视图（返回发现视图渲染完成的 waitFor） */
+/** 入口 → 发现视图（返回发现视图渲染完成的 waitFor；段标题已删，以常驻的
+ *  「手动配置…」入口为发现视图在场的判据） */
 async function enterDiscover() {
   render(<WelcomeScreen />)
   fireEvent.click(screen.getByRole("button", { name: "添加服务器" }))
-  await waitFor(() => expect(screen.getByText("发现的服务器")).toBeTruthy())
+  await waitFor(() => expect(screen.getByText("手动配置…")).toBeTruthy())
 }
 
 describe("WelcomeScreen", () => {
@@ -119,9 +118,10 @@ describe("WelcomeScreen", () => {
     await enterDiscover()
     expect(scanServers).toHaveBeenCalledTimes(1)
     expect(scanBinaries).toHaveBeenCalledTimes(1)
-    await waitFor(() => expect(screen.getByText("http://127.0.0.1:4096")).toBeTruthy())
-    expect(screen.getByText("本机")).toBeTruthy() // 来源徽标
+    await waitFor(() => expect(screen.getByText("127.0.0.1:4096")).toBeTruthy())
+    expect(screen.getByText("连接到现有 opencode 服务（attach 模式）")).toBeTruthy()
     expect(screen.getByText("/usr/bin/opencode")).toBeTruthy()
+    expect(screen.getByText("启动新的 opencode 进程（managed 模式）")).toBeTruthy()
     expect(screen.getByText("1.18.20")).toBeTruthy()
   })
 
@@ -129,15 +129,15 @@ describe("WelcomeScreen", () => {
     await enterDiscover()
     fireEvent.click(screen.getByTitle("返回"))
     expect(screen.getByText("欢迎使用 OpenBuilder")).toBeTruthy()
-    expect(screen.queryByText("发现的服务器")).toBeNull()
+    expect(screen.queryByText("手动配置…")).toBeNull()
   })
 
   it("点击 server 候选：先 health 验证（带草稿凭据），通过后建 attach profile（固定 id）并连接", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ healthy: true, version: "1.0.0" }), { status: 200 }))
     vi.stubGlobal("fetch", fetchMock)
     await enterDiscover()
-    await waitFor(() => expect(screen.getByText("http://127.0.0.1:4096")).toBeTruthy())
-    fireEvent.click(screen.getByText("http://127.0.0.1:4096"))
+    await waitFor(() => expect(screen.getByText("127.0.0.1:4096")).toBeTruthy())
+    fireEvent.click(screen.getByText("127.0.0.1:4096"))
     await waitFor(() =>
       expect(storeState.current.saveProfiles).toHaveBeenCalledWith(
         [
@@ -160,8 +160,8 @@ describe("WelcomeScreen", () => {
     const fetchMock = vi.fn(async () => new Response("nope", { status: 503 }))
     vi.stubGlobal("fetch", fetchMock)
     await enterDiscover()
-    await waitFor(() => expect(screen.getByText("http://127.0.0.1:4096")).toBeTruthy())
-    fireEvent.click(screen.getByText("http://127.0.0.1:4096"))
+    await waitFor(() => expect(screen.getByText("127.0.0.1:4096")).toBeTruthy())
+    fireEvent.click(screen.getByText("127.0.0.1:4096"))
     await waitFor(() => expect(screen.getByText(/连接失败/)).toBeTruthy())
     expect(storeState.current.saveProfiles).not.toHaveBeenCalled()
     expect(storeState.current.connect).not.toHaveBeenCalled()
@@ -239,7 +239,7 @@ describe("WelcomeScreen", () => {
     expect(storeState.current.disconnect).toHaveBeenCalled()
     expect(storeState.current.connect).toHaveBeenCalledWith({ openPickerAfter: true })
     fireEvent.click(screen.getByTitle("返回"))
-    await waitFor(() => expect(screen.getByText("发现的服务器")).toBeTruthy())
+    await waitFor(() => expect(screen.getByText("手动配置…")).toBeTruthy())
     vi.unstubAllGlobals()
   })
 

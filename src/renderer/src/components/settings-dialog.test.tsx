@@ -51,11 +51,9 @@ vi.mock("../app", () => ({
       modeManaged: "本机启动",
       modeAttachDesc: "attach 说明",
       modeManagedDesc: "managed 说明",
-      discoverServersTitle: "发现的服务器",
-      discoverBinariesTitle: "本机 opencode",
+      discoverAttachTitle: "连接到现有 opencode 服务（attach 模式）",
+      discoverManagedTitle: "启动新的 opencode 进程（managed 模式）",
       discoverScanning: "正在搜索…",
-      discoverSourceLoopback: "本机",
-      discoverSourceMdns: "局域网",
       discoverNoResult: "未发现",
       discoverRescan: "重新搜索",
       discoverManualEntry: "手动配置…",
@@ -157,10 +155,11 @@ describe("添加服务器引导式（design-guided-add-server）", () => {
     fireEvent.click(screen.getByText("添加"))
     expect(scanServers).toHaveBeenCalled()
     expect(scanBinaries).toHaveBeenCalled()
-    // 两类候选都出现（attach 候选带来源徽标「本机」）
-    await waitFor(() => expect(screen.getByText("http://127.0.0.1:4096")).toBeTruthy())
+    // 两类候选都出现（多行卡片：模式标题 + 明细行；binary 两个候选标题同名）
+    await waitFor(() => expect(screen.getByText("连接到现有 opencode 服务（attach 模式）")).toBeTruthy())
+    expect(screen.getByText("127.0.0.1:4096")).toBeTruthy()
     expect(screen.getByText("/usr/bin/opencode")).toBeTruthy()
-    expect(screen.getByText("本机")).toBeTruthy()
+    expect(screen.getAllByText("启动新的 opencode 进程（managed 模式）")).toHaveLength(2)
     // 手动入口常驻
     expect(screen.getByText("手动配置…")).toBeTruthy()
   })
@@ -187,8 +186,8 @@ describe("添加服务器引导式（design-guided-add-server）", () => {
   it("点击 server 候选：一键建档并启用（attach profile + baseUrl），关弹窗 + 直达连接", async () => {
     render(<SettingsDialog />)
     fireEvent.click(screen.getByText("添加"))
-    await waitFor(() => expect(screen.getByText("http://127.0.0.1:4096")).toBeTruthy())
-    fireEvent.click(screen.getByText("http://127.0.0.1:4096"))
+    await waitFor(() => expect(screen.getByText("127.0.0.1:4096")).toBeTruthy())
+    fireEvent.click(screen.getByText("127.0.0.1:4096"))
     // 建档即启用：saveProfiles 第二参 = 新 profile id（非 null）
     await waitFor(() => {
       const calls = (storeState.current.saveProfiles as ReturnType<typeof vi.fn>).mock.calls

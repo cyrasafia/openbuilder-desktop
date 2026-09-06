@@ -31,7 +31,7 @@ type EditingState =
 ### 2.1 并行搜索、先到先列
 
 - 进入即**同时**发起 `scanServers()` + `scanBinaries()`（不互相等待——mDNS 4s 窗口不拖二进制扫描的展示，反之亦然）；两路各自落地、各自渲染
-- 「搜到即列」：servers 候选区与 binaries 候选区按两节排布（发现的服务器 / 本机 opencode），attach 与 managed 候选**混排**在同一列表体里，各自带来源信息（attach 候选带「本机/局域网」来源徽标 + 版本；binary 候选带路径 + 版本）
+- 「搜到即列」：~~servers 候选区与 binaries 候选区按两节排布（发现的服务器 / 本机 opencode）~~（2026-09-06 修订：**取消分节与段标题**——attach 与 managed 候选**混排**在单一列表体里，**多行卡片、两模式同一套样式**：首行标题文案区分模式（attach =「连接到现有 opencode 服务（attach 模式）」/ managed =「启动新的 opencode 进程（managed 模式）」）+ 版本居右，次行 mono 明细（attach = 地址:端口，managed = 可执行路径）；~~attach 候选带「本机/局域网」来源徽标~~（同修订取消——`source` 字段保留在 `ServerCandidate` 契约里，UI 不再展示）
 - 搜索中 = 显式 scanning 态或任一路未回（guided review 修订）：底部 form-note「正在搜索…」，「重新搜索」钮禁用；**重搜同样置 scanning**（两路已非 null 的 rescan 无 null 判据可依，须显式态给反馈），双路全落地才清；两路都完成且零候选才给空态文案
 - **迟到响应丢弃**：视图内 seq 代际（rescan 递增）——上一轮的迟到结果不覆盖新一轮
 - 严格模式双触发安全：main 侧 `scan:binaries`/`scan:servers` 已有 in-flight Promise 去重（design-auto-scan §4）
@@ -67,8 +67,8 @@ type EditingState =
 | 文件 | 内容 |
 |---|---|
 | `settings-dialog.tsx` | `EditingState` 状态机；`DiscoverView`（双扫描并行 + 代际守卫 + 候选建档；**导出供欢迎屏复用**，`busy`/`emptyContent` props，2026-09-06）；ProfileFormView 模式段置顶（**导出**，`saveLabel`/`busy` props）；Esc 分层扩展 |
-| i18n | `discover*` 8 键 + `addProfileManualTitle` + `modeAttachDesc`/`modeManagedDesc` + `modeAttach`/`modeManaged` 改短标签（zh/en） |
-| app.css | `.discover-candidate`（同 `.scan-candidate` 骨架 + main/徽标行内布局）、`.discover-actions`（space-between）、`.profile-mode-seg`/`.profile-mode-desc` |
+| i18n | `discover*` 6 键（2026-09-06 修订：删 `discoverServersTitle`/`discoverBinariesTitle`（候选单列表混排无段标题）与 `discoverSourceLoopback`/`discoverSourceMdns`（来源徽标取消），增 `discoverAttachTitle`/`discoverManagedTitle` 多行卡片标题文案）+ `addProfileManualTitle` + `modeAttachDesc`/`modeManagedDesc` + `modeAttach`/`modeManaged` 改短标签（zh/en） |
+| app.css | `.discover-candidate`（多行卡片：首行 `.discover-candidate-head` 标题居左 + 版本居右、次行 `.discover-candidate-detail` mono 明细，attach/managed 同构）、`.discover-actions`（space-between）、`.profile-mode-seg`/`.profile-mode-desc` |
 | 测试 | `settings-dialog.test.tsx`：发现视图组（并行启动、先到先列、悬挂一路保持搜索中、空态、server/binary 候选建档**并启用**（saveProfiles 激活 + closeSettings + disconnect + connect({openPickerAfter})）、重新搜索、Esc 分层）+ manual 组（模式段切换、字段分化、编辑直落、**手动新增保存启用流**）；store 侧 `app-store.test.ts` 的 `connect({openPickerAfter})` 组（消费即清/已有项目不弹/普通 connect 不弹/失败保留标记） |
 
 ## 6. 已知取舍
