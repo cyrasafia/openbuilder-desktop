@@ -561,7 +561,13 @@ export class AppStore {
     return this.managedBaseUrl ?? this.activeProfile?.baseUrl ?? null
   }
 
-  async connect() {
+  /** connect 选项：openPickerAfter = 连接成功且无已打开项目时打开项目列表
+   *  的一次性标记（design-guided-add-server 修订：新增服务器连接后直达项目
+   *  选择；启动重连/切换 profile 的 connect 不带，落空态引导） */
+  private openPickerAfterConnect = false
+
+  async connect(opts?: { openPickerAfter?: boolean }) {
+    if (opts?.openPickerAfter) this.openPickerAfterConnect = true
     // 串行化（review 2026-09-04）：connect 并发重入（activate 的 connect 在途时
     // "restarted" 事件再入）会双 teardown/双恢复——第二次的 teardownConnection
     // 拆第一次正在 restore 的状态，恢复链对已清空容器解引用。在途时只记一次
@@ -650,12 +656,8 @@ export class AppStore {
     // 正是 restoreTabSession 即将读取的输入。恢复段收尾统一固化
     this.restoringTabs = true
     try {
-      // global 拆分发现快照：ensureDefaultProjects 的"最近活跃 global 目录"依赖它
+      // global 拆分发现快照：global 目录行数据源（连接时刷新保证行齐全）
       await this.refreshGlobalSessions()
-      if (stale()) return
-
-      // 首次连接默认打开 current + 最近活跃 1 个（design-layout）
-      await this.ensureDefaultProjects()
       if (stale()) return
 
       // 打开项目的快照 + 订阅
@@ -689,6 +691,14 @@ export class AppStore {
     // 冷启动 pending 回填（离线期间产生的授权/问题请求）
     void this.backfillPending()
     this.connectionState = "streaming"
+    // 新增服务器的一次性直达（design-guided-add-server 修订）：连接成功且无已
+    // 打开项目时打开项目列表（用户从设置/欢迎屏新增服务器即待选项目）；已打开
+    // 项目的 profile（既有用户重连/切换）不弹——空态引导足够。消费即清，失败
+    // 路径（上方早退）保留标记到下次成功连接，避免半途连接丢入口
+    if (this.openPickerAfterConnect) {
+      this.openPickerAfterConnect = false
+      if (this.openedProjects.length === 0) this.openProjectPicker()
+    }
     // 连接成功清 managed 退避提示：主进程侧显式 start() 取代排队重启时不发
     // restarted 事件，notice 会残留（崩溃 → 排队 → 用户动作触发 connect 的路径）
     this.managedNotice = null
@@ -813,6 +823,9 @@ export class AppStore {
     this.browserViewIds.clear()
     this.browserStates.clear()
     this.overlayCount = 0
+    // 项目选择器随连接拆除复位（overlayCount 已清零，同步标志位防重连后残留：
+    // openProjectPicker 的已开短路会吃掉新一次直达）
+    this.pickerOpen = false
     this.client = null
     this.managedBaseUrl = null
     this.projects = []
@@ -893,41 +906,6 @@ export class AppStore {
     this.modelCatalogLoading.clear()
     this.modelCatalogFailed.clear()
     this.resetFileTree()
-  }
-
-  private async ensureDefaultProjects() {
-    const ps = this.projectStateFor()
-    if (ps.opened.length > 0) return
-    // design-layout：首次连接默认打开 current + 最近活跃 1 个
-    let currentId: string | null = null
-    try {
-      const current = await this.client!.currentProject()
-      currentId = current.id
-    } catch {
-      currentId = this.projects[0]?.id ?? null
-    }
-    if (!currentId) return
-    if (currentId === GLOBAL_PROJECT_ID) {
-      // projects 列表无 global（两次请求响应不一致的防御）：不 push 幻影 entry——
-      // 否则 opened 非空短路默认打开逻辑，直到用户手动打开才恢复
-      if (!this.globalProject) return
-      // global 拆分：current 落到最近活跃 global 目录（发现快照已合并），
-      // 无会话则根目录（entry 打开但作用域 = 项目根语义）
-      const dir = this.globalDirectoryRowsAll()[0]?.directory ?? this.globalProject.worktree
-      ps.opened.push(globalEntryKey(dir))
-      ps.currentProjectId = GLOBAL_PROJECT_ID
-      ps.currentWorkspaceId = dir === this.globalProject.worktree ? null : dir
-    } else {
-      ps.opened.push(currentId)
-      ps.currentProjectId = currentId
-      ps.currentWorkspaceId = null
-    }
-    const recent = [...this.projects]
-      .filter((p) => !ps.opened.includes(p.id) && p.id !== GLOBAL_PROJECT_ID)
-      .sort((a, b) => b.time.updated - a.time.updated)[0]
-    if (recent) ps.opened.push(recent.id)
-    this.projectStates[this.profileKey()] = ps
-    await this.persistProjectState()
   }
 
   private async refreshAllOpenedProjects() {

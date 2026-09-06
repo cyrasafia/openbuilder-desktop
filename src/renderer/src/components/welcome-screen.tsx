@@ -156,7 +156,10 @@ function InstallHint() {
   )
 }
 
-/** 建 profile + 激活 + 连接（discover/manual 共用；connect 内部含 spawn/健康/快照） */
+/** 建 profile + 激活 + 连接（discover/manual 共用；connect 内部含 spawn/健康/快照）。
+ *  openPickerAfter 同设置页新增流（design-guided-add-server 修订）：连接成功且
+ *  无已打开项目时直达项目选择器；先断开再改激活（同 activate 惯例，managed
+ *  旧进程正确 stop） */
 async function connectWithProfile(
   store: ReturnType<typeof useStore>,
   profile: ConnectionProfile,
@@ -164,8 +167,9 @@ async function connectWithProfile(
   const idx = store.profiles.findIndex((p) => p.id === profile.id)
   const next =
     idx >= 0 ? store.profiles.map((p, i) => (i === idx ? profile : p)) : [...store.profiles, profile]
+  await store.disconnect()
   await store.saveProfiles(next, profile.id)
-  await store.connect()
+  await store.connect({ openPickerAfter: true })
 }
 
 function WelcomeHeader({ title, onBack }: { title: string; onBack: () => void }) {

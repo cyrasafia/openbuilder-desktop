@@ -82,6 +82,7 @@ beforeEach(() => {
     closeWelcome: vi.fn(),
     openSettings: vi.fn(),
     saveProfiles: vi.fn(async () => {}),
+    disconnect: vi.fn(async () => {}),
     connect: vi.fn(async () => {}),
   }
   Object.defineProperty(window, "desktop", {
@@ -150,7 +151,8 @@ describe("WelcomeScreen", () => {
         "welcome-attach",
       ),
     )
-    expect(storeState.current.connect).toHaveBeenCalled()
+    expect(storeState.current.disconnect).toHaveBeenCalled()
+    expect(storeState.current.connect).toHaveBeenCalledWith({ openPickerAfter: true })
     vi.unstubAllGlobals()
   })
 
@@ -184,7 +186,8 @@ describe("WelcomeScreen", () => {
         "welcome-managed",
       ),
     )
-    expect(storeState.current.connect).toHaveBeenCalled()
+    expect(storeState.current.disconnect).toHaveBeenCalled()
+    expect(storeState.current.connect).toHaveBeenCalledWith({ openPickerAfter: true })
     fireEvent.click(screen.getByText("/usr/bin/opencode"))
     await waitFor(() => expect(storeState.current.saveProfiles).toHaveBeenCalledTimes(2))
     const lastCall = (storeState.current.saveProfiles as ReturnType<typeof vi.fn>).mock.calls.at(-1)
@@ -233,7 +236,8 @@ describe("WelcomeScreen", () => {
         "welcome-attach",
       ),
     )
-    expect(storeState.current.connect).toHaveBeenCalled()
+    expect(storeState.current.disconnect).toHaveBeenCalled()
+    expect(storeState.current.connect).toHaveBeenCalledWith({ openPickerAfter: true })
     fireEvent.click(screen.getByTitle("返回"))
     await waitFor(() => expect(screen.getByText("发现的服务器")).toBeTruthy())
     vi.unstubAllGlobals()

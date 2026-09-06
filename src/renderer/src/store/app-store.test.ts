@@ -6,7 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AppStore, diffTabKey, FILE_WATCH_DEBOUNCE_MS, SCOPE_CYCLE_WINDOW_MS } from "./app-store"
-import { ApiError } from "@shared/rest-client"
+import { ApiError, RestClient } from "@shared/rest-client"
 import { SseSubscriber } from "@shared/sse-subscriber"
 import { globalEntryKey } from "@shared/project-entries"
 import type { ModelCatalog } from "@shared/model-catalog"
@@ -4368,6 +4368,70 @@ describe("applyManagedEvent disconnected 闸门（review 第三轮）", () => {
     expect(managedStart).not.toHaveBeenCalled()
     expect(store.managedLogLines).toEqual([])
     expect(store.managedNotice).toBeNull()
+  })
+})
+
+// ============ 新增服务器直达项目选择器（design-guided-add-server 修订） ============
+
+describe("connect({openPickerAfter}) 一次性标记", () => {
+  /** attach profile + RestClient 原型级 mock（doConnect 内 new 出的实例同样命中） */
+  function attachProfileDesktop(projects: Project[] = []) {
+    ;(window as unknown as { desktop: unknown }).desktop = {
+      ...(window as unknown as { desktop: Record<string, unknown> }).desktop,
+      onManagedEvent: () => () => {},
+    }
+    store.profiles = [{ id: "p1", name: "a", baseUrl: "http://127.0.0.1:1", mode: "attach" }]
+    store.activeProfileId = "p1"
+    vi.spyOn(RestClient.prototype, "health").mockResolvedValue({ healthy: true, version: "1.0.66" })
+    vi.spyOn(RestClient.prototype, "listProjects").mockResolvedValue(projects)
+    vi.spyOn(RestClient.prototype, "listProjectSessions").mockResolvedValue([])
+  }
+
+  it("带标记连接成功且无已打开项目 → 打开项目列表；标记消费即清", async () => {
+    attachProfileDesktop([project()])
+    store.projectStates = { p1: { opened: [], currentProjectId: null, currentWorkspaceId: null } }
+    store.pickerOpen = false
+
+    await store.connect({ openPickerAfter: true })
+    expect(store.connectionState).toBe("streaming")
+    expect(store.pickerOpen).toBe(true)
+    // 消费即清：断开重连（不带标记）不再弹
+    await store.disconnect()
+    await store.connect()
+    expect(store.pickerOpen).toBe(false)
+  })
+
+  it("带标记但 profile 已有打开项目 → 不弹（空态引导足够），标记同样消费", async () => {
+    attachProfileDesktop([project()])
+    store.projectStates = { p1: { opened: ["proj1"], currentProjectId: "proj1", currentWorkspaceId: null } }
+
+    await store.connect({ openPickerAfter: true })
+    expect(store.pickerOpen).toBe(false)
+    // 已消费：再连不弹
+    await store.disconnect()
+    await store.connect()
+    expect(store.pickerOpen).toBe(false)
+  })
+
+  it("普通 connect 不弹项目列表", async () => {
+    attachProfileDesktop([project()])
+    store.projectStates = { p1: { opened: [], currentProjectId: null, currentWorkspaceId: null } }
+
+    await store.connect()
+    expect(store.pickerOpen).toBe(false)
+  })
+
+  it("连接失败保留标记：下次成功连接仍直达（半途连接不丢入口）", async () => {
+    attachProfileDesktop([project()])
+    // 第一次失败：health 抛错
+    vi.spyOn(RestClient.prototype, "health").mockRejectedValue(new Error("down"))
+    await store.connect({ openPickerAfter: true })
+    expect(store.connectionState).toBe("disconnected")
+    expect(store.pickerOpen).toBe(false)
+    // 恢复后重连成功：标记仍在，直达
+    vi.spyOn(RestClient.prototype, "health").mockResolvedValue({ healthy: true, version: "1.0.66" })
+    await store.connect()
+    expect(store.pickerOpen).toBe(true)
   })
 })
 

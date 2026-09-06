@@ -147,7 +147,7 @@ Subagent 按 /review 方法全量审查（P1=3 P2=6 P3=7），核心结论：**s
 | 12 | P3 | `AbortSignal.timeout` 抛 `TimeoutError` 而非 `AbortError`，超时误分类 unknown | 分类函数加 `TimeoutError` 分支 |
 | 13 | P3 | void 端点（prompt_async 等）200 空体时 `json()` 抛错 → 乐观消息误撤回重发 | 空文本直接返回 undefined；JSON 解析失败归类 ApiError |
 | 14 | P3 | 安全：安全警告禁用生产也生效、sandbox:false、openExternal 不校验协议、无 will-navigate 拦截、密码框明文 | 仅 dev 禁警告；`sandbox:true`（验证 preload 正常）；openExternal 限 http/https；will-navigate 限制应用 origin；密码框 type=password |
-| 15 | P3 | 与设计偏差：首次连接缺"最近活跃 1 个"、关当前项目回退插入序而非最近活跃 | ensureDefaultProjects 开 current+最近活跃；closeProject 按 time.updated 回退。工作区"分支"输入：worktree API 实际不支持 branch 参数（body 仅 name/startCommand），i18n key 已删，design-layout 相应更正 |
+| 15 | P3 | 与设计偏差：首次连接缺"最近活跃 1 个"、关当前项目回退插入序而非最近活跃 | ensureDefaultProjects 开 current+最近活跃；closeProject 按 time.updated 回退。工作区"分支"输入：worktree API 实际不支持 branch 参数（body 仅 name/startCommand），i18n key 已删，design-layout 相应更正。**2026-09-06 修订**：ensureDefaultProjects 整体移除——首次连接不再自动打开项目（新增服务器走项目选择器直达，见 design-guided-add-server §2.2 修订；`/project/current` 无参调用随之从 rest-client 删除，带 directory 参数的 resolveProject 保留） |
 | 16 | P3 | Tab 重激活不重拉（陈旧内容） | chat/file Tab 激活即重拉（组件随激活重挂载，去掉缓存守卫；合并层保证不丢数据） |
 
 E2E 回归记录：关 Tab=归档+状态清理 ✓；切项目=Tab 全关+会话归档+项目切换 ✓；sandbox:true 下 preload/连接/流式正常 ✓。
