@@ -11,7 +11,8 @@
 | 3 | 自动扫描 | **managed 二进制扫描**（欢迎屏与 profile 表单共用）：PATH + 常见安装落点（`~/.opencode/bin`、`~/.local/bin`、npm global bin、`/opt/homebrew/bin`、`/usr/local/bin`）→ 去重候选列表，逐项 `--version` 展示。**attach server 扫描**（欢迎屏与 attach 表单共用）：loopback 探测（默认端口 4096；不做网段端口扫描）+ **mDNS 发现**（main 进程 bonjour-service 浏览 `_http._tcp`，按 server 原生发布格式过滤 `opencode-{port}` 服务名——server 侧 `--mdns` 且非 loopback hostname 才发布，与 opencode 同库互通）；每个候选 `GET /global/health` 验证并显示版本，一键填入 URL。扫描均手动触发（进入向导/表单时自动跑一轮 + 手动重扫按钮），不后台常驻 |
 | 4 | Provider/Model 配置 | 设置弹窗新增 **Provider 页签**：provider 列表（名称、source、key 配置状态、模型数，`GET /config/providers` 按当前作用域目录查）+ **API key 设置/删除**（`PUT /auth/{providerID}` `{type:"api", key}` / `DELETE /auth/{providerID}`，仅 API key 形态）。**Model 配置 = 默认模型选择**（复用现有「默认」页签 agent/model）。范围外见下（OAuth、config 编辑等） |
 | 5 | 会话附件（文件与贴图） | 三个入口：**粘贴**（clipboard 图片 → 附件；文本粘贴不变）、**拖拽外部文件**进输入框（工作区文件树拖入仍是 source 引用不变，v0.3）、输入框**附件按钮**（系统文件选择器，多选）。通路（参考 openbuilder [design-attachments](../../../openbuilder/docs/design-attachments.md) + [design-image-attachment-thumbnail](../../../openbuilder/docs/design-image-attachment-thumbnail.md)，协议已验证：**无独立上传端点**，`FilePartInput` data URL 内联进 `prompt_async` parts）：读字节 → mime 推断 → 图片压缩（尺寸/质量上限）→ base64 data URL → `{type:"file", mime, url, filename}`；**客户端体积上限**（base64 后，默认 4MB；图片压缩后同限校验，超出拒绝并提示）。展示：输入区附件条（图片缩略图/文件 chip，可删，复用引用 chip 模式）；用户气泡 file part 渲染区分 source 引用与 data URL 附件（复用 v0.3 引用回灌渲染路径）；**图片缩略图 + 点击放大**；重开历史会话时接收侧缩略图**惰性生成**（从 data URL 惰性解码，不做同步全量解码——openbuilder 踩坑：内存膨胀+乐观→权威过渡缩略图丢失）。乐观消息附件随上屏 |
-| 6 | 设置页快捷键列表 | 设置弹窗新增「快捷键」页签（[design-keyboard-shortcuts §8](./design-keyboard-shortcuts.md)）：平台分支展示全部快捷键——全局组（Tab/面板/作用域遍历，mac ⌘ 系键位与非 mac Ctrl+Tab 系互斥行）+ 输入与视图组（Enter 系/Ctrl+F/终端复制粘贴/Esc）；数据源 `SHORTCUT_GROUPS` 与分发同文件维护防漂移 |
+| 6 | 设置页快捷键列表 | 设置弹窗新增「快捷键」页签（[design-keyboard-shortcuts §8](./design-keyboard-shortcuts.md)）：平台分支展示全部快捷键——全局组（Tab/面板/作用域遍历/项目与工作区管理 Alt 系，mac ⌘ 系键位与非 mac Ctrl+Tab 系互斥行）+ 输入与视图组（Enter 系/Ctrl+F/终端复制粘贴/Esc）；数据源 `SHORTCUT_GROUPS` 与分发同文件维护防漂移 |
+| 7 | 项目/worktree 管理快捷键（Alt 系重构） | **修饰键域划分：Alt 系 = 项目/worktree 管理专域（强关联且互斥），Ctrl 系维持 Tab/面板/编辑域**（[design-keyboard-shortcuts §0/§1.2](./design-keyboard-shortcuts.md)，2026-09-06 重构，spec-v0.3 #2 主体不回溯修订）。新增四键：**Alt+O（mac ⌘⌥O）打开项目选择器——自 Ctrl+O 迁移，不保留别名，Ctrl+O 放行**（Electron 默认菜单无该加速键，核查见 §0.2）；**Alt+C（⌘⌥C）关闭当前激活 entry**（global 目录 entry 亦可；单 entry 不动作，对齐左栏"最后一个不关"；纯客户端状态无二次确认）；**Alt+N（⌘⌥N）当前项目新建 worktree**（name 省略 server 随机 slug，成功默认切换过去；global/未连接不动作）；**Alt+⌫（⌘⌥⌫）删除当前作用域 worktree**（项目根作用域/global/删除中不动作）——**二次确认保留，确认弹窗增 Enter 确认 / Esc 取消**（ConfirmDialog 通用增强，§4.1）。既有 **Alt+↑/↓ 作用域遍历**归入 Alt 域、语义不变。弹窗遮挡（overlayCount>0）时四键仅消费不动作。键位核查结论（§0.2）：⌘⌥D 为系统"显示/隐藏 Dock"弃用、按 code 匹配（mac ⌥ 系 key 产特殊字符）、Linux AltGr 上报 ctrl+alt 被 !ctrl 排除、live 终端归 pty/dead 终端释放、浏览器 Tab before-input-event 转发过滤扩展 |
 
 ## 范围外（明确不做）
 
@@ -46,3 +47,7 @@
 - [ ] 粘贴截图/拖入外部图片/附件按钮选图：输入区出现缩略图 chip 可删除；随消息发送后用户气泡正确渲染附件、AI 能读到内容并正确回应；超限文件（>4MB base64 后）被拒绝并提示原因
 - [ ] 任意非图片文件（拖入/按钮）同通路发送成功且渲染为文件 chip；工作区内文件树拖入输入框仍走 source 引用（不内联 data URL）
 - [ ] 重开含图片附件的历史会话：缩略图正常显示（惰性生成）、点击放大可用；无同步解码卡顿
+- [ ] Alt 系四键全链路：Alt+O 打开项目选择器且 **Ctrl+O 不再触发、放行无副作用**；Alt+C 关闭激活 entry（global 目录 entry 亦可、单 entry 不动作）；Alt+N 当前项目新建 worktree 并切换到新 worktree；Alt+⌫ 删除当前作用域 worktree（项目根/global 不动作）；弹窗遮挡（选择器/设置/确认等）时四键仅消费不动作
+- [ ] Alt+⌫ 二次确认弹窗：**Enter 确认**（非阻塞删除、左栏行禁用 + loading，与删除按钮同路径）、**Esc 取消**；loading 中两键无效
+- [ ] 键位边界：live 终端内 Alt 系不生效（xterm 归 pty 属预期）、dead 终端生效；浏览器 Tab 内生效（转发）；Alt+↑/↓ 回归不受影响
+- [ ] 设置「快捷键」页签展示 Alt 系新键位（平台分支正确，与分发表同源无漂移）

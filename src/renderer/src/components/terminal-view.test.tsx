@@ -476,7 +476,7 @@ describe("TerminalView", () => {
     expect(keyHandler!(evCsC)).toBe(true)
   })
 
-  it("live 态 Ctrl 系组合仍归 xterm（Ctrl+W 归 pty、Ctrl+Tab/Ctrl+Shift+Tab 归 pty，事件被 xterm 消费）", async () => {
+  it("live 态 Ctrl 系组合仍归 xterm（Ctrl+W 归 pty、Ctrl+Tab/Ctrl+Shift+Tab 归 pty，事件被 xterm 消费）；Alt 域四键同归 pty（readline M- 系键位保住）", async () => {
     vi.useFakeTimers()
     await bootLive()
     const evW = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, code: "KeyW" })
@@ -487,6 +487,14 @@ describe("TerminalView", () => {
     expect(keyHandler!(evTabS)).toBe(true)
     const evAlt = new KeyboardEvent("keydown", { cancelable: true, altKey: true, key: "ArrowDown" })
     expect(keyHandler!(evAlt)).toBe(true)
+    // Alt 域（design-keyboard-shortcuts §0.2）：live 终端内 Alt+O/C/N/⌫ 归 pty
+    //（ESC 前缀 → readline M-o/M-c/M-n/M-DEL），全局快捷键不生效属预期
+    const evAltO = new KeyboardEvent("keydown", { cancelable: true, altKey: true, code: "KeyO" })
+    expect(keyHandler!(evAltO)).toBe(true)
+    const evAltC = new KeyboardEvent("keydown", { cancelable: true, altKey: true, code: "KeyC" })
+    expect(keyHandler!(evAltC)).toBe(true)
+    const evAltBs = new KeyboardEvent("keydown", { cancelable: true, altKey: true, code: "Backspace" })
+    expect(keyHandler!(evAltBs)).toBe(true)
   })
 
   it("断开态不拦截应用快捷键：已退出后 Ctrl+W/Ctrl+Tab/Ctrl+Shift+Tab 返回 false（不 preventDefault，事件冒泡到全局分发）；无修饰键仍归 xterm", async () => {
@@ -506,13 +514,28 @@ describe("TerminalView", () => {
     const evTabS = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, shiftKey: true, key: "Tab" })
     expect(keyHandler!(evTabS)).toBe(false)
     expect(evTabS.defaultPrevented).toBe(false)
-    // ⌘ 系同释放（mac ⌘W）；裸 Alt+↑/↓（非 mac 作用域遍历）也释放；
-    // 无修饰键仍 true（xterm 键盘滚动等默认行为保留）
+    // ⌘ 系同释放（mac ⌘W）；裸 Alt+↑/↓（非 mac 作用域遍历）与裸 Alt 域四键
+    //（项目/worktree 管理，2026-09-06）也释放；无修饰键仍 true（xterm 键盘
+    // 滚动等默认行为保留）
     const evCmdW = new KeyboardEvent("keydown", { cancelable: true, metaKey: true, code: "KeyW" })
     expect(keyHandler!(evCmdW)).toBe(false)
     const evAlt = new KeyboardEvent("keydown", { cancelable: true, altKey: true, key: "ArrowDown" })
     expect(keyHandler!(evAlt)).toBe(false)
     expect(evAlt.defaultPrevented).toBe(false)
+    const evAltO = new KeyboardEvent("keydown", { cancelable: true, altKey: true, code: "KeyO" })
+    expect(keyHandler!(evAltO)).toBe(false)
+    expect(evAltO.defaultPrevented).toBe(false)
+    // 裸 Alt+C 同释放（2026-09-06 修订：copy 例外须带 Ctrl/⌘ 修饰——无修饰的
+    // KeyC 不再被误吞，Alt 域四键在断开态全数生效）
+    const evAltC = new KeyboardEvent("keydown", { cancelable: true, altKey: true, code: "KeyC" })
+    expect(keyHandler!(evAltC)).toBe(false)
+    expect(evAltC.defaultPrevented).toBe(false)
+    // 复制例外保留：断开态 Ctrl+Shift+C（无选区）仍归 xterm（回滚选区复制路径不破）
+    lastTerm!.getSelection = () => ""
+    const evCopy = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, shiftKey: true, code: "KeyC" })
+    expect(keyHandler!(evCopy)).toBe(true)
+    const evAltBs = new KeyboardEvent("keydown", { cancelable: true, altKey: true, code: "Backspace" })
+    expect(keyHandler!(evAltBs)).toBe(false)
     const evPlain = new KeyboardEvent("keydown", { cancelable: true, code: "KeyA" })
     expect(keyHandler!(evPlain)).toBe(true)
   })

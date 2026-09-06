@@ -54,6 +54,15 @@ export function ConfirmDialog({
   }
 
   const onKeyDown = (e: ReactKeyboardEvent) => {
+    // Enter = 确认（design-keyboard-shortcuts §4.1，2026-09-06）：打开即聚焦的
+    // 是取消钮（danger 弹窗安全默认），原生行为 Enter 会点击聚焦钮 = 取消——
+    // 容器先行拦截改道确认（preventDefault），stopPropagation 防嵌套宿主弹窗
+    //（如设置的 provider 删除确认，同 Esc）。repeat 不触发（按住连发防重复提交）
+    if (e.key === "Enter" && !loading && !e.repeat) {
+      e.preventDefault()
+      e.stopPropagation()
+      void handleConfirm()
+    }
     if (e.key === "Escape" && !loading) {
       // 嵌套在带 Esc handler 的弹窗内（如设置的 provider 删除确认，review P2）：
       // Esc 只关确认框，不冒泡到外层把宿主弹窗一起关掉

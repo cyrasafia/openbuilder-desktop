@@ -155,8 +155,8 @@ export interface DesktopApi {
   /** 浏览器视图内快捷键转发（main → renderer；页面聚焦时 window keydown 不可达，评审 M5）。
    *  code = 物理键（macOS ⌘⇧[/] 切 Tab 按 code 匹配，US 布局 shift+[ 的 key 是 "{"）；
    *  up = keyUp 转发（仅 Alt/Meta/Control 修饰键——作用域遍历预览的提交，§3 修订），
-   *  keyDown 恒 false */
-  onBrowserShortcut(cb: (input: { key: string; code: string; control: boolean; meta: boolean; shift: boolean; alt: boolean; up: boolean }) => void): () => void
+   *  keyDown 恒 false；isAutoRepeat = 按住连发（Alt 域键 repeat 不触发，§1.2） */
+  onBrowserShortcut(cb: (input: { key: string; code: string; control: boolean; meta: boolean; shift: boolean; alt: boolean; up: boolean; isAutoRepeat: boolean }) => void): () => void
   /** 顶层窗口失焦推送（main → renderer；浏览器视图持焦时 renderer 的 window 已
    *  blur 态、应用失活无 DOM blur——作废 Alt 遍历预览的 cancel 信号，§3 修订） */
   onBrowserWindowBlur(cb: () => void): () => void

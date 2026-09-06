@@ -74,15 +74,23 @@ export function registerBrowserViewIpc() {
     // shortcuts hook 订阅后走同一分发（非 Ctrl 组合不转发，页面自行消费；例外
     // 裸 Alt+↑/↓ 与裸 Alt 修饰键——非 mac 作用域遍历预览-提交，2026-09-06，
     // 见 design-keyboard-shortcuts §3 修订：keyDown 附带 begin、keyUp（仅修饰键）
-    // 驱动 commit，载荷 up 标记区分）
+    // 驱动 commit，载荷 up 标记区分；及裸 Alt 域四键 O/C/N/⌫——项目/worktree
+    // 管理，§0.2——转发+消费会覆盖 Linux 页面 accesskey（Alt+字母），罕见使用，
+    // 接受并记录）
     wc.on("before-input-event", (_e, input) => {
       const altKey = input.key === "Alt" || input.code === "AltLeft" || input.code === "AltRight"
       const altArrow = input.alt && (input.key === "ArrowUp" || input.key === "ArrowDown")
+      const altFamily =
+        input.alt &&
+        (input.code === "KeyO" ||
+          input.code === "KeyC" ||
+          input.code === "KeyN" ||
+          input.code === "Backspace")
       let forward: boolean
       if (input.type === "keyUp") {
         forward = altKey || input.key === "Meta" || input.key === "Control"
       } else {
-        forward = input.type === "keyDown" && (input.control || input.meta || altArrow || altKey)
+        forward = input.type === "keyDown" && (input.control || input.meta || altArrow || altKey || altFamily)
       }
       if (!forward) return
       mainWindow?.webContents.send("browser:shortcut", {
@@ -93,6 +101,7 @@ export function registerBrowserViewIpc() {
         shift: input.shift,
         alt: input.alt,
         up: input.type === "keyUp",
+        isAutoRepeat: input.isAutoRepeat,
       })
     })
     wc.setWindowOpenHandler(({ url }) => {

@@ -175,10 +175,8 @@ function ServerStatus() {
 function ProjectTree() {
   const store = useStore()
   const { t } = useI18n()
-  const [pendingDelete, setPendingDelete] = useState<{
-    directory: string
-    projectId: string
-  } | null>(null)
+  // 工作区删除确认在 store（pendingWorktreeDelete，design-keyboard-shortcuts
+  // §4.1）：左栏删除钮与 Alt+⌫ 快捷键共用同一弹窗状态与路径，防两份入口漂移
   // 项目行拖拽排序（design-layout §3）：实时预览式——dragKey = 拖拽中的 entry 键，
   // dragSlot = 目标插入位（以"移除拖拽项后的数组"为坐标系，0..base.length）。
   // 拖动中列表即时重排：拖拽项在目标位渲染占位样式，源位间隙闭合。提交挂
@@ -416,7 +414,7 @@ function ProjectTree() {
                             title={t.deleteWorkspace}
                             onClick={(ev) => {
                               ev.stopPropagation()
-                              setPendingDelete({ directory: w.directory, projectId: e.project.id })
+                              store.requestWorktreeDelete(w.directory, e.project.id)
                             }}
                           >
                             <Trash2 size={16} aria-hidden />
@@ -434,7 +432,7 @@ function ProjectTree() {
 
       {store.pickerOpen && <ProjectPicker onClose={() => store.closeProjectPicker()} />}
 
-      {pendingDelete && (
+      {store.pendingWorktreeDelete && (
         <ConfirmDialog
           title={t.confirmDeleteWorkspace}
           message={t.confirmDeleteWorkspaceMsg}
@@ -445,9 +443,10 @@ function ProjectTree() {
             // 非阻塞删除（design-layout §工作区行）：弹窗即关，删除态由
             // store.deletingWorkspaces 驱动左栏行禁用/loading，完成或失败
             // 复位由 removeWorkspace finally 兜底
-            void store.removeWorkspace(pendingDelete.directory, pendingDelete.projectId)
+            const pending = store.pendingWorktreeDelete
+            if (pending) void store.removeWorkspace(pending.directory, pending.projectId)
           }}
-          onClose={() => setPendingDelete(null)}
+          onClose={() => store.cancelWorktreeDelete()}
         />
       )}
     </>
