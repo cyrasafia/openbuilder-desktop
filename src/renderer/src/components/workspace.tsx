@@ -62,6 +62,7 @@ import { TerminalView } from "./terminal-view"
 import { BrowserTabView } from "./browser-tab-view"
 import { FileRefChips, useFileRefInput, userFileChipItems } from "./file-ref"
 import { AttachmentChips, AttachmentThumb, useAttachmentInput, userImageParts } from "./attachments"
+import { useCtrlHeld } from "./ctrl-held"
 
 export function Workspace() {
   const store = useStore()
@@ -550,14 +551,14 @@ function GuidePage() {
   // 引导页快捷键（design-keyboard-shortcuts §1，2026-09-06 增）：Ctrl+1/2/3 =
   // 磁贴三入口（diff/终端/网页），与磁贴点击同路径、同禁用态；监听挂组件内随
   // 引导页挂载/卸载——天然仅引导页生效，不经全局 useShortcuts 分发。Ctrl 按住
-  // 期间磁贴显示数字角标（Cmd 等价，macOS 开发态惯例；keyup/窗口失焦清——
-  // 失焦后 keyup 不再派发，不清会残留）
-  const [ctrlHeld, setCtrlHeld] = useState(false)
+  // 期间磁贴显示数字角标（Cmd 等价，macOS 开发态惯例）——跟踪在 useCtrlHeld
+  // 的模块级单例（2026-09-06 修复：Ctrl+T 开引导页时组件在 keydown 后才挂载，
+  // 按住的 Ctrl 不再派发事件，组件内监听拿不到初始态，角标不显示）
+  const ctrlHeld = useCtrlHeld()
   useEffect(() => {
     const onKeyDown = (e: globalThis.KeyboardEvent) => {
       // IME 组合中（fcitx5 上屏）/ 已被内层消费的事件不触发（同 useShortcuts 约定）
       if (e.isComposing || e.defaultPrevented) return
-      if (e.ctrlKey || e.metaKey) setCtrlHeld(true)
       // repeat 守卫：按住不放不重复开（终端每次调用都新建 pty）；Shift/Alt 组合
       // 不属本快捷键（按 code 匹配数字键，布局无关）
       if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.repeat) return
@@ -576,17 +577,9 @@ function GuidePage() {
         void store.openBrowserTab("about:blank")
       }
     }
-    const onKeyUp = (e: globalThis.KeyboardEvent) => {
-      if (e.key === "Control" || e.key === "Meta") setCtrlHeld(false)
-    }
-    const onBlur = () => setCtrlHeld(false)
     window.addEventListener("keydown", onKeyDown)
-    window.addEventListener("keyup", onKeyUp)
-    window.addEventListener("blur", onBlur)
     return () => {
       window.removeEventListener("keydown", onKeyDown)
-      window.removeEventListener("keyup", onKeyUp)
-      window.removeEventListener("blur", onBlur)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store])

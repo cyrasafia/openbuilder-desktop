@@ -2,6 +2,8 @@
  * 引导页快捷键测试（design-keyboard-shortcuts §1，2026-09-06 增）：
  * Ctrl+1/2/3 开 diff/终端/网页 Tab（与磁贴点击同路径同禁用态），监听随引导页
  * 挂载/卸载（仅引导页生效）；Ctrl 按住期间磁贴显示数字角标，禁用磁贴不显示。
+ * 角标跟踪是模块级单例（ctrl-held.ts）——Ctrl 按住期间挂载（Ctrl+T 开引导页
+ * 场景）初始态照常显示。
  */
 import { act, cleanup, render } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -128,7 +130,16 @@ beforeEach(() => {
   }
 })
 
-afterEach(cleanup)
+// 角标跟踪是模块级单例：用例间残留（如按住未松）会让后续断言角标缺席的用例
+// 假失败——afterEach 归零（native 派发需包 act）
+afterEach(() => {
+  cleanup()
+  act(() => {
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "Control" }))
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "Meta" }))
+    window.dispatchEvent(new Event("blur"))
+  })
+})
 
 describe("引导页快捷键（design-keyboard-shortcuts §1，2026-09-06 增）", () => {
   it("Ctrl+1/2/3 分别开 diff/终端/网页 Tab（preventDefault）", () => {
@@ -178,6 +189,16 @@ describe("引导页快捷键（design-keyboard-shortcuts §1，2026-09-06 增）
   it("Ctrl 按住显示数字角标，松开消失", () => {
     render(<Workspace />)
     press({ key: "Control", ctrlKey: true })
+    expect(badges().map((el) => el.textContent)).toEqual(["1", "2", "3"])
+    releaseCtrl()
+    expect(badges()).toHaveLength(0)
+  })
+
+  it("Ctrl 按住期间挂载（Ctrl+T 开引导页场景）角标照常显示（2026-09-06 修复）", () => {
+    // Ctrl+T：keydown 先于引导页挂载发生——按住 Ctrl 期间组件才挂载，
+    // 组件内监听拿不到初始态（修复前角标不显示，靠 ctrl-held 单例跟踪）
+    press({ key: "Control", ctrlKey: true })
+    render(<Workspace />)
     expect(badges().map((el) => el.textContent)).toEqual(["1", "2", "3"])
     releaseCtrl()
     expect(badges()).toHaveLength(0)
