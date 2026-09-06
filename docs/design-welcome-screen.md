@@ -77,4 +77,4 @@
 - **E2E 环境事实（重要，仍然有效）**：
   - opencode 的 auth.json 在 **XDG_DATA_HOME（全局）**而非 XDG_CONFIG_HOME——XDG_CONFIG_HOME 隔离不出"无 key"环境
   - **app.tsx emit 合帧的 rAF 在无人值守/被遮挡窗口会被饿死且不定时恢复**（连 `disable-features=CalculateNativeWinOcclusion` 都不保证）——scheduled 卡死 true 后一切 emit 短路、UI 永久停旧态（对真实用户：不可见窗口本就无需渲染，恢复可见即追平；欢迎屏的 streaming→closeWelcome effect 依赖重渲染，仍受影响）。**修复：flush 加 250ms setTimeout 安全网**（rAF 主路不变、flush 双清；不可见窗口最坏 ~1s 延迟，可见窗口无感）——这是对 3535091 emit 合帧的补丁而非推翻
-  - 欢迎模式下设置弹窗需要宿主：App 欢迎分支渲染 `<SettingsDialog/>`（原本只挂在 Workspace 内）
+  - 欢迎模式下设置弹窗需要宿主：App 欢迎分支渲染 `<SettingsDialog/>`（2026-09-06 修订：Shell 分支的弹窗已上移至 `Shell()` 单点挂载——原挂 Workspace 主分支末尾，无项目空态提前 return 时 settingsOpen 置位却无 UI；欢迎分支 Shell 未挂载，仍各自渲染）

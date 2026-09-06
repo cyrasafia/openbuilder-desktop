@@ -165,6 +165,11 @@ function Shell() {
         <Workspace />
         <FilePanel />
       </div>
+      {/* 设置弹窗挂 Shell 层（2026-09-06 修订，原在 Workspace 主分支末尾）：单点
+          渲染覆盖 Workspace 全部分支（无项目空态提前 return 曾漏渲染——左栏齿轮/
+          状态行/空态「打开设置」置位 settingsOpen 却无 UI）；dialog-mask 为 fixed，
+          位置无碍。欢迎屏分支 Shell 未挂载，各自渲染 */}
+      {store.settingsOpen && <SettingsDialog />}
     </div>
   )
 }
