@@ -166,32 +166,41 @@ describe("添加服务器引导式（design-guided-add-server）", () => {
     expect(screen.getByText("手动配置…")).toBeTruthy()
   })
 
-  it("点击 server 候选：一键建档（attach profile + baseUrl），弹窗退回列表", async () => {
+  it("点击 server 候选：一键建档并启用（attach profile + baseUrl），关弹窗 + 直达连接", async () => {
     render(<SettingsDialog />)
     fireEvent.click(screen.getByText("添加"))
     await waitFor(() => expect(screen.getByText("http://127.0.0.1:4096")).toBeTruthy())
     fireEvent.click(screen.getByText("http://127.0.0.1:4096"))
+    // 建档即启用：saveProfiles 第二参 = 新 profile id（非 null）
+    await waitFor(() => {
+      const calls = (storeState.current.saveProfiles as ReturnType<typeof vi.fn>).mock.calls
+      const last = calls.at(-1)
+      expect(last?.[0]).toEqual([expect.objectContaining({ baseUrl: "http://127.0.0.1:4096", mode: "attach" })])
+      expect(last?.[1]).toEqual(expect.any(String))
+    })
+    // 关闭设置弹窗 + 拆旧连接 + 带 openPickerAfter 标记连接
+    await waitFor(() => expect(storeState.current.closeSettings).toHaveBeenCalled())
+    await waitFor(() => expect(storeState.current.disconnect).toHaveBeenCalled())
     await waitFor(() =>
-      expect(storeState.current.saveProfiles).toHaveBeenCalledWith(
-        [expect.objectContaining({ baseUrl: "http://127.0.0.1:4096", mode: "attach" })],
-        null,
-      ),
+      expect(storeState.current.connect).toHaveBeenCalledWith({ openPickerAfter: true }),
     )
-    // 建档后退回列表视图（「添加」按钮回到视野）
-    await waitFor(() => expect(screen.getByText("添加")).toBeTruthy())
   })
 
-  it("点击 binary 候选：一键建档（managed profile + binaryPath）", async () => {
+  it("点击 binary 候选：一键建档并启用（managed profile + binaryPath）", async () => {
     scanServers.mockResolvedValue([])
     render(<SettingsDialog />)
     fireEvent.click(screen.getByText("添加"))
     await waitFor(() => expect(screen.getByText("/usr/bin/opencode")).toBeTruthy())
     fireEvent.click(screen.getByText("/usr/bin/opencode"))
+    await waitFor(() => {
+      const calls = (storeState.current.saveProfiles as ReturnType<typeof vi.fn>).mock.calls
+      const last = calls.at(-1)
+      expect(last?.[0]).toEqual([expect.objectContaining({ mode: "managed", binaryPath: "/usr/bin/opencode" })])
+      expect(last?.[1]).toEqual(expect.any(String))
+    })
+    await waitFor(() => expect(storeState.current.closeSettings).toHaveBeenCalled())
     await waitFor(() =>
-      expect(storeState.current.saveProfiles).toHaveBeenCalledWith(
-        [expect.objectContaining({ mode: "managed", binaryPath: "/usr/bin/opencode" })],
-        null,
-      ),
+      expect(storeState.current.connect).toHaveBeenCalledWith({ openPickerAfter: true }),
     )
   })
 
@@ -334,6 +343,30 @@ describe("ProfileFormView 模式分化", () => {
     )
     // 保存后退回列表（编辑按钮回到视野）
     await waitFor(() => expect(screen.getByTitle("编辑")).toBeTruthy())
+  })
+
+  it("手动新增保存 = 启用流：关弹窗 + disconnect + connect({openPickerAfter})", async () => {
+    render(<SettingsDialog />)
+    await goManual()
+    fireEvent.change(screen.getByLabelText("服务器地址"), { target: { value: "http://127.0.0.1:9999" } })
+    fireEvent.click(screen.getByText("保存"))
+    await waitFor(() => {
+      const calls = (storeState.current.saveProfiles as ReturnType<typeof vi.fn>).mock.calls
+      const last = calls.at(-1)
+      expect(last?.[0]).toEqual([expect.objectContaining({ baseUrl: "http://127.0.0.1:9999", mode: "attach" })])
+      expect(last?.[1]).toEqual(expect.any(String))
+    })
+    await waitFor(() => expect(storeState.current.closeSettings).toHaveBeenCalled())
+    await waitFor(() => expect(storeState.current.disconnect).toHaveBeenCalled())
+    await waitFor(() =>
+      expect(storeState.current.connect).toHaveBeenCalledWith({ openPickerAfter: true }),
+    )
+    // 顺序：disconnect 先于 saveProfiles——saveProfiles 先行会把 activeProfileId 切到
+    // 新 profile，disconnect 按新 profile 的 mode 判定（attach）跳过 managedStop，
+    // managed→attach 切换泄漏旧 server 进程（review P2）
+    const disIdx = (storeState.current.disconnect as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]
+    const saveIdx = (storeState.current.saveProfiles as ReturnType<typeof vi.fn>).mock.invocationCallOrder.at(-1)
+    expect(disIdx).toBeLessThan(saveIdx!)
   })
 })
 

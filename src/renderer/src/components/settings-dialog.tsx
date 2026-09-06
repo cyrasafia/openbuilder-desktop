@@ -57,13 +57,28 @@ export function SettingsDialog() {
   }, [editing, providerEdit])
 
   // 保存 = upsert 直落 store（弹窗内视图跳转后 ConnectionSettings 卸载重挂，
-  // 列表从 store 直读，无本地镜像；持久化用计算出的 next 列表）
-  const saveProfile = (p: ConnectionProfile) => {
+  // 列表从 store 直读，无本地镜像；持久化用计算出的 next 列表）。
+  // 新增（design-guided-add-server 修订）：保存即启用——激活 profile + 关闭
+  // 设置弹窗 + connect({openPickerAfter})，连接成功且无已打开项目时直达项目
+  // 选择器。编辑（isNew=false）：仍只 upsert 不激活，激活走列表「启用」
+  const saveProfile = async (p: ConnectionProfile, isNew: boolean) => {
     const idx = store.profiles.findIndex((x) => x.id === p.id)
     const next =
       idx >= 0 ? store.profiles.map((x, i) => (i === idx ? p : x)) : [...store.profiles, p]
-    void store.saveProfiles(next, store.activeProfileId)
+    if (!isNew) {
+      void store.saveProfiles(next, store.activeProfileId)
+      setEditing(null)
+      return
+    }
+    // 新增：立刻启用 + 关弹窗 + 连接（失败错误经左栏状态行可见，重试走列表「启用」）。
+    // 先断开再改激活（此时旧 profile 仍激活，managed 模式才能正确 stop 旧进程——
+    // 顺序同列表「启用」activate；saveProfiles 先行会 disconnect 按 profile 的
+    // mode 误判，managed→attach 切换泄漏旧 server 进程）
+    await store.disconnect()
+    await store.saveProfiles(next, p.id)
     setEditing(null)
+    store.closeSettings()
+    await store.connect({ openPickerAfter: true })
   }
 
   // 子视图标题行（返回钮 + 视图标题 + 关闭钮），discover/manual 共用骨架
@@ -122,13 +137,13 @@ export function SettingsDialog() {
             {editing.view === "discover" ? (
               <DiscoverView
                 onManual={() => setEditing({ view: "manual", profile: newProfileDraft(), isNew: true })}
-                onPick={(p) => saveProfile(p)}
+                onPick={(p) => void saveProfile(p, true)}
               />
             ) : (
               <ProfileFormView
                 profile={editing.profile}
                 onCancel={editingBack}
-                onSave={saveProfile}
+                onSave={(p) => void saveProfile(p, editing.isNew)}
               />
             )}
           </>

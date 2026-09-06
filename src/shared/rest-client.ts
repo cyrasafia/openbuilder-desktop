@@ -151,10 +151,6 @@ export class RestClient {
     return this.request<Project[]>("/project")
   }
 
-  currentProject(): Promise<Project> {
-    return this.request<Project>("/project/current")
-  }
-
   /**
    * 目录解析/注册项目（`GET /project/current?directory=X`，server 源码核实）：
    * instance 路由中间件按 directory 引导实例时走 Project.fromDirectory——目录尚未

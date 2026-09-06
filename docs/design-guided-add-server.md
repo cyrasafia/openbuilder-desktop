@@ -7,6 +7,7 @@
 - 原流程：点「添加」直接落表单，扫描埋在 managed 模式的候选区里——attach 用户感知不到 mDNS 发现，managed 用户要先找到藏在底部的模式下拉。两个高价值入口（自动发现）都被表单字段挡住
 - 新流程把发现提到最前：多数场景用户点一下候选即完成配置（零表单、零输入）；手填降级为兜底入口
 - 交互形态源自欢迎屏的扫描→候选→连接链路；**2026-09-06 反向统一：欢迎页只呈现「添加服务器」入口，点击后同源复用本设计的 DiscoverView + ProfileFormView**（design-welcome-screen §3，非复制），行为差异全部参数化（欢迎屏注入 busy/emptyContent/saveLabel/onPick 连接语义）
+- ~~设置弹窗内不引入连接副作用，激活仍走列表「启用」~~ **2026-09-06 修订**：新增建档 = **保存即启用**——激活 profile + 关闭设置弹窗 + `connect({openPickerAfter})`（连接成功且无已打开项目时直达项目选择器）；仅**编辑**（isNew=false）仍保持原语义：只 upsert 不激活不连接，激活走列表「启用」
 
 ## 1. 视图状态机
 
@@ -36,12 +37,12 @@ type EditingState =
 - 严格模式双触发安全：main 侧 `scan:binaries`/`scan:servers` 已有 in-flight Promise 去重（design-auto-scan §4）
 - **焦点管理（guided review 修订）**：列表/发现视图聚焦弹窗容器（无 autoFocus 元素的视图进入时焦点随上一视图卸载回落 body，Esc keydown 落不到弹窗容器静默失效）；manual/provider 表单由各自 autoFocus 输入框落焦点，不在聚焦范围
 
-### 2.2 候选一键建档（点击 = 保存）
+### 2.2 候选一键建档（点击 = 保存并启用，2026-09-06 修订）
 
 - attach 候选：`{ id: prof_*, name: url, baseUrl: url, mode: "attach" }`——health 已在扫描侧验证（design-auto-scan §3.3），无需再测
 - managed 候选：`{ id: prof_*, name: "", baseUrl: "", mode: "managed", binaryPath: 候选路径 }`
-- 点击即调 `saveProfiles(next, store.activeProfileId)`（追加，不自动激活）→ 退回列表视图；用户在列表「启用」才连接
-- name 取 url/空串与欢迎屏候选建档口径一致（2026-09-06 起两侧同源复用 DiscoverView/ProfileFormView——空名 managed → 列表回落展示 binaryPath）
+- ~~点击即调 `saveProfiles(next, store.activeProfileId)`（追加，不自动激活）→ 退回列表视图；用户在列表「启用」才连接~~（2026-09-06 修订）点击即走**启用流**（同 manual 新增保存）：`disconnect()`（**先于**改激活——此时旧 profile 仍激活，managed 模式才能正确 stop 旧进程，顺序同列表「启用」activate）→ `saveProfiles(next, profile.id)`（激活）→ 关闭设置弹窗 → `connect({ openPickerAfter: true })`。连接成功且无已打开项目时直达项目选择器（store 内一次性标记，见 app-store `doConnect` 收尾；失败错误经左栏状态行可见，重试走列表「启用」，标记保留到下次成功连接）
+- name 取 url/空串与欢迎屏候选建档口径一致（2026-09-06 起两侧同源复用 DiscoverView/ProfileFormView——空名 managed → 列表回落展示 binaryPath）；欢迎屏 `connectWithProfile` 同步 `disconnect` 先行 + `openPickerAfter`（建档连接成功后同样直达项目选择）
 
 ### 2.3 手动入口常驻
 
@@ -56,9 +57,10 @@ type EditingState =
 
 ## 4. 交互细节
 
-- 建档后不弹 toast、不自动激活：列表视图回显新行即反馈（profile-list 直读 store）
+- ~~建档后不弹 toast、不自动激活：列表视图回显新行即反馈（profile-list 直读 store）~~（2026-09-06 修订：新增即启用流，弹窗关闭；编辑保存回显不变——列表视图回显新行即反馈）
 - discover 视图无「取消」钮——返回钮/Esc 即取消（无草稿可丢）
 - manual（新增）的「取消」丢弃草稿回 discover（不是列表）——用户可能只是想换一种模式再来，回发现视图少一跳
+- 连接失败的处理（2026-09-06 修订）：启用流失败（server 不可达/managed 启动失败）时设置弹窗已关、错误经左栏状态行可见；用户重开设置在列表「启用」重试，或直接左栏操作
 
 ## 5. 实现落点
 
@@ -67,7 +69,7 @@ type EditingState =
 | `settings-dialog.tsx` | `EditingState` 状态机；`DiscoverView`（双扫描并行 + 代际守卫 + 候选建档；**导出供欢迎屏复用**，`busy`/`emptyContent` props，2026-09-06）；ProfileFormView 模式段置顶（**导出**，`saveLabel`/`busy` props）；Esc 分层扩展 |
 | i18n | `discover*` 8 键 + `addProfileManualTitle` + `modeAttachDesc`/`modeManagedDesc` + `modeAttach`/`modeManaged` 改短标签（zh/en） |
 | app.css | `.discover-candidate`（同 `.scan-candidate` 骨架 + main/徽标行内布局）、`.discover-actions`（space-between）、`.profile-mode-seg`/`.profile-mode-desc` |
-| 测试 | `settings-dialog.test.tsx`：发现视图组（并行启动、先到先列、悬挂一路保持搜索中、空态、server/binary 候选建档与退回、重新搜索、Esc 分层）+ manual 组（模式段切换、字段分化、编辑直落）；store mock 不变 |
+| 测试 | `settings-dialog.test.tsx`：发现视图组（并行启动、先到先列、悬挂一路保持搜索中、空态、server/binary 候选建档**并启用**（saveProfiles 激活 + closeSettings + disconnect + connect({openPickerAfter})）、重新搜索、Esc 分层）+ manual 组（模式段切换、字段分化、编辑直落、**手动新增保存启用流**）；store 侧 `app-store.test.ts` 的 `connect({openPickerAfter})` 组（消费即清/已有项目不弹/普通 connect 不弹/失败保留标记） |
 
 ## 6. 已知取舍
 
