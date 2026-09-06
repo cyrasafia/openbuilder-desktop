@@ -229,6 +229,17 @@
   background: color-mix(in srgb, var(--surface-container-highest) 96%, var(--on-surface));
 }
 
+/* Alt 遍历预览光标（design-keyboard-shortcuts §3 修订，2026-09-06）：按住
+   Alt（mac ⌘⌥）期间的键盘光标——"待提交"选中信号，与 hover（high）、active
+   （highest + 4% on-surface）区分：highest 叠 8% primary 淡染（provisional
+   语义取 primary，量级低于指示器色系不与其争色）。仍背景单信号（无描边环，
+   2026-08-24 idiom）；压过 active（本块在后同特异性胜出，光标行提交 = no-op
+   时短暂同格无碍），hover 保持光标底防背景跳变 */
+.tree-row.scope-cursor,
+.tree-row.scope-cursor:hover {
+  background: color-mix(in srgb, var(--surface-container-highest) 92%, var(--primary));
+}
+
 /* gitignore 项弱化（design-layout §5，2026-08-27）：server 的 ignored = 根 .gitignore/.ignore
    规则命中（规则不存在则恒 false，等价"未 git 初始化不区分"）。样式参考 openbuilder
    file_list_screen.dart 同款语义（outline 色 + 斜体）；hover/active 背景态照常

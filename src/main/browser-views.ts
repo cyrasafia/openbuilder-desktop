@@ -26,6 +26,14 @@ export function bindMainWindowForBrowserViews(win: BrowserWindow) {
     mainWindow = null
     disposeAllBrowserViews()
   })
+  // 顶层窗口失焦转发（design-keyboard-shortcuts §3 修订）：浏览器视图持焦时
+  // renderer 的 window 已是 blur 态——应用失活（Alt+Tab/⌘Tab 被合成器抢走）
+  // 不再有 DOM blur 事件，作废 Alt 预览的 cancel 信号由 main 补发。注意不能用
+  // 视图自身 webContents 的 blur——焦点回到宿主 UI（点侧栏）时也触发，那条
+  // 路径宿主 keyup 监听正常接管，cancel 会误杀按住中的预览
+  win.on("blur", () => {
+    mainWindow?.webContents.send("browser:window-blur")
+  })
 }
 
 function pushState(viewId: number) {
@@ -64,10 +72,19 @@ export function registerBrowserViewIpc() {
     // 页面聚焦后快捷键转发（design-browser-tab 评审 M5）：原生 webContents 抢走
     // 键盘焦点，renderer 的 window keydown 收不到——Ctrl 系快捷键经主窗口转发，
     // shortcuts hook 订阅后走同一分发（非 Ctrl 组合不转发，页面自行消费；例外
-    // 裸 Alt+↑/↓——非 mac 作用域遍历，2026-09-04，见 design-keyboard-shortcuts §3）
+    // 裸 Alt+↑/↓ 与裸 Alt 修饰键——非 mac 作用域遍历预览-提交，2026-09-06，
+    // 见 design-keyboard-shortcuts §3 修订：keyDown 附带 begin、keyUp（仅修饰键）
+    // 驱动 commit，载荷 up 标记区分）
     wc.on("before-input-event", (_e, input) => {
+      const altKey = input.key === "Alt" || input.code === "AltLeft" || input.code === "AltRight"
       const altArrow = input.alt && (input.key === "ArrowUp" || input.key === "ArrowDown")
-      if (input.type !== "keyDown" || !(input.control || input.meta || altArrow)) return
+      let forward: boolean
+      if (input.type === "keyUp") {
+        forward = altKey || input.key === "Meta" || input.key === "Control"
+      } else {
+        forward = input.type === "keyDown" && (input.control || input.meta || altArrow || altKey)
+      }
+      if (!forward) return
       mainWindow?.webContents.send("browser:shortcut", {
         key: input.key,
         code: input.code,
@@ -75,6 +92,7 @@ export function registerBrowserViewIpc() {
         meta: input.meta,
         shift: input.shift,
         alt: input.alt,
+        up: input.type === "keyUp",
       })
     })
     wc.setWindowOpenHandler(({ url }) => {

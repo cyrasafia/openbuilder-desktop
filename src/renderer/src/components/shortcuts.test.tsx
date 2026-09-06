@@ -2,15 +2,22 @@
  * 全局快捷键分发表测试（design-keyboard-shortcuts §1）：
  * mock store/i18n，window dispatch KeyboardEvent，断言 store 动作与 preventDefault。
  */
-import { render } from "@testing-library/react"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { cleanup, render } from "@testing-library/react"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { useShortcuts } from "./shortcuts"
+
+// 卸载 Harness（本项目无 RTL 自动清理惯例——原文件靠 dispatch 的
+// defaultPrevented 守卫掩盖监听累积；keyup/blur 监听无该守卫，须真实卸载）
+afterEach(cleanup)
 
 const actions = {
   showGuidePage: vi.fn(),
   openProjectPicker: vi.fn(),
   cycleTab: vi.fn(),
-  cycleScopeEntry: vi.fn(),
+  moveScopePreview: vi.fn(),
+  beginScopePreview: vi.fn(),
+  commitScopePreview: vi.fn(),
+  cancelScopePreview: vi.fn(),
   restoreClosedTab: vi.fn(),
   toggleLeftPanel: vi.fn(),
   toggleRightPanel: vi.fn(),
@@ -36,7 +43,15 @@ function press(init: KeyboardEventInit): KeyboardEvent {
   return ev
 }
 
-let shortcutCb: ((input: { key: string; code: string; control: boolean; meta: boolean; shift: boolean; alt: boolean }) => void) | null = null
+function release(init: KeyboardEventInit): KeyboardEvent {
+  const ev = new KeyboardEvent("keyup", { cancelable: true, ...init })
+  window.dispatchEvent(ev)
+  return ev
+}
+
+type ShortcutInput = { key: string; code: string; control: boolean; meta: boolean; shift: boolean; alt: boolean; up?: boolean }
+let shortcutCb: ((input: ShortcutInput) => void) | null = null
+let windowBlurCb: (() => void) | null = null
 
 /** platform 可变（macOS 专属切 Tab 键用例切 darwin 验证） */
 let platform: "linux" | "darwin" = "linux"
@@ -59,6 +74,12 @@ beforeEach(() => {
       shortcutCb = cb
       return () => {
         shortcutCb = null
+      }
+    },
+    onBrowserWindowBlur: (cb: typeof windowBlurCb) => {
+      windowBlurCb = cb
+      return () => {
+        windowBlurCb = null
       }
     },
   }
@@ -125,16 +146,40 @@ describe("useShortcuts 分发", () => {
     expect(actions.cycleTab).toHaveBeenCalledTimes(4)
   })
 
-  it("Alt+↑/↓ → 左栏作用域遍历（非 mac）；原 Ctrl+Alt+↑/↓ 废弃不吞", () => {
+  it("Alt+↑/↓ → 移动作用域预览光标（非 mac）；原 Ctrl+Alt+↑/↓ 废弃不吞", () => {
     render(<Harness />)
     press({ key: "ArrowDown", altKey: true })
-    expect(actions.cycleScopeEntry).toHaveBeenCalledWith(1)
+    expect(actions.moveScopePreview).toHaveBeenCalledWith(1)
     press({ key: "ArrowUp", altKey: true })
-    expect(actions.cycleScopeEntry).toHaveBeenCalledWith(-1)
+    expect(actions.moveScopePreview).toHaveBeenCalledWith(-1)
     // 原 Ctrl+Alt+↑/↓ 是 GNOME/KDE 合成器工作区切换（应用收不到），废弃不消费
     const old = press({ key: "ArrowDown", ctrlKey: true, altKey: true })
     expect(old.defaultPrevented).toBe(false)
-    expect(actions.cycleScopeEntry).toHaveBeenCalledTimes(2)
+    expect(actions.moveScopePreview).toHaveBeenCalledTimes(2)
+  })
+
+  it("Alt 预览-提交（§3 修订）：裸 Alt 按下 begin，Alt 松开 commit，窗口失焦 cancel；Ctrl 在位时 Alt 不 begin", () => {
+    render(<Harness />)
+    // Ctrl+Alt+B 组合路径：Alt 按下时 Ctrl 已在位——不显光标（commit 入口恒开，
+    // store 侧无预览时 no-op）
+    press({ key: "Control", ctrlKey: true })
+    press({ key: "Alt", ctrlKey: true, altKey: true })
+    expect(actions.beginScopePreview).not.toHaveBeenCalled()
+    release({ key: "Alt", ctrlKey: true, altKey: true })
+    expect(actions.commitScopePreview).toHaveBeenCalledTimes(1)
+    // 裸 Alt：按下 begin、松开 commit
+    press({ key: "Alt", altKey: true })
+    expect(actions.beginScopePreview).toHaveBeenCalledTimes(1)
+    press({ key: "ArrowDown", altKey: true })
+    expect(actions.moveScopePreview).toHaveBeenCalledWith(1)
+    release({ key: "Alt", altKey: true })
+    expect(actions.commitScopePreview).toHaveBeenCalledTimes(2)
+    // 窗口失焦（Alt+Tab 被合成器抢走后 keyup 不再来）：作废预览
+    window.dispatchEvent(new Event("blur"))
+    expect(actions.cancelScopePreview).toHaveBeenCalledTimes(1)
+    // 非 mac：Meta 键松开不提交（非遍历修饰）
+    release({ key: "Meta", metaKey: true })
+    expect(actions.commitScopePreview).toHaveBeenCalledTimes(2)
   })
 
   it("macOS 切 Tab 惯例键：⌘⌥←/→ 与 ⌘⇧[/]（按 code 匹配）；linux 不绑这两组", () => {
@@ -162,11 +207,19 @@ describe("useShortcuts 分发", () => {
     expect(actions.cycleTab).toHaveBeenCalledWith(-1)
     press({ key: "}", code: "BracketRight", metaKey: true, shiftKey: true })
     expect(actions.cycleTab).toHaveBeenCalledWith(1)
-    // mac 下 ⌘B 仍是左栏收起/展开；⌘⌥↑/↓ 仍是作用域遍历（与 ←/→ 轴不冲突）
+    // mac 下 ⌘B 仍是左栏收起/展开；⌘⌥↑/↓ 仍是作用域遍历（与 ←/→ 轴不冲突）——
+    // 预览-提交（§3 修订）：⌘⌥ 弦凑齐 begin（⌥ 先 ⌘ 后），↑/↓ 只移光标，
+    // 任一修饰松开 commit
     press({ key: "b", code: "KeyB", metaKey: true })
     expect(actions.toggleLeftPanel).toHaveBeenCalledTimes(1)
+    press({ key: "Alt", altKey: true })
+    expect(actions.beginScopePreview).not.toHaveBeenCalled()
+    press({ key: "Meta", metaKey: true, altKey: true })
+    expect(actions.beginScopePreview).toHaveBeenCalledTimes(1)
     press({ key: "ArrowDown", metaKey: true, altKey: true })
-    expect(actions.cycleScopeEntry).toHaveBeenCalledWith(1)
+    expect(actions.moveScopePreview).toHaveBeenCalledWith(1)
+    release({ key: "Meta", metaKey: true, altKey: true })
+    expect(actions.commitScopePreview).toHaveBeenCalledTimes(1)
     // mac 裸 ⌥↑/↓ 不劫持（NSText 段落首/尾移动惯例，输入框打字要用）
     const bareAlt = press({ key: "ArrowDown", altKey: true })
     expect(bareAlt.defaultPrevented).toBe(false)
@@ -196,15 +249,26 @@ describe("useShortcuts 分发", () => {
   it("浏览器视图快捷键转发（onBrowserShortcut）走同一分发", () => {
     render(<Harness />)
     expect(shortcutCb).not.toBeNull()
-    shortcutCb?.({ key: "t", code: "", control: true, meta: false, shift: false, alt: false })
+    shortcutCb?.({ key: "t", code: "", control: true, meta: false, shift: false, alt: false, up: false })
     expect(actions.showGuidePage).toHaveBeenCalledTimes(1)
-    // 裸 Alt+↓（非 mac 作用域遍历）经转发路径同分发（browser-views 过滤已扩）
-    shortcutCb?.({ key: "ArrowDown", code: "", control: false, meta: false, shift: false, alt: true })
-    expect(actions.cycleScopeEntry).toHaveBeenCalledWith(1)
-    shortcutCb?.({ key: "Tab", code: "", control: true, meta: false, shift: true, alt: false })
+    // 裸 Alt+↓（非 mac 作用域遍历）经转发路径同分发（browser-views 过滤已扩）；
+    // 裸 Alt keydown 附带 begin、Alt keyup 驱动 commit（§3 修订，up 标记）
+    shortcutCb?.({ key: "Alt", code: "AltLeft", control: false, meta: false, shift: false, alt: true, up: false })
+    expect(actions.beginScopePreview).toHaveBeenCalledTimes(1)
+    shortcutCb?.({ key: "ArrowDown", code: "", control: false, meta: false, shift: false, alt: true, up: false })
+    expect(actions.moveScopePreview).toHaveBeenCalledWith(1)
+    shortcutCb?.({ key: "Alt", code: "AltLeft", control: false, meta: false, shift: false, alt: false, up: true })
+    expect(actions.commitScopePreview).toHaveBeenCalledTimes(1)
+    shortcutCb?.({ key: "Tab", code: "", control: true, meta: false, shift: true, alt: false, up: false })
     expect(actions.cycleTab).toHaveBeenCalledWith(-1)
-    shortcutCb?.({ key: "b", code: "KeyB", control: true, meta: false, shift: false, alt: true })
+    shortcutCb?.({ key: "b", code: "KeyB", control: true, meta: false, shift: false, alt: true, up: false })
     expect(actions.toggleRightPanel).toHaveBeenCalledTimes(1)
+    // 非修饰键 keyup 不经转发（browser-views 过滤），即便到达也不动作
+    shortcutCb?.({ key: "b", code: "KeyB", control: true, meta: false, shift: false, alt: false, up: true })
+    expect(actions.toggleLeftPanel).not.toHaveBeenCalled()
+    // 顶层窗口失焦（视图持焦时应用失活，renderer 无 DOM blur）：main 补发 cancel
+    windowBlurCb?.()
+    expect(actions.cancelScopePreview).toHaveBeenCalledTimes(1)
   })
 
   it("IME 组合中与其他 Ctrl 组合不触发", () => {

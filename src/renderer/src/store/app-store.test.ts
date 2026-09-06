@@ -5,7 +5,7 @@
  * 快照落点用手动 deferred 控制。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { AppStore, diffTabKey, FILE_WATCH_DEBOUNCE_MS, SCOPE_CYCLE_WINDOW_MS } from "./app-store"
+import { AppStore, diffTabKey, FILE_WATCH_DEBOUNCE_MS } from "./app-store"
 import { ApiError, RestClient } from "@shared/rest-client"
 import { SseSubscriber } from "@shared/sse-subscriber"
 import { globalEntryKey } from "@shared/project-entries"
@@ -201,7 +201,7 @@ describe("先切换后加载：setCurrentWorkspace", () => {
     snapshots.set(OTHER, [])
     snapshots.set(WT9, [])
 
-    // 跨项目行 → 紧接其工作区行（cycleScopeEntry 一步直达语义）：openProject
+    // 跨项目行 → 紧接其工作区行（侧栏点击/activateScopeRow 一步直达语义）：openProject
     // 的 refreshAllOpenedProjects（全 opened 项目）被 setCurrentWorkspace 越代
     const p1 = store.openProject("proj2")
     const p2 = store.setCurrentWorkspace(WT9)
@@ -2640,7 +2640,7 @@ describe("快捷键支撑（design-keyboard-shortcuts）", () => {
     expect(store.activeTabKey).toBe(`file:${ROOT}/a.md`)
   })
 
-  it("cycleScopeEntry：项目行 → 工作区行逐行 → 跨项目 → 循环回首个 entry", async () => {
+  it("scopePreview 预览-提交（§3 修订）：begin 落当前行，move 只移光标不切换，commit 一次跨项目切换", async () => {
     const proj2 = { ...project(), id: "proj2", worktree: "/other", sandboxes: ["/other/wt9"] }
     store.projects = [project(), proj2]
     store.projectStates = {
@@ -2648,67 +2648,89 @@ describe("快捷键支撑（design-keyboard-shortcuts）", () => {
     }
     store.sessionsByProject = new Map()
     // 行序：entry:proj1 → ws:WT1 → ws:WT2 → entry:proj2 → ws:/other/wt9（循环）
-    store.cycleScopeEntry(1)
-    await vi.waitFor(() => expect(store.scopeQuery.directory).toBe(WT1))
-    store.cycleScopeEntry(1)
-    await vi.waitFor(() => expect(store.scopeQuery.directory).toBe(WT2))
-    store.cycleScopeEntry(1)
-    await vi.waitFor(() => expect(store.currentProject?.id).toBe("proj2"))
-    expect(store.scopeQuery.directory).toBe("/other")
-    store.cycleScopeEntry(1)
-    await vi.waitFor(() => expect(store.scopeQuery.directory).toBe("/other/wt9"))
-    // wt9 之后循环回 proj1 entry（主工作区）
-    store.cycleScopeEntry(1)
+    store.beginScopePreview()
+    expect(store.scopePreview).toEqual({ kind: "entry", key: "proj1" })
+    store.moveScopePreview(1)
+    expect(store.scopePreview).toEqual({ kind: "ws", projectId: "proj1", directory: WT1 })
+    // 预览期间零切换（中间作用域不经过——无文件树重置/Tab 恢复/快照请求）
+    expect(store.scopeQuery.directory).toBe(ROOT)
+    store.moveScopePreview(1)
+    store.moveScopePreview(1)
+    expect(store.scopePreview).toEqual({ kind: "entry", key: "proj2" })
+    expect(store.scopeQuery.directory).toBe(ROOT)
+    // 提交：一次切到光标行
+    store.commitScopePreview()
+    await vi.waitFor(() => {
+      expect(store.currentProject?.id).toBe("proj2")
+      expect(store.scopeQuery.directory).toBe("/other")
+    })
+    expect(store.scopePreview).toBeNull()
+  })
+
+  it("scopePreview 环游与工作区行提交：末行 +1 回首行；跨项目 commit 直达 worktree", async () => {
+    const proj2 = { ...project(), id: "proj2", worktree: "/other", sandboxes: ["/other/wt9"] }
+    store.projects = [project(), proj2]
+    store.projectStates = {
+      default: { opened: ["proj1", "proj2"], currentProjectId: "proj2", currentWorkspaceId: "/other/wt9" },
+    }
+    store.sessionsByProject = new Map()
+    store.beginScopePreview()
+    // 末行（/other/wt9）+1 → 循环回首行 entry:proj1
+    store.moveScopePreview(1)
+    expect(store.scopePreview).toEqual({ kind: "entry", key: "proj1" })
+    store.moveScopePreview(1)
+    expect(store.scopePreview).toEqual({ kind: "ws", projectId: "proj1", directory: WT1 })
+    store.commitScopePreview()
     await vi.waitFor(() => {
       expect(store.currentProject?.id).toBe("proj1")
-      expect(store.scopeQuery.directory).toBe(ROOT)
+      expect(store.scopeQuery.directory).toBe(WT1)
     })
   })
 
-  it("cycleScopeEntry 连按渲染抑制（§21）：首击立即单步，窗口内只累计净步数（无中间切换），停顿后一次跳目标；鼠标入口作废窗口", async () => {
-    vi.useFakeTimers()
-    try {
-      const proj2 = { ...project(), id: "proj2", worktree: "/other", sandboxes: ["/other/wt9"] }
-      store.projects = [project(), proj2]
-      store.projectStates = {
-        default: { opened: ["proj1", "proj2"], currentProjectId: "proj1", currentWorkspaceId: null },
-      }
-      store.sessionsByProject = new Map()
-      // 行序：entry:proj1(0) → ws:WT1(1) → ws:WT2(2) → entry:proj2(3) → ws:/other/wt9(4)
-
-      // 首击（leading）：立即单步到 WT1
-      store.cycleScopeEntry(1)
-      expect(store.scopeQuery.directory).toBe(WT1)
-      // 窗口内连按两下：累计 +2，不发生中间切换（停在首击位置）
-      store.cycleScopeEntry(1)
-      store.cycleScopeEntry(1)
-      expect(store.scopeQuery.directory).toBe(WT1)
-      // 停顿越窗：净 +2 一次跳到 entry:proj2（idx 3）
-      await vi.advanceTimersByTimeAsync(SCOPE_CYCLE_WINDOW_MS + 20)
-      expect(store.currentProject?.id).toBe("proj2")
-      expect(store.scopeQuery.directory).toBe("/other")
-
-      // 窗口已清：下一击重新 leading → /other/wt9（idx 4）
-      store.cycleScopeEntry(1)
-      expect(store.scopeQuery.directory).toBe("/other/wt9")
-      // 反向混合：↓↓↑ 净 -1 → 停顿后回 idx 3
-      store.cycleScopeEntry(-1)
-      store.cycleScopeEntry(-1)
-      store.cycleScopeEntry(1)
-      await vi.advanceTimersByTimeAsync(SCOPE_CYCLE_WINDOW_MS + 20)
-      expect(store.scopeQuery.directory).toBe("/other")
-
-      // 鼠标介入作废窗口：连按累计未停顿即 openEntry，累计步数作废不越权跳
-      store.cycleScopeEntry(1) // leading → /other/wt9
-      store.cycleScopeEntry(1) // pending +1
-      store.cycleScopeEntry(1) // pending +2
-      void store.openEntry("proj1")
-      await vi.advanceTimersByTimeAsync(SCOPE_CYCLE_WINDOW_MS + 20)
-      expect(store.currentProject?.id).toBe("proj1")
-      expect(store.scopeQuery.directory).toBe(ROOT)
-    } finally {
-      vi.useRealTimers()
+  it("scopePreview no-op 与作废：未移动提交不切换；鼠标介入作废预览且后续提交不越权跳", async () => {
+    const proj2 = { ...project(), id: "proj2", worktree: "/other", sandboxes: ["/other/wt9"] }
+    store.projects = [project(), proj2]
+    store.projectStates = {
+      default: { opened: ["proj1", "proj2"], currentProjectId: "proj1", currentWorkspaceId: null },
     }
+    store.sessionsByProject = new Map()
+    // 未移动（光标 = 当前行）：提交 no-op，仅清预览
+    store.beginScopePreview()
+    store.commitScopePreview()
+    expect(store.scopeQuery.directory).toBe(ROOT)
+    expect(store.scopePreview).toBeNull()
+    // 移动后鼠标介入（openEntry 入口 cancelScopePreview）：预览作废，后续提交 no-op
+    store.beginScopePreview()
+    store.moveScopePreview(1)
+    store.moveScopePreview(1)
+    void store.openEntry("proj2")
+    expect(store.scopePreview).toBeNull()
+    await vi.waitFor(() => expect(store.currentProject?.id).toBe("proj2"))
+    store.commitScopePreview()
+    await Promise.resolve()
+    expect(store.currentProject?.id).toBe("proj2")
+    expect(store.scopeQuery.directory).toBe("/other")
+  })
+
+  it("scopePreview 边界：未 begin 直接 move 从当前行起步；当前行瞬态消失按虚拟边界起步", async () => {
+    const proj2 = { ...project(), id: "proj2", worktree: "/other", sandboxes: ["/other/wt9"] }
+    store.projects = [project(), proj2]
+    // 当前行消失：currentProjectId=proj1 但 opened 已无 proj1（瞬态）
+    store.projectStates = {
+      default: { opened: ["proj2"], currentProjectId: "proj1", currentWorkspaceId: null },
+    }
+    store.sessionsByProject = new Map()
+    // begin 落不到当前行（null，无高亮）；dir=1 首步落首行
+    store.beginScopePreview()
+    expect(store.scopePreview).toBeNull()
+    store.moveScopePreview(1)
+    expect(store.scopePreview).toEqual({ kind: "entry", key: "proj2" })
+    // 提交仍可达（≠当前行 proj1）
+    store.commitScopePreview()
+    await vi.waitFor(() => expect(store.currentProject?.id).toBe("proj2"))
+    // 未 begin 直接 move：从当前行起步（等价 begin+move）
+    store.moveScopePreview(1)
+    expect(store.scopePreview).toEqual({ kind: "ws", projectId: "proj2", directory: "/other/wt9" })
   })
 
   it("restoreClosedTab 跨作用域：diff 栈项先切回所属作用域再开 Tab", async () => {

@@ -24,7 +24,7 @@
 - renderer 任何"覆盖全局的浮层"（设置弹窗 / 右键菜单 / 模型选择浮层 / @ 引用浮层等 portal 到 body 的 fixed 层）会被 browser view 挡住
 - **对策**：store `overlayCount`（设置弹窗 openSettings/closeSettings、文件树右键菜单挂/卸、**面板拖拽调宽起止**时 +1/-1）；Workspace 布局 effect 监听：`overlayCount > 0` → 隐藏全部 browser view；= 0 → 恢复激活 Tab 的 view。终态保守：宁闪不挡
 - 拖拽调宽期间经 overlay 计数隐藏（原生视图不受 CSS `:root.resizing` 影响——拖拽路径上的 pointer 事件会被 webContents 吞掉中断拖拽）
-- **页面聚焦后的快捷键**：原生 webContents 抢走键盘焦点，renderer 的 window keydown 不可达——view 的 `before-input-event` 把 Ctrl 系按键经主窗口转发（`onBrowserShortcut`），shortcuts hook 订阅后走与 window keydown **同一分发函数**（转发全部 Ctrl 系 keyDown，renderer 未映射组合不消费即无动作——页面自身快捷键不受影响）
+- **页面聚焦后的快捷键**：原生 webContents 抢走键盘焦点，renderer 的 window keydown 不可达——view 的 `before-input-event` 把 Ctrl 系按键经主窗口转发（`onBrowserShortcut`），shortcuts hook 订阅后走与 window keydown **同一分发函数**（转发全部 Ctrl 系 keyDown + 裸 Alt / Alt+↑/↓ keyDown 与 Alt/Meta/Control keyUp——作用域遍历预览-提交所需，shortcuts §3 修订 2026-09-06，载荷 `up` 字段区分；顶层窗口失焦经 `browser:window-blur` 补发作废预览——视图持焦时 renderer 的 window 已 blur 态、无 DOM blur 可听；renderer 未映射组合不消费即无动作——页面自身快捷键不受影响）
 
 ### 1.3 renderer
 

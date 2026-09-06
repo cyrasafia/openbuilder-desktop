@@ -1,6 +1,6 @@
 # 快捷键体系 — 设计文档
 
-> 对应 spec-v0.3 #2。Tab 新建/关闭/切换、关闭栈恢复（Ctrl+Shift+T）、左栏作用域遍历（非 mac `Alt+↑/↓` / mac `⌘⌥↑/↓`，2026-09-04 修订）。纯 renderer 改动（浏览器视图转发过滤在 main，见 §3）。2026-09-06 增：引导页磁贴快捷键 Ctrl+1/2/3（页面局部，见 §1.1）。
+> 对应 spec-v0.3 #2。Tab 新建/关闭/切换、关闭栈恢复（Ctrl+Shift+T）、左栏作用域遍历（非 mac `Alt+↑/↓` / mac `⌘⌥↑/↓`，2026-09-04 修订；**2026-09-06 再修：遍历改预览-提交模型（§3）**）。原纯 renderer 改动，2026-09-06 起浏览器视图转发过滤（main，browser-views.ts）亦涉（§3）。2026-09-06 增：引导页磁贴快捷键 Ctrl+1/2/3（页面局部，见 §1.1）。
 >
 > 参考先例：按 AGENTS.md 约定检索 `../openbuilder/docs/design-*.md`——移动端无硬件键盘快捷键体系（TUI 无从借鉴），无同类设计。
 
@@ -17,7 +17,7 @@
 | Ctrl+Shift+Tab / Ctrl+PageUp | 上一个可见 Tab（循环；Shift+PgUp/PgDn 同样反转；**仅非 macOS**） |
 | ⌘⌥→ / ⌘⌥←（macOS） | 下/上一个可见 Tab（2026-09-03 修订：macOS 浏览器惯例主键；⌘Tab/⌘⇧Tab 是系统应用切换器，永远到不了应用） |
 | ⌘⇧] / ⌘⇧[（macOS） | 下/上一个可见 Tab（浏览器惯例别名；**按 code 匹配** `BracketRight`/`BracketLeft`——US 布局 shift+[ 的 key 是 `"{"`，code 布局无关。浏览器视图转发载荷因此增加 `code` 字段） |
-| Alt+↓ / Alt+↑（mac ⌘⌥↓ / ⌘⌥↑） | 左栏项目/工作区行按显示顺序向下/上切换作用域（§3，循环）。2026-09-04 修订替换原 `Ctrl+Alt+↑/↓`——GNOME/KDE 合成器抢作工作区切换（Wayland 下应用收不到，gsettings `switch-to-workspace-up/down` 实测），`Ctrl+Alt+Shift+↑/↓` 亦被 GNOME `move-to-workspace` 占用；mac 不用裸 ⌥↑/↓（NSText 段落首/尾移动惯例，劫持破坏输入框打字），维持 ⌘⌥↑/↓ |
+| Alt+↓ / Alt+↑（mac ⌘⌥↓ / ⌘⌥↑） | 左栏项目/工作区行**预览-提交**遍历（§3，循环）：按下修饰键左栏显光标，↑/↓ 只移动光标不切换，松开修饰键一次切换到光标行；鼠标点击切换行为不变。2026-09-06 修订（原逐按立即切换）。键位沿革：2026-09-04 替换原 `Ctrl+Alt+↑/↓`——GNOME/KDE 合成器抢作工作区切换（Wayland 下应用收不到，gsettings `switch-to-workspace-up/down` 实测），`Ctrl+Alt+Shift+↑/↓` 亦被 GNOME `move-to-workspace` 占用；mac 不用裸 ⌥↑/↓（NSText 段落首/尾移动惯例，劫持破坏输入框打字），维持 ⌘⌥↑/↓ |
 | Ctrl+B（mac ⌘B） | 收起/展开**左栏**（翻转，与标题栏开关同路径 `toggleLeftPanel()`；2026-09-04 修订替换原 Ctrl+[） |
 | Ctrl+Alt+B（mac ⌥⌘B） | 收起/展开**右栏**（翻转，`toggleRightPanel()`；替换原 Ctrl+]） |
 
@@ -57,13 +57,22 @@ private closedTabs: ClosedTabEntry[] = []   // push 尾 / pop 尾，上限 20（
 2. 属其他**已打开** entry（`openedEntries` 按 projectId + directory/sandboxes 匹配）：entry 根/global 目录 → `openEntry(key)`；**普通项目的 worktree 一步直达 `setCurrentProject(projectId, dir)`**（= `openProject` 单次切换，同步段即落位 worktree——先 openEntry 再补 setCurrentWorkspace 的两段式会把 Tab 开在项目根作用域）
 3. 所属项目/entry 已关闭 → 不可达，跳过该栈项
 
-## 3. Alt+↑/↓（mac ⌘⌥↑/↓）作用域遍历
+## 3. Alt+↑/↓（mac ⌘⌥↑/↓）作用域遍历——预览-提交模型
 
-> 2026-09-04 修订：原 `Ctrl+Alt+↑/↓` 在 GNOME/KDE 被合成器抢作工作区切换（Wayland 下应用收不到 keydown，等价绑定不存在），`Ctrl+Alt+Shift+↑/↓` 亦被 GNOME `move-to-workspace` 占用——核查后改绑裸 `Alt+↑/↓`（GNOME/KDE/Chromium/CodeMirror/fcitx5 均无占用；live 终端照旧归 pty 属既定语义，断开终端经 deadRelease 释放，见 design-terminal-tab §1.4）；mac 维持 `⌘⌥↑/↓`（裸 ⌥↑/↓ 是 NSText 段落移动惯例）。浏览器 Tab 聚焦时的转发过滤（browser-views.ts）相应从"仅 Ctrl/⌘"扩为"Ctrl/⌘ + 裸 Alt+↑/↓"。
+> 键位沿革：2026-09-04 原 `Ctrl+Alt+↑/↓` 在 GNOME/KDE 被合成器抢作工作区切换（Wayland 下应用收不到 keydown，等价绑定不存在），`Ctrl+Alt+Shift+↑/↓` 亦被 GNOME `move-to-workspace` 占用——改绑裸 `Alt+↑/↓`（GNOME/KDE/Chromium/CodeMirror/fcitx5 均无占用）；mac 维持 `⌘⌥↑/↓`（裸 ⌥↑/↓ 是 NSText 段落移动惯例）。
+>
+> 2026-09-06 修订（预览-提交，用户决策）：按下修饰键左栏即时显示光标，↑/↓ 只移动光标**不切换**，松开修饰键才一次切换到光标行——替代原"逐按立即切换 + design-tab-memory §21 连按防抖"。中间作用域按构造消除（预览期零切换零请求，连 §20 的 latest-wins 断路都不需要），且光标提供明确的"将切换到哪"预览；§21 机制（`SCOPE_CYCLE_WINDOW_MS` 防抖窗口）随之移除。鼠标点击切换行为不变。
 
-- 平铺序列 = 左栏显示顺序：每个 `openedEntries` 行 +（普通项目）其 `workspacesOfProject` 行
-- 当前位置：worktree 激活命中工作区行（projectId + directory 双匹配），否则命中激活 entry 行；序列空则 no-op
-- ±1 循环；激活复用侧栏点击语义：entry → `openEntry`；工作区行 → 当前项目 `setCurrentWorkspace`，跨项目 `setCurrentProject`
+- **状态机**（store `scopePreview`；行**描述符**而非下标——拖拽重排/快照刷新中列表变化不失位）：
+  - **begin**（按下修饰键）：`beginScopePreview()` 光标落当前行；已在预览中 no-op（第二个 Alt 键 keydown 不复位光标）。非 mac 进入条件 = 裸 Alt keydown 且无 Ctrl/⌘（Ctrl+Alt+B 等组合不显光标）；mac = ⌘⌥ 弦凑齐（任一后到修饰键的 keydown 触发，用户按压顺序不定）。当前行瞬态消失（作用域行刚消失）时光标不落（null，无高亮），首步 move 按虚拟边界起步
+  - **move**（Alt+↑/↓，经 §1 分发表）：`moveScopePreview(dir)` 只移动光标并 emit——**零切换零请求**（无文件树重置/Tab 恢复/快照）。从预览行起步；预览未落退回当前行；两者皆失按虚拟边界起步（dir=1 落首行、dir=-1 落末行，与原单步语义一致）。未 begin 直接 move 亦合法（等价 begin+move，浏览器视图转发丢 begin 时兜底）
+  - **commit**（松开修饰键）：`commitScopePreview()` 一次切换到光标行并清预览。no-op 条件：未预览 / 未移动（光标 = 当前行）/ 光标行已消失（关项目/删工作区竞态）；当前行瞬态消失**不算**（光标行有效即用户明确所指）。激活复用侧栏点击语义：entry → `openEntry`；工作区行 → 当前项目 `setCurrentWorkspace`、跨项目 `setCurrentProject`（一步直达）
+  - **cancel**：鼠标等其他作用域操作介入（`openEntry`/`openProject`/`setCurrentWorkspace`/`closeEntry`/`closeProject` 入口先 `cancelScopePreview()`）作废预览不切换；窗口失焦同样作废——Alt+Tab/⌘Tab 被合成器抢走后 keyup 不再来，不清高亮残留
+- **提交键**：非 mac = Alt keyup；mac = ⌘ 或 ⌥ 任一 keyup（弦解散即提交）。commit 入口恒开，store 侧无预览时 no-op
+- **平铺序列** = 左栏显示顺序：每个 `openedEntries` 行 +（普通项目）其 `workspacesOfProject` 行；序列空 no-op
+- **侧栏渲染**：光标行 `.tree-row.scope-cursor`（highest + 8% primary 淡染——"待提交"信号，与 hover（high）、active（highest + 4% on-surface）区分；仍背景单信号无描边环，2026-08-24 idiom），`scrollIntoView({block:"nearest"})` 跟随移出视口的光标
+- **监听挂点**：`useShortcuts` 内 window keydown（begin）/ keyup（commit）/ blur（cancel），与分发同 effect。浏览器 Tab 聚焦时的转发（browser-views.ts）相应扩展：keyDown 增裸 Alt、新增 keyUp 转发（仅 Alt/Meta/Control），载荷加 `up` 字段区分；**顶层窗口失焦经 main 补发**（`browser:window-blur`）——视图持焦时 renderer 的 window 已是 blur 态，应用失活（Alt+Tab 被合成器抢走、keyup 不再来）无 DOM blur 事件可听，cancel 信号缺失会残留高亮。不用视图自身 webContents 的 blur——焦点回宿主 UI（点侧栏）时也触发，该路径宿主 keyup 监听正常接管，cancel 会误杀按住中的预览
+- **已知边界**：live 终端内 Alt+↑/↓ 归 pty（既定语义，design-terminal-tab §1.4）——裸 Alt keydown/keyup 本就冒泡，光标显示但不移动、松开 no-op，属预期；mac ⌥⌘B（右栏开关）与遍历弦同修饰组合，按住期间光标短暂可见（B keyup 不触发提交，无害瞬态）
 
 ## 4. 用户关闭路径的收敛（tab-actions）
 
@@ -82,18 +91,21 @@ private closedTabs: ClosedTabEntry[] = []   // push 尾 / pop 尾，上限 20（
 
 | 文件 | 变更 |
 |---|---|
-| `src/renderer/src/store/app-store.ts` | `closedTabs` + `restoreClosedTab` + `ensureScopeFor`；`closeTab` pushClosed 选项；`closeChatTab` 入栈；`cycleTab(dir)`；`cycleScopeEntry(dir)` + `scopeNavRows` |
-| `src/renderer/src/components/shortcuts.ts` | 新：`useShortcuts()`（window keydown 分发表） |
+| `src/renderer/src/store/app-store.ts` | `closedTabs` + `restoreClosedTab` + `ensureScopeFor`；`closeTab` pushClosed 选项；`closeChatTab` 入栈；`cycleTab(dir)`；`scopePreview` + begin/move/commit/cancelScopePreview + `scopeNavRows`/`currentScopeRow`/`activateScopeRow`（§3 修订，原 `cycleScopeEntry` 移除） |
+| `src/renderer/src/components/shortcuts.ts` | 新：`useShortcuts()`（window keydown 分发表 + keyup/blur 预览-提交监听） |
 | `src/renderer/src/components/tab-actions.ts` | 新：`closeTabInteractive` |
+| `src/renderer/src/components/sidebar.tsx` | 光标行 `.scope-cursor` + `data-scope-cursor`（scrollIntoView 跟随） |
+| `src/renderer/src/styles/app.css` | `.tree-row.scope-cursor`（§3 修订） |
+| `src/main/browser-views.ts` / `src/shared/ipc.ts` / `src/preload/index.ts` | 转发扩展（2026-09-06）：keyDown 增裸 Alt、新增 Alt/Meta/Control keyUp（载荷 `up` 字段）、顶层失焦 `browser:window-blur` 补发 |
 | `src/renderer/src/app.tsx` | Shell 挂 `useShortcuts()` |
 | `src/renderer/src/components/workspace.tsx` | Tab 关闭按钮改经 tab-actions；§1.1 引导页磁贴快捷键 + 角标（Ctrl+1/2/3 监听在 GuidePage 内；Ctrl 按住态跟踪在 ctrl-held.ts 单例） |
 | `src/renderer/src/components/ctrl-held.ts` | Ctrl 按住态模块级单例跟踪 + `useCtrlHeld`（2026-09-06 修复：挂载晚于 keydown 的初始态） |
 | `src/renderer/src/styles/app.css` | §1.1 `.btn-tile` relative + `.btn-tile-badge` |
-| 测试 | store（关闭栈入/弹/跳过/跨作用域/上限、cycleTab 循环、cycleScopeEntry 遍历）；shortcuts 按键分发表；workspace-guide（§1.1 分发/禁用态/角标/卸载） |
+| 测试 | store（关闭栈入/弹/跳过/跨作用域/上限、cycleTab 循环、scopePreview 预览-提交/环游/no-op/作废/虚拟边界）；shortcuts 按键分发表 + begin/commit/cancel + 转发 up；workspace-guide（§1.1 分发/禁用态/角标/卸载） |
 
 ## 7. 验收
 
-- spec-v0.3 #2 验收行全过：Ctrl+T/W/Tab/Shift+Tab/PgUp/PgDn、Ctrl+Shift+T 依次恢复（chat 取消归档、已删会话跳过）、Alt+↑/↓（mac ⌘⌥↑/↓）循环切换
+- spec-v0.3 #2 验收行全过：Ctrl+T/W/Tab/Shift+Tab/PgUp/PgDn、Ctrl+Shift+T 依次恢复（chat 取消归档、已删会话跳过）、Alt+↑/↓（mac ⌘⌥↑/↓）预览-提交（按下显光标、↑/↓ 循环移动不切换、松开一次切到光标行；未移动/光标行消失 no-op；鼠标介入作废、点击切换不变）
 - §1.1：引导页 Ctrl+1/2/3 开 diff/终端/网页 Tab（禁用态不动作）；Ctrl 按住三磁贴显数字角标、松开/失焦消失；离开引导页后按键无动作
 - `npm run test` / `typecheck` / `build` 全绿
 

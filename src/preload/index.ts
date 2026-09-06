@@ -54,6 +54,11 @@ const api = {
     ipcRenderer.on("browser:shortcut", listener)
     return () => ipcRenderer.removeListener("browser:shortcut", listener)
   },
+  onBrowserWindowBlur: (cb: () => void) => {
+    const listener = () => cb()
+    ipcRenderer.on("browser:window-blur", listener)
+    return () => ipcRenderer.removeListener("browser:window-blur", listener)
+  },
   winMinimize: () => ipcRenderer.send("win:minimize"),
   winToggleMaximize: () => ipcRenderer.send("win:toggleMaximize"),
   winClose: () => ipcRenderer.send("win:close"),

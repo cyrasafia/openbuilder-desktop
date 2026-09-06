@@ -79,6 +79,9 @@ function createBrowserDesktopApi(): DesktopApi {
     onBrowserShortcut() {
       return () => {}
     },
+    onBrowserWindowBlur() {
+      return () => {}
+    },
     winMinimize() {},
     winToggleMaximize() {},
     winClose() {},
