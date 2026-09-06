@@ -232,9 +232,11 @@ describe("FilePanel 右键菜单", () => {
     )
   })
 
-  it("无项目时不渲染菜单入口", () => {
+  it("无项目时：保留「文件」标题行（2026-09-06 修订，与左栏空态对称），不渲染菜单入口", () => {
     storeStub = { ...makeStore(), currentProject: null }
     const { container } = render(<FilePanel />)
+    expect(screen.getByText("文件").closest(".sidebar-heading")).toBeTruthy()
+    expect(container.querySelector(".tree")).toBeNull()
     fireEvent.contextMenu(container.querySelector("aside") as Element)
     expect(screen.queryByText("打开")).toBeNull()
   })

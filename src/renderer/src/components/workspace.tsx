@@ -387,8 +387,6 @@ export function Workspace() {
           onClose={() => setMenu(null)}
         />
       )}
-
-      {store.settingsOpen && <SettingsDialog />}
     </main>
   )
 }
@@ -2796,4 +2794,3 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
   )
 }
 
-import { SettingsDialog } from "./settings-dialog"
