@@ -547,6 +547,50 @@ function GuidePage() {
   // 会话附件输入接线（design-session-attachments §3）：粘贴/拖拽/按钮 → 管线 → store
   const attachInput = useAttachmentInput(directory)
 
+  // 引导页快捷键（design-keyboard-shortcuts §1，2026-09-06 增）：Ctrl+1/2/3 =
+  // 磁贴三入口（diff/终端/网页），与磁贴点击同路径、同禁用态；监听挂组件内随
+  // 引导页挂载/卸载——天然仅引导页生效，不经全局 useShortcuts 分发。Ctrl 按住
+  // 期间磁贴显示数字角标（Cmd 等价，macOS 开发态惯例；keyup/窗口失焦清——
+  // 失焦后 keyup 不再派发，不清会残留）
+  const [ctrlHeld, setCtrlHeld] = useState(false)
+  useEffect(() => {
+    const onKeyDown = (e: globalThis.KeyboardEvent) => {
+      // IME 组合中（fcitx5 上屏）/ 已被内层消费的事件不触发（同 useShortcuts 约定）
+      if (e.isComposing || e.defaultPrevented) return
+      if (e.ctrlKey || e.metaKey) setCtrlHeld(true)
+      // repeat 守卫：按住不放不重复开（终端每次调用都新建 pty）；Shift/Alt 组合
+      // 不属本快捷键（按 code 匹配数字键，布局无关）
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.repeat) return
+      if (e.code === "Digit1") {
+        e.preventDefault()
+        store.openDiffTab()
+      } else if (e.code === "Digit2" && store.activeProfile) {
+        e.preventDefault()
+        void store.openTerminalTab()
+      } else if (
+        e.code === "Digit3" &&
+        store.activeProfile &&
+        window.desktop.platform !== "browser"
+      ) {
+        e.preventDefault()
+        void store.openBrowserTab("about:blank")
+      }
+    }
+    const onKeyUp = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Control" || e.key === "Meta") setCtrlHeld(false)
+    }
+    const onBlur = () => setCtrlHeld(false)
+    window.addEventListener("keydown", onKeyDown)
+    window.addEventListener("keyup", onKeyUp)
+    window.addEventListener("blur", onBlur)
+    return () => {
+      window.removeEventListener("keydown", onKeyDown)
+      window.removeEventListener("keyup", onKeyUp)
+      window.removeEventListener("blur", onBlur)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store])
+
   const send = async () => {
     const text = draft.trim()
     // 空守卫：文本/引用/附件全空才拒绝（纯附件发送合法，design-session-attachments §2）
@@ -675,9 +719,15 @@ function GuidePage() {
         </div>
         {/* 操作区（design-diff-view §4.4 / design-layout §4）：diff 单入口（页内
             segment 切换三种来源）；.btn-tile 磁贴等宽 96px、5:4，icon 在上、
-            名称在磁贴内 icon 下方（DESIGN.md §按钮） */}
+            名称在磁贴内 icon 下方（DESIGN.md §按钮）。快捷键角标：Ctrl 按住期间
+            显示对应数字（§1 Ctrl+1/2/3），禁用磁贴不显示（快捷键同样不动作） */}
         <div className="guide-actions">
           <button type="button" className="btn-tile" onClick={() => store.openDiffTab()}>
+            {ctrlHeld && (
+              <span className="btn-tile-badge" aria-hidden>
+                1
+              </span>
+            )}
             <FileDiff size={20} aria-hidden />
             <span className="btn-tile-label">{t.diffTitle}</span>
           </button>
@@ -687,6 +737,11 @@ function GuidePage() {
             onClick={() => void store.openTerminalTab()}
             disabled={!store.activeProfile}
           >
+            {ctrlHeld && store.activeProfile && (
+              <span className="btn-tile-badge" aria-hidden>
+                2
+              </span>
+            )}
             <SquareTerminal size={20} aria-hidden />
             <span className="btn-tile-label">{t.openTerminal}</span>
           </button>
@@ -697,6 +752,13 @@ function GuidePage() {
             title={window.desktop.platform === "browser" ? t.comingSoon : undefined}
             onClick={() => void store.openBrowserTab("about:blank")}
           >
+            {ctrlHeld &&
+              store.activeProfile &&
+              window.desktop.platform !== "browser" && (
+                <span className="btn-tile-badge" aria-hidden>
+                  3
+                </span>
+              )}
             <Globe size={20} aria-hidden />
             <span className="btn-tile-label">{t.openBrowser}</span>
           </button>
