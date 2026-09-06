@@ -315,16 +315,12 @@ file/diff/terminal/browser Tab、任意 kind 激活、全 kind 混排顺序的�
 
 **遗留**（未做，按需再启）：分域订阅（useSyncExternalStore + selector，各面板只重渲染自身切片，根治全树渲染）；消息页缓存（切回作用域不重拉 listMessagesPage，参考 openbuilder 消息累积经验）。
 
-## 21. 连按渲染抑制：遍历防抖直达（2026-09-04）
+## 21. 连按渲染抑制 → 预览-提交（2026-09-06 机制整体替换）
 
-**问题**（§20 之后续）：emit 合帧把每按键渲染收到 ≤1 次/帧，但连按（Alt+↑/↓ 键重复 ~30ms/次）期间每帧仍有一次全树渲染，且中间作用域虽已无请求，同步段（文件树重置/记忆 Tab 恢复）仍逐次执行——用户仍感卡顿。需求：连按遍历时中间不渲染，停下后再渲染；鼠标点击行为不变。
+**原方案**（2026-09-04，leading + trailing 防抖，`cycleScopeEntry` 内置 `SCOPE_CYCLE_WINDOW_MS`=200ms 窗口）：首击立即单步（leading），窗口内只累计净步数（零状态改动零渲染零请求），停顿越窗后按净步数一次跳目标行（trailing）；鼠标介入（`openEntry`/`openProject`/`setCurrentWorkspace`/`closeEntry`/`closeProject` 入口 `cancelScopeCycle`）作废窗口。
 
-**方案（leading + trailing 防抖，`cycleScopeEntry` 内置）**：
+**替换（2026-09-06，用户决策）**：Alt+↑/↓ 遍历交互改为**预览-提交**——按下修饰键左栏显光标、↑/↓ 只移动光标、松开修饰键才切换（`scopePreview` 状态机，见 design-keyboard-shortcuts §3 修订）。中间作用域**按构造**不经过（预览期零切换零请求——原方案防抖窗口要解决的问题不复存在，连 §20 的 latest-wins 断路在预览期都用不上），且光标提供"将切换到哪"的明确预览。`cycleScopeEntry`/`scopeCycleTimer`/`scopeCyclePending`/`jumpScopeBy`/`SCOPE_CYCLE_WINDOW_MS` 移除；原 `cancelScopeCycle` 五个入口调用点原位改为 `cancelScopePreview`（鼠标介入作废语义不变，防 Alt 按住期间鼠标切换后被松开提交"跳回"）。
 
-- **首击立即单步**（leading）：单次按压零延迟跟手、有即时反馈；随后开启 `SCOPE_CYCLE_WINDOW_MS`（200ms）连按窗口
-- **窗口内只累计净步数**（`scopeCyclePending ±`）：零状态改动、零渲染、零请求——中间作用域完全不经过（比 §20 的 latest-wins 更省：连断路都省了）
-- **停顿越窗后按净步数一次跳到目标行**（`jumpScopeBy(net)`，stepwise 环游；虚拟边界语义与单步一致）。混合方向净额结算（↓↓↑ = -1）
-- **鼠标介入作废窗口**：`openEntry`/`openProject`/`setCurrentWorkspace`/`closeEntry`/`closeProject` 入口先 `cancelScopeCycle()`——连按未停顿即点击时累计步数作废，不越权跳转（leading 路径先跳后武装，入口处的 cancel 恒为 no-op，无时序冲突）
-- 键重复间隔 ~30ms、窗口 200ms：快速连按稳定落入窗口；刻意慢按（>200ms 间隔）逐击可见，符合直觉
+**渲染量级**：预览期每 move 一次 emit（经 §20 rAF 合帧 ≤1 次/帧全树渲染）——远低于本节原问题场景的每按键 ~5 次 emit（那是切换链路多段异步各自 emit 的风暴，§20 已收敛；新模型下切换只在 commit 发生一次）。键盘光标逐键 setState 与 picker/模型切换器同 idiom。§20 的 switchEpoch latest-wins 与 emit 合帧继续服务于 commit 的那一次切换。
 
-**验证**：vitest 642→643（新增：首击立即/窗口内冻结/净步数直达/反向混合/鼠标作废，fake timers 驱动）；既有遍历测试不改自过（waitFor 轮询容忍 200ms 窗口）；typecheck 双侧全绿。
+**验证**：vitest 779 用例全绿（§21 原防抖用例替换为：预览-提交/环游/未移动 no-op/鼠标作废/光标行消失 no-op/虚拟边界起步/未 begin 直接 move）；typecheck 双侧全绿。

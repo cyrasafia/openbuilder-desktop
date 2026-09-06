@@ -207,6 +207,13 @@ function ProjectTree() {
 
   const entries = store.openedEntries
   const current = store.currentProject
+  const preview = store.scopePreview
+
+  // Alt 预览光标滚入视野（design-keyboard-shortcuts §3 修订）：长列表光标移出
+  // 视口时跟随；scrollIntoView 在 jsdom 缺失——可选调用（ProjectPicker 同例）
+  useEffect(() => {
+    treeRef.current?.querySelector<HTMLElement>("[data-scope-cursor]")?.scrollIntoView?.({ block: "nearest" })
+  }, [preview])
 
   // 预览序：base = 移除拖拽项；slot 缺省 = 原位（dragIdx 在 base 中即原位）
   const dragIdx = dragKey ? entries.findIndex((e) => e.key === dragKey) : -1
@@ -301,14 +308,18 @@ function ProjectTree() {
           const isActive = store.isEntryActive(e.key)
           const isCurrentProject = e.project.id === current?.id
           const workspaces = e.isGlobal ? [] : store.workspacesOfProject(e.project.id)
+          // Alt 预览光标（design-keyboard-shortcuts §3 修订）：entry 行按 key 命中
+          const cursor = preview?.kind === "entry" && preview.key === e.key
           return (
             <div key={e.key} className="project-group" data-entry-key={e.key}>
               <div
                 className={
                   "tree-row project-row" +
                   (isActive ? " active" : "") +
+                  (cursor ? " scope-cursor" : "") +
                   (e.key === dragKey ? " dragging" : "")
                 }
+                data-scope-cursor={cursor ? "" : undefined}
                 draggable
                 onClick={() => selectEntry(e.key)}
                 onDragStart={(ev) => {
@@ -368,14 +379,19 @@ function ProjectTree() {
                 // 删除中（非阻塞删除，design-layout §工作区行）：整行禁用样式、
                 // 不可点击，右缘 loading 常显（替代 hover 才显的删除钮/指示点）
                 const deleting = store.isWorkspaceDeleting(e.project.id, w.directory)
+                // Alt 预览光标：工作区行按 projectId + directory 双匹配
+                const wsCursor =
+                  preview?.kind === "ws" && preview.projectId === e.project.id && preview.directory === w.directory
                 return (
                   <div
                     key={w.directory}
                     className={
                       "tree-row ws-row" +
                       (deleting ? " deleting" : "") +
-                      (isCurrentProject && store.currentWorkspace?.directory === w.directory ? " active" : "")
+                      (isCurrentProject && store.currentWorkspace?.directory === w.directory ? " active" : "") +
+                      (wsCursor ? " scope-cursor" : "")
                     }
+                    data-scope-cursor={wsCursor ? "" : undefined}
                     onClick={() => {
                       if (deleting) return
                       selectWorkspace(e.project.id, w.directory)

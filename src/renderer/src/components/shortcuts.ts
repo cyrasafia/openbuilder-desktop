@@ -10,7 +10,9 @@ import { closeTabInteractive } from "./tab-actions"
  * IME 组合中（fcitx5 上屏）不触发；已 preventDefault 的事件不重复处理。
  * Ctrl+O/T/W、Ctrl+Shift+T、Ctrl(+Shift)+Tab（非 mac）、Ctrl+PgUp/PgDn（非 mac）；
  * 作用域遍历非 mac 绑裸 Alt+↑/↓（2026-09-04 修订，原 Ctrl+Alt+↑/↓ 被 GNOME/KDE
- * 合成器抢作工作区切换，Wayland 下应用收不到；mac 维持 ⌘⌥↑/↓）；
+ * 合成器抢作工作区切换，Wayland 下应用收不到；mac 维持 ⌘⌥↑/↓）——
+ * **预览-提交模型（§3 修订，2026-09-06）**：按下修饰键左栏显光标（begin），
+ * ↑/↓ 只移动光标（move），松开修饰键才切换（commit）；
  * 面板开关全平台 VS Code 系：Ctrl+B / Ctrl+Alt+B（mac 经 metaKey 等价即 ⌘B / ⌥⌘B）。
  * macOS 切 Tab 仅惯例键 ⌘⌥←/→ 与 ⌘⇧[/]（⌘Tab/⌘⇧Tab 是系统应用切换器到不了应用，
  * Ctrl+Tab/PgUp/PgDn 亦不绑定——用户决策 2026-09-04）。
@@ -33,9 +35,10 @@ function dispatch(
   // Alt+↑/↓——原 Ctrl+Alt+↑/↓ 是 GNOME/KDE 合成器的工作区切换（Wayland 下应用
   // 收不到，实测 gsettings switch-to-workspace-up/down），Ctrl+Alt+Shift+↑/↓ 亦被
   // GNOME move-to-workspace 占用；mac 维持 ⌘⌥↑/↓——裸 ⌥↑/↓ 是 NSText 段落
-  // 首/尾移动惯例，绑定会劫持聊天输入框的打字
+  // 首/尾移动惯例，绑定会劫持聊天输入框的打字。§3 修订（2026-09-06）：只移动
+  // 预览光标不切换，切换在松开修饰键时提交（commitScopePreview）
   if (alt && !shift && (key === "ArrowDown" || key === "ArrowUp") && (mac ? ctrl : !ctrl)) {
-    store.cycleScopeEntry(key === "ArrowDown" ? 1 : -1)
+    store.moveScopePreview(key === "ArrowDown" ? 1 : -1)
     return true
   }
   // macOS 专属切 Tab 键（浏览器惯例，2026-09-03 修订，design-keyboard-shortcuts
@@ -96,6 +99,19 @@ function dispatch(
   }
   return false
 }
+/** Alt 预览进入判定（§3 修订，window keydown 与浏览器转发共用）：非 mac =
+ *  裸 Alt 按下（无 Ctrl/⌘——Ctrl+Alt+B 等组合不显光标）；mac = ⌘⌥ 弦凑齐
+ *  （后到的修饰键 keydown 时另一修饰已在位，用户按压顺序不定） */
+function traversalModifiersHeld(mac: boolean, key: string, ctrl: boolean, alt: boolean): boolean {
+  if (mac) return alt && ctrl && (key === "Alt" || key === "Meta" || key === "Control")
+  return key === "Alt" && !ctrl && alt
+}
+
+/** Alt 预览提交键（§3 修订）：非 mac = Alt 松开；mac = ⌘⌥ 弦任一修饰松开 */
+function isTraversalModifierKey(mac: boolean, key: string): boolean {
+  return key === "Alt" || (mac && (key === "Meta" || key === "Control"))
+}
+
 export function useShortcuts() {
   const store = useStore()
   const { t } = useI18n()
@@ -105,22 +121,58 @@ export function useShortcuts() {
       if (e.isComposing || e.defaultPrevented) return
       // Cmd 视同 Ctrl（macOS 开发态惯例；Linux 主环境无影响）
       const ctrl = e.ctrlKey || e.metaKey
+      // 按下 Alt（mac ⌘⌥ 弦）→ 光标落当前行（已在预览中 = no-op）；
+      // 平台按事件读取（同 dispatch 惰性判定）
+      if (traversalModifiersHeld(window.desktop.platform === "darwin", e.key, ctrl, e.altKey)) {
+        store.beginScopePreview()
+      }
       // 裸 Alt+↑/↓（非 mac 作用域遍历）无 Ctrl 也进分发
       const altArrow = e.altKey && !ctrl && (e.key === "ArrowUp" || e.key === "ArrowDown")
       if (!ctrl && !altArrow) return
       // 消费才吞（未映射组合放行——Ctrl+S 浏览器保存；Ctrl+W 无激活 Tab 也吞，见 dispatch）
       if (dispatch(store, t, e.key, ctrl, e.shiftKey, e.altKey, e.code)) e.preventDefault()
     }
+    // 松开 Alt（mac ⌘ 或 ⌥ 任一）→ 提交切换（未预览/未移动 = no-op）
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (isTraversalModifierKey(window.desktop.platform === "darwin", e.key)) store.commitScopePreview()
+    }
+    // 窗口失焦作废预览：Alt+Tab/⌘Tab 被合成器抢走后 keyup 不再来，不清高亮残留
+    //（同 workspace-guide Ctrl 角标的 blur 清理先例）
+    const onBlur = () => store.cancelScopePreview()
     window.addEventListener("keydown", onKey)
-    return () => window.removeEventListener("keydown", onKey)
+    window.addEventListener("keyup", onKeyUp)
+    window.addEventListener("blur", onBlur)
+    return () => {
+      window.removeEventListener("keydown", onKey)
+      window.removeEventListener("keyup", onKeyUp)
+      window.removeEventListener("blur", onBlur)
+    }
   }, [store, t])
   // 浏览器视图内快捷键转发（main → renderer；无 preventDefault 语义——页面
-  // 原按键已发生，转发仅驱动应用侧动作）
+  // 原按键已发生，转发仅驱动应用侧动作）；keyDown 载荷附带 begin，keyUp 载荷
+  // （仅修饰键，browser-views 过滤）驱动 commit；顶层窗口失焦（视图持焦时
+  // renderer 的 window 已 blur 态、应用失活无 DOM blur）补发 cancel
   useEffect(() => {
-    return window.desktop.onBrowserShortcut?.((input) => {
-      if (!input || typeof input.key !== "string") return
-      dispatch(store, t, input.key, input.control || input.meta, input.shift, input.alt, input.code ?? "")
-    })
+    const unsubs = [
+      window.desktop.onBrowserShortcut?.((input) => {
+        if (!input || typeof input.key !== "string") return
+        if (input.up) {
+          if (isTraversalModifierKey(window.desktop.platform === "darwin", input.key)) {
+            store.commitScopePreview()
+          }
+          return
+        }
+        const ctrl = input.control || input.meta
+        if (traversalModifiersHeld(window.desktop.platform === "darwin", input.key, ctrl, input.alt)) {
+          store.beginScopePreview()
+        }
+        dispatch(store, t, input.key, ctrl, input.shift, input.alt, input.code ?? "")
+      }),
+      window.desktop.onBrowserWindowBlur?.(() => store.cancelScopePreview()),
+    ]
+    return () => {
+      for (const u of unsubs) u?.()
+    }
   }, [store, t])
 }
 

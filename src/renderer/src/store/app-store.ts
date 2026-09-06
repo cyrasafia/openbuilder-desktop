@@ -107,10 +107,6 @@ export const DIFF_TAB_TYPES: readonly DiffTabType[] = ["round", "uncommitted", "
 /** 文件监听失效去抖窗口（design-file-watcher §3.1/§3.2） */
 export const FILE_WATCH_DEBOUNCE_MS = 300
 
-/** 作用域遍历连按窗口（design-tab-memory §21）：窗口内后续按压只累计净步数，
- *  停顿后一次跳到目标行——中间作用域零进入（无状态改动/渲染/请求） */
-export const SCOPE_CYCLE_WINDOW_MS = 200
-
 /** 面板宽度约束（design-layout §2 / design-layout-collapse） */
 const PANEL_LIMITS = {
   left: { min: 200, max: 360, def: 260 },
@@ -215,6 +211,21 @@ export interface ProjectEntry {
   directory: string
   name: string
   isGlobal: boolean
+}
+
+/** 左栏可遍历行（design-keyboard-shortcuts §3 Alt 预览-提交）：entry 行按 key、
+ *  工作区行按 projectId + directory 定位（描述符而非下标——拖拽重排/快照刷新
+ *  中列表变化不失位）；亦供侧栏渲染光标高亮 */
+export type ScopeNavRow =
+  | { kind: "entry"; key: string }
+  | { kind: "ws"; projectId: string; directory: string }
+
+/** 行描述符等值比较（kind + 标识字段） */
+function sameNavRow(a: ScopeNavRow, b: ScopeNavRow): boolean {
+  if (a.kind !== b.kind) return false
+  if (a.kind === "entry") return a.key === (b as { key: string }).key
+  const w = b as { projectId: string; directory: string }
+  return a.projectId === w.projectId && a.directory === w.directory
 }
 
 export interface SessionRuntime {
@@ -1647,9 +1658,13 @@ export class AppStore {
    */
   private switchEpoch = 0
 
-  /** 连按窗口定时器与累计净步数（design-tab-memory §21，见 cycleScopeEntry） */
-  private scopeCycleTimer: number | null = null
-  private scopeCyclePending = 0
+  /**
+   * Alt 遍历预览光标（design-keyboard-shortcuts §3 修订，2026-09-06）：按住
+   * Alt（mac ⌘⌥）期间左栏高亮光标行，↑/↓ 只移动光标（零切换零请求），松开
+   * 修饰键提交切换——替代原 §21 连按防抖（连按中间切换按构造消除）。null =
+   * 未预览；鼠标等作用域操作介入即作废（见 cancelScopePreview）
+   */
+  scopePreview: ScopeNavRow | null = null
 
   private async persistProjectState() {
     this.projectStates[this.profileKey()] = this.projectStateFor()
@@ -1666,7 +1681,7 @@ export class AppStore {
    * 代际校验见 switchEpoch，连按时中间切换整段放弃）。
    */
   async openProject(projectId: string, workspaceDirectory?: string) {
-    this.cancelScopeCycle() // 作用域操作介入：作废连按窗口（§21）
+    this.cancelScopePreview() // 作用域操作介入：作废 Alt 预览（§3 修订）
     const epoch = ++this.switchEpoch
     const ps = this.projectStateFor()
     if (!ps.opened.includes(projectId)) ps.opened.push(projectId)
@@ -1693,7 +1708,7 @@ export class AppStore {
 
   /** 打开左栏 entry（普通项目 id 或 `global\0<directory>`）并切换作用域 */
   async openEntry(key: string) {
-    this.cancelScopeCycle() // 作用域操作介入：作废连按窗口（§21）
+    this.cancelScopePreview() // 作用域操作介入：作废 Alt 预览（§3 修订）
     const dir = globalDirectoryOfKey(key)
     if (dir == null) return this.openProject(key)
     return this.openGlobalDirectory(dir)
@@ -1701,7 +1716,7 @@ export class AppStore {
 
   /** 关闭左栏 entry（global 目录 = 关闭该目录作用域；普通项目走 closeProject） */
   async closeEntry(key: string) {
-    this.cancelScopeCycle() // 同 openEntry
+    this.cancelScopePreview() // 同 openEntry
     const dir = globalDirectoryOfKey(key)
     if (dir == null) return this.closeProject(key)
     return this.closeGlobalDirectory(dir)
@@ -1909,7 +1924,7 @@ export class AppStore {
   }
 
   async closeProject(projectId: string) {
-    this.cancelScopeCycle() // 作用域操作介入：作废连按窗口（§21）
+    this.cancelScopePreview() // 作用域操作介入：作废 Alt 预览（§3 修订）
     const ps = this.projectStateFor()
     ps.opened = ps.opened.filter((id) => id !== projectId)
     if (ps.currentProjectId === projectId) {
@@ -2004,7 +2019,7 @@ export class AppStore {
   /** 切工作区（先切换后加载，同 openProject）：参数是 worktree directory（null = 主工作区）。
    *  同值早退（不刷新不恢复）——需要重同步作用域时须先切走再切回 */
   async setCurrentWorkspace(directory: string | null) {
-    this.cancelScopeCycle() // 作用域操作介入：作废连按窗口（§21；首击 leading 路径先跳后武装，此处为 no-op）
+    this.cancelScopePreview() // 作用域操作介入：作废 Alt 预览（提交路径先清后切，此处为 no-op）
     const project = this.currentProject
     if (!project) return
     // 幻影 directory 防御（同 openProject）：不在 sandboxes 内的目录视为主工作区，
@@ -4478,47 +4493,63 @@ export class AppStore {
   }
 
   /**
-   * Alt+↑/↓（mac ⌘⌥↑/↓）：左栏项目/工作区行按显示顺序遍历
-   * （design-keyboard-shortcuts §3，2026-09-04 修订替换 Ctrl+Alt+↑/↓——
-   * 被 GNOME/KDE 合成器抢作工作区切换）。
-   * 平铺序列 = openedEntries 行 +（普通项目）其 worktree 行；当前位置 = worktree
-   * 激活命中的工作区行，否则激活 entry 行；±1 循环。激活复用侧栏点击语义。
-   *
-   * 连按渲染抑制（design-tab-memory §21，leading + trailing）：首击立即单步
-   * （单次按压跟手、有即时反馈）；SCOPE_CYCLE_WINDOW_MS 窗口内的后续按压只
-   * 累计净步数——零状态改动零渲染，停顿后按净步数一次跳到目标行（中间作用域
-   * 不经过：无文件树重置/Tab 恢复/快照请求）。鼠标点击走 openEntry/
-   * setCurrentWorkspace 等入口（不经此路径），且这些入口先 cancelScopeCycle——
-   * 连按窗口内的鼠标介入作废累计步数，不越权跳转。
+   * Alt+↑/↓（mac ⌘⌥↑/↓）作用域遍历——预览-提交模型（design-keyboard-shortcuts
+   * §3 修订，2026-09-06）：按下修饰键 `beginScopePreview()` 光标落在当前行；
+   * ↑/↓ `moveScopePreview(dir)` 只移动光标——零切换零请求（无文件树重置/
+   * Tab 恢复/快照，§21 连按防抖的问题按构造消除）；松开修饰键
+   * `commitScopePreview()` 一次切换到光标行（激活复用侧栏点击语义）。
+   * 平铺序列 = openedEntries 行 +（普通项目）其 worktree 行，±1 循环。
    */
-  cycleScopeEntry(dir: 1 | -1) {
-    if (this.scopeCycleTimer != null) this.scopeCyclePending += dir
-    else this.jumpScopeBy(dir)
-    if (this.scopeCycleTimer != null) window.clearTimeout(this.scopeCycleTimer)
-    this.scopeCycleTimer = window.setTimeout(() => {
-      this.scopeCycleTimer = null
-      const pending = this.scopeCyclePending
-      this.scopeCyclePending = 0
-      if (pending !== 0) this.jumpScopeBy(pending)
-    }, SCOPE_CYCLE_WINDOW_MS)
+  beginScopePreview() {
+    if (this.scopePreview != null) return
+    this.scopePreview = this.currentScopeRow()
+    if (this.scopePreview != null) this.emit()
   }
 
-  /** 作废连按窗口（累计步数与定时器）：用户鼠标等其他作用域操作介入时调用 */
-  private cancelScopeCycle() {
-    if (this.scopeCycleTimer != null) {
-      window.clearTimeout(this.scopeCycleTimer)
-      this.scopeCycleTimer = null
+  /** 移动预览光标（不切换）：从预览行起步；预览未落（Alt 先于 begin 丢失/
+   *  鼠标介入作废后）退回当前行；当前行也瞬态消失按虚拟边界起步——dir=1 落
+   *  首行、dir=-1 落末行（与原 jumpScopeBy 单步语义一致） */
+  moveScopePreview(dir: 1 | -1) {
+    const rows = this.scopeNavRows()
+    if (rows.length === 0) return
+    const preview = this.scopePreview
+    let idx = preview ? rows.findIndex((r) => sameNavRow(r, preview)) : -1
+    if (idx < 0) {
+      const cur = this.currentScopeRow()
+      idx = cur ? rows.findIndex((r) => sameNavRow(r, cur)) : -1
     }
-    this.scopeCyclePending = 0
+    const from = idx < 0 ? (dir > 0 ? rows.length - 1 : 0) : idx
+    this.scopePreview = rows[(from + dir + rows.length) % rows.length]!
+    this.emit()
   }
 
-  /** 按净步数跳作用域行（正=向下，stepwise 环游）；虚拟边界（当前行瞬态消失）
-   *  语义与单步一致——首步 dir=1 落首行、dir=-1 落末行 */
-  private jumpScopeBy(net: number) {
-    type NavRow =
-      | { kind: "entry"; key: string }
-      | { kind: "ws"; projectId: string; directory: string }
-    const rows: NavRow[] = []
+  /** 提交预览（松开修饰键）：光标行仍存在且 ≠ 当前行才切换；清预览。
+   *  未预览 / 未移动（光标 = 当前行）/ 行已消失（关项目/删工作区竞态）均
+   *  no-op——当前行瞬态消失（虚拟边界起步）不算：光标行有效即用户明确所指 */
+  commitScopePreview() {
+    const target = this.scopePreview
+    if (!target) return
+    this.scopePreview = null
+    const rows = this.scopeNavRows()
+    const cur = this.currentScopeRow()
+    if ((cur != null && sameNavRow(target, cur)) || !rows.some((r) => sameNavRow(r, target))) {
+      this.emit()
+      return
+    }
+    this.activateScopeRow(target)
+  }
+
+  /** 作废 Alt 预览（不切换）：鼠标等其他作用域操作介入（入口先于切换调用）与
+   *  窗口失焦（Alt+Tab 被合成器抢走后 keyup 不再来，不清会残留高亮） */
+  cancelScopePreview() {
+    if (this.scopePreview == null) return
+    this.scopePreview = null
+    this.emit()
+  }
+
+  /** 平铺可遍历行（左栏显示顺序）：entry 行 +（普通项目）其工作区行 */
+  private scopeNavRows(): ScopeNavRow[] {
+    const rows: ScopeNavRow[] = []
     for (const e of this.openedEntries) {
       rows.push({ kind: "entry", key: e.key })
       if (!e.isGlobal) {
@@ -4527,24 +4558,26 @@ export class AppStore {
         }
       }
     }
-    if (rows.length === 0) return
-    let idx = -1
+    return rows
+  }
+
+  /** 当前作用域对应的行：worktree 激活命中工作区行（projectId + directory 双
+   *  匹配），否则激活 entry 行；均未命中（瞬态）= null */
+  private currentScopeRow(): ScopeNavRow | null {
+    const rows = this.scopeNavRows()
     const cur = this.currentProject
     if (cur && this.currentWorkspace) {
-      idx = rows.findIndex(
+      const ws = rows.find(
         (r) => r.kind === "ws" && r.projectId === cur.id && r.directory === this.currentWorkspace?.directory,
       )
+      if (ws) return ws
     }
-    if (idx < 0) idx = rows.findIndex((r) => r.kind === "entry" && this.isEntryActive(r.key))
-    // 当前行未命中（瞬态：作用域行刚消失）时按"虚拟边界"起步——dir=1 落首行、
-    // dir=-1 落末行（直接模运算会把 -1 当末行算成倒数第二行），后续步环游
-    const sign = net > 0 ? 1 : -1
-    const steps = Math.abs(net)
-    let i = idx < 0 ? (sign > 0 ? 0 : rows.length - 1) : idx
-    for (let k = idx < 0 ? 1 : 0; k < steps; k++) {
-      i = (i + sign + rows.length) % rows.length
-    }
-    const target = rows[i]!
+    return rows.find((r) => r.kind === "entry" && this.isEntryActive(r.key)) ?? null
+  }
+
+  /** 激活行（复用侧栏点击语义）：entry → openEntry；工作区行 → 当前项目
+   *  setCurrentWorkspace，跨项目 setCurrentProject（一步直达） */
+  private activateScopeRow(target: ScopeNavRow) {
     if (target.kind === "entry") {
       if (!this.isEntryActive(target.key)) void this.openEntry(target.key)
     } else if (target.projectId === this.currentProject?.id) {
