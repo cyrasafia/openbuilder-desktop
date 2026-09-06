@@ -94,21 +94,33 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
     // 吞掉 xterm 默认处理（仅命中组合键），返回 true 则放行其余键不受影响。
     const mac = window.desktop.platform === "darwin"
     // 无 live 连接（连接中/重连中/已退出/已断开——无 OPEN 的 WS）时不消费
-    // Ctrl/⌘ 系组合与裸 Alt+↑/↓（非 mac 作用域遍历，shortcuts §3）：xterm 对
-    // 这类键 preventDefault+stopPropagation（textarea 上 capture），全局分发
-    // （shortcuts.ts）收不到事件，Ctrl+W/Tab/Shift+Tab 等被无声吞掉而按键本就
-    // 无处可去（onData 只发 OPEN 态 WS）；返回 true = 释放给应用快捷键。覆盖含
-    // Shift 的 mod 组合（Ctrl+Shift+Tab 也释放），仅复制/粘贴组合例外——断开态
-    // 仍可复制回滚选区（§1.4）。无修饰键不释放（键盘滚动等 xterm 默认行为保留，
-    // 产生的 onData 发不出去无害）
+    // Ctrl/⌘ 系组合与裸 Alt+↑/↓（非 mac 作用域遍历，shortcuts §3）及裸 Alt 域
+    // 四键 O/C/N/⌫（项目/worktree 管理，shortcuts §1.2，2026-09-06；mac ⌘⌥ 系
+    // 经下方 ctrl/meta 判定本就释放）：xterm 对这类键 preventDefault+
+    // stopPropagation（textarea 上 capture），全局分发（shortcuts.ts）收不到事件，
+    // Ctrl+W/Tab/Shift+Tab 等被无声吞掉而按键本就无处可去（onData 只发 OPEN 态
+    // WS）；返回 true = 释放给应用快捷键。覆盖含 Shift 的 mod 组合（Ctrl+Shift+Tab
+    // 也释放），仅复制/粘贴组合例外——断开态仍可复制回滚选区（§1.4）。例外须
+    // 带 Ctrl/⌘ 修饰（2026-09-06 修订）：裸 Alt+C 是 Alt 域键（关激活 entry），
+    // 无修饰不属复制语义，不得被 code===KeyC 误吞。无修饰键不释放（键盘滚动等
+    // xterm 默认行为保留，产生的 onData 发不出去无害）
     const deadRelease = (ev: KeyboardEvent): boolean => {
       const altArrow =
         ev.altKey && !ev.ctrlKey && !ev.metaKey && (ev.key === "ArrowUp" || ev.key === "ArrowDown")
-      if (!ev.ctrlKey && !ev.metaKey && !altArrow) return false
+      const altFamily =
+        ev.altKey &&
+        !ev.ctrlKey &&
+        !ev.metaKey &&
+        (ev.code === "KeyO" ||
+          ev.code === "KeyC" ||
+          ev.code === "KeyN" ||
+          ev.code === "Backspace")
+      if (!ev.ctrlKey && !ev.metaKey && !altArrow && !altFamily) return false
       const ws = wsRef.current
       if (ws && ws.readyState === WebSocket.OPEN) return false
-      const isCopyKey = ev.code === "KeyC" || ev.key === "C" || ev.key === "c"
-      const isPasteKey = ev.code === "KeyV" || ev.key === "V" || ev.key === "v"
+      const copyPasteMods = ev.ctrlKey || ev.metaKey
+      const isCopyKey = copyPasteMods && (ev.code === "KeyC" || ev.key === "C" || ev.key === "c")
+      const isPasteKey = copyPasteMods && (ev.code === "KeyV" || ev.key === "V" || ev.key === "v")
       return !isCopyKey && !isPasteKey
     }
     term.attachCustomKeyEventHandler((ev) => {

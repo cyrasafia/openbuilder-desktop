@@ -4592,3 +4592,60 @@ describe("attachments + sendPrompt 附件扩展", () => {
     expect(store.attachmentsFor("s1")).toHaveLength(1)
   })
 })
+
+// ============ Alt 域动作（design-keyboard-shortcuts §1.2/§4.1） ============
+
+describe("Alt 域动作：requestWorktreeDelete / closeActiveEntry", () => {
+  it("requestWorktreeDelete 置位确认弹窗状态，cancelWorktreeDelete 清空（幂等）", () => {
+    store.requestWorktreeDelete(WT1)
+    expect(store.pendingWorktreeDelete).toEqual({ directory: WT1, projectId: "proj1" })
+    store.cancelWorktreeDelete()
+    expect(store.pendingWorktreeDelete).toBeNull()
+    store.cancelWorktreeDelete()
+    expect(store.pendingWorktreeDelete).toBeNull()
+  })
+
+  it("global 项目与删除中目标不动作（Alt+⌫ 对 global 作用域触达的兜底拒绝）", () => {
+    store.deletingWorkspaces.add(`proj1\u0000${WT1}`)
+    store.requestWorktreeDelete(WT1)
+    expect(store.pendingWorktreeDelete).toBeNull()
+    store.projects = [
+      ...store.projects,
+      { id: "global", worktree: "/", time: { created: 0, updated: 0 }, sandboxes: [] },
+    ]
+    store.requestWorktreeDelete("/home/x", "global")
+    expect(store.pendingWorktreeDelete).toBeNull()
+  })
+
+  it("closeActiveEntry：关当前激活项目（worktree 态亦关整个项目），回退最近候选", async () => {
+    store.projects = [
+      project(),
+      { ...project(), id: "proj2", worktree: "/other", time: { created: 0, updated: 5 }, sandboxes: [] },
+    ]
+    store.projectStates.default.opened = ["proj1", "proj2"]
+    store.projectStates.default.currentWorkspaceId = WT1
+    await store.closeActiveEntry()
+    expect(store.projectStates.default.opened).toEqual(["proj2"])
+    expect(store.projectStates.default.currentProjectId).toBe("proj2")
+    expect(store.projectStates.default.currentWorkspaceId).toBeNull()
+  })
+
+  it("closeActiveEntry：global 激活 = 关当前目录 entry（作用域目录复用 currentWorkspace 字段）", async () => {
+    store.projects = [
+      project(),
+      { id: "global", worktree: "/", time: { created: 0, updated: 0 }, sandboxes: [] },
+    ]
+    store.projectStates.default.opened = ["proj1", globalEntryKey("/home/g")]
+    store.projectStates.default.currentProjectId = "global"
+    store.projectStates.default.currentWorkspaceId = "/home/g"
+    await store.closeActiveEntry()
+    expect(store.projectStates.default.opened).toEqual(["proj1"])
+    expect(store.projectStates.default.currentProjectId).toBe("proj1")
+  })
+
+  it("closeActiveEntry：单 entry 不动作（对齐左栏单 entry 隐藏关闭按钮）", async () => {
+    await store.closeActiveEntry()
+    expect(store.projectStates.default.opened).toEqual(["proj1"])
+    expect(store.projectStates.default.currentProjectId).toBe("proj1")
+  })
+})

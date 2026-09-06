@@ -370,13 +370,19 @@ export class AppStore {
    */
   deletingWorkspaces = new Set<string>()
   /**
+   * 待确认删除的 worktree（左栏删除钮与 Alt+⌫ 同入口，design-keyboard-shortcuts
+   * §1.2/§4.1）：非空 = ConfirmDialog 挂载中；确认走 removeWorkspace 非阻塞删除，
+   * 取消/关闭清空。上提自 sidebar 本地状态——快捷键与按钮共用同一弹窗路径。
+   */
+  pendingWorktreeDelete: { directory: string; projectId: string } | null = null
+  /**
    * 本端 closeChatTab 在途集合（§17 修订二，SSE 归档回环关闭抑制）：关 Tab=归档
    * 流程"先 PATCH 后 closeTab(pushClosed 入关闭栈)"，SSE 归档回环可能先到——
    * 实时收敛分支抢先关会丢 Ctrl+Shift+T 关闭栈条目，在途期间抑制、交本地收尾
    */
   private closingChatSessions = new Set<string>()
   settingsOpen = false
-  /** 打开项目选择器（左栏 "+" 与 Ctrl+O 同路径；overlay 计数协调浏览器视图显隐） */
+  /** 打开项目选择器（左栏 "+" 与 Alt+O 同路径；overlay 计数协调浏览器视图显隐） */
   pickerOpen = false
   fileTreeExpanded = new Map<string, boolean>()
   fileTreeNodes = new Map<string, FileNode[]>()
@@ -2579,6 +2585,46 @@ export class AppStore {
   /** 该 worktree 是否删除中（左栏行禁用态数据源，design-layout §工作区行） */
   isWorkspaceDeleting(projectId: string, directory: string): boolean {
     return this.deletingWorkspaces.has(`${projectId}\u0000${directory}`)
+  }
+
+  /**
+   * 请求删除 worktree（二次确认入口，design-keyboard-shortcuts §1.2/§4.1）：
+   * 左栏删除钮与 Alt+⌫ 共用——置位 pendingWorktreeDelete 挂 ConfirmDialog，
+   * 确认走 removeWorkspace、取消走 cancelWorktreeDelete。global 项目（无
+   * worktree 概念）与删除中（重入）不动作——Alt+⌫ 对 global 作用域触达此处
+   * 亦被兜底拒绝。
+   */
+  requestWorktreeDelete(directory: string, projectId: string = this.currentProject?.id ?? "") {
+    const project = this.projects.find((p) => p.id === projectId)
+    if (!project || project.id === GLOBAL_PROJECT_ID) return
+    if (this.isWorkspaceDeleting(projectId, directory)) return
+    this.pendingWorktreeDelete = { directory, projectId }
+    this.emit()
+  }
+
+  /** 取消删除确认（ConfirmDialog onClose / Esc，design-keyboard-shortcuts §4.1） */
+  cancelWorktreeDelete() {
+    if (!this.pendingWorktreeDelete) return
+    this.pendingWorktreeDelete = null
+    this.emit()
+  }
+
+  /**
+   * Alt+C 关闭当前激活 entry（design-keyboard-shortcuts §1.2）：普通项目 = 当前
+   * 项目 entry（worktree 态亦关整个项目——entry 是关闭的最小单位，与左栏行 X 钮
+   * 同语义）；global = 当前目录 entry（作用域目录复用 currentWorkspace 字段，
+   * 同 isEntryActive 推导）。单 entry 不动作——对齐左栏单 entry 隐藏关闭按钮的
+   * "最后一个不关"。无二次确认：纯客户端状态、无 server 副作用，可随时重开。
+   */
+  closeActiveEntry() {
+    const cur = this.currentProject
+    if (!cur) return
+    const key =
+      cur.id === GLOBAL_PROJECT_ID
+        ? globalEntryKey(this.currentWorkspace?.directory ?? cur.worktree)
+        : cur.id
+    if (this.openedEntries.length <= 1) return
+    void this.closeEntry(key)
   }
 
   /**
