@@ -3474,6 +3474,64 @@
   background: var(--outline-variant);
 }
 
+/* ---------- 快捷键页签（design-keyboard-shortcuts §8） ---------- */
+
+.settings-shortcuts {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.sc-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.sc-group-title {
+  font-size: var(--text-sm);
+  color: var(--on-surface-variant);
+  margin-bottom: 2px;
+}
+
+.sc-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 30px;
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--surface-container);
+}
+
+/* 组内末行去分隔线（组间靠 gap 呼吸） */
+.sc-row:last-child {
+  border-bottom: none;
+}
+
+.sc-action {
+  font-size: var(--text-md);
+  color: var(--on-surface);
+}
+
+.sc-keys {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* 键位 chip：同一行的多个等效键（" / " 拆分）各一枚 */
+.sc-kbd {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--on-surface-variant);
+  background: var(--surface-container-high);
+  border: 1px solid var(--outline-variant);
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
 /* ---------- 欢迎屏（design-welcome-screen） ---------- */
 
 .welcome-wrap {

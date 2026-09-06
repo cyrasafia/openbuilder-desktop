@@ -89,6 +89,24 @@ vi.mock("../app", () => ({
       connectFirst: "请先连接服务器",
       providerNoProject: "打开项目后可在此配置 provider（列表按项目作用域查询）",
       noProjectMatch: "无匹配",
+      shortcutsTitle: "快捷键",
+      scGroupGlobal: "全局",
+      scGroupInput: "输入与视图",
+      newTab: "新建 Tab",
+      scCloseTab: "关闭当前 Tab",
+      scRestoreTab: "恢复刚关闭的 Tab",
+      scNextTab: "下一个 Tab",
+      scPrevTab: "上一个 Tab",
+      scOpenProject: "打开项目选择器",
+      scCycleScope: "在项目与工作区间切换作用域",
+      scToggleLeft: "收起/展开左栏",
+      scToggleRight: "收起/展开右栏",
+      scSend: "发送消息",
+      scNewline: "输入框换行",
+      scFileSearch: "文件内搜索",
+      scTermCopy: "终端复制",
+      scTermPaste: "终端粘贴",
+      scDismiss: "关闭弹窗/菜单",
     },
     locale: "zh" as const,
   }),
@@ -529,5 +547,71 @@ describe("ProviderSettings 组件", () => {
     render(<ProviderSettings ops={ops} onEditKey={onEditKey} />)
     await waitFor(() => expect(screen.getByText(/打开项目后/)).toBeTruthy())
     expect(list).not.toHaveBeenCalled()
+  })
+})
+
+// ============ 快捷键页签（design-keyboard-shortcuts §8） ============
+
+describe("ShortcutsSettings（快捷键列表）", () => {
+  /** 重定义 window.desktop.platform（beforeEach 的 getter 无 platform 字段） */
+  const setPlatform = (p: string) => {
+    Object.defineProperty(window, "desktop", {
+      configurable: true,
+      get: () => ({ scanBinaries, scanServers, openBinaryPicker, platform: p }),
+    })
+  }
+
+  it("非 mac：全局组与输入组列出，Ctrl+Tab 系可见、mac 惯例键不出现；键位拆 chip", () => {
+    setPlatform("linux")
+    render(<SettingsDialog />)
+    fireEvent.click(screen.getByText("快捷键"))
+    // 分组标题
+    expect(screen.getByText("全局")).toBeTruthy()
+    expect(screen.getByText("输入与视图")).toBeTruthy()
+    // 全局行：动作 + 键位 chip（含 " / " 拆分的多枚 chip）
+    expect(screen.getByText("新建 Tab")).toBeTruthy()
+    expect(screen.getByText("在项目与工作区间切换作用域")).toBeTruthy()
+    expect(screen.getByText("收起/展开右栏")).toBeTruthy()
+    expect(screen.getByText("Ctrl+Tab")).toBeTruthy()
+    expect(screen.getByText("Ctrl+PageDown")).toBeTruthy()
+    expect(screen.getByText("Alt+↓")).toBeTruthy()
+    expect(screen.getByText("Alt+↑")).toBeTruthy()
+    // 输入与视图组
+    expect(screen.getByText("发送消息")).toBeTruthy()
+    expect(screen.getByText("终端复制")).toBeTruthy()
+    expect(screen.getByText("Ctrl+Shift+C")).toBeTruthy()
+    expect(screen.getByText("Esc")).toBeTruthy()
+    // mac 专属切 Tab 键不出现；非 mac 行在
+    expect(screen.queryByText("⌘⌥→")).toBeNull()
+    expect(screen.queryByText("⌘⇧]")).toBeNull()
+    expect(screen.getByText("Ctrl+Shift+Tab")).toBeTruthy()
+  })
+
+  it("mac：显示 ⌘ 系键位与惯例键，Ctrl+Tab 系不出现；终端复制显示 ⌘C", () => {
+    setPlatform("darwin")
+    render(<SettingsDialog />)
+    fireEvent.click(screen.getByText("快捷键"))
+    expect(screen.getByText("⌘T")).toBeTruthy()
+    expect(screen.getByText("⌘⇧T")).toBeTruthy()
+    expect(screen.getByText("⌘B")).toBeTruthy()
+    expect(screen.getByText("⌥⌘B")).toBeTruthy()
+    expect(screen.getByText("⌘⌥↓")).toBeTruthy()
+    // mac 惯例切 Tab 键可见，非 mac 行隐藏
+    expect(screen.getByText("⌘⌥→")).toBeTruthy()
+    expect(screen.getByText("⌘⇧]")).toBeTruthy()
+    expect(screen.queryByText("Ctrl+Tab")).toBeNull()
+    expect(screen.queryByText("Ctrl+PageUp")).toBeNull()
+    // macKeys 回退：终端复制 ⌘C（linux 才是 Ctrl+Shift+C）
+    expect(screen.getByText("⌘C")).toBeTruthy()
+    expect(screen.queryByText("Ctrl+Shift+C")).toBeNull()
+  })
+
+  it("页签切换不丢其他页签：默认值页签仍可达", () => {
+    setPlatform("linux")
+    render(<SettingsDialog />)
+    fireEvent.click(screen.getByText("快捷键"))
+    fireEvent.click(screen.getByText("默认"))
+    expect(screen.queryByText("新建 Tab")).toBeNull()
+    expect(screen.getByText("默认")).toBeTruthy()
   })
 })
