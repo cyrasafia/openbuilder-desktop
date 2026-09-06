@@ -3349,6 +3349,79 @@
   user-select: text;
 }
 
+/* ---------- 添加服务器引导式（design-guided-add-server） ---------- */
+
+/* 发现视图候选行：与 .scan-candidate 同骨架，整行主信息居左、版本居右；
+   attach 行 URL 与来源徽标同组（徽标沿用 .profile-mode 形态） */
+.discover-candidate {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-chip);
+  background: transparent;
+  color: var(--on-surface);
+  text-align: left;
+  cursor: pointer;
+}
+
+.discover-candidate:hover,
+.discover-candidate:focus-visible {
+  background: var(--surface-container-high);
+}
+
+.discover-candidate-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.discover-candidate-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+}
+
+/* 第二节标题（本机 opencode）与首节拉开间距 */
+.discover-second-title {
+  margin-top: 10px;
+}
+
+/* 发现视图 actions：左「重新搜索」右「手动配置」（手动入口始终展示） */
+.discover-actions {
+  justify-content: space-between;
+}
+
+.discover-actions .btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 发现视图内非主按钮（重新搜索）与 dialog-actions 默认钮同源（灰底），
+   图标与文字间距 */
+.discover-actions button:not(.btn-primary) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 模式段（manual 表单置顶）：段控件居左（.form-label 是 column 布局） */
+.profile-mode-seg {
+  align-self: flex-start;
+}
+
+/* 模式一句话说明：紧跟段控件，弱化为辅助文字 */
+.profile-mode-desc {
+  margin: -4px 0 8px;
+}
+
 /* ---------- Provider 页签（design-provider-config） ---------- */
 
 .provider-search {
