@@ -8,7 +8,8 @@
  * 成功直接关闭欢迎屏（无 provider/默认模型引导）——Shell 接管，未打开项目时中
  * 栏即「打开项目」页。连接中卡片内「连接中…」行带 spinner（与设置弹窗挂起行
  * 同视觉，design-guided-add-server 修订 2）；失败停在原视图（候选可再点）。
- * 替代 Shell 渲染（TitleBar 由 App 层保留）；入口页底部保留设置入口。
+ * 替代 Shell 渲染（TitleBar 由 App 层保留）；入口页无设置入口（2026-09-08
+ * 修订，仅保留「添加服务器」）。
  */
 import { useEffect, useState } from "react"
 import { ArrowLeft, Copy, LoaderCircle } from "lucide-react"
@@ -91,9 +92,6 @@ export function WelcomeScreen() {
                 {t.addProfileTitle}
               </button>
             </div>
-            <button className="welcome-settings" onClick={() => store.openSettings()}>
-              {t.openSettings}
-            </button>
           </>
         ) : view === "discover" ? (
           <>
