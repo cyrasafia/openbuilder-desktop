@@ -63,6 +63,31 @@
 - **running/pending**：spinner + agent 名
 - **completed**：✓ 图标 + agent 名 + title 摘要（`state.title`）
 - **error**：✗ 图标 + agent 名 + error 摘要
+- **stopped**（2026-09-07 修订）：✗ 图标 + agent 名 + 描述摘要 + aria「已停止」
+
+**停止投影**（2026-09-07 修订）：`part.state.status` 的 pending/running 不是可信的
+进行中信号——server 对中断的 task part 可能**永远不写终态**（API 契约事实，同
+design-v0.1-implementation「中断消息 completed 恒 null」：实测本机 server 多个
+父会话的 task part 卡 `status:"running"` 数周，父消息无 finish/completed/error，
+而子会话早已结束）。投影规则：
+
+```
+running = part.status ∈ {pending, running} 且 (父会话活跃 或 子会话活跃)
+stopped = part.status ∈ {pending, running} 且 父/子会话均 idle（无 sessionStatus 条目）
+```
+
+活跃 = `sessionStatus` 有条目（busy/retry，`isSessionActive`）。判据依据：
+
+- task 工具在父会话 prompt 循环内同步执行——part 真在跑时父会话必为 busy；
+  父会话 idle 而 part 卡 running 只可能是中断残留（abort 后 server 未回写终态）
+  或历史僵死数据（重开旧 Tab，无状态事件可等）
+- 子会话活跃作为并集判据兜底：父条目瞬时缺失（冷启动/重连对账窗口）而子会话
+  确在跑时不误报停止；快照合并后父条目恢复，投影自愈
+- 已知瞬态取舍：断连期间 `sessionStatus.clear()` 会让真跑着的 subagent 短暂显示
+  停止，重连对账后恢复——与 typing dots 断连消失同语义，可接受
+- 已知瞬态取舍（对偶窗口）：中断残留的 part 在父会话发起**下一轮 prompt** 期间会
+  重新转圈（投影只看父会话 busy 与否，无法区分"本轮在跑"与"上轮残留"），新轮
+  idle 后回停止样式。纯外观、自愈，且无 per-part 状态可区分，不做修复
 
 ### D5：独立滚动
 
@@ -80,6 +105,37 @@ SubagentPanel body 设置 `overflow-y: auto; max-height: 400px`，滚轮事件�
   自身聚焦的按键（焦点在可滚后代 pre.code-block 时按键滚的是内层，误清会让
   跟随静默停摆）。回底吸附带滞回（向下滚且距底 <8px 才恢复）。收起重置 pinned，
   再展开恢复默认贴底。
+
+### D6：子会话报错上浮与待处理请求路由（2026-09-07 二次修订）
+
+**报错上浮**：subagent 的实际报错只落在子会话末条 assistant 的 `error` 上——
+task part 可能同停止投影一样永卡 running 不回写（同批实测数据：卡 running 的
+part 对应子会话末条 assistant `error: true`）。SubagentPanel 收起态直接消费：
+
+- 末条 assistant 带非中止 error（`name !== "MessageAbortedError"`，与
+  `inferFailedFromMessages` 同口径）→ ✗ 出错样式 + 报错文案（120 字截断），
+  优先于 running/stopped（子会话报错即终局）；中止不算报错，保持已停止样式
+- **retry 门控**：子会话活跃（busy/retry）期间挂起提取——退避窗口里失败尝试
+  的末条 assistant 恒带 error，不门控会在 ✗/转圈间按重试轮次闪动
+  （`dotStateFor` 的「busy/retry 期间跳过终局派生」同口径）；活跃期结束后
+  终局自现。卡 running 的目标场景子会话必 idle，不受门控影响
+- 冷开旧会话时子会话消息未经 SSE 累积、无报错文本来源 → stopped 且无内容时
+  按子会话 id 一次性 REST 补拉（独立 ref，不与展开路径互扰；展开仍是失败重试
+  入口）。loadSessionMessages 的 idle 副作用对停止态子会话无害（finish 推断
+  只认终态，卡死数据无终态不触发）
+
+**待处理请求路由**：子会话（subagent）工具触发的授权/问题请求挂在**子会话 ID**
+上（`pendingPermissions`/`pendingQuestions` 以 sessionID 为 key），而子会话无
+ChatView——请求原本无处展示，subagent 静默阻塞。路由规则（openbuilder 无先例，
+本仓库首次约定）：
+
+- 父会话 `ChatFooter`：自身请求优先，其次并入 `childPermissionFor` /
+  `childQuestionsFor`（按 `findSession(sid).parentID === 父会话 ID` 匹配）；
+  授权仍优先于问题（仅显示优先，queueTotal 计数含被授权卡遮蔽的问题——原
+  语义不变）。应答走请求自带 sessionID/directory（`respondPermission`
+  路由不变），卡片 UI 不变——上方 SubagentPanel 的转圈即上下文
+- `pendingCountFor`（父会话）计入子会话待处理 → Tab/左栏指示器 waiting 点亮
+- 并发多 subagent 同时请求取首个命中（短窗口，不排队区分）
 
 ## 坑
 
@@ -100,3 +156,12 @@ SubagentPanel body 设置 `overflow-y: auto; max-height: 400px`，滚轮事件�
 - **启发式匹配局限**（已知取舍）：`findChildSession` description 前缀匹配不上时回退
   "该父会话最新创建的子会话"——父会话并发跑多个 task 工具时可能挂到别的任务的子会话
   （`metadata.sessionId` 权威路径不受影响）；同 created 并列时排序结果不稳定。
+- **中断 part 永卡 running**（2026-09-07，D4 停止投影的动因）：用户停止父会话后
+  server 取消子会话，但父消息的 task part 可能不回写终态（半截消息，completed
+  恒 null）——UI 只看 `part.state.status` 会永久转圈。修复 = D4 停止投影
+  （父/子会话均 idle 时按已停止渲染）。openbuilder 移动端同源设计未覆盖此坑
+  （其 D4 无停止态），后续移动端如修可参考本投影。
+- **子会话报错无处可见 / 授权静默阻塞**（2026-09-07，D6 的动因）：同批卡 running
+  数据中子会话末条 assistant `error: true`——报错只在展开面板滚到底才可见；
+  授权/问题请求挂子会话 ID，子会话无 ChatView，请求根本不显示、subagent 无限
+  等待。修复 = D6 报错上浮 + 待处理请求路由到父会话。

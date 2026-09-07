@@ -1370,8 +1370,12 @@ function CommandHints({
  */
 function ChatFooter({ sessionID }: { sessionID: string }) {
   const store = useStore()
-  const permission = store.pendingPermissions.get(sessionID)
-  const questions = store.questionsForSession(sessionID)
+  // 子会话（subagent）待处理路由（design-subagent-status §D6）：授权/问题请求
+  // 挂在子会话 ID 上，子会话无 ChatView——并入父会话底部面板展示（应答走
+  // 请求自带 sessionID，不改路径）。授权优先于问题（同移动端 _FooterPanel，
+  // 仅显示优先，计数含被授权卡遮蔽的问题——原语义不变）
+  const permission = store.pendingPermissions.get(sessionID) ?? store.childPermissionFor(sessionID)
+  const questions = [...store.questionsForSession(sessionID), ...store.childQuestionsFor(sessionID)]
   const question = permission ? null : (questions[0] ?? null)
   const queueTotal = (permission ? 1 : 0) + questions.length
   const todos = queueTotal === 0 ? store.todosForSession(sessionID) : []
@@ -1997,12 +2001,29 @@ function ToolChip({ part }: { part: ToolPart }) {
 }
 
 /**
+ * 子会话末条 assistant 的非中止报错文案（design-subagent-status §D6，无则 null）。
+ * 中止（MessageAbortedError）= 用户主动停止，不算报错——与 dotStateFor 的
+ * inferFailedFromMessages 同口径。task part 卡 running 时这是 subagent 实际
+ * 报错的唯一来源
+ */
+function childSessionError(entries: ChatEntry[]): string | null {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i]
+    if (e.kind !== "message" || e.data.info.role !== "assistant") continue
+    const err = e.data.info.error as { name?: string } | null | undefined
+    if (err && err.name !== "MessageAbortedError") return extractErrorMessage(err)
+    return null
+  }
+  return null
+}
+
+/**
  * subagent 工作状态面板（design-subagent-status）：
  * task 工具的专用渲染——替代 ToolChip，在主消息流中内嵌子会话消息流。
  * 收起态 = agent 名 + 状态图标 + 描述摘要；展开态 = 独立滚动（滚动条隐藏）的
  * 子会话消息列表，宽度与消息区一致。子会话内回滚已屏蔽（MessageBlock isChildSession）。
  */
-function SubagentPanel({ part, parentSessionID }: { part: ToolPart; parentSessionID: string }) {
+export function SubagentPanel({ part, parentSessionID }: { part: ToolPart; parentSessionID: string }) {
   const { t } = useI18n()
   const store = useStore()
   const [open, setOpen] = useState(false)
@@ -2027,8 +2048,32 @@ function SubagentPanel({ part, parentSessionID }: { part: ToolPart; parentSessio
     : store.findChildSession(parentSessionID, description || undefined)
   const childSessionId = metadataSessionId ?? childSession?.id
 
-  // 状态图标 + 摘要
-  const running = status === "pending" || status === "running"
+  // 子会话消息列表（SSE 惰性累积；展开/停止补拉后含 REST 快照）
+  const childEntries = childSessionId ? store.chatEntries(childSessionId) : []
+
+  // 子会话报错上浮（§D6）：subagent 的实际报错只落在子会话末条 assistant 的
+  // error 上（task part 可能同停止投影一样永卡 running 不回写）。报错优先于
+  // running/stopped 展示（子会话报错即终局）；中止（MessageAbortedError）是
+  // 用户主动停止，不算报错——保持已停止样式（inferFailedFromMessages 同口径）。
+  // 子会话活跃（busy/retry）期间挂起提取——retry 退避窗口里失败尝试的末条
+  // assistant 恒带 error，不门控会在 ✗/转圈间按重试轮次闪动（dotStateFor
+  // 的「busy/retry 期间跳过终局派生」同口径）；活跃期结束后终局自现
+  const childActive = childSessionId != null && store.isSessionActive(childSessionId)
+  const childErrorText = childActive ? null : childSessionError(childEntries)
+
+  // 状态图标 + 摘要。停止投影（D4 修订）：server 对中断的 task part 可能永远
+  // 不写终态（实测卡 status:"running"、父消息 completed 恒 null——同
+  // message-merge.ts 半截消息注释的 server 行为），part 的 pending/running
+  // 只有在父会话或子会话仍活跃（busy/retry）时才可信；两侧均 idle = 中断/僵死
+  // 残留 → 按「已停止」渲染（✗ 图标），不再转圈。冷启动/重连对账的瞬时无状态
+  // 窗口里活跃会话可能暂缺条目（statusOf 缺省 idle），快照合并后即恢复转圈
+  const partRunning = status === "pending" || status === "running"
+  const sessionActive =
+    store.isSessionActive(parentSessionID) ||
+    (childSessionId != null && store.isSessionActive(childSessionId))
+  const errored = status === "error" || childErrorText != null
+  const running = partRunning && sessionActive && !errored
+  const stopped = partRunning && !sessionActive && !errored
   const agentLabel = subagentType
     ? subagentType.charAt(0).toUpperCase() + subagentType.slice(1)
     : t.assistant
@@ -2037,7 +2082,9 @@ function SubagentPanel({ part, parentSessionID }: { part: ToolPart; parentSessio
       ? (("title" in state ? state.title : "") || description || "")
       : status === "error"
         ? ("error" in state ? state.error.slice(0, 120) : "")
-        : description || ""
+        : childErrorText != null
+          ? childErrorText.slice(0, 120)
+          : description || ""
 
   // 首次展开加载子会话消息：SSE 增量已累积时跳过 REST（避免冗余拉取 +
   // loadSessionMessages 的 idle 副作用对运行中子会话的误判，review #1）。
@@ -2060,8 +2107,20 @@ function SubagentPanel({ part, parentSessionID }: { part: ToolPart; parentSessio
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, childSessionId])
 
-  // 子会话消息列表
-  const childEntries = childSessionId ? store.chatEntries(childSessionId) : []
+  // 停止态补拉（§D6）：冷开旧会话时子会话消息未经 SSE 累积，收起态无报错
+  // 文本来源——stopped 且无内容时按子会话 id 一次性 REST 拉取（独立 ref，
+  // 不与展开路径互斥/互扰；拉取后 childErrorText/摘要自然上浮）
+  const idleLoadedIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!stopped || !childSessionId || idleLoadedIdRef.current === childSessionId) return
+    idleLoadedIdRef.current = childSessionId
+    if (store.chatEntries(childSessionId).length > 0) return
+    const dir = childSession?.directory
+      ?? store.findSession(parentSessionID)?.directory
+      ?? ""
+    if (dir) void store.loadSessionMessages(childSessionId, dir)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stopped, childSessionId])
 
   // 独立滚动跟随（design-subagent-status §D5，ChatView 贴底语义同构）：
   // 展开挂载即贴底；贴底时新消息/流式更新跟随。上滚解除：wheel deltaY<0 +
@@ -2134,11 +2193,19 @@ function SubagentPanel({ part, parentSessionID }: { part: ToolPart; parentSessio
         <span className="chevron">{open ? "▾" : "▸"}</span>
         <span
           className="subagent-status-icon"
-          aria-label={running ? t.subagentRunning : status === "error" ? t.subagentError : t.subagentCompleted}
+          aria-label={
+            running
+              ? t.subagentRunning
+              : errored
+                ? t.subagentError
+                : stopped
+                  ? t.subagentStopped
+                  : t.subagentCompleted
+          }
         >
           {running ? (
             <LoaderCircle size={14} className="spin" aria-hidden />
-          ) : status === "error" ? (
+          ) : errored || stopped ? (
             <CircleX size={14} aria-hidden />
           ) : (
             <CircleCheck size={14} aria-hidden />

@@ -4683,3 +4683,87 @@ describe("Alt 域动作：requestWorktreeDelete / closeActiveEntry", () => {
     expect(store.projectStates.default.currentProjectId).toBe("proj1")
   })
 })
+
+describe("subagent 子会话待处理路由（design-subagent-status §D6）", () => {
+  /** 直驱 handleEvent（SSE 已 mock off）：事件信封 { type, properties } */
+  function dispatch(ev: { type: string; properties: unknown }) {
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, ev)
+  }
+
+  /** 父会话 s1 + 子会话 c1（parentID s1）入 sessionsByProject */
+  function seedChild() {
+    const parent = session("s1", ROOT, { created: 1, updated: 1 })
+    const child = { ...session("c1", ROOT, { created: 2, updated: 2 }), parentID: "s1" } as Session
+    store.sessionsByProject.set("proj1", sessionsOf(parent, child))
+  }
+
+  it("子会话授权路由到父会话：childPermissionFor 命中 + pendingCountFor 点亮", () => {
+    seedChild()
+    dispatch({
+      type: "permission.asked",
+      properties: { id: "per_1", sessionID: "c1", permission: "bash", patterns: ["ls"], metadata: null },
+    })
+    expect(store.childPermissionFor("s1")?.id).toBe("per_1")
+    expect(store.pendingCountFor("s1")).toBe(1)
+    // 非父会话不得命中
+    expect(store.childPermissionFor("c1")).toBeNull()
+  })
+
+  it("子会话问题卡路由：childQuestionsFor 命中 + 与授权计数并列", () => {
+    seedChild()
+    dispatch({
+      type: "question.asked",
+      properties: {
+        id: "que_1",
+        sessionID: "c1",
+        questions: [{ question: "继续吗", options: [], multiple: false, custom: true }],
+      },
+    })
+    expect(store.childQuestionsFor("s1").map((q) => q.id)).toEqual(["que_1"])
+    expect(store.pendingCountFor("s1")).toBe(1)
+  })
+
+  it("父会话自身待处理 + 子会话待处理合并计数", () => {
+    seedChild()
+    dispatch({
+      type: "permission.asked",
+      properties: { id: "per_1", sessionID: "s1", permission: "bash", patterns: ["ls"], metadata: null },
+    })
+    dispatch({
+      type: "question.asked",
+      properties: {
+        id: "que_1",
+        sessionID: "c1",
+        questions: [{ question: "继续吗", options: [], multiple: false, custom: true }],
+      },
+    })
+    expect(store.pendingCountFor("s1")).toBe(2)
+  })
+
+  it("他端答掉子会话授权：路由与计数随之清除", () => {
+    seedChild()
+    dispatch({
+      type: "permission.asked",
+      properties: { id: "per_1", sessionID: "c1", permission: "bash", patterns: ["ls"], metadata: null },
+    })
+    dispatch({ type: "permission.replied", properties: { requestID: "per_1" } })
+    expect(store.childPermissionFor("s1")).toBeNull()
+    expect(store.pendingCountFor("s1")).toBe(0)
+  })
+
+  it("无 parentID 关联的会话请求不误路由", () => {
+    store.sessionsByProject.set(
+      "proj1",
+      sessionsOf(
+        session("s1", ROOT, { created: 1, updated: 1 }),
+        session("s2", ROOT, { created: 2, updated: 2 }),
+      ),
+    )
+    dispatch({
+      type: "permission.asked",
+      properties: { id: "per_2", sessionID: "s2", permission: "bash", patterns: ["ls"], metadata: null },
+    })
+    expect(store.childPermissionFor("s1")).toBeNull()
+    expect(store.pendingCountFor("s1")).toBe(0)
+  })
+})

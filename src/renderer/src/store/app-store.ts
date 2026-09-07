@@ -3454,9 +3454,34 @@ export class AppStore {
     return [...this.pendingQuestions.values()].filter((q) => q.sessionID === sessionID)
   }
 
-  /** 会话待处理数（权限 ≤1 + 问题 N），指示器投影输入 */
+  /**
+   * 会话的 subagent 子会话待处理授权（design-subagent-status §D6）：子会话无
+   * ChatView，其授权/问题请求路由到父会话展示与应答（reply 走 permission
+   * 自带 sessionID/directory，路由不改应答路径）。取首个命中（map 容量小，
+   * 并发多 subagent 同时请求是罕见的短窗口）
+   */
+  childPermissionFor(sessionID: string): PendingPermission | null {
+    for (const p of this.pendingPermissions.values()) {
+      if (this.findSession(p.sessionID)?.parentID === sessionID) return p
+    }
+    return null
+  }
+
+  /** 会话的 subagent 子会话问题卡（同 childPermissionFor 路由语义） */
+  childQuestionsFor(sessionID: string): PendingQuestion[] {
+    return [...this.pendingQuestions.values()].filter(
+      (q) => this.findSession(q.sessionID)?.parentID === sessionID,
+    )
+  }
+
+  /** 会话待处理数（自身权限 ≤1 + 问题 N + 子会话待处理——父会话指示器代收子会话的 waiting） */
   pendingCountFor(sessionID: string): number {
-    return (this.pendingPermissions.has(sessionID) ? 1 : 0) + this.questionsForSession(sessionID).length
+    return (
+      (this.pendingPermissions.has(sessionID) ? 1 : 0) +
+      this.questionsForSession(sessionID).length +
+      (this.childPermissionFor(sessionID) ? 1 : 0) +
+      this.childQuestionsFor(sessionID).length
+    )
   }
 
   /** 会话任务列表（design-task-list；空数组 = 无/已全完成） */
