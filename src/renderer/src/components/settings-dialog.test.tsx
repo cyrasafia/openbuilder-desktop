@@ -296,8 +296,8 @@ describe("添加服务器引导式（design-guided-add-server）", () => {
     })
     render(<SettingsDialog />)
     fireEvent.click(screen.getByText("添加"))
-    await waitFor(() => expect(screen.getByText("http://127.0.0.1:4096")).toBeTruthy())
-    fireEvent.click(screen.getByText("http://127.0.0.1:4096"))
+    await waitFor(() => expect(screen.getByText("127.0.0.1:4096")).toBeTruthy())
+    fireEvent.click(screen.getByText("127.0.0.1:4096"))
     await waitFor(() => expect(screen.getByText("正在连接…")).toBeTruthy())
     // 连接失败落 disconnected（emit）：订阅收尾同步执行
     fail()
@@ -337,8 +337,8 @@ describe("添加服务器引导式（design-guided-add-server）", () => {
     })
     render(<SettingsDialog />)
     fireEvent.click(screen.getByText("添加"))
-    await waitFor(() => expect(screen.getByText("http://127.0.0.1:4096")).toBeTruthy())
-    fireEvent.click(screen.getByText("http://127.0.0.1:4096"))
+    await waitFor(() => expect(screen.getByText("127.0.0.1:4096")).toBeTruthy())
+    fireEvent.click(screen.getByText("127.0.0.1:4096"))
     // 断开在途（状态仍是旧连接 streaming）：不关弹窗（started 闸门守卫）
     expect(storeState.current.closeSettings).not.toHaveBeenCalled()
     // disconnect 完成 → connect 置 connecting（本次已发起）：不关（未见终态）
