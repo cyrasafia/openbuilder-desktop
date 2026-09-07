@@ -19,7 +19,11 @@ import {
 import { ResizeObserverStub } from "./resize-observer-stub"
 
 const loadFileContent = vi.fn(async () => {})
+const ensureFileImage = vi.fn()
 const scrollIntoView = vi.fn()
+
+/** store.subscribe 收集的监听器（md 相对图片 useSyncExternalStore 直订后，测试手动通知） */
+let storeListeners: Array<() => void> = []
 
 vi.mock("../app", () => ({
   useI18n: () => ({
@@ -37,12 +41,28 @@ vi.mock("../app", () => ({
       binaryUnsupported: "二进制文件，暂不支持预览",
       imageZoomToggle: "切换缩放",
       imageDecodeFailed: "图片解码失败",
+      mdImageFailed: "图片加载失败",
     },
     locale: "zh" as const,
   }),
-  useStore: () => ({
+  useStore: () => storeStub,
+}))
+
+/** useStore 返回的稳定 stub（真实 store 自 context 引用恒稳；每次渲染新建会使
+ *  MarkdownImage 的 [target, store] effect 依赖失效——重复 ensureFileImage） */
+let storeStub: Record<string, unknown>
+
+function buildStoreStub() {
+  storeStub = {
     fileContents: fileContentsStub,
     loadFileContent,
+    ensureFileImage,
+    subscribe: (fn: () => void) => {
+      storeListeners.push(fn)
+      return () => {
+        storeListeners = storeListeners.filter((l) => l !== fn)
+      }
+    },
     fileViewStateFor: (path: string) => fileViewStateStub.get(path) ?? null,
     setFileViewState: (path: string, state: { mode: "preview" | "source"; top: number }) => {
       fileViewStateStub.set(path, state)
@@ -56,8 +76,8 @@ vi.mock("../app", () => ({
       const cur = tocStateStub.get(path)
       tocStateStub.set(path, { visible: cur?.visible, folded })
     },
-  }),
-}))
+  }
+}
 
 /** 测试内动态替换的内容表（vi.mock 提升导致闭包需经变量间接） */
 let fileContentsStub: Map<
@@ -98,10 +118,13 @@ beforeEach(() => {
   cleanup()
   ResizeObserverStub.reset()
   loadFileContent.mockClear()
+  ensureFileImage.mockClear()
   scrollIntoView.mockClear()
+  storeListeners = []
   fileContentsStub = new Map()
   fileViewStateStub = new Map()
   tocStateStub = new Map()
+  buildStoreStub()
 })
 
 /** 模拟 .file-view-wrap 宽度变更（jsdom clientWidth 恒 0，需覆写后触发 RO 回调） */
@@ -271,6 +294,53 @@ describe("FileView markdown 预览", () => {
     render(<FileView absolutePath="/repo/loading.md" />)
     expect(screen.getByText("加载中…")).not.toBeNull()
     expect(document.querySelector(".ms-segmented")).not.toBeNull()
+  })
+
+  // 相对路径图片（design-markdown-preview §2.8）
+  it("相对图片：占位 chip（alt 文本）→ 拉取（基准 = md 所在目录）→ 缓存落地渲染 data URL", async () => {
+    fileContentsStub.set("/repo/docs/README.md", { content: "![截图](./img/shot.png)" })
+    render(<FileView absolutePath="/repo/docs/README.md" />)
+    // 无缓存：占位 chip 呈 alt 文本；按解析出的绝对路径发起 singleflight 拉取
+    expect(screen.getByText("截图").classList.contains("md-img-pending")).toBe(true)
+    expect(ensureFileImage).toHaveBeenCalledWith("/repo/docs/img/shot.png")
+    // 缓存落地 + 监听通知（useSyncExternalStore 直订，不经父层重渲染）
+    fileContentsStub.set("/repo/docs/img/shot.png", {
+      content: "QUJD",
+      binary: true,
+      mimeType: "image/png",
+    })
+    act(() => storeListeners.forEach((l) => l()))
+    const img = document.querySelector(".file-md img") as HTMLImageElement
+    expect(img).not.toBeNull()
+    expect(img.getAttribute("src")).toBe("data:image/png;base64,QUJD")
+    expect(img.getAttribute("alt")).toBe("截图")
+  })
+
+  it("相对图片失败：错误占位（title 悬浮详情）；外链图不经拉取直接透传 <img>", async () => {
+    fileContentsStub.set("/repo/docs/bad.md", {
+      content: "![坏](./gone.png)\n\n![外](https://e.com/a.png)",
+    })
+    render(<FileView absolutePath="/repo/docs/bad.md" />)
+    fileContentsStub.set("/repo/docs/gone.png", { content: "", error: "文件不存在" })
+    act(() => storeListeners.forEach((l) => l()))
+    const failed = document.querySelector(".md-img-failed")
+    expect(failed?.textContent).toContain("图片加载失败")
+    expect(failed?.getAttribute("title")).toBe("文件不存在")
+    // 只拉相对路径那张；外链字面透传
+    expect(ensureFileImage).toHaveBeenCalledTimes(1)
+    expect(ensureFileImage).toHaveBeenCalledWith("/repo/docs/gone.png")
+    const imgs = document.querySelectorAll(".file-md img")
+    expect(imgs.length).toBe(1)
+    expect(imgs[0].getAttribute("src")).toBe("https://e.com/a.png")
+  })
+
+  it("非图片扩展的相对 src 不解析：不拉取，字面透传（harden 折叠为 /notes.txt）", async () => {
+    fileContentsStub.set("/repo/docs/x.md", { content: "![文档](./notes.txt)" })
+    render(<FileView absolutePath="/repo/docs/x.md" />)
+    expect(ensureFileImage).not.toHaveBeenCalled()
+    const img = document.querySelector(".file-md img") as HTMLImageElement
+    // 预重写跳过（扩展名闸门）→ streamdown 默认 harden 把 ./ 折叠为根绝对字面
+    expect(img.getAttribute("src")).toBe("/notes.txt")
   })
 })
 

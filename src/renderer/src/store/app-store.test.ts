@@ -1679,6 +1679,64 @@ describe("文件监听（design-file-watcher）", () => {
   })
 })
 
+// md 相对路径图片（design-markdown-preview §2.8）：singleflight 拉取落 fileContents
+// （与文件 Tab 图片同缓存）；作用域取当前 scopeQuery
+describe("markdown 相对图片（design-markdown-preview §2.8）", () => {
+  function clientRef(): Record<string, unknown> {
+    return (store as unknown as { client: Record<string, unknown> }).client
+  }
+
+  it("ensureFileImage：在途/已缓存不重复拉取；成功落 binary/mimeType 条目", async () => {
+    const readFileContent = vi.fn(async () => ({
+      type: "binary" as const,
+      content: "QUJD",
+      encoding: "base64" as const,
+      mimeType: "image/png",
+    }))
+    clientRef().readFileContent = readFileContent
+
+    store.ensureFileImage(ROOT + "/img/a.png")
+    store.ensureFileImage(ROOT + "/img/a.png") // 在途 → 合并为一次请求
+    expect(readFileContent).toHaveBeenCalledTimes(1)
+    expect(readFileContent).toHaveBeenCalledWith(ROOT, ROOT + "/img/a.png", undefined)
+
+    await vi.waitFor(() =>
+      expect(store.fileContents.get(ROOT + "/img/a.png")).toEqual({
+        content: "QUJD",
+        binary: true,
+        mimeType: "image/png",
+      }),
+    )
+    store.ensureFileImage(ROOT + "/img/a.png") // 已缓存 → 不再拉
+    expect(readFileContent).toHaveBeenCalledTimes(1)
+  })
+
+  it("失败落 error 条目（组件侧占位呈现，不静默）；error 不短路——重挂载即重试", async () => {
+    clientRef().readFileContent = vi.fn(async () => {
+      throw new Error("ENOENT")
+    })
+    store.ensureFileImage(ROOT + "/gone.png")
+    await vi.waitFor(() =>
+      expect(store.fileContents.get(ROOT + "/gone.png")?.error).toBe("ENOENT"),
+    )
+    // error 条目不短路（瞬时失败如 agent 未写出图片，重开 Tab 即重试）
+    clientRef().readFileContent = vi.fn(async () => ({
+      type: "binary" as const,
+      content: "QUJD",
+      encoding: "base64" as const,
+      mimeType: "image/png",
+    }))
+    store.ensureFileImage(ROOT + "/gone.png")
+    await vi.waitFor(() =>
+      expect(store.fileContents.get(ROOT + "/gone.png")).toEqual({
+        content: "QUJD",
+        binary: true,
+        mimeType: "image/png",
+      }),
+    )
+  })
+})
+
 // 回滚到指定消息（design-message-revert §3.3）：暂存合并 + 草稿回填 + 撤销；
 // busy 先 abort 再回滚（官方 halt→stage）；409 经 connectionError 呈现
 describe("回滚到指定消息（design-message-revert）", () => {

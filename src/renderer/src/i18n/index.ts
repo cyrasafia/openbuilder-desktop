@@ -102,6 +102,8 @@ const zh = {
   binaryUnsupported: "二进制文件，暂不支持预览",
   imageZoomToggle: "切换缩放（适应窗口 / 原始尺寸）",
   imageDecodeFailed: "图片解码失败",
+  // markdown 相对路径图片占位（design-markdown-preview §2.8）
+  mdImageFailed: "图片加载失败",
   // 设置
   settings: "设置",
   connectionTitle: "服务器连接",
@@ -382,6 +384,7 @@ const en: typeof zh = {
   binaryUnsupported: "Binary file — no preview",
   imageZoomToggle: "Toggle zoom (fit / actual size)",
   imageDecodeFailed: "Failed to decode image",
+  mdImageFailed: "Failed to load image",
   settings: "Settings",
   connectionTitle: "Server",
   profileName: "Name",

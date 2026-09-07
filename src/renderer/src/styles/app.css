@@ -1244,6 +1244,29 @@
   }
 }
 
+/* md 相对路径图片占位 chip（design-markdown-preview §2.8）：在途/失败的
+ * 内联占位——alt 文本（无 alt 用文件名），失败态带错误文案（title 悬浮
+ * 看详情），不静默破图。长文件名/alt 截断省略，不撑破排版 */
+:root[data-theme] .markdown-body.md .md-img-pending,
+:root[data-theme] .markdown-body.md .md-img-failed {
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: middle;
+  padding: 2px 10px;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-chip);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  color: var(--outline);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+:root[data-theme] .markdown-body.md .md-img-failed {
+  color: var(--error);
+}
+
 /* 代码块滚动体：vendor 的 .markdown-body pre 设了 padding/bg/border-radius，
  * 本项目用 md-codeblock 外壳 + md-pre 滚动体分离，须撤回 vendor 的 pre 样式 */
 :root[data-theme] .markdown-body.md .md-pre {
