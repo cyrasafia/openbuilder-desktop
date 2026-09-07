@@ -128,6 +128,8 @@ const zh = {
   discoverRescan: "重新搜索",
   discoverManualEntry: "手动配置…",
   addProfileManualTitle: "手动配置服务器",
+  // 新增服务器启用流挂起态（design-guided-add-server 修订 2：连接中弹窗内 loading）
+  addProfileConnecting: "正在连接…",
   editProfile: "编辑",
   back: "返回",
   save: "保存",
@@ -391,6 +393,7 @@ const en: typeof zh = {
   discoverRescan: "Search again",
   discoverManualEntry: "Configure manually…",
   addProfileManualTitle: "Configure server manually",
+  addProfileConnecting: "Connecting…",
   editProfile: "Edit",
   back: "Back",
   save: "Save",

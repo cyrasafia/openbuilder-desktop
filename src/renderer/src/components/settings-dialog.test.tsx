@@ -37,6 +37,7 @@ vi.mock("../app", () => ({
       addProfile: "添加",
       addProfileTitle: "添加服务器",
       addProfileManualTitle: "手动配置服务器",
+      addProfileConnecting: "正在连接…",
       editProfileTitle: "编辑服务器",
       editProfile: "编辑",
       removeProfile: "删除",
@@ -108,14 +109,42 @@ beforeEach(() => {
     { url: "http://127.0.0.1:4096", version: "1.0.0", source: "loopback" },
   ])
   openBinaryPicker.mockImplementation(async () => null)
+  // mock store 的订阅面（三轮 review：收尾逻辑订阅 store.emit，不经渲染路径；
+  // 各状态变更须同步 emit，与真实 store 逐 emit 一致）——用例改写 connect/
+  // disconnect 桩时须同样带 emit（见 storeState.current 上的 emitStore 助手）
+  const listeners = new Set<() => void>()
+  const emitStore = () => {
+    for (const fn of [...listeners]) fn()
+  }
+  ;(emitStore as { _listeners?: Set<() => void> })._listeners = listeners
+  // 默认 connect 语义（design-guided-add-server 修订 2 挂起流）：置 connecting →
+  // streaming（异步模拟，每次变更即 emit）；用例可覆写为失败路径
+  const connect = vi.fn(async () => {
+    storeState.current.connectionState = "connecting"
+    emitStore()
+    await new Promise((r) => setTimeout(r, 0))
+    storeState.current.connectionState = "streaming"
+    emitStore()
+  })
   storeState.current = {
     profiles: [],
     activeProfileId: null,
     activeProfile: null,
+    connectionState: "disconnected",
     closeSettings: vi.fn(),
-    saveProfiles: vi.fn(),
-    disconnect: vi.fn(),
-    connect: vi.fn(),
+    saveProfiles: vi.fn(async () => {}),
+    disconnect: vi.fn(async () => {
+      storeState.current.connectionState = "disconnected"
+      emitStore()
+    }),
+    connect,
+    subscribe: (fn: () => void) => {
+      listeners.add(fn)
+      return () => {
+        listeners.delete(fn)
+      }
+    },
+    connectionError: null,
     serverVersionWarning: null,
     managedNotice: null,
     managedLogLines: [],
@@ -125,6 +154,8 @@ beforeEach(() => {
     popOverlay: () => {},
     settingsInitialTab: "connection",
   }
+  // 用例内覆写 connect/disconnect 后调本助手发 emit（闭包捕获本块 listeners）
+  ;(globalThis as { __emitStore?: () => void }).__emitStore = emitStore
   Object.defineProperty(window, "desktop", {
     configurable: true,
     get: () => ({ scanBinaries, scanServers, openBinaryPicker }),
@@ -166,7 +197,19 @@ describe("添加服务器引导式（design-guided-add-server）", () => {
     expect(screen.getByText("手动配置…")).toBeTruthy()
   })
 
-  it("点击 server 候选：一键建档并启用（attach profile + baseUrl），关弹窗 + 直达连接", async () => {
+  it("点击 server 候选：一键建档并启用——弹窗保持打开 + loading，成功才关弹窗 + 直达连接", async () => {
+    // 受控 connect 桩（connecting 挂起）：挂起期断言 loading 与冻结，释放后走成功收尾
+    let releaseConnect!: () => void
+    const emit = () => (globalThis as { __emitStore?: () => void }).__emitStore?.()
+    storeState.current.connect = vi.fn(async () => {
+      storeState.current.connectionState = "connecting"
+      emit()
+      await new Promise<void>((r) => {
+        releaseConnect = r
+      })
+      storeState.current.connectionState = "streaming"
+      emit()
+    })
     render(<SettingsDialog />)
     fireEvent.click(screen.getByText("添加"))
     await waitFor(() => expect(screen.getByText("http://127.0.0.1:4096")).toBeTruthy())
@@ -178,16 +221,32 @@ describe("添加服务器引导式（design-guided-add-server）", () => {
       expect(last?.[0]).toEqual([expect.objectContaining({ baseUrl: "http://127.0.0.1:4096", mode: "attach" })])
       expect(last?.[1]).toEqual(expect.any(String))
     })
-    // 关闭设置弹窗 + 拆旧连接 + 带 openPickerAfter 标记连接
-    await waitFor(() => expect(storeState.current.closeSettings).toHaveBeenCalled())
+    // 挂起期（连接中）：弹窗保持打开 + loading 行可见；未关弹窗
+    await waitFor(() => expect(screen.getByText("正在连接…")).toBeTruthy())
+    expect(storeState.current.closeSettings).not.toHaveBeenCalled()
+    // 拆旧连接 + 带 openPickerAfter 标记连接
     await waitFor(() => expect(storeState.current.disconnect).toHaveBeenCalled())
     await waitFor(() =>
       expect(storeState.current.connect).toHaveBeenCalledWith({ openPickerAfter: true }),
     )
+    // 连接成功（streaming + emit）：订阅收尾关弹窗
+    releaseConnect()
+    await waitFor(() => expect(storeState.current.closeSettings).toHaveBeenCalled())
   })
 
-  it("点击 binary 候选：一键建档并启用（managed profile + binaryPath）", async () => {
+  it("点击 binary 候选：一键建档并启用（managed profile + binaryPath），同挂起流", async () => {
     scanServers.mockResolvedValue([])
+    let releaseConnect!: () => void
+    const emit = () => (globalThis as { __emitStore?: () => void }).__emitStore?.()
+    storeState.current.connect = vi.fn(async () => {
+      storeState.current.connectionState = "connecting"
+      emit()
+      await new Promise<void>((r) => {
+        releaseConnect = r
+      })
+      storeState.current.connectionState = "streaming"
+      emit()
+    })
     render(<SettingsDialog />)
     fireEvent.click(screen.getByText("添加"))
     await waitFor(() => expect(screen.getByText("/usr/bin/opencode")).toBeTruthy())
@@ -198,10 +257,112 @@ describe("添加服务器引导式（design-guided-add-server）", () => {
       expect(last?.[0]).toEqual([expect.objectContaining({ mode: "managed", binaryPath: "/usr/bin/opencode" })])
       expect(last?.[1]).toEqual(expect.any(String))
     })
+    await waitFor(() => expect(screen.getByText("正在连接…")).toBeTruthy())
+    expect(storeState.current.closeSettings).not.toHaveBeenCalled()
+    releaseConnect()
     await waitFor(() => expect(storeState.current.closeSettings).toHaveBeenCalled())
-    await waitFor(() =>
-      expect(storeState.current.connect).toHaveBeenCalledWith({ openPickerAfter: true }),
-    )
+  })
+
+  it("挂起新增连接失败：回到原视图（发现页），loading 消失、错误内联展示、候选可再点", async () => {
+    // 可控 connect 桩：置 connecting（emit）后挂起——失败落点由 release 手动推进
+    let fail!: () => void
+    const emit = () => (globalThis as { __emitStore?: () => void }).__emitStore?.()
+    storeState.current.connect = vi.fn(async () => {
+      storeState.current.connectionState = "connecting"
+      emit()
+      await new Promise<void>((r) => {
+        fail = r
+      })
+      storeState.current.connectionState = "disconnected"
+      storeState.current.connectionError = "连接被拒"
+      emit()
+    })
+    render(<SettingsDialog />)
+    fireEvent.click(screen.getByText("添加"))
+    await waitFor(() => expect(screen.getByText("http://127.0.0.1:4096")).toBeTruthy())
+    fireEvent.click(screen.getByText("http://127.0.0.1:4096"))
+    await waitFor(() => expect(screen.getByText("正在连接…")).toBeTruthy())
+    // 连接失败落 disconnected（emit）：订阅收尾同步执行
+    fail()
+    // 失败收尾：挂起清（loading 消失）、错误内联可见（遮罩盖左栏）、停在发现视图、不关弹窗（可重试）
+    await waitFor(() => expect(screen.queryByText("正在连接…")).toBeNull())
+    expect(screen.getByText("连接被拒")).toBeTruthy()
+    expect(screen.getByText("手动配置…")).toBeTruthy()
+    expect(storeState.current.closeSettings).not.toHaveBeenCalled()
+    const binaryBtn = screen.getByText("/usr/bin/opencode").closest("button")
+    expect(binaryBtn?.disabled).toBe(false)
+  })
+
+  it("旧连接 streaming 时新增（managed 断开窗口）：不误判成功，弹窗不提前关（review 修订 2 P1）", async () => {
+    // 初态 = 旧连接存活（streaming）——旧 managed disconnect 的 IPC 往返窗口内
+    // 全局状态仍是旧连接的 streaming，不得据此关弹窗
+    storeState.current.connectionState = "streaming"
+    // 可控 disconnect/connect 桩：disconnect 挂起模拟 IPC 往返窗口；connect
+    // 逐段推进（connecting → 挂起 → streaming），每次变更即 emit
+    let stopDone!: () => void
+    let releaseConnect!: () => void
+    const emit = () => (globalThis as { __emitStore?: () => void }).__emitStore?.()
+    storeState.current.disconnect = vi.fn(async () => {
+      await new Promise<void>((r) => {
+        stopDone = r
+      })
+      storeState.current.connectionState = "disconnected"
+      emit()
+    })
+    storeState.current.connect = vi.fn(async () => {
+      storeState.current.connectionState = "connecting"
+      emit()
+      await new Promise<void>((r) => {
+        releaseConnect = r
+      })
+      storeState.current.connectionState = "streaming"
+      emit()
+    })
+    render(<SettingsDialog />)
+    fireEvent.click(screen.getByText("添加"))
+    await waitFor(() => expect(screen.getByText("http://127.0.0.1:4096")).toBeTruthy())
+    fireEvent.click(screen.getByText("http://127.0.0.1:4096"))
+    // 断开在途（状态仍是旧连接 streaming）：不关弹窗（started 闸门守卫）
+    expect(storeState.current.closeSettings).not.toHaveBeenCalled()
+    // disconnect 完成 → connect 置 connecting（本次已发起）：不关（未见终态）
+    stopDone()
+    await waitFor(() => expect(storeState.current.connectionState).toBe("connecting"))
+    expect(storeState.current.closeSettings).not.toHaveBeenCalled()
+    // connect 落 streaming（emit）：订阅收尾此刻才关弹窗
+    releaseConnect()
+    await waitFor(() => expect(storeState.current.closeSettings).toHaveBeenCalled())
+  })
+
+  it("manual 表单挂起期控件全冻结（review 修订 2 P2）：模式段/输入/取消不可点，草稿不丢", async () => {
+    let release!: () => void
+    const emit = () => (globalThis as { __emitStore?: () => void }).__emitStore?.()
+    storeState.current.connect = vi.fn(async () => {
+      storeState.current.connectionState = "connecting"
+      emit()
+      await new Promise<void>((r) => {
+        release = r
+      })
+      storeState.current.connectionState = "disconnected"
+      storeState.current.connectionError = "boom"
+      emit()
+    })
+    render(<SettingsDialog />)
+    fireEvent.click(screen.getByText("添加"))
+    await waitFor(() => expect(screen.getByText("手动配置…")).toBeTruthy())
+    fireEvent.click(screen.getByText("手动配置…"))
+    fireEvent.change(screen.getByLabelText("服务器地址"), { target: { value: "http://10.0.0.5:4096" } })
+    fireEvent.click(screen.getByText("保存"))
+    await waitFor(() => expect(screen.getByText("正在连接…")).toBeTruthy())
+    // 挂起期：取消/模式段/输入全禁用
+    expect((screen.getByText("取消") as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByText("本机启动") as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByLabelText("服务器地址") as HTMLInputElement).disabled).toBe(true)
+    // 失败收尾：仍停在 manual 表单且草稿保留（挂起期没被切走）
+    release()
+    await waitFor(() => expect(screen.queryByText("正在连接…")).toBeNull())
+    expect(screen.getByText("手动配置服务器")).toBeTruthy()
+    expect((screen.getByLabelText("服务器地址") as HTMLInputElement).value).toBe("http://10.0.0.5:4096")
+    expect(screen.getByText("boom")).toBeTruthy()
   })
 
   it("「手动配置…」进 manual 表单：模式段置顶默认 attach，字段齐全，不再触发扫描", async () => {
@@ -345,7 +506,18 @@ describe("ProfileFormView 模式分化", () => {
     await waitFor(() => expect(screen.getByTitle("编辑")).toBeTruthy())
   })
 
-  it("手动新增保存 = 启用流：关弹窗 + disconnect + connect({openPickerAfter})", async () => {
+  it("手动新增保存 = 启用流（挂起）：loading 保持弹窗，成功后关弹窗；disconnect 先于 saveProfiles", async () => {
+    let releaseConnect!: () => void
+    const emit = () => (globalThis as { __emitStore?: () => void }).__emitStore?.()
+    storeState.current.connect = vi.fn(async () => {
+      storeState.current.connectionState = "connecting"
+      emit()
+      await new Promise<void>((r) => {
+        releaseConnect = r
+      })
+      storeState.current.connectionState = "streaming"
+      emit()
+    })
     render(<SettingsDialog />)
     await goManual()
     fireEvent.change(screen.getByLabelText("服务器地址"), { target: { value: "http://127.0.0.1:9999" } })
@@ -356,11 +528,16 @@ describe("ProfileFormView 模式分化", () => {
       expect(last?.[0]).toEqual([expect.objectContaining({ baseUrl: "http://127.0.0.1:9999", mode: "attach" })])
       expect(last?.[1]).toEqual(expect.any(String))
     })
-    await waitFor(() => expect(storeState.current.closeSettings).toHaveBeenCalled())
+    // 挂起期：loading 行 + 弹窗未关
+    await waitFor(() => expect(screen.getByText("正在连接…")).toBeTruthy())
+    expect(storeState.current.closeSettings).not.toHaveBeenCalled()
     await waitFor(() => expect(storeState.current.disconnect).toHaveBeenCalled())
     await waitFor(() =>
       expect(storeState.current.connect).toHaveBeenCalledWith({ openPickerAfter: true }),
     )
+    // 成功收尾关弹窗（streaming + emit，订阅直接收尾）
+    releaseConnect()
+    await waitFor(() => expect(storeState.current.closeSettings).toHaveBeenCalled())
     // 顺序：disconnect 先于 saveProfiles——saveProfiles 先行会把 activeProfileId 切到
     // 新 profile，disconnect 按新 profile 的 mode 判定（attach）跳过 managedStop，
     // managed→attach 切换泄漏旧 server 进程（review P2）

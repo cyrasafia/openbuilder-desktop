@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
-import { ArrowLeft, Pencil, RefreshCw, X } from "lucide-react"
+import { ArrowLeft, LoaderCircle, Pencil, RefreshCw, X } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import type { BinaryCandidate, ConnectionProfile, ManagedNotice, ServerCandidate } from "@shared/ipc"
 import { MIN_SERVER_VERSION } from "@shared/semver"
@@ -27,7 +27,9 @@ export function newProfileDraft(): ConnectionProfile {
 }
 
 /** 设置弹窗（dialog-lg）。模态不重叠（DESIGN.md §标准弹窗）：添加/编辑服务器
- *  在弹窗内跳转视图（标题行左置返回钮），不叠加二级弹窗 */
+ *  在弹窗内跳转视图（标题行左置返回钮），不叠加二级弹窗。新增服务器的启用
+ *  流挂起期间（连接中）弹窗保持打开：loading 行 + 动作冻结（design-guided-
+ *  add-server 修订 2），成功关弹窗直达项目列表，失败回原视图 */
 export function SettingsDialog() {
   const store = useStore()
   const { t } = useI18n()
@@ -43,6 +45,7 @@ export function SettingsDialog() {
   const dialogRef = useRef<HTMLDivElement>(null)
 
   const close = () => {
+    setConnectError(null)
     store.closeSettings()
   }
 
@@ -58,28 +61,95 @@ export function SettingsDialog() {
 
   // 保存 = upsert 直落 store（弹窗内视图跳转后 ConnectionSettings 卸载重挂，
   // 列表从 store 直读，无本地镜像；持久化用计算出的 next 列表）。
-  // 新增（design-guided-add-server 修订）：保存即启用——激活 profile + 关闭
-  // 设置弹窗 + connect({openPickerAfter})，连接成功且无已打开项目时直达项目
-  // 选择器。编辑（isNew=false）：仍只 upsert 不激活，激活走列表「启用」
-  const saveProfile = async (p: ConnectionProfile, isNew: boolean) => {
+  // 编辑（from="edit"，isNew=false）：只 upsert 不激活，激活走列表「启用」，
+  // 保存后即回列表。
+  // 新增（from="discover"/"manual"，design-guided-add-server 修订 2）：保存即
+  // 启用 + **保持弹窗打开直到连接结束**——连接中弹窗挂 loading 态（动作全
+  // 禁用，防二次触发）；成功关弹窗（项目列表由 store 内 openPickerAfter
+  // 一次性标记直达）；失败回到原视图（discover/manual 草稿保留，可改可换）
+  // + connectionError 内联展示。
+  // 先断开再改激活（此时旧 profile 仍激活，managed 模式才能正确 stop 旧进程——
+  // 顺序同列表「启用」activate；saveProfiles 先行会 disconnect 按 profile 的
+  // mode 误判，managed→attach 切换泄漏旧 server 进程）
+  const [pendingNew, setPendingNew] = useState<{ view: "discover" | "manual" } | null>(null)
+  // 本次启用流的连接代际（review 修订 2 P1/P2 + 三轮 review）：store.
+  // connectionState 是全局单值——disconnect() 期间旧连接的 streaming（managed
+  // IPC 往返窗口）、disconnect→connect 之间 saveProfiles IPC 窗口的
+  // disconnected、无关在途 connect 的 connecting 都会短暂可见。两个要点：
+  // ① started.current 在 disconnect() 完成后才置 true——此前的任何全局状态
+  //   一律无视；② disconnected 只有**本次已见过 connecting**才认失败（否则
+  //   saveProfiles IPC 往返窗口的 disconnected 会提前误判，三轮 review P1）。
+  // 收尾不经渲染路径（不挂 effect，rAF 合帧会吞 connecting→终态的瞬态）：
+  // 直接订阅 store.emit——同步逐 emit 触发，状态机变迁逐个可见不漏
+  const started = useRef(false)
+  const seenConnecting = useRef(false)
+  const saveProfile = async (p: ConnectionProfile, from: "discover" | "manual" | "edit") => {
     const idx = store.profiles.findIndex((x) => x.id === p.id)
     const next =
       idx >= 0 ? store.profiles.map((x, i) => (i === idx ? p : x)) : [...store.profiles, p]
-    if (!isNew) {
+    if (from === "edit") {
       void store.saveProfiles(next, store.activeProfileId)
       setEditing(null)
       return
     }
-    // 新增：立刻启用 + 关弹窗 + 连接（失败错误经左栏状态行可见，重试走列表「启用」）。
-    // 先断开再改激活（此时旧 profile 仍激活，managed 模式才能正确 stop 旧进程——
-    // 顺序同列表「启用」activate；saveProfiles 先行会 disconnect 按 profile 的
-    // mode 误判，managed→attach 切换泄漏旧 server 进程）
-    await store.disconnect()
-    await store.saveProfiles(next, p.id)
-    setEditing(null)
-    store.closeSettings()
-    await store.connect({ openPickerAfter: true })
+    if (!pendingNew) setPendingNew({ view: from })
+    // 异常兜底（review P3）：disconnect/saveProfiles/connect 的 rejection 若不
+    // 捕获，pendingNew 永久残留 = 弹窗冻结无超时无取消；捕获后按失败收尾
+    // （store 状态机落 disconnected 时同样走失败分支）
+    try {
+      await store.disconnect()
+      started.current = true
+      seenConnecting.current = false
+      await store.saveProfiles(next, p.id)
+      await store.connect({ openPickerAfter: true })
+    } catch (e) {
+      started.current = false
+      setPendingNew(null)
+      setConnectError(e instanceof Error ? e.message : String(e))
+    }
   }
+
+  // 挂起新增收尾期间的本次失败原因（store.connectionError 快照）：弹窗遮罩
+  // 盖住左栏（review 修订 2 P3），失败原因必须弹窗内可见
+  const [connectError, setConnectError] = useState<string | null>(null)
+
+  // 挂起新增的收尾（design-guided-add-server 修订 2，订阅驱动不经渲染）：
+  // started 置位（= disconnect 完成）后：connecting → 记已见 + 清 connectError
+  // 起挂 loading；streaming → 成功关弹窗（项目列表直达已在 store 内）；
+  // disconnected（已见过 connecting）→ 失败回原视图 + connectionError 内联
+  // 展示（弹窗遮罩下左栏不可见）。卸载即解订（订阅生命周期 = 组件挂载）；
+  // 回调经 pendingRef/editingRef 读最新值（订阅只挂一次，不能闭包旧值）
+  const pendingRef = useRef(pendingNew)
+  pendingRef.current = pendingNew
+  const editingRef = useRef(editing)
+  editingRef.current = editing
+  useEffect(() => {
+    const unsub = store.subscribe(() => {
+      const pending = pendingRef.current
+      if (!pending || !started.current) return
+      if (store.connectionState === "connecting") {
+        seenConnecting.current = true
+        setConnectError(null)
+      } else if (store.connectionState === "streaming") {
+        started.current = false
+        seenConnecting.current = false
+        setPendingNew(null)
+        store.closeSettings()
+      } else if (store.connectionState === "disconnected" && seenConnecting.current) {
+        started.current = false
+        seenConnecting.current = false
+        setPendingNew(null)
+        setConnectError(store.connectionError)
+        setEditing(
+          pending.view === "discover" ? { view: "discover" } : editingRef.current ?? null,
+        )
+      }
+    })
+    return () => {
+      unsub()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // 子视图标题行（返回钮 + 视图标题 + 关闭钮），discover/manual 共用骨架
   const editingTitle =
@@ -97,7 +167,12 @@ export function SettingsDialog() {
   }
 
   return (
-    <div className="dialog-mask" onClick={close}>
+    <div
+      className="dialog-mask"
+      onClick={() => {
+        if (!pendingNew) close()
+      }}
+    >
       <div
         ref={dialogRef}
         className="dialog dialog-lg"
@@ -106,6 +181,8 @@ export function SettingsDialog() {
         onKeyDown={(e) => {
           // IME 组合中的 Escape 是取消候选词，不能顺手关弹窗（同项目选择器）
           if (e.nativeEvent.isComposing) return
+          // 挂起新增（连接中）：Esc 不关弹窗不退层（连接不可中断，UI 冻结在 loading）
+          if (pendingNew) return
           // Esc 分层（review P2 + design-guided-add-server §2）：manual（新增）
           // / provider 表单先退回上一层，其余退回列表
           if (e.key === "Escape") {
@@ -124,26 +201,45 @@ export function SettingsDialog() {
                   className="icon-btn"
                   title={t.back}
                   aria-label={t.back}
+                  disabled={!!pendingNew}
                   onClick={editingBack}
                 >
                   <ArrowLeft size={14} aria-hidden />
                 </button>
                 <span>{editingTitle}</span>
               </div>
-              <button className="icon-btn" title={t.close} aria-label={t.close} onClick={close}>
+              <button
+                className="icon-btn"
+                title={t.close}
+                aria-label={t.close}
+                disabled={!!pendingNew}
+                onClick={close}
+              >
                 <X size={14} aria-hidden />
               </button>
             </div>
+            {pendingNew ? (
+              <div className="pending-connect">
+                <LoaderCircle className="pending-connect-spinner" size={14} aria-hidden />
+                <span>{t.addProfileConnecting}</span>
+              </div>
+            ) : (
+              connectError && <div className="pending-connect pending-connect-error">{connectError}</div>
+            )}
             {editing.view === "discover" ? (
               <DiscoverView
+                busy={!!pendingNew || store.connectionState === "connecting"}
                 onManual={() => setEditing({ view: "manual", profile: newProfileDraft(), isNew: true })}
-                onPick={(p) => void saveProfile(p, true)}
+                onPick={(p) => void saveProfile(p, "discover")}
               />
             ) : (
               <ProfileFormView
                 profile={editing.profile}
+                busy={!!pendingNew || store.connectionState === "connecting"}
                 onCancel={editingBack}
-                onSave={(p) => void saveProfile(p, editing.isNew)}
+                onSave={(p) =>
+                  editing.isNew ? void saveProfile(p, "manual") : void saveProfile(p, "edit")
+                }
               />
             )}
           </>
@@ -309,9 +405,9 @@ function ConnectionSettings({
  *  两路各自落地（先到先列，不互相等）；attach 候选一键建档（含 health 已验证），
  *  managed 候选一键建档（binaryPath = 候选路径）；手动入口常驻底部。
  *  扫描在 main 侧 in-flight 去重，重入（StrictMode 双触发/重搜）安全。
- *  欢迎屏复用（design-welcome-screen 2026-09-06）：busy = 连接进行中禁用候选
- *  与动作；emptyContent = 双路皆空时覆盖默认空态文案（欢迎屏传首装安装指引）；
- *  onPick 的建档/连接语义由调用方决定（设置弹窗仅建档，欢迎屏建档+激活+连接） */
+ *  busy = 连接/挂起新增进行中禁用候选与动作；emptyContent = 双路皆空时覆盖
+ *  默认空态文案（欢迎屏传首装安装指引）；onPick 的建档/连接语义由调用方
+ *  决定（设置弹窗 = 启用流挂起，欢迎屏 = 建档+激活+连接） */
 export function DiscoverView({
   onManual,
   onPick,
@@ -443,13 +539,14 @@ export function DiscoverView({
  *  钮由 SettingsDialog 提供）；取消 = 丢弃草稿返回上一层（新增回发现视图，
  *  编辑回列表），保存 = upsert 落盘。
  * 模式选择置顶为 segment control（design-guided-add-server §3）+ 两模式一句话
- * 说明；表单按模式分化（design-managed-config §1）：managed 隐藏 URL/凭据
+ *  说明；表单按模式分化（design-managed-config §1）：managed 隐藏 URL/凭据
  * （随机端口 + 自动凭据），新增二进制路径（自动扫描候选 + 浏览手选）；attach
- * 字段不变
+ *  字段不变
  *
  * 欢迎屏手动页复用（design-welcome-screen 2026-09-06 修订）：saveLabel 覆写
- * 主按钮文案（连接/启动并连接）、busy 禁用动作（连接进行中）、onSave 由
- * 「保存建档」换为「建档+激活+连接」（connectWithProfile） */
+ * 主按钮文案（连接/启动并连接）、onSave 由「保存建档」换为「建档+激活+连接」
+ * （connectWithProfile）。busy = 挂起新增/连接进行中：全部控件禁用（review
+ * 修订 2 P2——模式段/输入/浏览/扫描候选/取消钮一并冻结，草稿不可丢） */
 export function ProfileFormView({
   profile,
   onCancel,
@@ -513,6 +610,7 @@ export function ProfileFormView({
       <input
         type={type}
         autoFocus={autoFocus}
+        disabled={busy}
         value={String(draft[key] ?? "")}
         onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
       />
@@ -534,6 +632,7 @@ export function ProfileFormView({
                 type="button"
                 aria-pressed={draft.mode === m}
                 className={"ms-seg" + (draft.mode === m ? " active" : "")}
+                disabled={busy}
                 onClick={() => setDraft({ ...draft, mode: m })}
               >
                 {m === "attach" ? t.modeAttach : t.modeManaged}
@@ -553,9 +652,10 @@ export function ProfileFormView({
                 <input
                   value={draft.binaryPath ?? ""}
                   placeholder={t.profileBinaryPathHint}
+                  disabled={busy}
                   onChange={(e) => setDraft({ ...draft, binaryPath: e.target.value })}
                 />
-                <button type="button" onClick={() => void browseBinary()}>
+                <button type="button" disabled={busy} onClick={() => void browseBinary()}>
                   {t.browseBinary}
                 </button>
               </div>
@@ -564,7 +664,7 @@ export function ProfileFormView({
             <div className="scan-section">
               <div className="scan-section-title">
                 <span>{t.scanCandidatesTitle}</span>
-                <button type="button" disabled={scanning} onClick={() => void runScan()}>
+                <button type="button" disabled={scanning || busy} onClick={() => void runScan()}>
                   {scanning ? t.scanRescanning : t.scanRescan}
                 </button>
               </div>
@@ -579,6 +679,7 @@ export function ProfileFormView({
                     type="button"
                     className={"scan-candidate" + (draft.binaryPath === c.path ? " selected" : "")}
                     title={c.path}
+                    disabled={busy}
                     onClick={() => setDraft({ ...draft, binaryPath: c.path })}
                   >
                     <span className="mono scan-candidate-path">{c.path}</span>
@@ -598,7 +699,7 @@ export function ProfileFormView({
         {!managed && testResult && <div className="form-note">{testResult}</div>}
       </div>
       <div className="dialog-actions">
-        <button onClick={onCancel}>{t.cancel}</button>
+        <button disabled={busy} onClick={onCancel}>{t.cancel}</button>
         {!managed && (
           <button disabled={testing || busy} onClick={() => void test()}>
             {t.testConnection}

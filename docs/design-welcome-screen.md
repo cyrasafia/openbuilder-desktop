@@ -26,7 +26,7 @@
   - 动作语义：`onPick`/`onSave` = 建档（固定 id `welcome-managed`/`welcome-attach` upsert，重试/往返不堆 profile）+ 激活 + `connect()`（设置弹窗仅建档不激活）。**建档时序按模式保留原分支语义（review 追问后恢复）**：attach 先带凭据 `health()` 验证，通过才建档——失败不残留死 profile（候选虽经扫描无凭据预验证，复验一并关闭"扫描后 server 下线"窄窗）；managed 建档先于 connect（spawn 失败保留固定 id profile，设置内可调整重试）
   - `busy`：连接中（connectionState connecting）或 attach 预验中禁用候选与动作（设置弹窗不传）
   - `emptyContent`：双路皆空时覆盖默认空态，展示安装指引（首装用户兜底，设置弹窗不传）——文案 + 平台命令（linux/macOS `curl -fsSL https://opencode.ai/install | bash`、brew、npm 三行，逐行复制按钮；范围外：不自动安装）
-- 连接反馈（卡片底部，视图无关）：connecting「连接中…」提示行；attach 预验失败 / 连接失败展示对应错误可重试；成功 streaming → §1 关闭路径
+- 连接反馈（卡片底部，视图无关）：connecting「连接中…」提示行**带 spinner**（design-guided-add-server 修订 2，与设置弹窗挂起行同视觉）；attach 预验失败 / 连接失败展示对应错误可重试；成功 streaming → §1 关闭路径
 
 ## 4. ~~连接成功后的 provider 检查（引导视图）~~（已移除，2026-09-06）
 
