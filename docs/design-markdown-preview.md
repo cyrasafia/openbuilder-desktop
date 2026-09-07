@@ -4,7 +4,7 @@
 >
 > 参考来源（openbuilder 移动端，按 AGENTS.md 约定先行检索）：
 > - `openbuilder/docs/design-file-view.md` —— FileView 按文件类型分发 Render Mode 的总设计（Markdown Mode：默认预览态、AppBar 源码/预览切换、渲染范围、不支持 mermaid）
-> - `openbuilder/docs/design-markdown-webview.md` + `lib/features/files/markdown_html.dart` —— front matter 拆分与元数据卡（`splitFrontMatter`，§2.5 语义移植来源）
+> - `openbuilder/docs/design-markdown-webview.md` + `lib/features/files/markdown_html.dart` —— front matter 拆分与元数据卡（`splitFrontMatter`，§2.5 语义移植来源）；其链接侧 `_resolvePath`（§4.2.6，相对路径解析基准 = 当前文件目录）是 §2.8 图片解析的语义同源（移动端仅做链接点击解析，未做图片）
 > - 本仓库 `markdown.tsx` —— 消息流 markdown 渲染组件（streamdown + tokens.css 语义令牌覆写），直接复用为预览渲染器（桌面端无 webview 一说，`design-markdown-webview.md` 的动机不适用）
 > - TOC 无移动端先例（检索 openbuilder docs 未见大纲/TOC 设计），§2.4 为桌面端新设计；GFM alert（§2.6）移动端亦未做过，规格对齐 GitHub 官方（https://docs.github.com/en/get-started/writing-on-github/get-started-writing-to-format-your-message-using-markdown/alerts），样式复用 vendor github-markdown-css 自带的 `.markdown-alert` 系列
 
@@ -35,7 +35,7 @@
 
 - streamdown 解析集：标题/表格/列表/任务列表/代码块/链接等（同消息流，无额外配置）。
 - 链接 → 系统浏览器（`Markdown` 组件既有 `target="_blank"` + main 进程 `shell.openExternal`）。
-- **相对路径图片不支持**（`<img src>` 相对路径无 base URL 可解析，openbuilder 亦未支持）——坏图即 broken icon，不在本功能内解决。
+- ~~相对路径图片不支持~~ → 已做（2026-09-07，§2.8）：以 md 文件所在目录为基准解析，经 server `/file/content` 拉取渲染。
 
 ### 2.4 TOC 大纲（2026-08-25 增补；2026-08-25 三次修订：侧边栏 → 悬浮窗共同居中 → 滚动层内 sticky → 内容区居中 + 悬浮窗挂左侧）
 
@@ -76,12 +76,39 @@ GitHub Alerts 规范：blockquote 首段以 `[!NOTE]` / `[!TIP]` / `[!IMPORTANT]
 - **样式**：`.md-mermaid` 与代码块同视觉家族（同底色/边框/圆角），居中、svg 限宽自适应（覆盖 mermaid 内联固定尺寸）；消息流 max-height 300px 同 `.md-pre` 内滚，`.file-md` 下放开（同代码块覆写）。加载态为语言标签 + 呼吸骨架（无文案，不引 i18n）。
 - **消息流与文件预览同时生效**（共享 `Markdown` 组件）。
 
+### 2.8 相对路径图片（2026-09-07 增）
+
+原 §2.3 标注「相对路径图片不支持」，诉求落地后纳入：预览态 `<img src>` 相对路径以 **md 文件所在目录**为基准解析，经 server `GET /file/content` 拉取（位图 base64 → data URL；svg 文本 → utf8 data URL），复用文件 Tab 图片预览（[design-image-preview.md](./design-image-preview.md)）的 `fileContents` 缓存与 `imageSrcFor` 构建——单一数据通路，无第二份图片状态。
+
+**两段式架构**（管线实测结论所迫，见下）：
+
+1. **remark 阶段预重写**：`Markdown` 增可选 `remarkPlugins` prop（整体替换默认集语义，FileView 拼回默认件 + `relativeImageRewrite`）；插件遍历 mdast `image` 节点与 `definition` 节点（reference 语法 `![alt][ref]` 的 url 在定义上——不改写则 harden 折叠后被覆写消费成错误路径；definition 兼服务 linkReference，扩展名闸门下非图 url 不动、链接行为不变），把可解析的相对 url 改写为 `/` 文件系统绝对路径。mdast 层天然跳过代码块/行内代码（其内容是文本节点）；raw html `<img>` 不经 image 节点，不覆盖；引用与定义跨 streamdown 块时解析本就落回字面文本（既有行为）。
+2. **img 覆写消费**：`Markdown` 增可选 `img` prop，FileView 传入模块级 `MarkdownImage`（引用恒稳，streamdown 块级 memo 不失效）；组件识别 `/` 绝对路径 + 图片扩展（`markdownRewrittenImagePath`，解码 `%20` 等 URL 规范化编码）走拉取渲染，其余字面透传 `<img>`。
+
+**管线实测事实（决定上述形态）**：
+
+- streamdown 默认 rehype 管线含 `rehype-harden`（wildcard 配置）+ `rehype-sanitize`（扩展 schema，src 协议白名单 http/https）。harden 会把 `./a.png`/`../a.png` 按 dummy origin（`http://example.com`）折叠成 `/a.png`——`..` 段的基准信息**在 img 组件收到 src 前已丢失**；裸 `a.png`（无 `./` 前缀）直接被拦为占位节点（img 覆写不可达）。而 `/` 开头的输入原样透传（pathname 回写）——故预重写为 `/` 绝对路径可无损穿过整条管线；自定义 scheme 标记（如 `mdimg:`）不可行（sanitize 的 src 协议白名单会剥掉）。
+- **streamdown processor 缓存按插件源码文本生成 key**：返回闭包的工厂（`make(baseDir)` 形态）源码恒同，不同基准目录的 md 会撞 key、复用首个文件创建的处理器（实测：先渲染 `/repo` 下的 md，再开 `/repo/docs/` 下的，后者图片按 `/repo` 基准重写出错）。必须以 `[plugin, { baseDir }]` **元组形态**挂载——数组形态的 options 参与 `JSON.stringify` 进 key，基准目录得以区分。
+
+其余要点：
+
+- **解析纯函数** `resolveMarkdownImage(baseDir, src)`（`markdown-image.ts`）：先剥 query/hash（GitHub 口径）；带 URL scheme（`http:`/`data:`/`file:` 等）或协议相对 `//` → 返回 null **不拦截**（字面交给 `<img>`，外链图照常经网络加载）；`/` 开头视作文件系统绝对路径；`decodeURIComponent` 解包（坏 `%` 序列保留原样，不整体失败）；POSIX join + normalize（`.`/`..`/空段折叠）；**扩展名闸门**复用 `isImagePath` 集合（png/jpg/jpeg/gif/webp/avif/bmp/ico/svg，随 `IMAGE_MIME_BY_EXT` 一并自 workspace.tsx 迁入 markdown-image.ts 单一来源）——非图片扩展不解析（维持破图，与「分发只按扩展名，不嗅探内容」同哲学）。
+- **数据通路守 D4**（renderer 直连 server，不经 main/IPC）：`store.ensureFileImage(absolutePath)` singleflight 拉取（非 error 缓存命中且不在途才跳过；同图多次引用并发只发一次请求）→ `readFileContent`（作用域取当前 `scopeQuery` directory+workspace，与 FileView 首拉 md 同口径）→ 落 `fileContents` 缓存。与文件 Tab 图片同缓存：先在 md 里看过、再单开图片 Tab 即首帧命中，反向亦然。**error 条目不短路**——瞬时失败（agent 尚未写出图片、server 抖动）在组件重挂载（重开 Tab / 切回预览态）时即重试；error 落地不触发组件 effect 重跑（依赖不变），无重试风暴。**内存注记**：缓存值是兆字节级 base64，无淘汰上限、仅随作用域切换清空——文件 Tab 场景由用户逐个打开天然有界，md 引用是内容驱动自动拉取，一篇多图文档会拉全并常驻（阅读场景接受，未做 LRU）。
+- **组件更新环必须自持**：streamdown 块级 memo 下，store emit 引发的父层重渲染到不了块内组件实例——`MarkdownImage` 以 `useSyncExternalStore(store.subscribe, () => fileContents.get(path))` 直订缓存条目（快照 = 条目对象引用，`set` 换引用即触发重渲染；App 层 rAF emit 合帧不影响此通路）；挂载 effect 触发 `ensureFileImage`。
+- **消息流不启用**（不传 img/remarkPlugins）：会话文本的相对路径无基准目录语义（消息非文件产物），维持现状；components 引用恒为模块级 `mdComponents`，既有 memo 语义不变。
+- **状态渲染**：在途/无条目 → 内联占位 chip（alt 文本，无 alt 用文件名）；失败（server 错误 / 内容构建不出 data URL）→ 占位 chip + `mdImageFailed` 文案（title 悬浮看错误详情，不静默破图）；成功 → `<img src=data URL>`。解码失败不可能在占位路径外发生（src 已是 data URL，非 data 路径均被解析层放行给浏览器）。
+- **不跟随 file watch**：图片文件自身变更不触发重拉（监听只覆盖打开的 file Tab，md 引用的图片不是 Tab）；成功条目重开 Tab 也不重拉（缓存命中），**error 条目重开 Tab 即重试**（见上），重启全量刷新。
+
 ## 3. 不做的事
 
 | 项 | 原因 |
 |---|---|
 | ~~mermaid 图表渲染~~ | 已做（2026-08-27，§2.7）：mermaid 是 streamdown 既有传递依赖，懒加载零增量成本 |
 | ~~模式偏好持久化（记住上次源码/预览）~~ | 已做运行期按文件记忆（2026-08-26，见 [design-tab-state-memory.md](./design-tab-state-memory.md) §2.2）；per-profile 跨文件偏好仍不做 |
+| 消息流相对路径图片 | 消息文本非文件产物，无基准目录语义（可按会话 directory 解析，等真实诉求再评） |
+| 相对图片跟随 file watch 重拉 | 监听仅覆盖打开的 file Tab（design-file-watcher）；重开 Tab / 重启即刷新 |
+| raw html `<img>` 相对路径 | 不经 mdast image 节点（预重写不可达）；仅支持 markdown 图片语法 |
+| 非 POSIX（Windows 盘符 `C:\`）src | 主力环境 Linux（GNOME/Wayland，打包 arch/fedora）；该形态 src 罕见 |
 | 内部相对链接跳转（md → md 导航） | nice-to-have（openbuilder 同标注），等真实需求 |
 | TOC 滚动位置高亮（scrollspy） | 见 §2.4：锚点是消费主体，增量收益有限 |
 | 预览内容键盘可达（放开链接/复制按钮 tabIndex） | 复用 `Markdown` 继承消息流「内容不入焦点序列」决策（review P3 备注）；后续需要时给组件加 interactive 变体 |
@@ -91,16 +118,18 @@ GitHub Alerts 规范：blockquote 首段以 `[!NOTE]` / `[!TIP]` / `[!IMPORTANT]
 
 | 文件 | 改动 |
 |---|---|
-| `src/renderer/src/components/workspace.tsx` | FileView：扩展名分发 + markdown mode（工具条 + 预览/源码 + TOC 收起态与工具条按钮）+ TOC 标题扫描与布局 + front matter 拆分 memo 与元数据卡（§2.5） |
+| `src/renderer/src/components/workspace.tsx` | FileView：扩展名分发 + markdown mode（工具条 + 预览/源码 + TOC 收起态与工具条按钮）+ TOC 标题扫描与布局 + front matter 拆分 memo 与元数据卡（§2.5）+ MarkdownImage 组件与注入（§2.8；`isImagePath`/`IMAGE_MIME_BY_EXT` 迁出） |
+| `src/renderer/src/components/markdown-image.ts` | `resolveMarkdownImage` 解析 + `relativeImageRewrite` remark 预重写插件 + `markdownRewrittenImagePath` 覆写侧消费 + `isImagePath`/`IMAGE_MIME_BY_EXT` 迁入（§2.8，单一来源）+ 同名测试 |
 | `src/renderer/src/components/markdown-frontmatter.ts` | `splitFrontMatter`（语义移植 openbuilder）+ 同名测试（用例随移动端移植） |
-| `src/renderer/src/components/markdown.tsx` | 消息流共享渲染器：blockquote 覆写增加 GFM alert 识别/标记剥离（§2.6）+ 测试用例 |
+| `src/renderer/src/components/markdown.tsx` | 消息流共享渲染器：blockquote 覆写增加 GFM alert 识别/标记剥离（§2.6）+ 可选 `img` 覆写 prop（§2.8）+ 测试用例 |
 | `src/renderer/src/components/mermaid-diagram.tsx` | mermaid 懒加载/串行渲染/主题跟随/失败回落（§2.7）+ markdown.test.tsx 用例（vi.mock mermaid） |
 | `src/renderer/src/components/md-toc.tsx` | TOC 悬浮窗：标题收集/章节树/按章节折叠/点击锚定（收起态由 FileView 控制） |
-| `src/renderer/src/i18n/index.ts` | `preview` / `source` / TOC 文案 |
+| `src/renderer/src/store/app-store.ts` | `ensureFileImage`：md 相对图片 singleflight 拉取落 `fileContents`（§2.8） |
+| `src/renderer/src/i18n/index.ts` | `preview` / `source` / TOC / `mdImageFailed` 文案 |
 | `src/renderer/src/styles/tokens.css` | `--file-toolbar-h`（工具条高度单一来源）、`--toc-w` / `--toc-gap` |
-| `src/renderer/src/styles/app.css` | `.file-view-wrap`（`--file-md-min/max`、TOC 绝对定位锚）/ `.file-toolbar(.file-toolbar-toc)` / `.file-md` / `.md-toc*` |
+| `src/renderer/src/styles/app.css` | `.file-view-wrap`（`--file-md-min/max`、TOC 绝对定位锚）/ `.file-toolbar(.file-toolbar-toc)` / `.file-md` / `.md-toc*` / `.md-img-pending`/`.md-img-failed`（§2.8） |
 | `src/renderer/src/components/resize-observer-stub.ts` | ResizeObserver 测试 stub（jsdom 缺失；测宽用例手动触发） |
-| `src/renderer/src/components/file-view.test.tsx` / `md-toc.test.tsx` | FileView 分发与二态切换 + TOC 行为测试（含窄屏默认隐藏） |
+| `src/renderer/src/components/file-view.test.tsx` / `md-toc.test.tsx` | FileView 分发与二态切换 + TOC 行为测试（含窄屏默认隐藏）+ 相对图片用例（§2.8） |
 
 ## 5. 验收
 
@@ -109,4 +138,5 @@ GitHub Alerts 规范：blockquote 首段以 `[!NOTE]` / `[!TIP]` / `[!IMPORTANT]
 - `[!NOTE]`/`[!TIP]`/`[!IMPORTANT]`/`[!WARNING]`/`[!CAUTION]` 引用块渲染为对应颜色的 alert 卡（标记剥离、标题行图标 + 标签）；未知标记或标记不在首段按普通引用块字面渲染；消息流同样生效；
 - ` ```mermaid ` 块：懒加载后渲染为图（明暗主题跟随 `[data-theme]`，切换重渲染）；语法错误/流式未完成回落代码块外壳（源码可见、可复制）；无 mermaid 块的文档不加载 mermaid chunk；消息流同样生效；
 - 有标题的 `.md` 预览：内容区 [600, 800] 自适应居中；侧缘够宽时 TOC 悬浮窗挂内容区左侧；滚动条贴窗口右缘、滚动时悬浮窗常驻可见、高度不超可见区（超出自滚）；悬浮窗会遮挡内容区时默认收起、工具条按钮可显式展开（悬浮覆盖内容区）；可按章节收起/展开、工具条按钮可整体收起/展开悬浮窗、点击条目平滑滚动锚定到对应标题；无标题文档无 TOC 无按钮；源码态无 TOC；
+- 相对路径图片（§2.8）：`![](./img/a.png)` 先占位 chip 后渲染图；`../` 上跳、`%20` 空格、svg 相对路径均正确解析渲染；引用不存在的图呈错误占位（title 可看详情，不静默破图）；同图多次引用只发一次请求（singleflight）；外链 `http(s)`/data URL 图照常渲染不经拉取；消息流 markdown 图片行为不变；
 - `npm run test` / `npm run typecheck` 全绿。

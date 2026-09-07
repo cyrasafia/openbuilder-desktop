@@ -5,6 +5,8 @@
 import { render, screen, waitFor } from "@testing-library/react"
 import { beforeAll, describe, expect, it, vi } from "vitest"
 import { Markdown } from "./markdown"
+import { defaultRemarkPlugins, type StreamdownProps } from "streamdown"
+import { relativeImageRewrite } from "./markdown-image"
 
 vi.mock("../app", () => ({
   useI18n: () => ({ t: { copy: "复制", copied: "已复制" }, locale: "zh" as const }),
@@ -168,5 +170,49 @@ describe("Markdown", () => {
   it("默认（无 softLineBreak）：单个换行按 CommonMark 折叠为空格，不产生 <br>", () => {
     const { container } = render(<Markdown>{"第一行\n第二行"}</Markdown>)
     expect(container.querySelector("p")!.querySelectorAll("br").length).toBe(0)
+  })
+
+  // img 覆写（design-markdown-preview §2.8 相对路径图片注入点）
+  it("img 覆写：传入时替换默认 img 组件（src/alt 透传）", () => {
+    const { container } = render(
+      <Markdown img={({ node: _node, ...rest }) => <img data-ov="1" {...rest} />}>
+        {"![替代](/abs/img/a.png)"}
+      </Markdown>,
+    )
+    const el = container.querySelector("img[data-ov]") as HTMLImageElement
+    expect(el).not.toBeNull()
+    expect(el.getAttribute("src")).toBe("/abs/img/a.png")
+    expect(el.getAttribute("alt")).toBe("替代")
+  })
+
+  it("默认 img：无覆写时原样渲染（外链不拦截）", () => {
+    const { container } = render(<Markdown>{"![a](https://e.com/x.png)"}</Markdown>)
+    const el = container.querySelector("img") as HTMLImageElement
+    expect(el).not.toBeNull()
+    expect(el.getAttribute("src")).toBe("https://e.com/x.png")
+  })
+
+  it("§2.8 预重写管线：remarkPlugins 重写相对 src 为 / 绝对路径（默认 rehype 管线前）", () => {
+    const seen: string[] = []
+    const plugins = [
+      ...Object.values(defaultRemarkPlugins),
+      [relativeImageRewrite, { baseDir: "/repo/docs" }],
+    ] as unknown as StreamdownProps["remarkPlugins"]
+    render(
+      <Markdown
+        remarkPlugins={plugins}
+        img={({ node: _node, src, ...rest }) => {
+          if (typeof src === "string") seen.push(src)
+          return <img {...rest} src={src} />
+        }}
+      >
+        {"![a](./img/x.png) ![b](https://e.com/y.png) ![c](./doc.pdf)"}
+      </Markdown>,
+    )
+    // 相对图片 → / 绝对路径；外链/非图扩展不改写（harden 对其维持原语义：
+    // 外链透传，./doc.pdf 被折叠为 /doc.pdf 的字面 pathname）
+    expect(seen).toContain("/repo/docs/img/x.png")
+    expect(seen).toContain("https://e.com/y.png")
+    expect(seen).not.toContain("./img/x.png")
   })
 })
