@@ -4593,13 +4593,17 @@ export class AppStore {
     this.emit()
   }
 
-  /** 平铺可遍历行（左栏显示顺序）：entry 行 +（普通项目）其工作区行 */
+  /** 平铺可遍历行（左栏显示顺序）：entry 行 +（普通项目）其工作区行；
+   *  删除中（清理中）的工作区行排除——与左栏点击禁用同口径（design-layout
+   *  §工作区行），当前作用域不受影响（删当前作用域时 removeWorkspace 同步段
+   *  已跳回项目根） */
   private scopeNavRows(): ScopeNavRow[] {
     const rows: ScopeNavRow[] = []
     for (const e of this.openedEntries) {
       rows.push({ kind: "entry", key: e.key })
       if (!e.isGlobal) {
         for (const w of this.workspacesOfProject(e.project.id)) {
+          if (this.isWorkspaceDeleting(e.project.id, w.directory)) continue
           rows.push({ kind: "ws", projectId: e.project.id, directory: w.directory })
         }
       }

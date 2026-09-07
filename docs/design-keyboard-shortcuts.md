@@ -110,7 +110,7 @@ private closedTabs: ClosedTabEntry[] = []   // push 尾 / pop 尾，上限 20（
   - **commit**（松开修饰键）：`commitScopePreview()` 一次切换到光标行并清预览。no-op 条件：未预览 / 未移动（光标 = 当前行）/ 光标行已消失（关项目/删工作区竞态）；当前行瞬态消失**不算**（光标行有效即用户明确所指）。激活复用侧栏点击语义：entry → `openEntry`；工作区行 → 当前项目 `setCurrentWorkspace`、跨项目 `setCurrentProject`（一步直达）
   - **cancel**：鼠标等其他作用域操作介入（`openEntry`/`openProject`/`setCurrentWorkspace`/`closeEntry`/`closeProject` 入口先 `cancelScopePreview()`）作废预览不切换；窗口失焦同样作废——Alt+Tab/⌘Tab 被合成器抢走后 keyup 不再来，不清高亮残留
 - **提交键**：非 mac = Alt keyup；mac = ⌘ 或 ⌥ 任一 keyup（弦解散即提交）。commit 入口恒开，store 侧无预览时 no-op
-- **平铺序列** = 左栏显示顺序：每个 `openedEntries` 行 +（普通项目）其 `workspacesOfProject` 行；序列空 no-op
+- **平铺序列** = 左栏显示顺序：每个 `openedEntries` 行 +（普通项目）其 `workspacesOfProject` 行；删除中（`deletingWorkspaces`，清理中行禁用，design-layout §工作区行）的工作区行排除——与左栏点击禁用同口径，光标不落、提交不达（行进入删除态后光标行消失走既有 no-op 分支）；序列空 no-op
 - **侧栏渲染**：光标行 `.tree-row.scope-cursor`（highest + 8% primary 淡染——"待提交"信号，与 hover（high）、active（highest + 4% on-surface）区分；仍背景单信号无描边环，2026-08-24 idiom），`scrollIntoView({block:"nearest"})` 跟随移出视口的光标
 - **监听挂点**：`useShortcuts` 内 window keydown（begin）/ keyup（commit）/ blur（cancel），与分发同 effect。浏览器 Tab 聚焦时的转发（browser-views.ts）相应扩展：keyDown 增裸 Alt、新增 keyUp 转发（仅 Alt/Meta/Control），载荷加 `up` 字段区分；**顶层窗口失焦经 main 补发**（`browser:window-blur`）——视图持焦时 renderer 的 window 已是 blur 态，应用失活（Alt+Tab 被合成器抢走、keyup 不再来）无 DOM blur 事件可听，cancel 信号缺失会残留高亮。不用视图自身 webContents 的 blur——焦点回宿主 UI（点侧栏）时也触发，该路径宿主 keyup 监听正常接管，cancel 会误杀按住中的预览
 - **已知边界**：live 终端内 Alt+↑/↓ 归 pty（既定语义，design-terminal-tab §1.4）——裸 Alt keydown/keyup 本就冒泡，光标显示但不移动、松开 no-op，属预期；mac ⌥⌘B（右栏开关）与遍历弦同修饰组合，按住期间光标短暂可见（B keyup 不触发提交，无害瞬态）

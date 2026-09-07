@@ -2733,6 +2733,40 @@ describe("快捷键支撑（design-keyboard-shortcuts）", () => {
     expect(store.scopePreview).toEqual({ kind: "ws", projectId: "proj2", directory: "/other/wt9" })
   })
 
+  it("scopePreview 跳过删除中工作区：遍历不含该行，+1 越过 ws 行直落下一行", async () => {
+    store.projects = [project()]
+    store.projectStates = {
+      default: { opened: ["proj1"], currentProjectId: "proj1", currentWorkspaceId: null },
+    }
+    store.sessionsByProject = new Map()
+    // WT1 清理中：行序 entry:proj1 → ws:WT2（跳过 ws:WT1）
+    store.deletingWorkspaces.add(`proj1\u0000${WT1}`)
+    store.beginScopePreview()
+    store.moveScopePreview(1)
+    expect(store.scopePreview).toEqual({ kind: "ws", projectId: "proj1", directory: WT2 })
+    store.commitScopePreview()
+    await vi.waitFor(() => expect(store.scopeQuery.directory).toBe(WT2))
+  })
+
+  it("scopePreview 光标行进入删除态（预览期间鼠标触发删除）：提交 no-op，后续 move 从当前行重新起步", () => {
+    store.projects = [project()]
+    store.projectStates = {
+      default: { opened: ["proj1"], currentProjectId: "proj1", currentWorkspaceId: null },
+    }
+    store.sessionsByProject = new Map()
+    store.beginScopePreview()
+    store.moveScopePreview(1) // ws:WT1
+    store.moveScopePreview(1) // ws:WT2
+    expect(store.scopePreview).toEqual({ kind: "ws", projectId: "proj1", directory: WT2 })
+    // WT2 进入清理中：行被遍历排除
+    store.deletingWorkspaces.add(`proj1\u0000${WT2}`)
+    store.commitScopePreview()
+    expect(store.scopeQuery.directory).toBe(ROOT) // 行已消失：提交 no-op 未切换
+    // 预览已清：后续 move 从当前行（entry:proj1）起步，+1 落 ws:WT1（跳过 ws:WT2）
+    store.moveScopePreview(1)
+    expect(store.scopePreview).toEqual({ kind: "ws", projectId: "proj1", directory: WT1 })
+  })
+
   it("restoreClosedTab 跨作用域：diff 栈项先切回所属作用域再开 Tab", async () => {
     store.tabs = []
     store.closedTabs = [
