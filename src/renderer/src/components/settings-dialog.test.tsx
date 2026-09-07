@@ -2,7 +2,7 @@
  * 添加服务器引导式（design-guided-add-server）：点「添加」先搜索（servers +
  * binaries 并行、先到先列），候选一键建档；手动入口进 manual 表单。
  * manual 表单按模式分化（design-managed-config §1）：模式段置顶（segment），
- * managed 隐藏 URL/凭据、显示二进制路径与扫描候选；attach 字段齐全。
+ * managed 隐藏 URL/凭据、显示二进制路径（2026-09-07 起手动页无扫描候选）；attach 字段齐全。
  * Provider 页签（design-provider-config）：已连接组/搜索/设删 key（ops 注入）。
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
@@ -41,7 +41,7 @@ vi.mock("../app", () => ({
       editProfileTitle: "编辑服务器",
       editProfile: "编辑",
       removeProfile: "删除",
-      activateProfile: "启用",
+      switchProfile: "切换",
       activeProfile: "当前使用",
       profileName: "名称",
       profileUrl: "服务器地址",
@@ -64,10 +64,6 @@ vi.mock("../app", () => ({
       profileBinaryPath: "二进制路径",
       profileBinaryPathHint: "留空 = 自动发现",
       browseBinary: "浏览…",
-      scanCandidatesTitle: "扫描到的 opencode",
-      scanRescan: "重新扫描",
-      scanRescanning: "扫描中…",
-      scanNone: "未发现 opencode",
       managedCredsHint: "随机端口 + 自动凭据",
       serverLogTitle: "服务器日志",
       serverLogEmpty: "暂无日志",
@@ -464,7 +460,7 @@ describe("ProfileFormView 模式分化", () => {
     await waitFor(() => expect(screen.getByText("手动配置服务器")).toBeTruthy())
   }
 
-  it("managed 模式：模式段切换后隐藏 URL/凭据，显示二进制路径 + 扫描候选，点击候选填入", async () => {
+  it("managed 模式：模式段切换后隐藏 URL/凭据，显示二进制路径（无扫描候选段），可手填", async () => {
     render(<SettingsDialog />)
     await goManual()
     // 切到 managed（模式段按钮）
@@ -474,13 +470,13 @@ describe("ProfileFormView 模式分化", () => {
     expect(screen.queryByLabelText("服务器地址")).toBeNull()
     expect(screen.queryByLabelText("用户名（可选）")).toBeNull()
     expect(screen.queryByLabelText("密码（可选）")).toBeNull()
-    // 二进制路径 + 候选出现
+    // 二进制路径出现；扫描候选段已移除（2026-09-07：手动页不做扫描）
     expect(screen.getByLabelText("二进制路径")).toBeTruthy()
-    expect(await screen.findByText("/usr/bin/opencode")).toBeTruthy()
-    // 点击候选填入
-    fireEvent.click(screen.getByText("/usr/bin/opencode"))
-    const input = screen.getByLabelText("二进制路径") as HTMLInputElement
-    expect(input.value).toBe("/usr/bin/opencode")
+    expect(screen.queryByText("/usr/bin/opencode")).toBeNull()
+    fireEvent.change(screen.getByLabelText("二进制路径"), {
+      target: { value: "/usr/bin/opencode" },
+    })
+    expect((screen.getByLabelText("二进制路径") as HTMLInputElement).value).toBe("/usr/bin/opencode")
   })
 
   it("attach 模式：URL/凭据字段齐全，无二进制路径", async () => {
@@ -561,6 +557,62 @@ describe("ProfileFormView 模式分化", () => {
     const disIdx = (storeState.current.disconnect as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]
     const saveIdx = (storeState.current.saveProfiles as ReturnType<typeof vi.fn>).mock.invocationCallOrder.at(-1)
     expect(disIdx).toBeLessThan(saveIdx!)
+  })
+})
+
+// ============ 列表「切换」挂起流（2026-09-07：use → switch，成功直达主页面） ============
+
+describe("服务器列表切换", () => {
+  /** 双 profile 列表（p1 激活，p2 待切换） */
+  const setupList = () => {
+    storeState.current.profiles = [
+      { id: "p1", name: "a", baseUrl: "http://a:1", mode: "attach" },
+      { id: "p2", name: "b", baseUrl: "http://b:2", mode: "attach" },
+    ]
+    storeState.current.activeProfileId = "p1"
+  }
+
+  it("切换：disconnect → saveProfiles(激活 p2) → connect 不带 openPickerAfter；挂起 loading 在页签视图，成功关弹窗", async () => {
+    setupList()
+    render(<SettingsDialog />)
+    fireEvent.click(screen.getByText("切换"))
+    // 挂起期：loading 行渲染在页签视图标题行下 + 弹窗未关 + 页签切换冻结
+    // （切走页签后失败原因将不可见，review 2026-09-07）
+    await waitFor(() => expect(screen.getByText("正在连接…")).toBeTruthy())
+    expect((screen.getByText("Provider").closest("button") as HTMLButtonElement).disabled).toBe(true)
+    expect(storeState.current.closeSettings).not.toHaveBeenCalled()
+    await waitFor(() => {
+      const calls = (storeState.current.saveProfiles as ReturnType<typeof vi.fn>).mock.calls
+      const last = calls.at(-1)
+      expect(last?.[0]).toEqual([
+        expect.objectContaining({ id: "p1" }),
+        expect.objectContaining({ id: "p2" }),
+      ])
+      expect(last?.[1]).toBe("p2")
+    })
+    // 切换直达主页面：connect 不带 openPickerAfter（不弹项目列表）
+    await waitFor(() => expect(storeState.current.connect).toHaveBeenCalledWith(undefined))
+    // 成功收尾关弹窗（streaming + emit，订阅直接收尾）
+    await waitFor(() => expect(storeState.current.closeSettings).toHaveBeenCalled())
+  })
+
+  it("切换失败：loading 消失、失败原因内联展示、留在列表可重试，弹窗不关", async () => {
+    const emit = () => (globalThis as { __emitStore?: () => void }).__emitStore?.()
+    setupList()
+    storeState.current.connect = vi.fn(async () => {
+      storeState.current.connectionState = "connecting"
+      emit()
+      await new Promise((r) => setTimeout(r, 0))
+      storeState.current.connectionState = "disconnected"
+      storeState.current.connectionError = "连接被拒绝"
+      emit()
+    })
+    render(<SettingsDialog />)
+    fireEvent.click(screen.getByText("切换"))
+    await waitFor(() => expect(screen.getByText("连接被拒绝")).toBeTruthy())
+    expect(screen.queryByText("正在连接…")).toBeNull()
+    expect(screen.getByText("切换")).toBeTruthy()
+    expect(storeState.current.closeSettings).not.toHaveBeenCalled()
   })
 })
 

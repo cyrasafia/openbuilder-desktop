@@ -3344,50 +3344,12 @@
   min-width: 0;
 }
 
-.scan-section {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 4px;
-}
-
 .scan-section-title {
   display: flex;
   align-items: center;
   justify-content: space-between;
   font-size: var(--text-sm);
   color: var(--on-surface-variant);
-}
-
-.scan-candidate {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 4px 8px;
-  border: 1px solid var(--outline-variant);
-  border-radius: var(--radius-chip);
-  background: transparent;
-  color: var(--on-surface);
-  text-align: left;
-  cursor: pointer;
-}
-
-.scan-candidate:hover,
-.scan-candidate:focus-visible {
-  background: var(--surface-container-high);
-}
-
-.scan-candidate.selected {
-  border-color: var(--primary);
-  background: var(--surface-container-highest);
-}
-
-.scan-candidate-path {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--text-xs);
 }
 
 .server-log-section {
@@ -3428,6 +3390,11 @@
   color: var(--on-surface);
   text-align: left;
   cursor: pointer;
+}
+
+/* 候选卡片之间留出间距（相邻兄弟选中，首卡不产生顶部空隙） */
+.discover-candidate + .discover-candidate {
+  margin-top: 8px;
 }
 
 .discover-candidate:hover,
