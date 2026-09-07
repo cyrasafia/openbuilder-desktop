@@ -7,7 +7,7 @@
  * reasoning 同走 markdown；GFM alert（[!NOTE] 等）在 blockquote 覆写层支持；
  * mermaid 图在 pre 覆写层分发（§2.7）。
  */
-import { cloneElement, isValidElement, useState, type ReactElement, type ReactNode } from "react"
+import { cloneElement, isValidElement, useMemo, useState, type ReactElement, type ReactNode } from "react"
 import { Info, Lightbulb, MessageSquareWarning, OctagonX, TriangleAlert, type LucideIcon } from "lucide-react"
 import {
   Streamdown,
@@ -261,13 +261,32 @@ const userRemarkPlugins: StreamdownProps["remarkPlugins"] = [
   softBreaks,
 ]
 
-export function Markdown({ children, softLineBreak }: { children: string; softLineBreak?: boolean }) {
+export function Markdown({
+  children,
+  softLineBreak,
+  img,
+  remarkPlugins,
+}: {
+  children: string
+  softLineBreak?: boolean
+  /** img 覆写（design-markdown-preview §2.8 相对路径图片）：文件预览传入
+   *  MarkdownImage；消息流不传——components 引用恒为模块级 mdComponents，
+   *  streamdown 块级 memo 语义不变。传入时 useMemo 合并，调用方须保持引用稳定 */
+  img?: Components["img"]
+  /** remark 插件整体替换默认集（同 streamdown 语义；§2.8 文件预览传
+   *  relativeImageRewrite 拼默认件）。与 softLineBreak 互斥——同时传入时
+   *  softLineBreak 优先、本 prop 被忽略（当前调用方天然不并存）。调用方
+   *  须保持引用稳定 */
+  remarkPlugins?: StreamdownProps["remarkPlugins"]
+}) {
+  // img 覆写存在才生成新对象（消息流零成本）；引用稳定时 memo 不失效
+  const components = useMemo(() => (img ? { ...mdComponents, img } : mdComponents), [img])
   return (
     <Streamdown
       className="markdown-body md"
-      components={mdComponents}
+      components={components}
       linkSafety={mdLinkSafety}
-      remarkPlugins={softLineBreak ? userRemarkPlugins : undefined}
+      remarkPlugins={softLineBreak ? userRemarkPlugins : remarkPlugins}
     >
       {children}
     </Streamdown>

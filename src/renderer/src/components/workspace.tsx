@@ -6,6 +6,8 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
+  type ImgHTMLAttributes,
   type KeyboardEvent,
   type ReactNode,
   type WheelEvent,
@@ -49,7 +51,15 @@ import type { PendingPermission, PendingQuestion } from "@shared/pending-request
 import { externalDirectoryPath, permissionCommand } from "@shared/pending-requests"
 import { todoActive, todoDone, todoKey, todosActive } from "@shared/session-todos"
 import { Markdown } from "./markdown"
+import type { StreamdownProps } from "streamdown"
+import { defaultRemarkPlugins } from "streamdown"
 import { splitFrontMatter } from "./markdown-frontmatter"
+import {
+  IMAGE_MIME_BY_EXT,
+  isImagePath,
+  markdownRewrittenImagePath,
+  relativeImageRewrite,
+} from "./markdown-image"
 import { createPortal } from "react-dom"
 import { ModelSwitcherBar } from "./model-switcher"
 import { CodeView } from "./code-view"
@@ -2273,32 +2283,14 @@ function tocOccludesContent(paneW: number): boolean {
 }
 
 /**
- * 图片文件判定（design-image-preview §2.2）：与 isMarkdownPath 同解析规则。
- * 移动端格式集 jpeg/png/gif/webp/svg；avif/bmp/ico 为 Chromium 原生解码的桌面增补。
+ * ~~图片文件判定与 mime 映射~~ 已迁 `markdown-image.ts`（design-markdown-preview
+ * §2.8：文件 Tab 图片分发与 md 相对图片扩展名闸门共用同一集合，单一来源）。
  */
-const IMAGE_MIME_BY_EXT: Record<string, string> = {
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  gif: "image/gif",
-  webp: "image/webp",
-  avif: "image/avif",
-  bmp: "image/bmp",
-  ico: "image/x-icon",
-}
 
 /** PDF 判定（design-pdf-preview §1）：仅 .pdf 扩展名（大小写不敏感） */
 function isPdfPath(path: string): boolean {
   const base = path.split("/").pop() ?? ""
   return base.toLowerCase().endsWith(".pdf")
-}
-
-function isImagePath(path: string): boolean {
-  const base = path.split("/").pop() ?? ""
-  const dot = base.lastIndexOf(".")
-  if (dot <= 0) return false
-  const ext = base.slice(dot + 1).toLowerCase()
-  return ext === "svg" || ext in IMAGE_MIME_BY_EXT
 }
 
 /**
@@ -2325,6 +2317,48 @@ function imageSrcFor(
       : IMAGE_MIME_BY_EXT[ext]
   if (!mime) return null
   return `data:${mime};base64,${cached.content}`
+}
+
+/**
+ * md 相对路径图片（design-markdown-preview §2.8）：FileView 预览态经 Markdown
+ * 的 img 覆写 prop 注入（模块级常量——components 引用恒稳，streamdown 块级
+ * memo 不失效）。相对 src 已由 remark 阶段 relativeImageRewrite 预重写为 `/`
+ * 绝对路径（经 rehype-harden 透传，可能百分号编码），此处 markdownRewrittenImagePath
+ * 识别并解码；**更新环必须自持**——块级 memo 下 store emit 引发的父层重渲染
+ * 到不了块内组件实例，useSyncExternalStore 直订 fileContents 条目（快照 = 缓存
+ * 对象引用，set 换引用即重渲染）；挂载 effect 触发 store.ensureFileImage
+ * （singleflight）。非重写形态（外链/data/相对字面残留）字面透传 `<img>`。
+ */
+type MdImageProps = ImgHTMLAttributes<HTMLImageElement> & { node?: unknown }
+
+function MarkdownImage({ node: _node, src, alt, ...rest }: MdImageProps) {
+  const store = useStore()
+  const { t } = useI18n()
+  const target = useMemo(
+    () => (typeof src === "string" ? markdownRewrittenImagePath(src) : null),
+    [src],
+  )
+  // 直订缓存条目（App 层 rAF emit 合帧不影响此通路——监听器被同步调用）
+  const entry = useSyncExternalStore(
+    store.subscribe,
+    () => (target == null ? null : store.fileContents.get(target) ?? null),
+  )
+  useEffect(() => {
+    if (target != null) store.ensureFileImage(target)
+  }, [target, store])
+  if (target == null) return <img src={src} alt={alt} {...rest} />
+  const label = (typeof alt === "string" ? alt : "").trim() || target.split("/").pop() || ""
+  if (!entry) return <span className="md-img-pending">{label}</span>
+  const url = imageSrcFor(target, entry)
+  if (entry.error || !url) {
+    return (
+      <span className="md-img-failed" title={entry.error ?? undefined}>
+        {label ? `${label} · ` : ""}
+        {t.mdImageFailed}
+      </span>
+    )
+  }
+  return <img src={url} alt={alt} {...rest} />
 }
 
 /**
@@ -2668,6 +2702,17 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
     [isMarkdown, cached?.content, cached?.error],
     // eslint-disable-next-line react-hooks/exhaustive-deps
   )
+  // 相对路径图片（design-markdown-preview §2.8）：remark 阶段预重写（相对 src
+  // → `/` 绝对路径，须在 streamdown 默认 rehype 管线（harden）之前）+ img 覆写
+  // 认重写形态。插件按 `[plugin, {baseDir}]` 元组挂载（options 进 streamdown
+  // processor 缓存 key，不同基准目录不撞车——见 markdown-image.ts 注释）；
+  // 数组按路径 memo 保持引用稳定
+  const mdRemarkPlugins = useMemo<StreamdownProps["remarkPlugins"]>(() => {
+    if (!isMarkdown) return undefined
+    const slash = absolutePath.lastIndexOf("/")
+    const baseDir = slash > 0 ? absolutePath.slice(0, slash) : "/"
+    return [...Object.values(defaultRemarkPlugins), [relativeImageRewrite, { baseDir }]]
+  }, [isMarkdown, absolutePath])
 
   // 激活即重拉（缓存仅作首帧显示）
   useEffect(() => {
@@ -2826,7 +2871,9 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
               ))}
             </dl>
           )}
-          <Markdown>{mdFrontMatter ? mdFrontMatter.body : cached.content}</Markdown>
+          <Markdown img={MarkdownImage} remarkPlugins={mdRemarkPlugins}>
+            {mdFrontMatter ? mdFrontMatter.body : cached.content}
+          </Markdown>
         </div>
       )}
       {cached && !cached.error && mode === "source" && (

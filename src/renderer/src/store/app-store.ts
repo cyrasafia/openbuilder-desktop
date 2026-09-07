@@ -4298,6 +4298,42 @@ export class AppStore {
     this.emit()
   }
 
+  /**
+   * md 相对路径图片拉取（design-markdown-preview §2.8）：singleflight——非
+   * error 缓存命中且不在途才跳过；结果落 fileContents（与文件 Tab 图片同缓存，
+   * 互预热）。**error 条目不短路**：瞬时失败（如 agent 尚未写出图片）在组件
+   * 重挂载（重开 Tab / 切回预览态）时即重试；error 落地不会触发组件 effect
+   * 重跑（依赖不变），无重试风暴。作用域取当前 scopeQuery（与 FileView 首拉
+   * md 同口径，worktree 场景带 workspace）；落地守卫 client 身份（teardown 后
+   * 丢弃）。不跟随 file watch（监听仅覆盖打开的 file Tab）。
+   */
+  ensureFileImage(absolutePath: string): void {
+    const client = this.client
+    const cached = this.fileContents.get(absolutePath)
+    if (!client || (cached && !cached.error) || this.fileImageInflight.has(absolutePath)) {
+      return
+    }
+    const { directory, workspace } = this.scopeQuery
+    this.fileImageInflight.add(absolutePath)
+    void client
+      .readFileContent(directory, absolutePath, workspace)
+      .then((fc) => {
+        if (this.client !== client) return
+        this.fileContents.set(absolutePath, fileContentEntry(fc))
+      })
+      .catch((e: unknown) => {
+        if (this.client !== client) return
+        this.fileContents.set(absolutePath, {
+          content: "",
+          error: e instanceof Error ? e.message : String(e),
+        })
+      })
+      .finally(() => {
+        this.fileImageInflight.delete(absolutePath)
+        this.emit()
+      })
+  }
+
   /** 关闭 chat Tab = 归档（design-layout 锁定语义），并卸载会话运行时状态 */
   async closeChatTab(sessionID: string, opts: { streaming: boolean }): Promise<boolean> {
     // 在途标记（§17 修订二）：archive PATCH 的 SSE 回环（实时收敛）先到时
@@ -4835,6 +4871,8 @@ export class AppStore {
   private fileReloadTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private fileReloadInflight = new Set<string>()
   private fileReloadDirty = new Set<string>()
+  /** md 相对图片在途（design-markdown-preview §2.8）：同图多次引用并发只发一次请求 */
+  private fileImageInflight = new Set<string>()
   private treeRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
   /**
