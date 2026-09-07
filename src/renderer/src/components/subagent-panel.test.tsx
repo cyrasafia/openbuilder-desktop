@@ -5,12 +5,14 @@
  * ResizeObserver/IntersectionObserver jsdom 缺失，补 stub（workspace 模块图所需）。
  */
 import { render } from "@testing-library/react"
-import { beforeAll, describe, expect, it, vi } from "vitest"
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { SubagentPanel } from "./workspace"
 import type { ToolPart } from "@shared/api-types"
 
 /** 测试内动态替换的 store 桩（vi.mock 提升导致闭包需经变量间接） */
 let storeStub: Record<string, unknown>
+/** chatEntries 返回内容（报错上浮用例注入子会话末条 assistant） */
+let chatEntriesStub: unknown[] = []
 
 vi.mock("../app", () => ({
   useI18n: () => ({
@@ -37,7 +39,7 @@ function makeStore(active: string[]): Record<string, unknown> {
     findSession: (id: string) =>
       id === CHILD ? { id: CHILD, parentID: PARENT, directory: "/repo" } : undefined,
     findChildSession: () => ({ id: CHILD, parentID: PARENT, directory: "/repo" }),
-    chatEntries: () => [],
+    chatEntries: () => chatEntriesStub,
     loadSessionMessages: vi.fn(),
   }
 }
@@ -67,7 +69,8 @@ function renderPanel(part: ToolPart) {
   const { container } = render(<SubagentPanel part={part} parentSessionID={PARENT} />)
   const icon = container.querySelector<HTMLElement>(".subagent-status-icon")!
   expect(icon).not.toBeNull()
-  return { icon, spinning: icon.querySelector(".spin") != null }
+  const summary = container.querySelector<HTMLElement>(".chip-summary")
+  return { icon, summary, spinning: icon.querySelector(".spin") != null }
 }
 
 beforeAll(() => {
@@ -91,6 +94,10 @@ beforeAll(() => {
 })
 
 describe("SubagentPanel 状态投影", () => {
+  beforeEach(() => {
+    chatEntriesStub = []
+  })
+
   it("part running + 父会话活跃：转圈（正常进行中）", () => {
     storeStub = makeStore([PARENT])
     const { icon, spinning } = renderPanel(taskPart("running"))
@@ -131,5 +138,66 @@ describe("SubagentPanel 状态投影", () => {
     const { icon, spinning } = renderPanel(taskPart("error"))
     expect(spinning).toBe(false)
     expect(icon.getAttribute("aria-label")).toBe("出错")
+  })
+})
+
+describe("SubagentPanel 报错上浮（§D6）", () => {
+  beforeEach(() => {
+    chatEntriesStub = []
+  })
+
+  /** 子会话消息 entry（kind message，末条 assistant 可带 error） */
+  const entry = (role: string, error?: unknown) => ({
+    kind: "message",
+    data: {
+      info: { id: `msg_${role}`, role, error: error ?? null },
+      parts: [],
+    },
+  })
+
+  it("part 卡 running + 子会话末条 assistant 报错：✗ 出错 + 报错文案上浮（优先于转圈）", () => {
+    chatEntriesStub = [entry("user"), entry("assistant"), entry("assistant", { name: "UnknownError", data: { message: "provider 429" } })]
+    storeStub = makeStore([PARENT])
+    const { icon, summary, spinning } = renderPanel(taskPart("running"))
+    expect(spinning).toBe(false)
+    expect(icon.getAttribute("aria-label")).toBe("出错")
+    expect(summary?.textContent).toContain("provider 429")
+  })
+
+  it("子会话活跃（retry 退避）期间挂起报错提取：保持转圈，不按轮次闪动", () => {
+    chatEntriesStub = [entry("assistant", { name: "UnknownError", data: { message: "provider 429" } })]
+    storeStub = makeStore([CHILD])
+    const { spinning } = renderPanel(taskPart("running"))
+    expect(spinning).toBe(true)
+  })
+
+  it("中止（MessageAbortedError）不算报错：保持已停止样式", () => {
+    chatEntriesStub = [entry("assistant", { name: "MessageAbortedError", data: { message: "Aborted" } })]
+    storeStub = makeStore([])
+    const { icon, spinning } = renderPanel(taskPart("running"))
+    expect(spinning).toBe(false)
+    expect(icon.getAttribute("aria-label")).toBe("已停止")
+  })
+
+  it("末条 assistant 无报错：不受更早历史 assistant 报错影响", () => {
+    chatEntriesStub = [
+      entry("assistant", { name: "UnknownError", data: { message: "旧错" } }),
+      entry("assistant"),
+    ]
+    storeStub = makeStore([PARENT])
+    const { spinning } = renderPanel(taskPart("running"))
+    expect(spinning).toBe(true)
+  })
+
+  it("stopped 且子会话无内容：触发一次性 REST 补拉（冷开报错文本来源）", () => {
+    storeStub = makeStore([])
+    renderPanel(taskPart("running"))
+    expect(storeStub.loadSessionMessages).toHaveBeenCalledWith(CHILD, "/repo")
+  })
+
+  it("running（父活跃）不触发补拉", () => {
+    storeStub = makeStore([PARENT])
+    renderPanel(taskPart("running"))
+    expect(storeStub.loadSessionMessages).not.toHaveBeenCalled()
   })
 })

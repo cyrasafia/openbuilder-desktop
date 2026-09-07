@@ -106,6 +106,37 @@ SubagentPanel body 设置 `overflow-y: auto; max-height: 400px`，滚轮事件�
   跟随静默停摆）。回底吸附带滞回（向下滚且距底 <8px 才恢复）。收起重置 pinned，
   再展开恢复默认贴底。
 
+### D6：子会话报错上浮与待处理请求路由（2026-09-07 二次修订）
+
+**报错上浮**：subagent 的实际报错只落在子会话末条 assistant 的 `error` 上——
+task part 可能同停止投影一样永卡 running 不回写（同批实测数据：卡 running 的
+part 对应子会话末条 assistant `error: true`）。SubagentPanel 收起态直接消费：
+
+- 末条 assistant 带非中止 error（`name !== "MessageAbortedError"`，与
+  `inferFailedFromMessages` 同口径）→ ✗ 出错样式 + 报错文案（120 字截断），
+  优先于 running/stopped（子会话报错即终局）；中止不算报错，保持已停止样式
+- **retry 门控**：子会话活跃（busy/retry）期间挂起提取——退避窗口里失败尝试
+  的末条 assistant 恒带 error，不门控会在 ✗/转圈间按重试轮次闪动
+  （`dotStateFor` 的「busy/retry 期间跳过终局派生」同口径）；活跃期结束后
+  终局自现。卡 running 的目标场景子会话必 idle，不受门控影响
+- 冷开旧会话时子会话消息未经 SSE 累积、无报错文本来源 → stopped 且无内容时
+  按子会话 id 一次性 REST 补拉（独立 ref，不与展开路径互扰；展开仍是失败重试
+  入口）。loadSessionMessages 的 idle 副作用对停止态子会话无害（finish 推断
+  只认终态，卡死数据无终态不触发）
+
+**待处理请求路由**：子会话（subagent）工具触发的授权/问题请求挂在**子会话 ID**
+上（`pendingPermissions`/`pendingQuestions` 以 sessionID 为 key），而子会话无
+ChatView——请求原本无处展示，subagent 静默阻塞。路由规则（openbuilder 无先例，
+本仓库首次约定）：
+
+- 父会话 `ChatFooter`：自身请求优先，其次并入 `childPermissionFor` /
+  `childQuestionsFor`（按 `findSession(sid).parentID === 父会话 ID` 匹配）；
+  授权仍优先于问题（仅显示优先，queueTotal 计数含被授权卡遮蔽的问题——原
+  语义不变）。应答走请求自带 sessionID/directory（`respondPermission`
+  路由不变），卡片 UI 不变——上方 SubagentPanel 的转圈即上下文
+- `pendingCountFor`（父会话）计入子会话待处理 → Tab/左栏指示器 waiting 点亮
+- 并发多 subagent 同时请求取首个命中（短窗口，不排队区分）
+
 ## 坑
 
 - **metadata.sessionId 时序**：tool part 初始状态为 pending/running 时 metadata 可能
@@ -130,3 +161,7 @@ SubagentPanel body 设置 `overflow-y: auto; max-height: 400px`，滚轮事件�
   恒 null）——UI 只看 `part.state.status` 会永久转圈。修复 = D4 停止投影
   （父/子会话均 idle 时按已停止渲染）。openbuilder 移动端同源设计未覆盖此坑
   （其 D4 无停止态），后续移动端如修可参考本投影。
+- **子会话报错无处可见 / 授权静默阻塞**（2026-09-07，D6 的动因）：同批卡 running
+  数据中子会话末条 assistant `error: true`——报错只在展开面板滚到底才可见；
+  授权/问题请求挂子会话 ID，子会话无 ChatView，请求根本不显示、subagent 无限
+  等待。修复 = D6 报错上浮 + 待处理请求路由到父会话。
