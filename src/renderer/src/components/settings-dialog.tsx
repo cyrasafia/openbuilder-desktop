@@ -560,13 +560,12 @@ export function DiscoverView({
  *  编辑回列表），保存 = upsert 落盘。
  * 模式选择置顶为 segment control（design-guided-add-server §3）+ 两模式一句话
  *  说明；表单按模式分化（design-managed-config §1）：managed 隐藏 URL/凭据
- * （随机端口 + 自动凭据），新增二进制路径（自动扫描候选 + 浏览手选）；attach
- *  字段不变
+ * （随机端口 + 自动凭据），新增二进制路径（浏览手选）；attach 字段不变
  *
  * 欢迎屏手动页复用（design-welcome-screen 2026-09-06 修订）：saveLabel 覆写
  * 主按钮文案（连接/启动并连接）、onSave 由「保存建档」换为「建档+激活+连接」
  * （connectWithProfile）。busy = 挂起新增/连接进行中：全部控件禁用（review
- * 修订 2 P2——模式段/输入/浏览/扫描候选/取消钮一并冻结，草稿不可丢） */
+ * 修订 2 P2——模式段/输入/浏览/取消钮一并冻结，草稿不可丢） */
 export function ProfileFormView({
   profile,
   onCancel,
@@ -584,25 +583,6 @@ export function ProfileFormView({
   const [draft, setDraft] = useState<ConnectionProfile>(profile)
   const [testResult, setTestResult] = useState<string | null>(null)
   const [testing, setTesting] = useState(false)
-  // managed 扫描候选（design-auto-scan）：进入 managed 表单自动跑一轮 + 手动重扫
-  const [candidates, setCandidates] = useState<BinaryCandidate[] | null>(null)
-  const [scanning, setScanning] = useState(false)
-
-  const runScan = async () => {
-    setScanning(true)
-    try {
-      setCandidates(await window.desktop.scanBinaries())
-    } catch {
-      setCandidates([])
-    } finally {
-      setScanning(false)
-    }
-  }
-
-  useEffect(() => {
-    if (draft.mode === "managed" && candidates === null && !scanning) void runScan()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft.mode])
 
   const browseBinary = async () => {
     const p = await window.desktop.openBinaryPicker()
@@ -681,33 +661,6 @@ export function ProfileFormView({
               </div>
             </label>
             <div className="form-note">{t.managedCredsHint}</div>
-            <div className="scan-section">
-              <div className="scan-section-title">
-                <span>{t.scanCandidatesTitle}</span>
-                <button type="button" disabled={scanning || busy} onClick={() => void runScan()}>
-                  {scanning ? t.scanRescanning : t.scanRescan}
-                </button>
-              </div>
-              {candidates === null || scanning ? (
-                <div className="form-note">{t.scanRescanning}</div>
-              ) : candidates.length === 0 ? (
-                <div className="form-note">{t.scanNone}</div>
-              ) : (
-                candidates.map((c) => (
-                  <button
-                    key={c.path}
-                    type="button"
-                    className={"scan-candidate" + (draft.binaryPath === c.path ? " selected" : "")}
-                    title={c.path}
-                    disabled={busy}
-                    onClick={() => setDraft({ ...draft, binaryPath: c.path })}
-                  >
-                    <span className="mono scan-candidate-path">{c.path}</span>
-                    <span className="tree-meta mono">{c.version ?? "—"}</span>
-                  </button>
-                ))
-              )}
-            </div>
           </>
         ) : (
           <>

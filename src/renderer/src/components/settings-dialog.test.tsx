@@ -2,7 +2,7 @@
  * 添加服务器引导式（design-guided-add-server）：点「添加」先搜索（servers +
  * binaries 并行、先到先列），候选一键建档；手动入口进 manual 表单。
  * manual 表单按模式分化（design-managed-config §1）：模式段置顶（segment），
- * managed 隐藏 URL/凭据、显示二进制路径与扫描候选；attach 字段齐全。
+ * managed 隐藏 URL/凭据、显示二进制路径（2026-09-07 起手动页无扫描候选）；attach 字段齐全。
  * Provider 页签（design-provider-config）：已连接组/搜索/设删 key（ops 注入）。
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
@@ -64,10 +64,6 @@ vi.mock("../app", () => ({
       profileBinaryPath: "二进制路径",
       profileBinaryPathHint: "留空 = 自动发现",
       browseBinary: "浏览…",
-      scanCandidatesTitle: "扫描到的 opencode",
-      scanRescan: "重新扫描",
-      scanRescanning: "扫描中…",
-      scanNone: "未发现 opencode",
       managedCredsHint: "随机端口 + 自动凭据",
       serverLogTitle: "服务器日志",
       serverLogEmpty: "暂无日志",
@@ -464,7 +460,7 @@ describe("ProfileFormView 模式分化", () => {
     await waitFor(() => expect(screen.getByText("手动配置服务器")).toBeTruthy())
   }
 
-  it("managed 模式：模式段切换后隐藏 URL/凭据，显示二进制路径 + 扫描候选，点击候选填入", async () => {
+  it("managed 模式：模式段切换后隐藏 URL/凭据，显示二进制路径（无扫描候选段），可手填", async () => {
     render(<SettingsDialog />)
     await goManual()
     // 切到 managed（模式段按钮）
@@ -474,13 +470,13 @@ describe("ProfileFormView 模式分化", () => {
     expect(screen.queryByLabelText("服务器地址")).toBeNull()
     expect(screen.queryByLabelText("用户名（可选）")).toBeNull()
     expect(screen.queryByLabelText("密码（可选）")).toBeNull()
-    // 二进制路径 + 候选出现
+    // 二进制路径出现；扫描候选段已移除（2026-09-07：手动页不做扫描）
     expect(screen.getByLabelText("二进制路径")).toBeTruthy()
-    expect(await screen.findByText("/usr/bin/opencode")).toBeTruthy()
-    // 点击候选填入
-    fireEvent.click(screen.getByText("/usr/bin/opencode"))
-    const input = screen.getByLabelText("二进制路径") as HTMLInputElement
-    expect(input.value).toBe("/usr/bin/opencode")
+    expect(screen.queryByText("/usr/bin/opencode")).toBeNull()
+    fireEvent.change(screen.getByLabelText("二进制路径"), {
+      target: { value: "/usr/bin/opencode" },
+    })
+    expect((screen.getByLabelText("二进制路径") as HTMLInputElement).value).toBe("/usr/bin/opencode")
   })
 
   it("attach 模式：URL/凭据字段齐全，无二进制路径", async () => {
