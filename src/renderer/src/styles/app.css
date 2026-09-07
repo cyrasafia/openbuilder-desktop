@@ -3621,21 +3621,6 @@
   margin: 8px 24px 20px;
 }
 
-.welcome-settings {
-  display: block;
-  margin: 16px auto 4px;
-  background: none;
-  border: none;
-  color: var(--outline);
-  font-size: var(--text-sm);
-  cursor: pointer;
-}
-
-.welcome-settings:hover {
-  color: var(--on-surface-variant);
-  text-decoration: underline;
-}
-
 /* 入口视图唯一动作：「添加服务器」满宽主按钮（welcome-body 为 column 布局） */
 .welcome-entry-btn {
   align-self: stretch;
