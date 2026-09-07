@@ -3089,6 +3089,33 @@
   background: var(--surface-container-high);
 }
 
+/* 新增服务器启用流挂起行（design-guided-add-server 修订 2）：标题行下方
+   一条 spinner + 文案，标题行与视图体之间；spinner 与 typing/history 同一
+   keyframes（typing-spin），颜色 --outline 同源 */
+.pending-connect {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 20px 0;
+  font-size: var(--text-sm);
+  color: var(--on-surface-variant);
+}
+
+.pending-connect-spinner {
+  color: var(--outline);
+  flex-shrink: 0;
+  animation: typing-spin 1s linear infinite;
+}
+
+/* 失败收尾行（review 修订 2 P3）：弹窗遮罩盖住左栏，connectionError 须在弹窗
+   内可见；与 loading 行同位（标题行下）换色呈现 */
+.pending-connect-error {
+  color: var(--error);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* 列表/表单体（§标准弹窗骨架）：flex:1 占满余高，内部滚动；变体只覆写内边距 */
 .dialog-body {
   flex: 1;
@@ -3622,9 +3649,23 @@
   align-self: stretch;
 }
 
-/* 连接中/连接错误行（视图体之外的卡片级反馈，两侧与卡片内边距对齐） */
+/* 连接中/连接错误行（视图体之外的卡片级反馈，两侧与卡片内边距对齐）；
+   连接中行带 spinner（与弹窗挂起行同视觉：typing-spin + --outline） */
 .welcome-error {
   margin: 0 24px 8px;
+}
+
+.welcome-connecting {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 24px 0;
+}
+
+.welcome-connecting-spinner {
+  color: var(--outline);
+  flex-shrink: 0;
+  animation: typing-spin 1s linear infinite;
 }
 
 .welcome-body {

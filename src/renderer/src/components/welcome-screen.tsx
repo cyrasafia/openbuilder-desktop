@@ -2,15 +2,16 @@
  * 欢迎屏（design-welcome-screen，2026-09-06 二次修订）：无激活 profile（无服务
  * 器）时的全页向导。只呈现「添加服务器」入口；点击进入与设置弹窗**同源复用**的
  * 引导式流程（design-guided-add-server 的 DiscoverView + ProfileFormView，单一
- * 来源非复制），差异仅注入项：动作语义 = 建档 + 激活 + 连接（设置弹窗仅建档；
- * attach 先 health 验证再建档，失败不残留——managed 建档→connect，原分支各自
- * 语义保留）、busy（连接/预验中禁用）、emptyContent（首装安装指引）。连接成功
- * 直接关闭欢迎屏（无 provider/默认模型引导）——Shell 接管，未打开项目时中栏即
- * 「打开项目」页。替代 Shell 渲染（TitleBar 由 App 层保留）；入口页底部保留
- * 设置入口。
+ * 来源非复制），差异仅注入项：动作语义 = 建档 + 激活 + 连接（设置弹窗 = 启用流
+ * 挂起；attach 先 health 验证再建档，失败不残留——managed 建档→connect，原分支
+ * 各自语义保留）、busy（连接/预验中禁用）、emptyContent（首装安装指引）。连接
+ * 成功直接关闭欢迎屏（无 provider/默认模型引导）——Shell 接管，未打开项目时中
+ * 栏即「打开项目」页。连接中卡片内「连接中…」行带 spinner（与设置弹窗挂起行
+ * 同视觉，design-guided-add-server 修订 2）；失败停在原视图（候选可再点）。
+ * 替代 Shell 渲染（TitleBar 由 App 层保留）；入口页底部保留设置入口。
  */
 import { useEffect, useState } from "react"
-import { ArrowLeft, Copy } from "lucide-react"
+import { ArrowLeft, Copy, LoaderCircle } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import type { ConnectionProfile } from "@shared/ipc"
 import { ApiError, RestClient } from "@shared/rest-client"
@@ -116,9 +117,16 @@ export function WelcomeScreen() {
             />
           </>
         )}
-        {connecting && <div className="form-note welcome-error">{t.welcomeConnecting}</div>}
+        {connecting && (
+          <div className="form-note welcome-connecting">
+            <LoaderCircle className="welcome-connecting-spinner" size={14} aria-hidden />
+            <span>{t.welcomeConnecting}</span>
+          </div>
+        )}
         {pickError && <div className="form-note welcome-error">{pickError}</div>}
-        {store.connectionError && <div className="form-note welcome-error">{store.connectionError}</div>}
+        {store.connectionError && !connecting && (
+          <div className="form-note welcome-error">{store.connectionError}</div>
+        )}
       </div>
     </div>
   )
@@ -159,17 +167,22 @@ function InstallHint() {
 /** 建 profile + 激活 + 连接（discover/manual 共用；connect 内部含 spawn/健康/快照）。
  *  openPickerAfter 同设置页新增流（design-guided-add-server 修订）：连接成功且
  *  无已打开项目时直达项目选择器；先断开再改激活（同 activate 惯例，managed
- *  旧进程正确 stop） */
+ *  旧进程正确 stop）。拒绝路径吞掉（调用方 void 挂起无收尾 UI，IPC 层异常
+ *  不冒 unhandled rejection；连接失败走 store 状态机由 connectionError 呈现） */
 async function connectWithProfile(
   store: ReturnType<typeof useStore>,
   profile: ConnectionProfile,
 ): Promise<void> {
-  const idx = store.profiles.findIndex((p) => p.id === profile.id)
-  const next =
-    idx >= 0 ? store.profiles.map((p, i) => (i === idx ? profile : p)) : [...store.profiles, profile]
-  await store.disconnect()
-  await store.saveProfiles(next, profile.id)
-  await store.connect({ openPickerAfter: true })
+  try {
+    const idx = store.profiles.findIndex((p) => p.id === profile.id)
+    const next =
+      idx >= 0 ? store.profiles.map((p, i) => (i === idx ? profile : p)) : [...store.profiles, profile]
+    await store.disconnect()
+    await store.saveProfiles(next, profile.id)
+    await store.connect({ openPickerAfter: true })
+  } catch {
+    // store 状态机收尾（connectionError 行可见）；此处无额外 UI
+  }
 }
 
 function WelcomeHeader({ title, onBack }: { title: string; onBack: () => void }) {
