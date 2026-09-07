@@ -2011,7 +2011,9 @@
 }
 
 .code-view-host .cm-gutters {
-  background: transparent;
+  /* 不透明底（同中栏 --surface）：gutter 是 sticky 层，横向滚动时长代码行
+     从其下穿过，透明底会与行号重叠 */
+  background: var(--surface);
   color: var(--outline);
   border: none;
   min-width: 44px;
