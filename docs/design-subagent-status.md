@@ -63,6 +63,31 @@
 - **running/pending**：spinner + agent 名
 - **completed**：✓ 图标 + agent 名 + title 摘要（`state.title`）
 - **error**：✗ 图标 + agent 名 + error 摘要
+- **stopped**（2026-09-07 修订）：✗ 图标 + agent 名 + 描述摘要 + aria「已停止」
+
+**停止投影**（2026-09-07 修订）：`part.state.status` 的 pending/running 不是可信的
+进行中信号——server 对中断的 task part 可能**永远不写终态**（API 契约事实，同
+design-v0.1-implementation「中断消息 completed 恒 null」：实测本机 server 多个
+父会话的 task part 卡 `status:"running"` 数周，父消息无 finish/completed/error，
+而子会话早已结束）。投影规则：
+
+```
+running = part.status ∈ {pending, running} 且 (父会话活跃 或 子会话活跃)
+stopped = part.status ∈ {pending, running} 且 父/子会话均 idle（无 sessionStatus 条目）
+```
+
+活跃 = `sessionStatus` 有条目（busy/retry，`isSessionActive`）。判据依据：
+
+- task 工具在父会话 prompt 循环内同步执行——part 真在跑时父会话必为 busy；
+  父会话 idle 而 part 卡 running 只可能是中断残留（abort 后 server 未回写终态）
+  或历史僵死数据（重开旧 Tab，无状态事件可等）
+- 子会话活跃作为并集判据兜底：父条目瞬时缺失（冷启动/重连对账窗口）而子会话
+  确在跑时不误报停止；快照合并后父条目恢复，投影自愈
+- 已知瞬态取舍：断连期间 `sessionStatus.clear()` 会让真跑着的 subagent 短暂显示
+  停止，重连对账后恢复——与 typing dots 断连消失同语义，可接受
+- 已知瞬态取舍（对偶窗口）：中断残留的 part 在父会话发起**下一轮 prompt** 期间会
+  重新转圈（投影只看父会话 busy 与否，无法区分"本轮在跑"与"上轮残留"），新轮
+  idle 后回停止样式。纯外观、自愈，且无 per-part 状态可区分，不做修复
 
 ### D5：独立滚动
 
@@ -100,3 +125,8 @@ SubagentPanel body 设置 `overflow-y: auto; max-height: 400px`，滚轮事件�
 - **启发式匹配局限**（已知取舍）：`findChildSession` description 前缀匹配不上时回退
   "该父会话最新创建的子会话"——父会话并发跑多个 task 工具时可能挂到别的任务的子会话
   （`metadata.sessionId` 权威路径不受影响）；同 created 并列时排序结果不稳定。
+- **中断 part 永卡 running**（2026-09-07，D4 停止投影的动因）：用户停止父会话后
+  server 取消子会话，但父消息的 task part 可能不回写终态（半截消息，completed
+  恒 null）——UI 只看 `part.state.status` 会永久转圈。修复 = D4 停止投影
+  （父/子会话均 idle 时按已停止渲染）。openbuilder 移动端同源设计未覆盖此坑
+  （其 D4 无停止态），后续移动端如修可参考本投影。

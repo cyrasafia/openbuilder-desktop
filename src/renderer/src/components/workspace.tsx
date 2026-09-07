@@ -2002,7 +2002,7 @@ function ToolChip({ part }: { part: ToolPart }) {
  * 收起态 = agent 名 + 状态图标 + 描述摘要；展开态 = 独立滚动（滚动条隐藏）的
  * 子会话消息列表，宽度与消息区一致。子会话内回滚已屏蔽（MessageBlock isChildSession）。
  */
-function SubagentPanel({ part, parentSessionID }: { part: ToolPart; parentSessionID: string }) {
+export function SubagentPanel({ part, parentSessionID }: { part: ToolPart; parentSessionID: string }) {
   const { t } = useI18n()
   const store = useStore()
   const [open, setOpen] = useState(false)
@@ -2027,8 +2027,18 @@ function SubagentPanel({ part, parentSessionID }: { part: ToolPart; parentSessio
     : store.findChildSession(parentSessionID, description || undefined)
   const childSessionId = metadataSessionId ?? childSession?.id
 
-  // 状态图标 + 摘要
-  const running = status === "pending" || status === "running"
+  // 状态图标 + 摘要。停止投影（D4 修订）：server 对中断的 task part 可能永远
+  // 不写终态（实测卡 status:"running"、父消息 completed 恒 null——同
+  // message-merge.ts 半截消息注释的 server 行为），part 的 pending/running
+  // 只有在父会话或子会话仍活跃（busy/retry）时才可信；两侧均 idle = 中断/僵死
+  // 残留 → 按「已停止」渲染（✗ 图标），不再转圈。冷启动/重连对账的瞬时无状态
+  // 窗口里活跃会话可能暂缺条目（statusOf 缺省 idle），快照合并后即恢复转圈
+  const partRunning = status === "pending" || status === "running"
+  const sessionActive =
+    store.isSessionActive(parentSessionID) ||
+    (childSessionId != null && store.isSessionActive(childSessionId))
+  const running = partRunning && sessionActive
+  const stopped = partRunning && !sessionActive
   const agentLabel = subagentType
     ? subagentType.charAt(0).toUpperCase() + subagentType.slice(1)
     : t.assistant
@@ -2134,11 +2144,19 @@ function SubagentPanel({ part, parentSessionID }: { part: ToolPart; parentSessio
         <span className="chevron">{open ? "▾" : "▸"}</span>
         <span
           className="subagent-status-icon"
-          aria-label={running ? t.subagentRunning : status === "error" ? t.subagentError : t.subagentCompleted}
+          aria-label={
+            running
+              ? t.subagentRunning
+              : status === "error"
+                ? t.subagentError
+                : stopped
+                  ? t.subagentStopped
+                  : t.subagentCompleted
+          }
         >
           {running ? (
             <LoaderCircle size={14} className="spin" aria-hidden />
-          ) : status === "error" ? (
+          ) : status === "error" || stopped ? (
             <CircleX size={14} aria-hidden />
           ) : (
             <CircleCheck size={14} aria-hidden />
