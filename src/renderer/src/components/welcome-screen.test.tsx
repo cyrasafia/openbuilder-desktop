@@ -1,8 +1,8 @@
 /**
  * 欢迎屏（design-welcome-screen，2026-09-06 二次修订）：入口视图只呈现「添加
- * 服务器」；点击后复用设置弹窗引导式流程（DiscoverView 双扫描混排 + 手动配置
- * ProfileFormView），动作语义 = 建档 + 激活 + 连接；streaming 直接关闭（无
- * provider 引导）。mock ../app 与 window.desktop。
+ * 服务器」（2026-09-08 修订：设置入口移除）；点击后复用设置弹窗引导式流程
+ * （DiscoverView 双扫描混排 + 手动配置 ProfileFormView），动作语义 = 建档 +
+ * 激活 + 连接；streaming 直接关闭（无 provider 引导）。mock ../app 与 window.desktop。
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -25,7 +25,6 @@ vi.mock("../app", () => ({
       cancel: "取消",
       save: "保存",
       copy: "复制",
-      openSettings: "打开设置",
       profileMode: "模式",
       modeAttach: "连接现有服务",
       modeManaged: "本机启动",
@@ -74,7 +73,6 @@ beforeEach(() => {
     connectionError: null,
     profiles: [],
     closeWelcome: vi.fn(),
-    openSettings: vi.fn(),
     saveProfiles: vi.fn(async () => {}),
     disconnect: vi.fn(async () => {}),
     connect: vi.fn(async () => {}),
@@ -99,15 +97,14 @@ async function enterDiscover() {
 }
 
 describe("WelcomeScreen", () => {
-  it("入口视图：标题/副标题 + 唯一「添加服务器」入口 + 打开设置；未进入流程不扫描", () => {
+  it("入口视图：标题/副标题 + 唯一「添加服务器」入口（无设置入口）；未进入流程不扫描", () => {
     render(<WelcomeScreen />)
     expect(screen.getByText("欢迎使用 OpenBuilder")).toBeTruthy()
     expect(screen.getByRole("button", { name: "添加服务器" })).toBeTruthy()
     expect(screen.queryByText("手动配置…")).toBeNull()
+    expect(screen.queryByText("打开设置")).toBeNull()
     expect(scanServers).not.toHaveBeenCalled()
     expect(scanBinaries).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByText("打开设置"))
-    expect(storeState.current.openSettings).toHaveBeenCalledWith()
   })
 
   it("点击「添加服务器」进发现视图：双扫描并行启动，server 与 binary 候选混排", async () => {

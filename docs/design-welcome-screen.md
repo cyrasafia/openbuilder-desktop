@@ -12,7 +12,7 @@
 
 ## 2. 入口视图（entry，默认视图）
 
-- 应用标识 + 副标题 + **唯一动作「添加服务器」**（满宽主按钮）+ 底部「打开设置」文字按钮（→ `openSettings()`；设置弹窗在欢迎屏之上正常打开，App 欢迎分支提供 SettingsDialog 宿主）
+- 应用标识 + 副标题 + **唯一动作「添加服务器」**（满宽主按钮）。**底部「打开设置」入口已移除（2026-09-08 修订）**——设置在欢迎屏期间的可达性随入口删除（见 §8 取舍修订）
 - **入口页不扫描**：扫描只在进入流程后发现视图启动（用户未表达意图前不做 mDNS 4s 窗口等成本动作）
 - 原「入口二选一」（managed 推荐 / attach）随流程统一废弃（2026-09-06）——模式选择融入发现视图的候选分区与手动配置页的模式段，不再前置逼迫用户理解 attach/managed 术语
 
@@ -44,14 +44,14 @@
 |---|---|
 | `src/renderer/src/components/welcome-screen.tsx` | WelcomeScreen（entry/discover/manual 三视图状态机；入口页；`pick` = 建档固定 id upsert + 激活 + 连接；InstallHint 安装指引 emptyContent；streaming effect 直接 closeWelcome；卡片底部 connecting/connectionError 反馈行） |
 | `src/renderer/src/components/settings-dialog.tsx` | 导出 `DiscoverView`/`ProfileFormView`/`newProfileDraft` 供欢迎屏同源复用；DiscoverView 新增 `busy`/`emptyContent` props、ProfileFormView 新增 `saveLabel`/`busy` props（设置弹窗自身用法不变） |
-| `src/renderer/src/store/app-store.ts` | `welcomeOpen` + `closeWelcome`；doInit 无 profile 置位；`saveProfiles` 清空激活置位（回欢迎页）；`openSettings(tab?)` 初始页签提示字段（providers/defaults 直达仅剩主界面设置入口在用） |
+| `src/renderer/src/store/app-store.ts` | `welcomeOpen` + `closeWelcome`；doInit 无 profile 置位；`saveProfiles` 清空激活置位（回欢迎页）；`openSettings(tab?)` 初始页签提示字段（providers/defaults 直达仅剩主界面设置入口在用；欢迎页入口 2026-09-08 移除） |
 | `src/renderer/src/app.tsx` | ready 后分支渲染 WelcomeScreen / Shell |
 | i18n / app.css | 删 choose/guidance 废弃键（zh/en）；`.welcome-discover-actions`/`.welcome-error` 新增，`.welcome-entry*`/`.welcome-action`/`.welcome-link` 随旧视图移除 |
 
 ## 7. 测试
 
 - 组件（mock store/desktop，注入扫描与连接动作），13 用例：
-  - 入口视图：标题/副标题 + 唯一「添加服务器」入口 + 打开设置；**未进入流程不扫描**；点击进发现视图后双扫描并行启动
+  - 入口视图：标题/副标题 + 唯一「添加服务器」入口（无设置入口，2026-09-08 修订）；**未进入流程不扫描**；点击进发现视图后双扫描并行启动
   - 发现视图：server/binary 候选混排（来源徽标+版本）；返回回入口页
   - 候选连接：server 候选先 health（fetch 桩）后建 attach profile（固定 id + baseUrl）+ connect；**health 失败不建档不连接**；binary 候选建 managed profile（binaryPath + 空名）+ connect；固定 id upsert 重试不堆 profile
   - 空态：双路皆空给安装指引命令 + 复制按钮（emptyContent 覆盖默认空态），手动入口常驻
@@ -64,7 +64,7 @@
 
 - ~~provider 检查用 server cwd instance 的 auth 集~~（检查已移除，2026-09-06；provider 配置入口 = 主界面设置，打开项目后按作用域精确查询）
 - 欢迎屏期间 managed 崩溃重启等事件照常（状态行不可见但 connect 串行化兜底；日志在设置内可见）
-- **无服务器 = 强制欢迎页**（2026-09-05 修订）：主题/语言等个性化设置在连接前仅经欢迎页「打开设置」可达——接受（连接一次即一劳永逸，且设置弹窗在欢迎页之上功能完整）
+- **无服务器 = 强制欢迎页**（2026-09-05 修订）：主题/语言等个性化设置在连接前不再可达（2026-09-08 修订：欢迎页「打开设置」入口移除）——接受（连接是唯一必经动作，设置弹窗在欢迎屏之上的宿主仍保留以防万一）
 - 连接态降级（有 profile，server 失联）不回欢迎页：SSE 重连恢复优先，欢迎页会打断自动重连（参考 openbuilder design-sse-reconnect-recovery 的教训：断线恢复不打断用户所在界面）
 - 发现视图不展示 server 凭据输入；受 Basic auth 保护的 server 扫描不出来，走手动配置（与 guided-add-server §6 同源约束）
 - attach 建档失败不残留（health 先行）；managed 建档先于连接、spawn 失败保留 profile——两模式不对称是原分支语义的保留，非疏漏：attach 的失败面是"地址/凭据写错"（用户可改后重试，残留无意义），managed 的失败面是"二进制不可用"（保留 profile 才能在设置里调整路径重试，且固定 id upsert 不堆积）
