@@ -30,7 +30,9 @@ export function newProfileDraft(): ConnectionProfile {
 /** 设置弹窗（dialog-lg）。模态不重叠（DESIGN.md §标准弹窗）：添加/编辑服务器
  *  在弹窗内跳转视图（标题行左置返回钮），不叠加二级弹窗。新增服务器的启用
  *  流挂起期间（连接中）弹窗保持打开：loading 行 + 动作冻结（design-guided-
- *  add-server 修订 2），成功关弹窗直达项目列表，失败回原视图 */
+ *  add-server 修订 2），成功关弹窗直达项目列表，失败回原视图。列表「切换」
+ *  （2026-09-07）走同一挂起流（loading 在 tabs 视图标题行下渲染），成功后
+ *  同样关弹窗但不带 openPickerAfter——直达主页面，不弹项目列表 */
 export function SettingsDialog() {
   const store = useStore()
   const { t } = useI18n()
@@ -66,17 +68,18 @@ export function SettingsDialog() {
 
   // 保存 = upsert 直落 store（弹窗内视图跳转后 ConnectionSettings 卸载重挂，
   // 列表从 store 直读，无本地镜像；持久化用计算出的 next 列表）。
-  // 编辑（from="edit"，isNew=false）：只 upsert 不激活，激活走列表「启用」，
+  // 编辑（from="edit"，isNew=false）：只 upsert 不激活，激活走列表「切换」，
   // 保存后即回列表。
-  // 新增（from="discover"/"manual"，design-guided-add-server 修订 2）：保存即
-  // 启用 + **保持弹窗打开直到连接结束**——连接中弹窗挂 loading 态（动作全
-  // 禁用，防二次触发）；成功关弹窗（项目列表由 store 内 openPickerAfter
-  // 一次性标记直达）；失败回到原视图（discover/manual 草稿保留，可改可换）
-  // + connectionError 内联展示。
+  // 新增（from="discover"/"manual"，design-guided-add-server 修订 2）与列表
+  // 「切换」（from="switch"，2026-09-07）共用同一挂起流：保存/激活即连接 +
+  // **保持弹窗打开直到连接结束**——连接中弹窗挂 loading 态（动作全禁用，防
+  // 二次触发）；成功关弹窗（项目列表仅新增流经 store 内 openPickerAfter 直达，
+  // 切换不带标记 = 落主页面）；失败回到原视图（discover/manual 草稿保留，可改
+  // 可换；切换留在列表）+ connectionError 内联展示。
   // 先断开再改激活（此时旧 profile 仍激活，managed 模式才能正确 stop 旧进程——
-  // 顺序同列表「启用」activate；saveProfiles 先行会 disconnect 按 profile 的
+  // 顺序同列表「切换」activate；saveProfiles 先行会 disconnect 按 profile 的
   // mode 误判，managed→attach 切换泄漏旧 server 进程）
-  const [pendingNew, setPendingNew] = useState<{ view: "discover" | "manual" } | null>(null)
+  const [pendingNew, setPendingNew] = useState<{ view: "discover" | "manual" | "list" } | null>(null)
   // 本次启用流的连接代际（review 修订 2 P1/P2 + 三轮 review）：store.
   // connectionState 是全局单值——disconnect() 期间旧连接的 streaming（managed
   // IPC 往返窗口）、disconnect→connect 之间 saveProfiles IPC 窗口的
@@ -88,7 +91,7 @@ export function SettingsDialog() {
   // 直接订阅 store.emit——同步逐 emit 触发，状态机变迁逐个可见不漏
   const started = useRef(false)
   const seenConnecting = useRef(false)
-  const saveProfile = async (p: ConnectionProfile, from: "discover" | "manual" | "edit") => {
+  const saveProfile = async (p: ConnectionProfile, from: "discover" | "manual" | "edit" | "switch") => {
     const idx = store.profiles.findIndex((x) => x.id === p.id)
     const next =
       idx >= 0 ? store.profiles.map((x, i) => (i === idx ? p : x)) : [...store.profiles, p]
@@ -97,7 +100,7 @@ export function SettingsDialog() {
       setEditing(null)
       return
     }
-    if (!pendingNew) setPendingNew({ view: from })
+    if (!pendingNew) setPendingNew({ view: from === "switch" ? "list" : from })
     // 异常兜底（review P3）：disconnect/saveProfiles/connect 的 rejection 若不
     // 捕获，pendingNew 永久残留 = 弹窗冻结无超时无取消；捕获后按失败收尾
     // （store 状态机落 disconnected 时同样走失败分支）
@@ -106,7 +109,8 @@ export function SettingsDialog() {
       started.current = true
       seenConnecting.current = false
       await store.saveProfiles(next, p.id)
-      await store.connect({ openPickerAfter: true })
+      // 切换不带 openPickerAfter（2026-09-07）：成功关弹窗后落主页面，不弹项目列表
+      await store.connect(from === "switch" ? undefined : { openPickerAfter: true })
     } catch (e) {
       started.current = false
       setPendingNew(null)
@@ -276,30 +280,72 @@ export function SettingsDialog() {
           <>
             <div className="dialog-title dialog-title-row">
               <span>{t.settings}</span>
-              <button className="icon-btn" title={t.close} aria-label={t.close} onClick={close}>
+              <button
+                className="icon-btn"
+                title={t.close}
+                aria-label={t.close}
+                disabled={!!pendingNew}
+                onClick={close}
+              >
                 <X size={14} aria-hidden />
               </button>
             </div>
+            {/* 列表「切换」挂起流（2026-09-07）：loading/失败原因行与子视图共用
+             *  骨架——渲染在页签上方，任何页签在场都可见 */}
+            {pendingNew ? (
+              <div className="pending-connect">
+                <LoaderCircle className="pending-connect-spinner" size={14} aria-hidden />
+                <span>{t.addProfileConnecting}</span>
+              </div>
+            ) : (
+              connectError && <div className="pending-connect pending-connect-error">{connectError}</div>
+            )}
             <div className="settings-tabs">
-              <button className={tab === "connection" ? "active" : ""} onClick={() => setTab("connection")}>
+              {/* 挂起期冻结页签切换（review 2026-09-07）：loading/失败原因行渲染在
+               *  页签上方，切走页签后失败将不可见；冻结保证反馈始终在场 */}
+              <button
+                className={tab === "connection" ? "active" : ""}
+                disabled={!!pendingNew}
+                onClick={() => setTab("connection")}
+              >
                 {t.connectionTitle}
               </button>
-              <button className={tab === "providers" ? "active" : ""} onClick={() => setTab("providers")}>
+              <button
+                className={tab === "providers" ? "active" : ""}
+                disabled={!!pendingNew}
+                onClick={() => setTab("providers")}
+              >
                 {t.providerTitle}
               </button>
-              <button className={tab === "appearance" ? "active" : ""} onClick={() => setTab("appearance")}>
+              <button
+                className={tab === "appearance" ? "active" : ""}
+                disabled={!!pendingNew}
+                onClick={() => setTab("appearance")}
+              >
                 {t.appearanceTitle}
               </button>
-              <button className={tab === "defaults" ? "active" : ""} onClick={() => setTab("defaults")}>
+              <button
+                className={tab === "defaults" ? "active" : ""}
+                disabled={!!pendingNew}
+                onClick={() => setTab("defaults")}
+              >
                 {t.defaultsTitle}
               </button>
-              <button className={tab === "shortcuts" ? "active" : ""} onClick={() => setTab("shortcuts")}>
+              <button
+                className={tab === "shortcuts" ? "active" : ""}
+                disabled={!!pendingNew}
+                onClick={() => setTab("shortcuts")}
+              >
                 {t.shortcutsTitle}
               </button>
             </div>
             <div className="dialog-body">
               {tab === "connection" ? (
-                <ConnectionSettings onEdit={setEditing} />
+                <ConnectionSettings
+                  busy={!!pendingNew}
+                  onEdit={setEditing}
+                  onSwitch={(p) => void saveProfile(p, "switch")}
+                />
               ) : tab === "providers" ? (
                 <ProviderSettings onEditKey={setProviderEdit} />
               ) : tab === "appearance" ? (
@@ -317,24 +363,23 @@ export function SettingsDialog() {
   )
 }
 
+/** 服务器连接页签。切换（2026-09-07）：按钮 = 触发弹窗层挂起流（onSwitch →
+ *  SettingsDialog.saveProfile("switch")），本组件不再自持 connect——连接反馈、
+ *  成功落主页面、失败回列表都在弹窗层收口。busy = 挂起流进行中冻结全部动作 */
 function ConnectionSettings({
+  busy,
   onEdit,
+  onSwitch,
 }: {
+  busy?: boolean
   onEdit: (editing: EditingState) => void
+  onSwitch: (p: ConnectionProfile) => void
 }) {
   const store = useStore()
   const { t } = useI18n()
   const profiles = store.profiles
   const activeId = store.activeProfileId
   const activeManaged = store.activeProfile?.mode === "managed"
-
-  const activate = async (id: string) => {
-    // 先断开（此时旧 profile 仍激活，managed 模式才能正确 stop 旧进程）
-    await store.disconnect()
-    await store.saveProfiles(profiles, id)
-    // 切换 profile = 全量重对账（回到 snapshot 态）
-    await store.connect()
-  }
 
   // 引导式（design-guided-add-server §2）：点「添加」先进发现视图
   const addProfile = () => onEdit({ view: "discover" })
@@ -347,7 +392,7 @@ function ConnectionSettings({
     const next = profiles.filter((x) => x.id !== p.id)
     const nextActive = activeId === p.id ? next[0]?.id ?? null : activeId
     await store.saveProfiles(next, nextActive)
-    // 后继 profile 存在则自动重连（避免"启用"按钮 disabled 导致无重连入口）
+    // 后继 profile 存在则自动重连（避免「切换」按钮 disabled 导致无重连入口）
     if (p.id === activeId && nextActive) {
       await store.connect()
     }
@@ -375,20 +420,31 @@ function ConnectionSettings({
             <span className="profile-mode">{p.mode}</span>
             <span className="tree-label">{p.name || (p.mode === "managed" ? p.binaryPath || "opencode" : p.baseUrl)}</span>
             <span className="tree-meta mono">{p.mode === "managed" ? "managed" : p.baseUrl}</span>
-            <button disabled={p.id === activeId} onClick={() => void activate(p.id)}>
-              {p.id === activeId ? t.activeProfile : t.activateProfile}
+            <button disabled={p.id === activeId || busy} onClick={() => onSwitch(p)}>
+              {p.id === activeId ? t.activeProfile : t.switchProfile}
             </button>
-            <button title={t.editProfile} aria-label={t.editProfile} onClick={() => onEdit({ view: "manual", profile: p, isNew: false })}>
+            <button
+              title={t.editProfile}
+              aria-label={t.editProfile}
+              disabled={busy}
+              onClick={() => onEdit({ view: "manual", profile: p, isNew: false })}
+            >
               <Pencil size={12} aria-hidden />
             </button>
-            <button className="danger" title={t.removeProfile} aria-label={t.removeProfile} onClick={() => void remove(p)}>
+            <button
+              className="danger"
+              title={t.removeProfile}
+              aria-label={t.removeProfile}
+              disabled={busy}
+              onClick={() => void remove(p)}
+            >
               <X size={12} aria-hidden />
             </button>
           </div>
         ))}
       </div>
       <div className="profile-actions">
-        <button className="btn-primary" onClick={addProfile}>
+        <button className="btn-primary" disabled={busy} onClick={addProfile}>
           {t.addProfile}
         </button>
       </div>

@@ -8,6 +8,7 @@
 - 新流程把发现提到最前：多数场景用户点一下候选即完成配置（零表单、零输入）；手填降级为兜底入口
 - 交互形态源自欢迎屏的扫描→候选→连接链路；**2026-09-06 反向统一：欢迎页只呈现「添加服务器」入口，点击后同源复用本设计的 DiscoverView + ProfileFormView**（design-welcome-screen §3，非复制），行为差异全部参数化（欢迎屏注入 busy/emptyContent/saveLabel/onPick 连接语义）
 - ~~设置弹窗内不引入连接副作用，激活仍走列表「启用」~~ **2026-09-06 修订**：新增建档 = **保存即启用**——激活 profile + `connect({openPickerAfter})`（连接成功且无已打开项目时直达项目选择器）；仅**编辑**（isNew=false）仍保持原语义：只 upsert 不激活不连接，激活走列表「启用」
+- **2026-09-07 修订（列表激活改走挂起流）**：列表「启用」（use）更名**「切换」**（switch），不再自持静默 connect——点击后**走同一挂起流**（连接中弹窗保持打开 + loading 行，页签切换一并冻结），成功关弹窗但**不带 `openPickerAfter`**（落主页面，不弹项目列表），失败留在列表 + connectionError 内联展示可重试。挂起流实现同一收口：`ConnectionSettings` 的 onSwitch → 弹窗层 `saveProfile(p, "switch")`，loading/错误行提升到页签视图标题行下（原只在 discover/manual 子视图内）
 - **2026-09-06 修订 2（连接反馈闭环）**：启用流挂起期间**设置弹窗保持打开**——标题行下方 loading 行（spinner + 「正在连接…」），候选/手动入口/模式段/表单输入/取消/返回/关闭/Esc/遮罩**全部冻结**（连接不可中断，manual 草稿不可丢，review P2）；收尾以**本次尝试代际**驱动（三轮 review）——`started` 标记在 `disconnect()` 完成后置位，且 `disconnected` 须**本次已见过 connecting**才认失败：旧连接 managed 断开窗口的 streaming、disconnect→connect 之间 saveProfiles IPC 窗口的 disconnected、无关在途 connect 的 connecting 一律不认（review P1/P2 + 三轮 review P1）。收尾**订阅 store.emit**（逐 emit 同步触发，不经渲染路径——rAF 合帧会吞 connecting→终态的瞬态）。连接**成功**关弹窗（项目列表由 store 内 `openPickerAfter` 一次性标记直达，无打开项目时不弹）；连接**失败**回到原视图（discover 或 manual，草稿保留）+ **connectionError 在弹窗内 loading 位换色内联展示**（弹窗遮罩盖住左栏，错误必须弹窗内可见，review P3；左栏状态行仍同步可见），重试（再点保存）或关闭弹窗即清
 
 ## 1. 视图状态机
@@ -42,7 +43,7 @@ type EditingState =
 
 - attach 候选：`{ id: prof_*, name: url, baseUrl: url, mode: "attach" }`——health 已在扫描侧验证（design-auto-scan §3.3），无需再测
 - managed 候选：`{ id: prof_*, name: "", baseUrl: "", mode: "managed", binaryPath: 候选路径 }`
-- ~~点击即调 `saveProfiles(next, store.activeProfileId)`（追加，不自动激活）→ 退回列表视图；用户在列表「启用」才连接~~（2026-09-06 修订）点击即走**启用流**（同 manual 新增保存）：`disconnect()`（**先于**改激活——此时旧 profile 仍激活，managed 模式才能正确 stop 旧进程，顺序同列表「启用」activate）→ `saveProfiles(next, profile.id)`（激活）→ `connect({ openPickerAfter: true })`。连接成功且无已打开项目时直达项目选择器（store 内一次性标记，见 app-store `doConnect` 收尾；失败错误经左栏状态行可见，重试走列表「启用」，标记保留到下次成功连接）
+- ~~点击即调 `saveProfiles(next, store.activeProfileId)`（追加，不自动激活）→ 退回列表视图；用户在列表「启用」才连接~~（2026-09-06 修订）点击即走**启用流**（同 manual 新增保存）：`disconnect()`（**先于**改激活——此时旧 profile 仍激活，managed 模式才能正确 stop 旧进程，顺序同列表「切换」activate）→ `saveProfiles(next, profile.id)`（激活）→ `connect({ openPickerAfter: true })`。连接成功且无已打开项目时直达项目选择器（store 内一次性标记，见 app-store `doConnect` 收尾；失败错误经左栏状态行可见，重试走列表「切换」，标记保留到下次成功连接）
 - **2026-09-06 修订 2**：启用流挂起期间弹窗保持打开（loading 行 + 动作冻结），成功关弹窗、失败回原视图（见 §0 修订 2）；设置弹窗与欢迎屏（`connectWithProfile`）同语义——欢迎屏卡片内「连接中…」行带 spinner，streaming 关欢迎屏、失败停在原视图
 - name 取 url/空串与欢迎屏候选建档口径一致（2026-09-06 起两侧同源复用 DiscoverView/ProfileFormView——空名 managed → 列表回落展示 binaryPath）；欢迎屏 `connectWithProfile` 同步 `disconnect` 先行 + `openPickerAfter`（建档连接成功后同样直达项目选择）
 

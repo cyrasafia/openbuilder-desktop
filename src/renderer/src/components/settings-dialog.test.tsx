@@ -41,7 +41,7 @@ vi.mock("../app", () => ({
       editProfileTitle: "编辑服务器",
       editProfile: "编辑",
       removeProfile: "删除",
-      activateProfile: "启用",
+      switchProfile: "切换",
       activeProfile: "当前使用",
       profileName: "名称",
       profileUrl: "服务器地址",
@@ -557,6 +557,62 @@ describe("ProfileFormView 模式分化", () => {
     const disIdx = (storeState.current.disconnect as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]
     const saveIdx = (storeState.current.saveProfiles as ReturnType<typeof vi.fn>).mock.invocationCallOrder.at(-1)
     expect(disIdx).toBeLessThan(saveIdx!)
+  })
+})
+
+// ============ 列表「切换」挂起流（2026-09-07：use → switch，成功直达主页面） ============
+
+describe("服务器列表切换", () => {
+  /** 双 profile 列表（p1 激活，p2 待切换） */
+  const setupList = () => {
+    storeState.current.profiles = [
+      { id: "p1", name: "a", baseUrl: "http://a:1", mode: "attach" },
+      { id: "p2", name: "b", baseUrl: "http://b:2", mode: "attach" },
+    ]
+    storeState.current.activeProfileId = "p1"
+  }
+
+  it("切换：disconnect → saveProfiles(激活 p2) → connect 不带 openPickerAfter；挂起 loading 在页签视图，成功关弹窗", async () => {
+    setupList()
+    render(<SettingsDialog />)
+    fireEvent.click(screen.getByText("切换"))
+    // 挂起期：loading 行渲染在页签视图标题行下 + 弹窗未关 + 页签切换冻结
+    // （切走页签后失败原因将不可见，review 2026-09-07）
+    await waitFor(() => expect(screen.getByText("正在连接…")).toBeTruthy())
+    expect((screen.getByText("Provider").closest("button") as HTMLButtonElement).disabled).toBe(true)
+    expect(storeState.current.closeSettings).not.toHaveBeenCalled()
+    await waitFor(() => {
+      const calls = (storeState.current.saveProfiles as ReturnType<typeof vi.fn>).mock.calls
+      const last = calls.at(-1)
+      expect(last?.[0]).toEqual([
+        expect.objectContaining({ id: "p1" }),
+        expect.objectContaining({ id: "p2" }),
+      ])
+      expect(last?.[1]).toBe("p2")
+    })
+    // 切换直达主页面：connect 不带 openPickerAfter（不弹项目列表）
+    await waitFor(() => expect(storeState.current.connect).toHaveBeenCalledWith(undefined))
+    // 成功收尾关弹窗（streaming + emit，订阅直接收尾）
+    await waitFor(() => expect(storeState.current.closeSettings).toHaveBeenCalled())
+  })
+
+  it("切换失败：loading 消失、失败原因内联展示、留在列表可重试，弹窗不关", async () => {
+    const emit = () => (globalThis as { __emitStore?: () => void }).__emitStore?.()
+    setupList()
+    storeState.current.connect = vi.fn(async () => {
+      storeState.current.connectionState = "connecting"
+      emit()
+      await new Promise((r) => setTimeout(r, 0))
+      storeState.current.connectionState = "disconnected"
+      storeState.current.connectionError = "连接被拒绝"
+      emit()
+    })
+    render(<SettingsDialog />)
+    fireEvent.click(screen.getByText("切换"))
+    await waitFor(() => expect(screen.getByText("连接被拒绝")).toBeTruthy())
+    expect(screen.queryByText("正在连接…")).toBeNull()
+    expect(screen.getByText("切换")).toBeTruthy()
+    expect(storeState.current.closeSettings).not.toHaveBeenCalled()
   })
 })
 
