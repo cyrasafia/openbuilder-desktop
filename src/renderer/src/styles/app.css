@@ -2045,8 +2045,13 @@
    * 无交互处理器，多余点击被 CM gutter 分发忽略，放行无损 */
 }
 
-/* 折叠标记（cm-gutters 内，随行号列渲染）：颜色令牌化 + hover 反馈 */
+/* 折叠标记（cm-gutters 内，随行号列渲染）：颜色令牌化 + hover 反馈。
+ * span 自身也须 flex：SVG 是 inline 替换元素，按基线对齐会在 span 行盒底部留出
+ * descender 空隙，只居中 gutterElement 等于「span 居中而 SVG 在 span 内偏上」，
+ * 残留偏移仍随字体度量漂移——两层都去掉行盒才真正与字体解耦 */
 .code-view-host .cm-foldGutter span {
+  display: flex;
+  align-items: center;
   color: var(--outline);
   cursor: pointer;
 }
@@ -2055,8 +2060,8 @@
   color: var(--on-surface);
 }
 
-/* 标记垂直居中：CM 给 gutterElement 设显式行高 px，lucide SVG（inline）按
- * 基线对齐会随字体度量偏上——flex 居中消除依赖（design-code-folding §2.3） */
+/* 标记垂直居中（外层）：CM 给 gutterElement 设显式行高 px（GutterElement.update
+ * 写 style.height），flex 居中把 span 钉在该高度的几何中心（design-code-folding §2.3） */
 .code-view-host .cm-foldGutter .cm-gutterElement {
   display: flex;
   align-items: center;
