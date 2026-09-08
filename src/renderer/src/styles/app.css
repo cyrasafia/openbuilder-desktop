@@ -2088,38 +2088,92 @@
   background: color-mix(in srgb, var(--primary) 26%, transparent);
 }
 
-/* 搜索面板（Ctrl+F，top: true） */
-.code-view-host .cm-panels {
+/* 搜索面板（Ctrl+F，top: true）：密度对齐工具条 idiom——28 高控件（--control-h）
+ * + 上下 6 padding（面板高 = --file-toolbar-h，与文件操作条等高衔接）；flex 单行
+ * 纵向居中（readonly 恒单行，CM 内建的 <br> 分行与 .2em margin 换 gap；close 钮
+ * 由 CM 的绝对定位 top:0 收编为流内 margin-left:auto 右推——原贴顶右缘不居中）；
+ * 字号统一界面基准 13px，label 覆盖 CM 内建 80% 缩小（原实际 ~10.4px 偏小）。
+ * 特异性：CM baseTheme 的选择器编译时全部带隐式编辑器类前缀（buildTheme("." +
+ * baseThemeID)，.ͼN 挂在 .cm-editor 上）——`& label { fontSize: 80% }` 实为
+ * `.ͼN .cm-panel.cm-search label`（0,3,1），旧写法 `.code-view-host .cm-panels
+ * label`（0,2,1）看似同级实则低一档、恒被压住（2026-09-08 实测）。故本组一律
+ * 叠 .cm-panel.cm-search 抬至 4 类起步，不依赖文档序稳赢 */
+.code-view-host .cm-editor .cm-panels {
   background: var(--surface-container-high);
   color: var(--on-surface);
   border-bottom: 1px solid var(--outline-variant);
 }
 
-.code-view-host .cm-panels input,
-.code-view-host .cm-panels button {
-  font: inherit;
-  font-size: var(--text-sm);
+.code-view-host .cm-panels .cm-panel.cm-search {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding: 6px 8px;
 }
 
-.code-view-host .cm-panels input.cm-textfield {
+.code-view-host .cm-panels .cm-panel.cm-search input,
+.code-view-host .cm-panels .cm-panel.cm-search button,
+.code-view-host .cm-panels .cm-panel.cm-search label {
+  font: inherit;
+  font-size: var(--text-md);
+  margin: 0;
+}
+
+/* 复选项 label：checkbox 与文字 flex 居中（替代基线对齐的错位），文字次级色 */
+.code-view-host .cm-panels .cm-panel.cm-search label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--on-surface-variant);
+  white-space: pre;
+}
+
+/* checkbox：accent 对齐既有惯例（settings-check/markdown 任务列表同款） */
+.code-view-host .cm-panels .cm-panel.cm-search input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--primary);
+}
+
+.code-view-host .cm-panels .cm-panel.cm-search input.cm-textfield {
   background: var(--surface-container-lowest);
   color: var(--on-surface);
   border: 1px solid var(--outline-variant);
-  border-radius: 4px;
-  padding: 2px 6px;
+  border-radius: var(--radius-chip);
+  height: var(--control-h);
+  padding: 0 8px;
 }
 
-.code-view-host .cm-panels button {
+.code-view-host .cm-panels .cm-panel.cm-search input.cm-textfield:focus {
+  border-color: var(--primary);
+}
+
+.code-view-host .cm-panels .cm-panel.cm-search button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: var(--surface-container);
   color: var(--on-surface-variant);
   border: 1px solid var(--outline-variant);
-  border-radius: 4px;
-  padding: 2px 8px;
+  border-radius: var(--radius-chip);
+  height: var(--control-h);
+  padding: 0 10px;
   cursor: pointer;
 }
 
-.code-view-host .cm-panels button:hover {
+.code-view-host .cm-panels .cm-panel.cm-search button:hover,
+.code-view-host .cm-panels .cm-panel.cm-search button:focus-visible {
+  border-color: var(--outline);
   color: var(--on-surface);
+}
+
+/* close（×）：流内右推方钮（宽=高），× 字符提一档补偿视觉偏小 */
+.code-view-host .cm-panels .cm-panel.cm-search button[name="close"] {
+  position: static;
+  margin-left: auto;
+  width: var(--control-h);
+  padding: 0;
+  font-size: var(--text-title-sm);
 }
 
 .code-view-host .cm-searchMatch {
