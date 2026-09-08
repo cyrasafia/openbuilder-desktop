@@ -159,4 +159,30 @@ describe("代码折叠（design-code-folding）", () => {
     const view = viewFrom(container)
     expect(foldable(view.state, 0, view.state.doc.line(1).to)).toBeNull()
   })
+
+  it("点击行号折叠/展开（热区扩到整列，非仅折叠标记）", () => {
+    const { container } = render(<CodeView path="/repo/pkg.json" content={jsonDoc} />)
+    const lineNo = container.querySelector(".cm-lineNumbers .cm-gutterElement")
+    expect(lineNo).not.toBeNull()
+    expect(container.querySelector(".cm-foldPlaceholder")).toBeNull()
+    // jsdom 无布局：gutter 点击经 clientY=0 解析为首行块——顶层 Object 可折叠，
+    // 行号 click 分发应等价于点折叠标记（foldEffect）
+    fireEvent.click(lineNo!)
+    expect(container.querySelector(".cm-foldPlaceholder")).not.toBeNull()
+    expect(container.querySelector(".cm-content")?.textContent).not.toContain('"b": 1')
+    // 已折叠行再点行号：findFold 命中 → unfoldEffect 还原
+    fireEvent.click(lineNo!)
+    expect(container.querySelector(".cm-foldPlaceholder")).toBeNull()
+    expect(container.querySelector(".cm-content")?.textContent).toContain('"b": 1')
+  })
+
+  it("点击行号在无折叠范围语言下无动作（返回 false 不劫持）", () => {
+    const { container } = render(<CodeView path="/repo/notes.xyz" content={"line1\nline2\n"} />)
+    const lineNo = container.querySelector(".cm-lineNumbers .cm-gutterElement")
+    expect(lineNo).not.toBeNull()
+    fireEvent.click(lineNo!)
+    // 无 foldable：handler 返回 false，无折叠发生、内容不变
+    expect(container.querySelector(".cm-foldPlaceholder")).toBeNull()
+    expect(container.querySelector(".cm-content")?.textContent).toContain("line1")
+  })
 })

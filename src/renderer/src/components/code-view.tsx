@@ -8,9 +8,9 @@
 import { useEffect, useRef } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { EditorState } from "@codemirror/state"
-import { EditorView, keymap, lineNumbers } from "@codemirror/view"
+import { EditorView, keymap, lineNumbers, type BlockInfo } from "@codemirror/view"
 import { search, searchKeymap } from "@codemirror/search"
-import { foldGutter, foldKeymap } from "@codemirror/language"
+import { foldGutter, foldKeymap, foldable, foldedRanges, foldEffect, unfoldEffect } from "@codemirror/language"
 import { ChevronDown, ChevronRight } from "lucide-react"
 import { languageForPath } from "./cm-lang"
 import { cmSyntaxTheme } from "./cm-theme"
@@ -61,10 +61,44 @@ function foldMarkerDOMFor(locale: Locale | undefined): (open: boolean) => HTMLEl
   }
 }
 
+/** 行内已折叠范围（from 最小者优先）——逐句复刻 @codemirror/language 内建
+ *  findFold（未导出）：foldedRanges 是公开 API，语义等价 */
+function findFold(state: EditorState, from: number, to: number): { from: number; to: number } | null {
+  let found: { from: number; to: number } | null = null
+  foldedRanges(state).between(from, to, (f: number, t: number) => {
+    if (!found || found.from > f) found = { from: f, to: t }
+  })
+  return found
+}
+
+/** 点击行号折叠/展开（design-code-folding §2.2 增补）：点击热区从仅折叠标记
+ *  扩到整个行号列——VS Code 同款交互。经 lineNumbers 的 LineNumberConfig
+ *  domEventHandlers 挂接（CM 公开扩展点，点击命中后 CM 解析行块回调），
+ *  分发逻辑与 foldGutter 内建处理器逐句一致：已折叠先展开（findFold），
+ *  否则有可折叠范围则折叠（foldable），二者皆无返回 false 交还默认（无动作） */
+function lineNumbersFoldHandler(view: EditorView, line: BlockInfo, event: Event): boolean {
+  void event
+  const folded = findFold(view.state, line.from, line.to)
+  if (folded) {
+    view.dispatch({ effects: unfoldEffect.of(folded) })
+    return true
+  }
+  const range = foldable(view.state, line.from, line.to)
+  if (range) {
+    view.dispatch({ effects: foldEffect.of(range) })
+    return true
+  }
+  return false
+}
+
 function buildExtensions(path: string, locale: Locale | undefined) {
   const lang = languageForPath(path)
   return [
-    lineNumbers(),
+    lineNumbers({
+      // 点击行号 = 折叠/展开该行（design-code-folding §2.2 增补）：热区从仅
+      // 折叠标记扩到整列；无折叠范围行返回 false 交还默认（无动作）
+      domEventHandlers: { click: lineNumbersFoldHandler },
+    }),
     cmSyntaxTheme,
     ...(lang ? [lang] : []),
     // 折叠（design-code-folding §2.1/§2.2）：foldGutter 内部已含 codeFolding，
