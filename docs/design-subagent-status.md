@@ -30,7 +30,8 @@
 
 `task` 工具的 ToolChip 替换为 SubagentPanel 组件：
 - **收起态**：与现有 ToolChip 收起态同构——灰色填充 chip（`surface-container-highest`）
-  + agent 名 + 描述 + 状态图标（spinner / ✓ / ✗）。点击 header 切换展开/收起。
+  + 折叠 chevron（lucide `ChevronDown` 展开 / `ChevronRight` 收起，16px，`.chip-chevron`
+  同 ToolChip 家族）+ 状态图标（14px，见 D4）+ agent 名 + 描述。点击 header 切换展开/收起。
 - **展开态**：面板整体保持 chip 灰底（与消息区同宽），子会话消息流嵌入圆角矩形块——
   观感对齐工具 input/output 的 `.code-block`（`color-code-bg` 底 + `color-border` 边），
   内嵌模块与面板通过底色差自然分层。模块有**独立滚动**
@@ -60,10 +61,13 @@
 
 ### D4：状态显示
 
-- **running/pending**：spinner + agent 名
-- **completed**：✓ 图标 + agent 名 + title 摘要（`state.title`）
-- **error**：✗ 图标 + agent 名 + error 摘要
-- **stopped**（2026-09-07 修订）：✗ 图标 + agent 名 + 描述摘要 + aria「已停止」
+状态图标 14px（`.subagent-status-icon`，lucide 线性；2026-09-08 订正——原文用 `✓`/`✗`
+字形描述，实现自 2026-08-29 图标 lucide 化起即为下列组件，DESIGN.md 禁 Unicode 字形充当图标）：
+
+- **running/pending**：`LoaderCircle` 旋转（`.spin`）+ agent 名
+- **completed**：`CircleCheck` + agent 名 + title 摘要（`state.title`）
+- **error**：`CircleX` + agent 名 + error 摘要
+- **stopped**（2026-09-07 修订）：`CircleX` + agent 名 + 描述摘要 + aria「已停止」
 
 **停止投影**（2026-09-07 修订）：`part.state.status` 的 pending/running 不是可信的
 进行中信号——server 对中断的 task part 可能**永远不写终态**（API 契约事实，同
@@ -113,10 +117,10 @@ task part 可能同停止投影一样永卡 running 不回写（同批实测数�
 part 对应子会话末条 assistant `error: true`）。SubagentPanel 收起态直接消费：
 
 - 末条 assistant 带非中止 error（`name !== "MessageAbortedError"`，与
-  `inferFailedFromMessages` 同口径）→ ✗ 出错样式 + 报错文案（120 字截断），
+  `inferFailedFromMessages` 同口径）→ `CircleX` 出错样式 + 报错文案（120 字截断），
   优先于 running/stopped（子会话报错即终局）；中止不算报错，保持已停止样式
 - **retry 门控**：子会话活跃（busy/retry）期间挂起提取——退避窗口里失败尝试
-  的末条 assistant 恒带 error，不门控会在 ✗/转圈间按重试轮次闪动
+  的末条 assistant 恒带 error，不门控会在 `CircleX`/`LoaderCircle` 间按重试轮次闪动
   （`dotStateFor` 的「busy/retry 期间跳过终局派生」同口径）；活跃期结束后
   终局自现。卡 running 的目标场景子会话必 idle，不受门控影响
 - 冷开旧会话时子会话消息未经 SSE 累积、无报错文本来源 → stopped 且无内容时

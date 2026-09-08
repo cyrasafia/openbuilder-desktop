@@ -135,6 +135,23 @@ describe("代码折叠（design-code-folding）", () => {
     expect(container.querySelector(".cm-content")?.textContent).toContain('"b": 1')
   })
 
+  it("折叠标记为 lucide SVG（DESIGN.md 禁 Unicode 字形），折叠后换向、tooltip 在位", () => {
+    const { container } = render(<CodeView path="/repo/pkg.json" content={jsonDoc} />)
+    const markers = visibleFoldMarkers(container)
+    expect(markers.length).toBeGreaterThan(0)
+    // 可折叠：ChevronDown SVG，无文本字形（CM 默认 ⌄ 已由 markerDOM 替换）
+    expect(markers[0].querySelector("svg.lucide-chevron-down")).not.toBeNull()
+    expect(markers[0].textContent).toBe("")
+    // markerDOM 不走 CM phrase，title 由 locale 闭包补齐（en = 内建原文）
+    expect(markers[0].title).toBe("Fold line")
+    const view = viewFrom(container)
+    view.dispatch({ effects: foldEffect.of(foldable(view.state, 0, view.state.doc.line(1).to)!) })
+    // 已折叠：ChevronRight + 展开 tooltip
+    const folded = visibleFoldMarkers(container)
+    expect(folded[0].querySelector("svg.lucide-chevron-right")).not.toBeNull()
+    expect(folded[0].title).toBe("Unfold line")
+  })
+
   it("无折叠范围（纯文本）无标记，折叠指令无动作", () => {
     const { container } = render(<CodeView path="/repo/notes.xyz" content={"line1\nline2\n"} />)
     // 纯文本无 foldable 范围 → 无折叠标记（仅剩 spacer 兜底，被可见性过滤掉）

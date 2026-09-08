@@ -15,7 +15,7 @@
  */
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react"
 import { createPortal } from "react-dom"
-import { Check } from "lucide-react"
+import { Check, ChevronDown } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import {
   carriedVariant,
@@ -403,7 +403,7 @@ function AgentControl({
         onClick={() => setOpen((v) => !v)}
       >
         <span>{cleared ? "" : current}</span>
-        <span className="ms-chev">▾</span>
+        <ChevronDown className="ms-chev" size={12} aria-hidden />
       </button>
       <Popover open={open} anchorRef={anchorRef} onClose={() => setOpen(false)}>
         <div
@@ -533,7 +533,7 @@ function ModelControl({
         onClick={() => setOpen((v) => !v)}
       >
         <span className="ms-pill-label">{label}</span>
-        <span className="ms-chev">▾</span>
+        <ChevronDown className="ms-chev" size={12} aria-hidden />
       </button>
       <Popover open={open} anchorRef={anchorRef} onClose={() => setOpen(false)} width="320px">
         <div className="ms-model">
@@ -665,7 +665,7 @@ function ThinkingControl({
       >
         <span className="ms-pill-prefix">{t.thinkingLabel}</span>
         <span>{label}</span>
-        <span className="ms-chev">▾</span>
+        <ChevronDown className="ms-chev" size={12} aria-hidden />
       </button>
       <Popover open={open} anchorRef={anchorRef} onClose={() => setOpen(false)} width="180px">
         <div

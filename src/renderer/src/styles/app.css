@@ -1389,6 +1389,13 @@
   background: var(--surface-container-high);
 }
 
+/* chip 家族折叠标记（DESIGN.md §组件「工具调用 = 可折叠 chip」chevron 16）：
+   ToolChip / ReasoningChip / SubagentPanel 同族同尺寸 */
+.chip-chevron {
+  color: var(--outline);
+  flex-shrink: 0;
+}
+
 .chip-label {
   font-size: var(--text-sm);
   color: var(--outline);
@@ -1406,9 +1413,7 @@
 }
 
 .chevron {
-  font-size: 10px;
   color: var(--outline);
-  width: 12px;
   flex-shrink: 0;
 }
 
@@ -1643,7 +1648,6 @@
   color: var(--outline);
 }
 .ms-chev {
-  font-size: 10px;
   color: var(--outline);
   flex-shrink: 0;
 }
@@ -2049,6 +2053,13 @@
 
 .code-view-host .cm-foldGutter span:hover {
   color: var(--on-surface);
+}
+
+/* 标记垂直居中：CM 给 gutterElement 设显式行高 px，lucide SVG（inline）按
+ * 基线对齐会随字体度量偏上——flex 居中消除依赖（design-code-folding §2.3） */
+.code-view-host .cm-foldGutter .cm-gutterElement {
+  display: flex;
+  align-items: center;
 }
 
 /* 折叠占位符：覆盖 CM baseTheme 浅灰底（dark 下突兀），令牌化 */
@@ -3697,9 +3708,10 @@
   padding: 8px 24px 12px;
 }
 
+/* 复制成功反馈（lucide Check，语义强调色——DESIGN.md 图标「语义强调例外」） */
 .welcome-copied {
   color: var(--primary);
-  font-size: var(--text-sm);
+  flex-shrink: 0;
 }
 
 .install-cmd {
