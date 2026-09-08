@@ -2088,7 +2088,8 @@
   background: color-mix(in srgb, var(--primary) 26%, transparent);
 }
 
-/* 搜索面板（Ctrl+F，top: true）：密度对齐工具条 idiom——28 高控件（--control-h）
+/* 搜索面板（Ctrl+F，面板居底——CM 默认，原 top，2026-09-08 修订）：密度对齐
+ * 工具条 idiom——28 高控件（--control-h）
  * + 上下 6 padding（面板高 = --file-toolbar-h，与文件操作条等高衔接）；flex 单行
  * 纵向居中（readonly 恒单行，CM 内建的 <br> 分行与 .2em margin 换 gap；close 钮
  * 由 CM 的绝对定位 top:0 收编为流内 margin-left:auto 右推——原贴顶右缘不居中）；
@@ -2101,7 +2102,16 @@
 .code-view-host .cm-editor .cm-panels {
   background: var(--surface-container-high);
   color: var(--on-surface);
+}
+
+/* 分隔边框随面板贴边（搜索/gotoLine 面板现均居底 → border-top；-top 变体保留
+ * 备将来居顶），覆盖 CM 内建 &light .cm-panels-top/-bottom 的 #ddd 边框 */
+.code-view-host .cm-editor .cm-panels-top {
   border-bottom: 1px solid var(--outline-variant);
+}
+
+.code-view-host .cm-editor .cm-panels-bottom {
+  border-top: 1px solid var(--outline-variant);
 }
 
 .code-view-host .cm-panels .cm-panel.cm-search {
