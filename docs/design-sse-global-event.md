@@ -94,7 +94,7 @@
 | # | 风险 | 处置 |
 |---|---|---|
 | 1 | 单流收到 server 上全部项目的事件（含未打开），每条都过 JSON.parse + 闸门 | v0.1 接受：单用户 server 活跃会话有限，parse+Set 查找成本远低于连接池饿死；帧级 coalesce 为 v0.2 预留（§4.6） |
-| 2 | `server.instance.disposed`（directory:"global"）语义：server 侧 dispose 全部实例 | v0.1 忽略（重启 server 场景走断线→重连→对账既有路径）；不特殊处理 |
+| 2 | `server.instance.disposed`（directory:"global"）语义：server 侧 dispose 全部实例 | global 变体（`directory:"global"`，properties 空）仍忽略（重启 server 场景走断线→重连→对账既有路径）；**实例变体**（directory = 具体目录，properties `{directory}`）2026-09-08 起消费——`worktree.ready` 后 `POST /instance/dispose` 的 teardown 回执，作为重拉命令注册表前的等待点（见 design-worktree-sync §3.1；teardown 在响应后异步执行，不等回执会命中待销毁实例拿到冻结旧缓存）。handleEvent 在目录闸门之前放行（被销毁目录可能尚未/不再属于打开集合） |
 | 3 | 心跳超时判死（60s）与 server 心跳周期（10s）余量大 | 无需处理；仅记录 |
 | 4 | sync 双发漏过滤会导致重复应用事件 | 测试用例覆盖（见 §6） |
 
