@@ -14,6 +14,7 @@
 | 6 | 设置页快捷键列表 | 设置弹窗新增「快捷键」页签（[design-keyboard-shortcuts §8](./design-keyboard-shortcuts.md)）：平台分支展示全部快捷键——全局组（Tab/面板/作用域遍历/项目与工作区管理 Alt 系，mac ⌘ 系键位与非 mac Ctrl+Tab 系互斥行）+ 输入与视图组（Enter 系/Ctrl+F/终端复制粘贴/Esc）；数据源 `SHORTCUT_GROUPS` 与分发同文件维护防漂移 |
 | 7 | 项目/worktree 管理快捷键（Alt 系重构） | **修饰键域划分：Alt 系 = 项目/worktree 管理专域（强关联且互斥），Ctrl 系维持 Tab/面板/编辑域**（[design-keyboard-shortcuts §0/§1.2](./design-keyboard-shortcuts.md)，2026-09-06 重构，spec-v0.3 #2 主体不回溯修订）。新增四键：**Alt+O（mac ⌘⌥O）打开项目选择器——自 Ctrl+O 迁移，不保留别名，Ctrl+O 放行**（Electron 默认菜单无该加速键，核查见 §0.2）；**Alt+C（⌘⌥C）关闭当前激活 entry**（global 目录 entry 亦可；单 entry 不动作，对齐左栏"最后一个不关"；纯客户端状态无二次确认）；**Alt+N（⌘⌥N）当前项目新建 worktree**（name 省略 server 随机 slug，成功默认切换过去；global/未连接不动作）；**Alt+⌫（⌘⌥⌫）删除当前作用域 worktree**（项目根作用域/global/删除中不动作）——**二次确认保留，确认弹窗增 Enter 确认 / Esc 取消**（ConfirmDialog 通用增强，§4.1）。既有 **Alt+↑/↓ 作用域遍历**归入 Alt 域、语义不变。弹窗遮挡（overlayCount>0）时四键仅消费不动作。键位核查结论（§0.2）：⌘⌥D 为系统"显示/隐藏 Dock"弃用、按 code 匹配（mac ⌥ 系 key 产特殊字符）、Linux AltGr 上报 ctrl+alt 被 !ctrl 排除、live 终端归 pty/dead 终端释放、浏览器 Tab before-input-event 转发过滤扩展 |
 | 8 | 文件预览操作条（open / open with） | 文件 Tab 全部预览视图（markdown/代码/图片/PDF/二进制占位，含加载/错误态）统一常驻操作条：代码视图**新增操作条**（原无任何工具条）；open（`shell:openPath`，系统默认应用）与 open with（平台分支同文件树右键菜单——linux 自建选择器弹窗、win32/darwin 系统对话框、纯浏览器 shim 不显示）入口与文件树右键菜单动作/文案/IPC 完全同源（零新增通道）。图片/PDF 原「无工具条」决策修订为「有操作条、无模式切换」（[design-file-view-actions.md](./design-file-view-actions.md)）；顺带修复 OpenWithDialog 无浮层计数的既有缺口（浏览器/PDF Tab 激活时弹窗被原生 WebContentsView 盖住） |
+| 9 | 引导页斜杠命令（**2026-09-08 增补**） | 新 Tab 引导页 composer 同构支持斜杠命令（原仅会话 Tab，[design-slash-command.md](./design-slash-command.md) 2026-09-08 修订）：输入 `/` 出命令菜单（按需拉取 + 前缀过滤 + ↑/↓/Enter/Tab/Esc 键盘交互，组件与 ChatView 复用）；发送命中命令走 `POST /session/{id}/command`（建会话后发送，服务端展开），未注册 `/xxx` 按字面 prompt 降级；注册表目录 = 作用域目录（与 createSession 同源）；附件守卫同 ChatView。无新增 API（复用 v0.1 斜杠命令映射） |
 
 ## 范围外（明确不做）
 
@@ -53,3 +54,4 @@
 - [ ] 键位边界：live 终端内 Alt 系不生效（xterm 归 pty 属预期）、dead 终端生效；浏览器 Tab 内生效（转发）；Alt+↑/↓ 回归不受影响
 - [ ] 设置「快捷键」页签展示 Alt 系新键位（平台分支正确，与分发表同源无漂移）
 - [ ] 文件 Tab 操作条（design-file-view-actions #8）：任意类型文件（代码/图片/PDF/二进制占位/加载/错误态）预览页顶部操作条常驻；「打开」以系统默认应用打开当前文件；「打开方式…」Linux 弹自建选择器（全量列表/搜索/上次使用）选择后对应应用打开、win32/darwin 走系统对话框、纯浏览器 shim 不显示该项；markdown 页 open/open-with 与 TOC 钮、预览/源码分段同条共存；PDF Tab 上弹选择器期间原生视图让位（浮层计数）、关闭恢复
+- [ ] 引导页斜杠命令（#9）：引导页输入 `/` 出菜单（过滤/键盘导航/补全/Esc）；发送 `/review` 类命中命令 → 新会话创建 + 命令执行 + 回显（subtask/text 展开型）正确渲染；未注册 `/xxx` 按字面消息发送；命令 + 附件被阻并提示

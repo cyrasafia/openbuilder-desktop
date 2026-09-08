@@ -517,6 +517,17 @@ function TabContextMenu({
 /** 存档期大小：初始加载与「加载更多」步长 */
 const ARCHIVE_PAGE_SIZE = 5
 
+/** 斜杠命令 token/args 解析（ChatView/GuidePage 共用，单一来源防漂移）。
+ *  命令名与参数以任意空白分隔（空格/换行/Tab——Shift+Enter 多行参数可达）。 */
+function parseSlash(text: string): { token: string; args: string } {
+  const rest = text.slice(1)
+  const sep = rest.search(/\s/)
+  return {
+    token: (sep === -1 ? rest : rest.slice(0, sep)).toLowerCase(),
+    args: sep === -1 ? "" : rest.slice(sep + 1).trim(),
+  }
+}
+
 /**
  * 新 Tab 引导页：无激活 Tab 时的默认视图（design-layout §4）。
  * 输入消息发送 = 新建会话 + 发送首条消息（Tab 自动打开激活，引导页退出）；
@@ -533,6 +544,10 @@ function GuidePage() {
   const directory = store.scopeQuery.directory
   const [draft, setDraft] = useState(() => store.guideDraftFor(directory))
   const [sending, setSending] = useState(false)
+  // 再入闩（同步，先于任何 await）：sending 是 state，守卫 `await refreshCommands`
+  // 在途时第二次 Enter 拿到的仍是旧闭包值 false，会并发走到 createSession——
+  // 建出两个会话、发两遍。ref 写入即生效，不依赖 React flush 时序（review 修复）
+  const sendingRef = useRef(false)
   useEffect(() => {
     store.setGuideDraft(directory, draft)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -597,38 +612,105 @@ function GuidePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store])
 
+  // ---- 斜杠命令菜单（design-slash-command 2026-09-08 修订：引导页同构支持）----
+  // 会话尚未创建，注册表按作用域目录拉取（createSession 也用 scopeQuery.directory，
+  // 两者恒同目录——pendingSession 的会话目录即当前作用域目录）
+  const [cmdDismissed, setCmdDismissed] = useState(false)
+  const [selIndex, setSelIndex] = useState(0)
+  const cmdMode = draft.startsWith("/") && !/\s/.test(draft.slice(1)) && !cmdDismissed
+  const commands = store.commandsFor(directory)
+  const matches = cmdMode
+    ? commands.filter((c) => ("/" + c.name).toLowerCase().startsWith(draft.toLowerCase()))
+    : []
+  const sel = Math.min(selIndex, Math.max(0, matches.length - 1))
+  const cmdRefreshTriggeredRef = useRef(false)
+
+  // 进入命令模式按需拉取（同 ChatView：未拉过或上次降级才拉）
+  useEffect(() => {
+    if (!cmdMode) {
+      cmdRefreshTriggeredRef.current = false
+      return
+    }
+    if (!cmdRefreshTriggeredRef.current || store.commandsDegraded) {
+      cmdRefreshTriggeredRef.current = true
+      void store.refreshCommands(directory)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cmdMode, directory])
+
+  const pickCommand = (c: CommandInfo) => {
+    setDraft(`/${c.name} `)
+    setSelIndex(0)
+    setCmdDismissed(false)
+  }
+
   const send = async () => {
     const text = draft.trim()
     // 空守卫：文本/引用/附件全空才拒绝（纯附件发送合法，design-session-attachments §2）
     const refs = store.fileRefsFor(directory)
     const attachments = store.attachmentsFor(directory)
-    if ((!text && refs.length === 0 && attachments.length === 0) || sending) return
+    if ((!text && refs.length === 0 && attachments.length === 0) || sendingRef.current) return
+    // 闩与 state 同步置起，先于下方任何 await（守卫的 refreshCommands 在途时
+    // 第二次 Enter 不得再入，见 sendingRef 注释）；出口统一在 finally 清
+    sendingRef.current = true
     setSending(true)
-    if (!pendingSession.current) {
-      // openTab:false——首条消息发送成功才开 Tab 激活（引导页退出）
-      const session = await store.createSession({ openTab: false })
-      if (!session) {
-        setSending(false)
-        return
+    try {
+      // 斜杠命令 + 附件守卫（同 ChatView，design-session-attachments review P2-2）：
+      // 命中注册命令的 /cmd 是否消费 data URL 附件未经验证——阻止并提示，
+      // 文本/附件全部保留（去掉 / 前缀或清空附件后可发）
+      if (text.startsWith("/") && attachments.length > 0) {
+        await store.refreshCommands(directory)
+        const { token } = parseSlash(text)
+        const matched = store.commandsFor(directory).some((c) => c.name.toLowerCase() === token)
+        if (matched) {
+          attachInput.notify(t.attachCmdBlocked)
+          return
+        }
       }
-      pendingSession.current = session
+      if (!pendingSession.current) {
+        // openTab:false——首条消息发送成功才开 Tab 激活（引导页退出）
+        const session = await store.createSession({ openTab: false })
+        if (!session) return
+        pendingSession.current = session
+      }
+      // 斜杠命令分流（design-slash-command 决策 3/4，同 ChatView sendSlash）：发送前
+      // 强制重拉注册表，命中走 POST /session/:id/command（服务端展开模板）；未注册
+      // 的 /xxx 按字面文本走 prompt（服务端不会展开模板）。会话已建，注册表与
+      // 匹配仍按作用域目录（新会话目录 = scopeQuery.directory，createSession 契约）
+      const res = await sendSlash(text, refs, attachments)
+      if (res.ok) {
+        // store 侧显式清：发送成功开 Tab → 引导页同 commit 卸载，React 丢弃卸载
+        // 组件的待定 effect，同步 effect 的 setGuideDraft("") 不会执行（不清则
+        // 旧草稿残留，关 Tab 回引导页会复活已发送文本）；引用同因（sendPrompt/
+        // sendCommand 只清 session 键，directory 键在此显式清）
+        setDraft("")
+        store.setGuideDraft(directory, "")
+        store.clearFileRefs(directory)
+        store.clearAttachments(directory)
+        store.openChatTab(pendingSession.current!)
+        pendingSession.current = null
+      }
+      // 失败：草稿保留在输入框，connectionError 经左栏状态行可见，重试复用同一会话
+    } finally {
+      sendingRef.current = false
+      setSending(false)
     }
-    // 引用/附件随首条消息发送；发送成功 store 侧清（引导页卸载丢待定 effect，同草稿）
-    const res = await store.sendPrompt(pendingSession.current.id, text, refs, attachments)
-    setSending(false)
-    if (res.ok) {
-      // store 侧显式清：发送成功开 Tab → 引导页同 commit 卸载，React 丢弃卸载
-      // 组件的待定 effect，同步 effect 的 setGuideDraft("") 不会执行（不清则
-      // 旧草稿残留，关 Tab 回引导页会复活已发送文本）；引用同因（sendPrompt
-      // 只清 session 键，directory 键在此显式清）
-      setDraft("")
-      store.setGuideDraft(directory, "")
-      store.clearFileRefs(directory)
-      store.clearAttachments(directory)
-      store.openChatTab(pendingSession.current)
-      pendingSession.current = null
-    }
-    // 失败：草稿保留在输入框，connectionError 经左栏状态行可见，重试复用同一会话
+  }
+
+  /** 发送分流：非斜杠 = 字面 prompt；斜杠 = 强制重拉后命中 command / 未命中 prompt */
+  const sendSlash = async (
+    text: string,
+    refs: ReturnType<typeof store.fileRefsFor>,
+    attachments: ReturnType<typeof store.attachmentsFor>,
+  ): Promise<{ ok: boolean; error?: string }> => {
+    const session = pendingSession.current!
+    if (!text.startsWith("/")) return store.sendPrompt(session.id, text, refs, attachments)
+    await store.refreshCommands(directory)
+    const { token, args } = parseSlash(text)
+    const matched = store.commandsFor(directory).find((c) => c.name.toLowerCase() === token)
+    return matched
+      ? store.sendCommand(session.id, matched.name, args, refs, attachments)
+      : store.sendPrompt(session.id, text, refs, attachments)
   }
 
   return (
@@ -650,6 +732,16 @@ function GuidePage() {
             }}
             onDragLeave={refInput.dragProps.onDragLeave}
           >
+            {/* 斜杠命令菜单（design-slash-command 2026-09-08 修订）：锚定/交互同
+                ChatView（.guide-composer 已有 position:relative 锚，design-file-reference H1） */}
+            {cmdMode && (
+              <CommandHints
+                matches={matches}
+                loading={store.commandsRefreshing && commands.length === 0}
+                selIndex={sel}
+                onPick={pickCommand}
+              />
+            )}
             {refInput.chips}
             {attachInput.chips}
             <div className="composer-input">
@@ -671,6 +763,8 @@ function GuidePage() {
                 }}
                 onChange={(e) => {
                   setDraft(e.target.value)
+                  setCmdDismissed(false)
+                  setSelIndex(0)
                   refInput.onTextChange(e.target.value, e.target.selectionStart)
                 }}
                 onKeyUp={(e) => {
@@ -684,6 +778,30 @@ function GuidePage() {
                   if (e.nativeEvent.isComposing) return
                   // @ 浮层键盘交互优先（消费则终止）
                   if (refInput.onKeyDown(e)) return
+                  // 命令菜单打开且有匹配：↑/↓ 移动、Enter/Tab 选中补全、Esc 关闭
+                  // （同 ChatView；修饰键组合是全局快捷键域，不在此拦截）
+                  if (cmdMode && matches.length > 0) {
+                    const noMod = !e.ctrlKey && !e.metaKey && !e.altKey
+                    if (noMod && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+                      e.preventDefault()
+                      const len = matches.length
+                      setSelIndex(e.key === "ArrowDown" ? (sel + 1) % len : (sel - 1 + len) % len)
+                      return
+                    }
+                    if (
+                      (noMod && e.key === "Tab") ||
+                      (e.key === "Enter" && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey)
+                    ) {
+                      e.preventDefault()
+                      pickCommand(matches[sel])
+                      return
+                    }
+                    if (e.key === "Escape") {
+                      e.preventDefault()
+                      setCmdDismissed(true)
+                      return
+                    }
+                  }
                   if (e.key === "Enter") {
                     // 修饰键组合（Ctrl/Shift/Alt/Meta）= 换行；裸 Enter = 发送（与聊天输入区一致）
                     if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return
@@ -1062,19 +1180,6 @@ function ChatView({ sessionID }: { sessionID: string }) {
       : await store.sendPrompt(sessionID, text, refs, attachments)
     // 失败回填草稿：文本不丢（乐观消息已在 store 侧撤回）
     if (!res.ok) setDraft(text)
-  }
-
-  /**
-   * 斜杠命令 token/args 解析（守卫与分流共用，review 第二轮 P3：单一来源防漂移）。
-   * 命令名与参数以任意空白分隔（空格/换行/Tab——Shift+Enter 多行参数可达）。
-   */
-  const parseSlash = (text: string): { token: string; args: string } => {
-    const rest = text.slice(1)
-    const sep = rest.search(/\s/)
-    return {
-      token: (sep === -1 ? rest : rest.slice(0, sep)).toLowerCase(),
-      args: sep === -1 ? "" : rest.slice(sep + 1).trim(),
-    }
   }
 
   /**
