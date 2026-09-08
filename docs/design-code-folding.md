@@ -39,11 +39,14 @@ search({ top: true }),
 
 - **行号 gutter 与折叠 gutter 合流**（`.cm-gutters` 单容器）：折叠标记随行号列渲染（`FoldMarker` gutter 混入 `cm-gutters`），无独立折叠列——宽度不增，与 VS Code「标记浮在行号右侧」近似。
 - 现状 `​.cm-gutters { pointer-events: none }`（只读浏览行号不抢指针，de3b6da）**必须放行**：折叠标记是 gutter 内唯一可点元素，`pointer-events: none` 会废掉点击折叠。改为 gutter 整体可点——副作用是行号区域也接 pointer 事件，但除折叠标记外无任何行号交互处理器，多余点击被 CM gutter click 分发忽略（无折叠范围行 `foldable()` 返回 null 即无动作），行为无损。
-- `.cm-foldGutter` 标记字形：CM 默认 `⌄`（可折叠）/`›`（已折叠）——**不改字形**（unicode 几何字形两主题均可读），仅令牌化颜色 + hover 反馈：
+- `.cm-foldGutter` 标记字形（2026-09-08 修订，原「不改字形」弃用——DESIGN.md 图标 lucide 单一体系禁 Unicode 字形充当图标，`⌄`/`›` 属禁用形，与 2026-08-29 全量清零一致补漏）：`foldGutter({ markerDOM })` 自定义标记 DOM——lucide `ChevronDown` 12px（可折叠）/`ChevronRight` 12px（已折叠），经 `renderToStaticMarkup` 模块级一次性序列化为 SVG 字符串、`span.innerHTML` 注入（markerDOM 随视口滚动高频重建，逐标记 createRoot 会泄漏 root；静态 SVG 无 root、无泄漏）。tooltip：markerDOM 拿不到 view 无法走 `state.phrase`，由 `buildExtensions` 按 locale 闭包传 `cmPhrasesZh["Fold line"]/["Unfold line"]`（en 用 CM 内建英文原文）。颜色令牌化 + hover 反馈不变（SVG stroke 走 `currentColor`）：
 
 ```css
 .code-view-host .cm-foldGutter span { color: var(--outline); cursor: pointer; }
 .code-view-host .cm-foldGutter span:hover { color: var(--on-surface); }
+/* 垂直居中：CM 给 gutterElement 设显式行高 px，inline SVG 按基线对齐会随
+ * 字体度量偏上——flex 居中消除依赖 */
+.code-view-host .cm-foldGutter .cm-gutterElement { display: flex; align-items: center; }
 ```
 
 - `.cm-foldPlaceholder`：覆盖 CM baseTheme（`#eee` 浅灰底——dark 主题下突兀），令牌化：
@@ -87,7 +90,7 @@ CM baseTheme 经 `Prec.lowest` 插 head.firstChild，app.css 文档序靠后同�
 
 ## 4. 验收
 
-- 打开大 JSON/YAML/HTML/XML 文件：行号列折叠标记（`⌄`）出现，点击折叠→行内 `…` 占位符（令牌化样式）、点击占位符或标记展开；
+- 打开大 JSON/YAML/HTML/XML 文件：行号列折叠标记（lucide ChevronDown）出现，点击折叠→行内 `…` 占位符（令牌化样式）、点击占位符或标记展开（已折叠行标记为 ChevronRight）；
 - `Ctrl+Alt+[` 全部折叠 / `Ctrl+Alt+]` 全部展开（JSON/YAML/HTML/XML 生效；sh/ts 等其他语言同样生效——foldNodeProp 出厂自带）；
 - 无折叠范围语言（txt/unknown.xyz）无标记无键动作；
 - 主题切换（dark/light）标记与占位符颜色正确；全局快捷键（Alt 系、Ctrl+B 等）不受影响；

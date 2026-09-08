@@ -6,10 +6,12 @@
  * search 面板在 readonly 下自动隐藏 replace 控件（CM 内建行为）。
  */
 import { useEffect, useRef } from "react"
+import { renderToStaticMarkup } from "react-dom/server"
 import { EditorState } from "@codemirror/state"
 import { EditorView, keymap, lineNumbers } from "@codemirror/view"
 import { search, searchKeymap } from "@codemirror/search"
 import { foldGutter, foldKeymap } from "@codemirror/language"
+import { ChevronDown, ChevronRight } from "lucide-react"
 import { languageForPath } from "./cm-lang"
 import { cmSyntaxTheme } from "./cm-theme"
 import type { Locale } from "../i18n"
@@ -39,6 +41,26 @@ const cmPhrasesZh: Record<string, string> = {
   to: "至",
 }
 
+/** 折叠标记 SVG 字符串（design-code-folding §2.3 修订）：lucide ChevronDown/
+ *  ChevronRight 静态渲染（DESIGN.md 禁 Unicode 字形充当图标；CM 默认 ⌄/› 属禁用形）。
+ *  模块级一次性序列化：markerDOM 随视口滚动高频重建，逐标记 createRoot 会
+ *  泄漏 root；静态 SVG innerHTML 无 root、无泄漏、无 React 运行时依赖 */
+const foldOpenSvg = renderToStaticMarkup(<ChevronDown size={12} aria-hidden />)
+const foldClosedSvg = renderToStaticMarkup(<ChevronRight size={12} aria-hidden />)
+
+/** markerDOM 拿不到 view，title 无法走 CM phrase——由 buildExtensions 按 locale
+ *  传短语值（zh 取 cmPhrasesZh，en 用 CM 内建英文原文） */
+function foldMarkerDOMFor(locale: Locale | undefined): (open: boolean) => HTMLElement {
+  const foldTitle = locale === "zh" ? cmPhrasesZh["Fold line"] : "Fold line"
+  const unfoldTitle = locale === "zh" ? cmPhrasesZh["Unfold line"] : "Unfold line"
+  return (open: boolean) => {
+    const span = document.createElement("span")
+    span.innerHTML = open ? foldOpenSvg : foldClosedSvg
+    span.title = open ? foldTitle : unfoldTitle
+    return span
+  }
+}
+
 function buildExtensions(path: string, locale: Locale | undefined) {
   const lang = languageForPath(path)
   return [
@@ -48,7 +70,7 @@ function buildExtensions(path: string, locale: Locale | undefined) {
     // 折叠（design-code-folding §2.1/§2.2）：foldGutter 内部已含 codeFolding，
     // 不得重复挂载；折叠范围来自语言包出厂 foldNodeProp，无范围语言自然降级
     //（gutter 无标记、键无动作），故无语言文件也统一装配
-    foldGutter(),
+    foldGutter({ markerDOM: foldMarkerDOMFor(locale) }),
     keymap.of(foldKeymap),
     search({ top: true }),
     keymap.of(searchKeymap),

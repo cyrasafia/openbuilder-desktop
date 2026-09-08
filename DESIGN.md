@@ -130,11 +130,12 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 
 ## 图标（lucide 单一体系）
 
-- **来源唯一**：全部图标来自 `lucide-react`，线性 outline 风格，`strokeWidth` 一律默认 2 不自定义。**禁用 Unicode 字符/emoji 充当图标**（✕ ✓ ⚙ ⚠ ✎ + × 等）——字形随系统字体漂移（粗细/基线跨平台不一致）、笔触与线性体系不协调（2026-08-29 已全量替换清零，后续新增图标不得回退）
+- **来源唯一**：全部图标来自 `lucide-react`，线性 outline 风格，`strokeWidth` 一律默认 2 不自定义。**禁用 Unicode 字符/emoji 充当图标**（✕ ✓ ⚙ ⚠ ✎ + × 等）——字形随系统字体漂移（粗细/基线跨平台不一致）、笔触与线性体系不协调（2026-08-29 已全量替换清零；2026-09-08 补齐三处漏网——树/chip/pill 的折叠 chevron `▾▸`、引导页复制成功反馈 `✓`、代码视图 CM 折叠标记 `⌄›`（第三方 DOM，经 `foldGutter` 的 `markerDOM` 注入 lucide SVG，见 design-code-folding §2.3），后续新增图标不得回退）
 - **尺寸三档**（token `--icon-chrome/compact/main`，落点 tokens.css）：
   - **12**：与同排 `ui-sm` 文字同尺寸——面板标题（左栏/右栏）、底部状态行、chip 行内（如 file-ref 移除钮）
   - **14**：紧凑功能区——Tab 条（关闭/新建）、标题栏窗口控制、diff/浏览器工具条
   - **16**：树行与主功能区——项目/worktree 行操作钮、卡片头、列表行
+- **折叠 chevron（展开/收起成对）**：`ChevronDown` = 展开态、`ChevronRight` = 收起态（全应用统一，不用 `ChevronUp`/旋转表达折叠）；尺寸随所在行档——chip 家族头（工具/思考/subagent）16（见「工具调用 = 可折叠 chip」）、文件树行 12（文件行缩进补偿 `+16` = chevron 12 + gap 6 − 2，即目录/文件标签既有 2px 错位；改 16 会拉到 6px，故树行 chevron 不随「树行 16」档）、composer pill 12、代码视图 gutter 折叠标记 12（紧凑档；第三方 DOM，经 `foldGutter` 的 `markerDOM` 注入，见 design-code-folding §2.3）
 - **明度与颜色**：图标颜色一律继承所在文字的语义色（`currentColor`），与同排文字同明度，不单独设色；语义强调例外（如连接错误 `TriangleAlert` 套 `--status-error`）。面板 chrome 区（标题/底部）文字与图标统一 `onSurfaceVariant`——曾出现文字 `outline` 比同排图标暗一档的明度倒挂，已修订
 - **可访问性**：装饰性图标一律 `aria-hidden`；纯图标按钮必须带 i18n 词条的 `title` + `aria-label`
 
