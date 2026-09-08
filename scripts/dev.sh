@@ -43,4 +43,20 @@ if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
   echo "警告：未检测到图形会话（DISPLAY / WAYLAND_DISPLAY 均为空），Electron 窗口将无法启动" >&2
 fi
 
-exec npm run dev -- "$@"
+# Chromium 开关不透传给 electron-vite：其 CLI（cac）拒收未知选项，
+# `npm run dev -- --disable-gpu` 会 CACError: Unknown option '--disableGpu'。
+# 在此拦截并转为 env 门控——main/index.ts 读 OB_DISABLE_GPU 后
+# app.commandLine.appendSwitch("disable-gpu")，其余参数原样透传。
+passthrough=()
+for arg in "$@"; do
+  case "$arg" in
+    --disable-gpu) export OB_DISABLE_GPU=1 ;;
+    *) passthrough+=("$arg") ;;
+  esac
+done
+
+if [ "${#passthrough[@]}" -eq 0 ]; then
+  exec npm run dev
+else
+  exec npm run dev -- "${passthrough[@]}"
+fi

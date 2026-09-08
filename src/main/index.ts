@@ -21,6 +21,13 @@ if (process.env.OB_E2E === "1") {
   app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion")
 }
 
+// Wayland 下规避 Vulkan/GPU 崩溃的逃生开关（AGENTS.md / scripts/dev.sh）：electron-vite 5
+// 的 CLI 不透传 Chromium 开关（cac 拒收未知选项，`npm run dev -- --disable-gpu` 直接
+// CACError），故经 env 门控在此 appendSwitch；dev 与打包态均可用 OB_DISABLE_GPU=1 触发
+if (process.env.OB_DISABLE_GPU === "1") {
+  app.commandLine.appendSwitch("disable-gpu")
+}
+
 if (process.env.NODE_ENV === "development") {
   process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = "true"
 }
