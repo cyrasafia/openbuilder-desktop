@@ -883,4 +883,17 @@ describe("FileView PDF 预览（design-pdf-preview：专用视图宿主分发）
     render(<FileView absolutePath="/repo/err.pdf" />)
     expect(document.querySelector(".file-view.error")?.textContent).toContain("boom")
   })
+
+  it("操作条展示文件名：basename 可见、title 悬浮全路径；加载/占位态常驻不弹入", () => {
+    fileContentsStub.set("/repo/src/main.ts", { content: "const x = 1" })
+    const { unmount } = render(<FileView absolutePath="/repo/src/main.ts" />)
+    const name = document.querySelector<HTMLElement>(".file-toolbar-name")
+    expect(name).not.toBeNull()
+    expect(name?.textContent).toBe("main.ts")
+    expect(name?.getAttribute("title")).toBe("/repo/src/main.ts")
+    unmount()
+    // 无缓存（占位/加载态）：工具条与文件名同样常驻
+    render(<FileView absolutePath="/repo/a/b/c.json" />)
+    expect(document.querySelector(".file-toolbar-name")?.textContent).toBe("c.json")
+  })
 })

@@ -24,6 +24,10 @@
 └──────────┴─────────────────────────────────────┴───────────────┘
 ```
 
+> 上方 ASCII 示意图内的 `▼`/`▸`/`●`/`⚙` 等只是纸面画法，**不得照字面渲染 Unicode 字形**——
+> 实际图标一律 lucide（文件树折叠 chevron = `ChevronDown`/`ChevronRight` 12px、状态点/齿轮见
+> DESIGN.md 图标章与「服务器状态行」）。2026-09-08 补注：初版实现曾误把示意图的 `▸` 当规格落地。
+
 - 三栏：**左 = 项目列表（+当前项目会话列表）**，**中 = 工作区**，**右 = 文件树**
 - 设置弹窗（连接配置等）不占布局，模态呈现
 - **标题栏（2026-08-24 增补）**：Linux 用自定义头部——main 侧 `frame: false`（GNOME/Wayland 下 CSD 本就应用自绘），renderer 侧 `title-bar.tsx`：整体为拖拽区（`-webkit-app-region: drag`，双击最大化/还原用 Electron 原生行为，不另挂 dblclick），右侧**最小化/最大化还原/关闭**三按钮（IPC `win:*`，关闭按钮 hover 用 error/on-error token）；高度 36px（`--titlebar-h`），配色全走主题 token，跟随 `data-theme` 深/浅切换；按 `desktop.platform === "linux"` 门控渲染，macOS/Windows 及纯浏览器 shim 沿用系统装饰/不渲染；2026-08-26 修订：应用标题定为「OpenBuilder」（去掉 desktop、规范大小写，含窗口标题/index.html/i18n appTitle/打包 desktop entry Name），标题栏内**整栏水平居中**展示（绝对定位铺满标题栏、`pointer-events: none` 放行右侧按钮点击，控制钮右贴边）
@@ -117,7 +121,7 @@
 2026-08-24 修订：原三栏下方全宽状态栏取消，服务器状态收入左栏底部，与设置齿轮同行（状态在左、设置在右）。
 
 - **置底常驻**：不随项目区状态变化——无 profile（引导态）/无项目/有项目均固定在左栏最底，项目树区滚动不影响此行
-- 状态点 + 文案（`streaming` / `degraded（重连中）` / `offline` / `对账中`，对账中 = running 点闪烁）；点击打开设置弹窗，悬浮提示含 profile 名 / URL / connectionError（有错误时内联 ⚠）
+- 状态点 + 文案（`streaming` / `degraded（重连中）` / `offline` / `对账中`，对账中 = running 点闪烁）；点击打开设置弹窗，悬浮提示含 profile 名 / URL / connectionError（有错误时内联 lucide `TriangleAlert` 12px `status.error`，2026-09-08 订正——原文 `⚠` 字形，实现自 2026-08-29 图标 lucide 化起即为该组件，见 DESIGN.md 服务器状态行）
 - **服务器版本不再展示**（原状态栏右侧版本信息取消；设置弹窗"测试连接"仍可见版本）
 - 对账进行中显式可见（spec §对账策略 5 的可观察性要求，不变）
 - 原"右侧当前 agent/model + 应用版本"规划随状态栏一并取消，v0.2 需要时另行设计入口

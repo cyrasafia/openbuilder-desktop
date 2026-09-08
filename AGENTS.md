@@ -4,7 +4,7 @@ opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录�
 
 ## 开发命令
 
-- `npm run dev` — electron-vite dev（Wayland 下建议加 `-- --disable-gpu` 规避 Vulkan 崩溃）
+- `npm run dev` — electron-vite dev；Wayland 下如遇 Vulkan/GPU 崩溃用 `./scripts/dev.sh --disable-gpu`（或 `OB_DISABLE_GPU=1 npm run dev`）。**不要**写 `npm run dev -- --disable-gpu`：electron-vite 5 的 CLI（cac）不透传 Chromium 开关、直接 `CACError: Unknown option '--disableGpu'`；开关经 env 门控在 `main/index.ts` `app.commandLine.appendSwitch("disable-gpu")`（2026-09-08 修，原记载的透传写法从未生效）
 - `npm run build` / `npm run typecheck`（node+web 双 tsconfig）/ `npm run test`（vitest，20 用例）
 - 联调：本机 opencode server `http://127.0.0.1:15120`（不要停止/重启）；CDP 驱动 E2E 用 `--remote-debugging-port=9222`
 - preload 必须 CJS 输出（`.cjs`）——sandbox:true 不支持 ESM preload（electron.vite.config.ts 有注释）

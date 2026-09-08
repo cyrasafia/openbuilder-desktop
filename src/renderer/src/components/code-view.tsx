@@ -6,10 +6,12 @@
  * search 面板在 readonly 下自动隐藏 replace 控件（CM 内建行为）。
  */
 import { useEffect, useRef } from "react"
+import { renderToStaticMarkup } from "react-dom/server"
 import { EditorState } from "@codemirror/state"
-import { EditorView, keymap, lineNumbers } from "@codemirror/view"
+import { EditorView, keymap, lineNumbers, type BlockInfo } from "@codemirror/view"
 import { search, searchKeymap } from "@codemirror/search"
-import { foldGutter, foldKeymap } from "@codemirror/language"
+import { foldGutter, foldKeymap, foldable, foldedRanges, foldEffect, unfoldEffect } from "@codemirror/language"
+import { ChevronDown, ChevronRight } from "lucide-react"
 import { languageForPath } from "./cm-lang"
 import { cmSyntaxTheme } from "./cm-theme"
 import type { Locale } from "../i18n"
@@ -39,16 +41,70 @@ const cmPhrasesZh: Record<string, string> = {
   to: "至",
 }
 
+/** 折叠标记 SVG 字符串（design-code-folding §2.3 修订）：lucide ChevronDown/
+ *  ChevronRight 静态渲染（DESIGN.md 禁 Unicode 字形充当图标；CM 默认 ⌄/› 属禁用形）。
+ *  模块级一次性序列化：markerDOM 随视口滚动高频重建，逐标记 createRoot 会
+ *  泄漏 root；静态 SVG innerHTML 无 root、无泄漏、无 React 运行时依赖 */
+const foldOpenSvg = renderToStaticMarkup(<ChevronDown size={12} aria-hidden />)
+const foldClosedSvg = renderToStaticMarkup(<ChevronRight size={12} aria-hidden />)
+
+/** markerDOM 拿不到 view，title 无法走 CM phrase——由 buildExtensions 按 locale
+ *  传短语值（zh 取 cmPhrasesZh，en 用 CM 内建英文原文） */
+function foldMarkerDOMFor(locale: Locale | undefined): (open: boolean) => HTMLElement {
+  const foldTitle = locale === "zh" ? cmPhrasesZh["Fold line"] : "Fold line"
+  const unfoldTitle = locale === "zh" ? cmPhrasesZh["Unfold line"] : "Unfold line"
+  return (open: boolean) => {
+    const span = document.createElement("span")
+    span.innerHTML = open ? foldOpenSvg : foldClosedSvg
+    span.title = open ? foldTitle : unfoldTitle
+    return span
+  }
+}
+
+/** 行内已折叠范围（from 最小者优先）——逐句复刻 @codemirror/language 内建
+ *  findFold（未导出）：foldedRanges 是公开 API，语义等价 */
+function findFold(state: EditorState, from: number, to: number): { from: number; to: number } | null {
+  let found: { from: number; to: number } | null = null
+  foldedRanges(state).between(from, to, (f: number, t: number) => {
+    if (!found || found.from > f) found = { from: f, to: t }
+  })
+  return found
+}
+
+/** 点击行号折叠/展开（design-code-folding §2.2 增补）：点击热区从仅折叠标记
+ *  扩到整个行号列——VS Code 同款交互。经 lineNumbers 的 LineNumberConfig
+ *  domEventHandlers 挂接（CM 公开扩展点，点击命中后 CM 解析行块回调），
+ *  分发逻辑与 foldGutter 内建处理器逐句一致：已折叠先展开（findFold），
+ *  否则有可折叠范围则折叠（foldable），二者皆无返回 false 交还默认（无动作） */
+function lineNumbersFoldHandler(view: EditorView, line: BlockInfo, event: Event): boolean {
+  void event
+  const folded = findFold(view.state, line.from, line.to)
+  if (folded) {
+    view.dispatch({ effects: unfoldEffect.of(folded) })
+    return true
+  }
+  const range = foldable(view.state, line.from, line.to)
+  if (range) {
+    view.dispatch({ effects: foldEffect.of(range) })
+    return true
+  }
+  return false
+}
+
 function buildExtensions(path: string, locale: Locale | undefined) {
   const lang = languageForPath(path)
   return [
-    lineNumbers(),
+    lineNumbers({
+      // 点击行号 = 折叠/展开该行（design-code-folding §2.2 增补）：热区从仅
+      // 折叠标记扩到整列；无折叠范围行返回 false 交还默认（无动作）
+      domEventHandlers: { click: lineNumbersFoldHandler },
+    }),
     cmSyntaxTheme,
     ...(lang ? [lang] : []),
     // 折叠（design-code-folding §2.1/§2.2）：foldGutter 内部已含 codeFolding，
     // 不得重复挂载；折叠范围来自语言包出厂 foldNodeProp，无范围语言自然降级
     //（gutter 无标记、键无动作），故无语言文件也统一装配
-    foldGutter(),
+    foldGutter({ markerDOM: foldMarkerDOMFor(locale) }),
     keymap.of(foldKeymap),
     search(), // 搜索面板居底（CM 默认；原 top: true，2026-09-08 修订）
     keymap.of(searchKeymap),

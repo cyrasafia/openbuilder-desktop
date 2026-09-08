@@ -130,11 +130,13 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 
 ## 图标（lucide 单一体系）
 
-- **来源唯一**：全部图标来自 `lucide-react`，线性 outline 风格，`strokeWidth` 一律默认 2 不自定义。**禁用 Unicode 字符/emoji 充当图标**（✕ ✓ ⚙ ⚠ ✎ + × 等）——字形随系统字体漂移（粗细/基线跨平台不一致）、笔触与线性体系不协调（2026-08-29 已全量替换清零，后续新增图标不得回退）
+- **来源唯一**：全部图标来自 `lucide-react`，线性 outline 风格，`strokeWidth` 一律默认 2 不自定义。**禁用 Unicode 字符/emoji 充当图标**（✕ ✓ ⚙ ⚠ ✎ + × 等）——字形随系统字体漂移（粗细/基线跨平台不一致）、笔触与线性体系不协调（2026-08-29 已全量替换清零；2026-09-08 补齐三处漏网——树/chip/pill 的折叠 chevron `▾▸`、引导页复制成功反馈 `✓`、代码视图 CM 折叠标记 `⌄›`（第三方 DOM，经 `foldGutter` 的 `markerDOM` 注入 lucide SVG，见 design-code-folding §2.3），后续新增图标不得回退）
 - **尺寸三档**（token `--icon-chrome/compact/main`，落点 tokens.css）：
   - **12**：与同排 `ui-sm` 文字同尺寸——面板标题（左栏/右栏）、底部状态行、chip 行内（如 file-ref 移除钮）
   - **14**：紧凑功能区——Tab 条（关闭/新建）、标题栏窗口控制、diff/浏览器工具条
   - **16**：树行与主功能区——项目/worktree 行操作钮、卡片头、列表行
+- **折叠 chevron（行内 disclosure 标记）**：与文字**同排**、成对表达开合的折叠标记——`ChevronDown` = 展开态、`ChevronRight` = 收起态（此类不用旋转/`ChevronUp` 表达）；尺寸判据是「与同排文字同尺寸」，故**一律 12**：chip 家族头（工具/思考/subagent，同排工具名 `ui-sm` 12px）、文件树行（且文件行缩进补偿 `+16` = chevron 12 + gap 6 − 2，即目录/文件标签既有 2px 错位；改 16 会拉到 6px）、composer pill、代码视图 gutter 折叠标记（第三方 DOM，经 `foldGutter` 的 `markerDOM` 注入，见 design-code-folding §2.3）、md TOC 折叠钮。两处**不属此类**、按所在功能区取档：diff 文件头 14（紧凑功能区档）、pending 卡片头 16（卡片头档，同排标题 `ui-md` 13px）。
+- **气泡开合提示（另一语义，勿与上条混同）**：高用户消息的 `.bubble-collapse-hint`/`.bubble-expand-hint` 是**方向性动作提示**而非 disclosure 标记——独占一行（`justify-content:center`）、**无同排文字**，故上条「与文字同尺寸」判据不适用；取方位隐喻「向下 = 下方还有内容 / 向上 = 收回」：收起态渐变浮层底 `ChevronDown` 16、展开态 16px 高独占行内 `ChevronUp` 14。规格见 design-user-message-collapse §展开态；上条「不用 `ChevronUp`」仅约束行内 disclosure 类，不含此处。
 - **明度与颜色**：图标颜色一律继承所在文字的语义色（`currentColor`），与同排文字同明度，不单独设色；语义强调例外（如连接错误 `TriangleAlert` 套 `--status-error`）。面板 chrome 区（标题/底部）文字与图标统一 `onSurfaceVariant`——曾出现文字 `outline` 比同排图标暗一档的明度倒挂，已修订
 - **可访问性**：装饰性图标一律 `aria-hidden`；纯图标按钮必须带 i18n 词条的 `title` + `aria-label`
 
@@ -228,7 +230,7 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 
 设计原则级约定，先于具体组件规格——聊天组件设计以"忠实呈现 agent 行为模式"为准绳：
 
-1. **工具调用（tool use）= 可折叠 chip**：沿用移动端 chip 骨架概念，桌面版为行内折叠条（高 28，chevron 16 + 工具名 `ui-sm` sans + 状态点）；展开体 = 输入/输出两个 mono 块（`appColors.codeBackground` + `border`），长输出内部滚动不撑高消息
+1. **工具调用（tool use）= 可折叠 chip**：沿用移动端 chip 骨架概念，桌面版为行内折叠条（高 26 = `--row-tree`，chevron 12 + 工具名 `ui-sm` sans + 状态点）；展开体 = 输入/输出两个 mono 块（`appColors.codeBackground` + `border`），长输出内部滚动不撑高消息。（2026-09-08 订正：原写「高 28，chevron 16」两项均与实现不符——`.chip-header` 高取 `--row-tree`=26；chevron 按图标章「chip 行内 = 12 档、与同排 `ui-sm` 文字同尺寸」定为 12，16 会让图标盒超出同排文字 4px。实测依据见图标章「折叠 chevron」条）
 2. **推理/思考（reflection）= 弱化呈现**：斜体 + `outline` 色展开体，与正文明确区分"内部推理"地位
 3. **进行中的活动 = 状态可见**：running 态在 Tab、会话列表、chip 三处同步呈现（status 色 + 指示点），离屏也能从边缘感知
 4. **人机协同（human-in-the-loop）= 权限卡占位**：v0.1 仅占位呈现（拒绝/同意按钮置灰），v0.2 补交互

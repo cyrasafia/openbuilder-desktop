@@ -12,7 +12,7 @@
  * 修订，仅保留「添加服务器」）。
  */
 import { useEffect, useState } from "react"
-import { ArrowLeft, Copy, LoaderCircle } from "lucide-react"
+import { ArrowLeft, Check, Copy, LoaderCircle } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import type { ConnectionProfile } from "@shared/ipc"
 import { ApiError, RestClient } from "@shared/rest-client"
@@ -154,7 +154,11 @@ function InstallHint() {
               })
             }}
           >
-            {copied === c.cmd ? <span className="welcome-copied">✓</span> : <Copy size={12} aria-hidden />}
+            {copied === c.cmd ? (
+              <Check className="welcome-copied" size={12} aria-hidden />
+            ) : (
+              <Copy size={12} aria-hidden />
+            )}
           </button>
         </div>
       ))}
