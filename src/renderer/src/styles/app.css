@@ -1093,6 +1093,26 @@
   font-family: var(--font-sans);
 }
 
+/* vendor 600 系强调件 → 601（design-markdown-preview §2.10）：CJK 单字重字体
+ * 环境（如仅 Regular 的霞鹜新晰黑屏幕阅读版）下 Chromium 仅在 >600 时做合成
+ * 加粗——600 视觉上与正文 400 完全相同（像素实测墨水量 3261=3261，601/700
+ * 均 4921），strong/标题/表头全部"平的"。601 在多字重/可变字体上实渲染 ≈600
+ * （保留 GitHub 档位意图），单字重字体上触发合成加粗且墨水量与 700 完全一致
+ * （合成是固定涂抹量）。覆盖 vendor 全部 600 落点（明暗两侧各 11 处同集） */
+:root[data-theme] .markdown-body.md b,
+:root[data-theme] .markdown-body.md strong,
+:root[data-theme] .markdown-body.md h1,
+:root[data-theme] .markdown-body.md h2,
+:root[data-theme] .markdown-body.md h3,
+:root[data-theme] .markdown-body.md h4,
+:root[data-theme] .markdown-body.md h5,
+:root[data-theme] .markdown-body.md h6,
+:root[data-theme] .markdown-body.md dt,
+:root[data-theme] .markdown-body.md th,
+:root[data-theme] .markdown-body.md .csv-data th {
+  font-weight: 601;
+}
+
 :root[data-theme] .markdown-body.md p {
   word-break: break-word;
 }
