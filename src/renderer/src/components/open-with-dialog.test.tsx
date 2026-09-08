@@ -1,6 +1,8 @@
 /**
  * 「打开方式」选择器（design-linux-open-with §1.3）：枚举/空态/键盘导航/选择回调。
  * mock desktop.shellListOpenWithApps；onLaunch/onClose 为直接注入的 mock。
+ * 2026-09-08 增浮层计数用例（design-file-view-actions §2.3：弹窗存续期间
+ * pushOverlay、卸载 popOverlay——盖住浏览器/PDF 原生视图的 z-order 对策）。
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -16,6 +18,8 @@ const listApps = vi.fn(async () => [
 ] as AppRow[])
 const onLaunch = vi.fn()
 const onClose = vi.fn()
+const pushOverlay = vi.fn()
+const popOverlay = vi.fn()
 
 vi.mock("../app", () => ({
   useI18n: () => ({
@@ -28,15 +32,19 @@ vi.mock("../app", () => ({
       openWithOther: "其他应用",
       openWithLastUsed: "上次使用",
       openWithNoResult: "无匹配结果",
+      close: "关闭",
     },
     locale: "zh" as const,
   }),
+  useStore: () => ({ pushOverlay, popOverlay }),
 }))
 
 beforeEach(() => {
   listApps.mockClear()
   onLaunch.mockClear()
   onClose.mockClear()
+  pushOverlay.mockClear()
+  popOverlay.mockClear()
   listApps.mockResolvedValue([
     { id: "a.desktop", name: "Alpha 编辑器", icon: "data:image/png;base64,AAAA", matches: true },
     { id: "b.desktop", name: "Beta", icon: null, matches: true },
@@ -52,6 +60,14 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe("OpenWithDialog", () => {
+  it("浮层计数（design-file-view-actions §2.3）：挂载 push、卸载 pop——弹窗存续期间隐藏浏览器/PDF 原生视图", () => {
+    const { unmount } = render(<OpenWithDialog path="/repo/a.json" onLaunch={onLaunch} onClose={onClose} />)
+    expect(pushOverlay).toHaveBeenCalledTimes(1)
+    expect(popOverlay).not.toHaveBeenCalled()
+    unmount()
+    expect(popOverlay).toHaveBeenCalledTimes(1)
+  })
+
   it("枚举落地列出应用；点击行 → onLaunch + 关闭", async () => {
     render(<OpenWithDialog path="/repo/a.json" onLaunch={onLaunch} onClose={onClose} />)
     expect(await screen.findByText("Alpha 编辑器")).toBeTruthy()

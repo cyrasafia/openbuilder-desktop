@@ -23,7 +23,7 @@
 
 ### 1.3 UI（渲染层）
 
-- 右键菜单「打开方式…」：Linux 恢复显示（win32/darwin 走原系统对话框 IPC 不变）。**2026-08-31 修订**：目录行/空白处根目录同样显示（原「目录仍不显示」废止）——`xdg-mime query filetype` 对目录返回 `inode/directory`（真机验证），枚举按 MimeType 命中文件管理器类应用，枚举/启动链路零改动
+- 右键菜单「打开方式…」：Linux 恢复显示（win32/darwin 走原系统对话框 IPC 不变）。**2026-08-31 修订**：目录行/空白处根目录同样显示（原「目录仍不显示」废止）——`xdg-mime query filetype` 对目录返回 `inode/directory`（真机验证），枚举按 MimeType 命中文件管理器类应用，枚举/启动链路零改动。**2026-09-08 增触发点**：文件预览操作条「打开方式…」钮（[design-file-view-actions](./design-file-view-actions.md) §2.2）——同一弹窗/启动链路零改动复用；弹窗自持浮层计数（§2.3 同文档），修复本弹窗在浏览器/PDF Tab 激活时被原生视图盖住的既有缺口
 - 点击 → `shell:listOpenWithApps` → **应用内选择器弹窗**（骨架/尺寸/内边距/关闭按钮对齐 **DESIGN.md §标准弹窗** 列表档（700×560 固定、`dialog-title-row` 关闭钮、`dialog-search` 搜索框下边距 14）；顶部**搜索框**（名称大小写不敏感子串过滤；打开即聚焦；Esc 有内容先清空再关闭）+ 分段列表（匹配组标题「推荐应用」在前、其余「其他应用」在后，组次序由 main 排定、过滤后保持）+ 列表行 = 应用图标（`icon` data URL，`<img class="open-with-icon">` 铺瓷片；null 时回退文本首字母瓷片，同 ProjectAvatar 模式）+ 名称（仅本地化名；**2026-08-31 修订：不再展示 id 包名**（`xx.desktop` 技术细节对用户无意义，id 仍作 key/启动白名单凭据）；键盘 ↑↓/Enter 在过滤后列表内循环、点击行启动并关闭；目录与文件同一弹窗）
 - 加载中/空态/搜索无结果文案（枚举空 = openWithEmpty；搜索无结果 = openWithNoResult）
 

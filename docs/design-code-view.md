@@ -60,6 +60,7 @@ FileView 源码态是 `<pre className="file-content">`：无行号、无高亮�
 - 非 markdown 文本文件：`<pre>` → `<CodeView path content />`。
 - markdown 源码态：同样 `<CodeView>`（lang-markdown）；预览态不变。
 - 加载/错误态不变。
+- 2026-09-08 起代码视图位于 FileView 统一常驻操作条（open/open-with 入口，[design-file-view-actions.md](./design-file-view-actions.md)）之下的内容层——本设计所述 CM 视图本体不变。
 
 ## 3. 不做的事
 
