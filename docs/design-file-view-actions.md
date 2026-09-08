@@ -33,7 +33,9 @@
 | open with… | linux → 应用内自建选择器 `OpenWithDialog`（design-linux-open-with 全量列表/搜索/上次使用，零改动复用）→ `shellOpenWithApp`；win32/darwin → `shellOpenWith` 系统对话框 | win32/darwin/linux（纯浏览器 shim 不显示——同 FileContextMenu 判定） |
 
 - 图标钮 `.icon-btn`（22×22，同 TOC 钮 idiom）：open = `ExternalLink`、open with = `AppWindow`（lucide 16px），title/aria-label 复用既有 i18n `fileOpen` / `fileOpenWith`。
-- 工具条布局：`.file-toolbar` 增 `gap: 8px`（右组内间距；TOC 钮 margin-right:auto 推左不受影响）；open/open-with 位于分段开关左侧，**跨文件类型右缘同位**（代码/图片/PDF 无分段时即为最右）。
+- 工具条布局：`.file-toolbar` 增 `gap: 8px`（右组内间距）；open/open-with 位于分段开关左侧，**跨文件类型右缘同位**（代码/图片/PDF 无分段时即为最右）。
+- **文件名展示**（2026-09-08 增补）：左缘 basename（`ui-sm`/`on-surface-variant`——同排 `.icon-btn` 即该色，沿 2026-08-29 栏标题明度倒挂修订先例，非 `outline`；title 悬浮全路径），`.file-toolbar-name` `flex:1 + min-width:0` 在左缘与右组间省略截断、动作组不收缩（`:not(.file-toolbar-name)` 恒整宽）；常驻同工具条（加载/占位/错误态不弹入）。
+- **chrome 底与分层**（2026-09-08 增补）：工具条加 `surface-container-low` 底 + `outline-variant` 下边线——统一工具条语言（同 `.browser-toolbar` idiom），与内容区拉开一档作分层信号；推左职责从 TOC 钮的 `margin-right:auto` 移交给文件名 `flex:1`（TOC 钮随文件名之后）。CM 搜索面板（`cm-panels`）同步改 `surface-container-low` + 下边线（原 `container-high` 与工具条割裂，2026-09-08 修订）——文件页顶部工具条与底部搜索面板背景统一、与文件背景（`--surface`/透明）区分一档。
 
 ### 2.3 OpenWithDialog 自持浮层计数（修订：既有缺口修复）
 

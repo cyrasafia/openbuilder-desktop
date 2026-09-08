@@ -2914,9 +2914,13 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
     <div className="file-view-wrap" ref={wrapRef}>
       {/* 操作条（design-file-view-actions §2.1/§2.2）：所有文件视图常驻（加载/
           错误/占位态不弹入，防 ~32px 布局跳动，沿 markdown 工具条常驻决策）——
-          open / open with 动作与文件树右键菜单同源；markdown 另有 TOC 钮（左，
-          margin-right:auto 推左）与预览/源码分段（右缘） */}
+          文件名（左，flex:1 截断）+ open / open with 动作与文件树右键菜单同源；
+          markdown 另有 TOC 钮（随文件名之后）与预览/源码分段（右缘） */}
       <div className="file-toolbar">
+        {/* 文件名：basename 展示、title 全路径；flex:1 在左缘与右侧动作组间伸缩截断 */}
+        <span className="file-toolbar-name" title={absolutePath}>
+          {absolutePath.split("/").pop() ?? absolutePath}
+        </span>
         {hasToc && (
           <button
             type="button"
