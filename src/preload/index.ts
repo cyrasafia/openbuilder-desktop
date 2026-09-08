@@ -26,6 +26,7 @@ const api = {
   openHtmlFilePicker: () => ipcRenderer.invoke("dialog:openHtmlFile") as Promise<string | null>,
   getAppVersion: () => ipcRenderer.invoke("app:getVersion"),
   shellOpenPath: (path: string) => ipcRenderer.invoke("shell:openPath", path) as Promise<string>,
+  shellOpenExternal: (url: string) => ipcRenderer.invoke("shell:openExternal", url) as Promise<string>,
   shellOpenWith: (path: string) => ipcRenderer.invoke("shell:openWith", path) as Promise<string>,
   shellListOpenWithApps: (path: string) =>
     ipcRenderer.invoke("shell:listOpenWithApps", path) as Promise<

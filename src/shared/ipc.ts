@@ -133,6 +133,10 @@ export interface DesktopApi {
   getAppVersion(): Promise<string>
   /** 系统默认方式打开文件/目录（shell.openPath）；resolve ""=成功，否则错误信息 */
   shellOpenPath(path: string): Promise<string>
+  /** 系统浏览器打开 URL（浏览器 Tab 工具条，design-browser-tab §1.3）：仅接受
+   *  http/https/file（about: 无意义拒收）；Linux/darwin 自管 spawn 净化 env
+   *  （同 shellOpenPath 分支注记），win32 shell.openExternal */
+  shellOpenExternal(url: string): Promise<string>
   /** 系统「打开方式」（design-file-panel-context-menu §2.4）：win32 = OpenAs_RunDLL 对话框，
    *  darwin = 系统应用选择器；linux 无系统对话框，渲染层不提供入口。同返回错误信息约定 */
   shellOpenWith(path: string): Promise<string>
