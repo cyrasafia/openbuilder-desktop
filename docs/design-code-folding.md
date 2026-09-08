@@ -32,6 +32,7 @@ search({ top: true }),
 - `foldKeymap` 全键挂载：`Ctrl-Shift-[`/`Ctrl-Shift-]` 折叠/展开**光标行**；`Ctrl-Alt-[`/`Ctrl-Alt-]` **全文**折叠/展开——两条绑定均无 mac 覆盖（CM 源码实证），mac 上生效的是字面 ⌃⌥[ / ⌃⌥]，快捷键清单按此展示。只读视图光标透明但点击仍可置位，「光标行」键实际可用，只是透明光标下难感知位置——非主路径，快捷键清单不单列。`Ctrl-Alt-[`/`]` 与全局分发（window keydown）无冲突：全局未绑定该组合，事件在 CM 内被 keymap 消费（`preventDefault`）后 `e.defaultPrevented` 守卫拦住全局分发。
 - **点击折叠占位符展开**：`cm-foldPlaceholder` 是 `Decoration.replace` widget，点击回调内建（`unfoldEffect`）——只读不影响 widget 交互。
 - gutter 点击折叠：`foldGutter` 内建 click 处理器（fold/unfoldEffect），无需自写。
+- **点击行号折叠/展开**（2026-09-08 增补）：热区从仅折叠标记扩到整个行号列——VS Code 同款交互。经 `lineNumbers` 的 `LineNumberConfig.domEventHandlers` 挂接（CM 公开扩展点，点击命中后 CM 自解析行块回调，与 foldGutter 的 click 分发同构）；分发逻辑与 foldGutter 内建处理器逐句一致：已折叠先展开（`findFold`——CM 未导出，用公开 `foldedRanges` 复刻其 8 行语义），否则有 `foldable` 范围则折叠，皆无则返回 false 交还默认（无折叠范围行点击无动作，行为无损）。
 
 ### 2.3 视觉（app.css）
 
@@ -92,7 +93,7 @@ CM baseTheme 经 `Prec.lowest` 插 head.firstChild，app.css 文档序靠后同�
 
 ## 4. 验收
 
-- 打开大 JSON/YAML/HTML/XML 文件：行号列折叠标记（lucide ChevronDown）出现，点击折叠→行内 `…` 占位符（令牌化样式）、点击占位符或标记展开（已折叠行标记为 ChevronRight）；
+- 打开大 JSON/YAML/HTML/XML 文件：行号列折叠标记（lucide ChevronDown）出现，点击折叠→行内 `…` 占位符（令牌化样式）、点击占位符/标记/**行号**展开（已折叠行标记为 ChevronRight）；点行号与点标记行为一致（同折叠同展开）；
 - `Ctrl+Alt+[` 全部折叠 / `Ctrl+Alt+]` 全部展开（JSON/YAML/HTML/XML 生效；sh/ts 等其他语言同样生效——foldNodeProp 出厂自带）；
 - 无折叠范围语言（txt/unknown.xyz）无标记无键动作；
 - 主题切换（dark/light）标记与占位符颜色正确；全局快捷键（Alt 系、Ctrl+B 等）不受影响；
