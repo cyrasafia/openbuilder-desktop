@@ -42,10 +42,12 @@ search({ top: true }),
 - `.cm-foldGutter` 标记字形（2026-09-08 修订，原「不改字形」弃用——DESIGN.md 图标 lucide 单一体系禁 Unicode 字形充当图标，`⌄`/`›` 属禁用形，与 2026-08-29 全量清零一致补漏）：`foldGutter({ markerDOM })` 自定义标记 DOM——lucide `ChevronDown` 12px（可折叠）/`ChevronRight` 12px（已折叠），经 `renderToStaticMarkup` 模块级一次性序列化为 SVG 字符串、`span.innerHTML` 注入（markerDOM 随视口滚动高频重建，逐标记 createRoot 会泄漏 root；静态 SVG 无 root、无泄漏）。tooltip：markerDOM 拿不到 view 无法走 `state.phrase`，由 `buildExtensions` 按 locale 闭包传 `cmPhrasesZh["Fold line"]/["Unfold line"]`（en 用 CM 内建英文原文）。颜色令牌化 + hover 反馈不变（SVG stroke 走 `currentColor`）：
 
 ```css
-.code-view-host .cm-foldGutter span { color: var(--outline); cursor: pointer; }
+/* 垂直居中须两层都去行盒：CM 给 gutterElement 写显式 style.height（GutterElement.update），
+ * 外层 flex 把 span 钉在该高度几何中心；但 span 自身仍是 inline 容器，SVG 作为 inline
+ * 替换元素按基线对齐会在行盒底部留 descender 空隙——只居中外层等于「span 居中而 SVG
+ * 在 span 内偏上」，残留偏移随字体度量漂移，故 span 也设 flex */
+.code-view-host .cm-foldGutter span { display: flex; align-items: center; color: var(--outline); cursor: pointer; }
 .code-view-host .cm-foldGutter span:hover { color: var(--on-surface); }
-/* 垂直居中：CM 给 gutterElement 设显式行高 px，inline SVG 按基线对齐会随
- * 字体度量偏上——flex 居中消除依赖 */
 .code-view-host .cm-foldGutter .cm-gutterElement { display: flex; align-items: center; }
 ```
 
