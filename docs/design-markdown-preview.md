@@ -99,6 +99,35 @@ GitHub Alerts 规范：blockquote 首段以 `[!NOTE]` / `[!TIP]` / `[!IMPORTANT]
 - **状态渲染**：在途/无条目 → 内联占位 chip（alt 文本，无 alt 用文件名）；失败（server 错误 / 内容构建不出 data URL）→ 占位 chip + `mdImageFailed` 文案（title 悬浮看错误详情，不静默破图）；成功 → `<img src=data URL>`。解码失败不可能在占位路径外发生（src 已是 data URL，非 data 路径均被解析层放行给浏览器）。
 - **不跟随 file watch**：图片文件自身变更不触发重拉（监听只覆盖打开的 file Tab，md 引用的图片不是 Tab）；成功条目重开 Tab 也不重拉（缓存命中），**error 条目重开 Tab 即重试**（见上），重启全量刷新。
 
+### 2.9 CJK 标点侧向修复（2026-09-08 增）
+
+用户实测报告：`**每一张订单都是双赢的结果，**只有…` 的加粗不渲染。根因是 CommonMark 侧向规则（flanking）对 CJK 的已知缺陷——**闭合 `**` 前是全角标点（`，` U+FF0C 属 Unicode 标点）、后紧跟汉字时不满足 right-flanking，无法闭合**，整段退化为字面文本；开侧对称失效（`字**，加粗**`：`**` 后是全角标点、前是汉字，不满足 left-flanking）。micromark（streamdown 底层）严格遵循规范，GitHub 同样不渲染。移动端 openbuilder 在 URL 自动链接上踩过同族坑（全角标点吞字，design-message-autolink MF-1）——ASCII 为中心的语法规则里 CJK 标点天然是坑位，此为桌面端首个同类记录。
+
+**方案：mdast 后置补救插件 `cjkEmphasis`**（`markdown-cjk-emphasis.ts`，remark 阶段）。解析后失效的定界符残留在 text 节点字面里，插件按「放宽侧向」重新配对：
+
+- **判定**：定界符严格侧向判定（CommonMark 口径，text 节点两端缺失邻字符按非空白非标点处理——比规范更严，方向安全：严格可开/闭的已被 micromark 正常消费不会残留）不可开/闭、但侧翼字符是**非 ASCII 标点**（全角形式 + CJK 专有标点）时，仍允许开/闭；
+- **配对**：`*` 连续段长度 1–3（>3 罕见不做），等长配对（2→strong、1→emphasis、3→emphasis>strong，与 `***x***` 的 `<em><strong>` 语义一致）；配对不可交叉（boundary 闸门），同 text 节点内嵌套补救不成立；
+- **注入点**：`Markdown` 组件统一注入三条管线——assistant（默认集 + 插件）、user（默认集 + 插件 + softBreaks，插件在前：补救要在软换行拆分 text 节点前看到完整段落文本）、文件预览（调用方 `remarkPlugins` 追加，调用方无需感知）。模块级常量 + prop 引用 memo，streamdown processor 缓存/memo 语义不变。
+
+**不做的事 / 已知取舍**：
+
+- **纯 ASCII 维持严格语义**：`**foo,**bar` 仍不渲染（与 GitHub 一致）——补救仅限非 ASCII 标点侧翼，不改变 ASCII 内容的规范行为；
+- **`_` 底线族不补救**：intraword 语义不同（`foo__bar__baz` 型标识符误伤风险高）；
+- **跨节点/嵌套不补救**：嵌套内联（如 `**a *b* c，**`，内层被正常解析后外层定界符分属不同 text 节点）超出单 text 节点配对范围，外层保持字面（内层本就正确）；
+- **`\*\*` 转义假阳性**（理论已知取舍）：mdast 中 `\*\*字，\*\*` 的转义产物与失败字面不可区分（值同为 `**字，**`），命中 CJK 侧翼条件时会被补救为加粗——转义 + CJK 标点侧翼 + 可配对三条件叠加，实际近乎不发生；
+- `~~`（GFM 删除线）同族侧向规则不补救，等真实诉求。
+
+### 2.10 CJK 单字重字体环境的 600 系字重（2026-09-08 增）
+
+§2.9 修复后的二段用户报告：`<strong>` 在、computed `font-weight: 600` 生效，但**视觉上不加粗**。根因不在代码，在渲染层：本机 CJK 回退字体（霞鹜新晰黑 屏幕阅读版 补全，`system-ui` 解析目标）只有 Regular 一个字重，而 **Chromium 仅在 >600 时做合成加粗**——600 与 400 渲染完全相同（真实 Chromium 像素实测：同文本墨水量 400=600=3261，601=700=4921；用户 DevTools 实测 601 起效一致）。vendor github-markdown-css 的强调件全用 600（`b/strong/h1–h6/dt/th/.csv-data th`，明暗各 11 处），在此环境全部视觉扁平——标题靠字号尚可辨识，strong/表头与正文无异。
+
+**方案：本地覆写上述全集为 `font-weight: 601`**（app.css，` :root[data-theme] .markdown-body.md` (0,4,0) 前缀压 vendor）。选 601 而非 700 的依据（像素实测）：
+
+- 多字重/可变字体环境：601 实渲染 ≈600，保留 GitHub 的视觉档位意图，对正常环境零观感变化；
+- 单字重字体环境：601 触发合成加粗，且**墨水量与 700 完全一致**（合成加粗是固定涂抹量，不随字重值缩放）——即「正常系统看着是 600、缺字重系统看着等同 700」的双态最优。
+
+**范围注记**：app 自有 UI 的 `--weight-semibold: 600`（chips/标题等）在同环境同样扁平——那是用户系统字体选择影响整个桌面 GNOMOME UI 的问题，不属 markdown 预览范围；如需处理应走 tokens 层另行决策，此处不动。
+
 ## 3. 不做的事
 
 | 项 | 原因 |
@@ -113,6 +142,7 @@ GitHub Alerts 规范：blockquote 首段以 `[!NOTE]` / `[!TIP]` / `[!IMPORTANT]
 | TOC 滚动位置高亮（scrollspy） | 见 §2.4：锚点是消费主体，增量收益有限 |
 | 预览内容键盘可达（放开链接/复制按钮 tabIndex） | 复用 `Markdown` 继承消息流「内容不入焦点序列」决策（review P3 备注）；后续需要时给组件加 interactive 变体 |
 | mermaid 图交互（缩放/平移/导出 PNG） | streamdown 内建有 zoom/pan/下载控件（Tailwind 样式，不合本项目视觉语言）；渲染阅读优先，交互等真实诉求 |
+| `_` 底线族 CJK 补救 / `~~` 删除线侧向 | 见 §2.9：intraword 语义不同误伤风险高；等真实诉求 |
 
 ## 4. 涉及文件
 
@@ -121,13 +151,14 @@ GitHub Alerts 规范：blockquote 首段以 `[!NOTE]` / `[!TIP]` / `[!IMPORTANT]
 | `src/renderer/src/components/workspace.tsx` | FileView：扩展名分发 + markdown mode（工具条 + 预览/源码 + TOC 收起态与工具条按钮）+ TOC 标题扫描与布局 + front matter 拆分 memo 与元数据卡（§2.5）+ MarkdownImage 组件与注入（§2.8；`isImagePath`/`IMAGE_MIME_BY_EXT` 迁出） |
 | `src/renderer/src/components/markdown-image.ts` | `resolveMarkdownImage` 解析 + `relativeImageRewrite` remark 预重写插件 + `markdownRewrittenImagePath` 覆写侧消费 + `isImagePath`/`IMAGE_MIME_BY_EXT` 迁入（§2.8，单一来源）+ 同名测试 |
 | `src/renderer/src/components/markdown-frontmatter.ts` | `splitFrontMatter`（语义移植 openbuilder）+ 同名测试（用例随移动端移植） |
-| `src/renderer/src/components/markdown.tsx` | 消息流共享渲染器：blockquote 覆写增加 GFM alert 识别/标记剥离（§2.6）+ 可选 `img` 覆写 prop（§2.8）+ 测试用例 |
+| `src/renderer/src/components/markdown.tsx` | 消息流共享渲染器：blockquote 覆写增加 GFM alert 识别/标记剥离（§2.6）+ 可选 `img` 覆写 prop（§2.8）+ cjkEmphasis 三管线统一注入（§2.9）+ 测试用例 |
+| `src/renderer/src/components/markdown-cjk-emphasis.ts` | `rescueCjkEmphasis` 补救配对 + `cjkEmphasis` remark 插件（§2.9）+ 同名测试 |
 | `src/renderer/src/components/mermaid-diagram.tsx` | mermaid 懒加载/串行渲染/主题跟随/失败回落（§2.7）+ markdown.test.tsx 用例（vi.mock mermaid） |
 | `src/renderer/src/components/md-toc.tsx` | TOC 悬浮窗：标题收集/章节树/按章节折叠/点击锚定（收起态由 FileView 控制） |
 | `src/renderer/src/store/app-store.ts` | `ensureFileImage`：md 相对图片 singleflight 拉取落 `fileContents`（§2.8） |
 | `src/renderer/src/i18n/index.ts` | `preview` / `source` / TOC / `mdImageFailed` 文案 |
 | `src/renderer/src/styles/tokens.css` | `--file-toolbar-h`（工具条高度单一来源）、`--toc-w` / `--toc-gap` |
-| `src/renderer/src/styles/app.css` | `.file-view-wrap`（`--file-md-min/max`、TOC 绝对定位锚）/ `.file-toolbar(.file-toolbar-toc)` / `.file-md` / `.md-toc*` / `.md-img-pending`/`.md-img-failed`（§2.8） |
+| `src/renderer/src/styles/app.css` | `.file-view-wrap`（`--file-md-min/max`、TOC 绝对定位锚）/ `.file-toolbar(.file-toolbar-toc)` / `.file-md` / `.md-toc*` / `.md-img-pending`/`.md-img-failed`（§2.8）/ 600 系强调件 → 601 覆写（§2.10） |
 | `src/renderer/src/components/resize-observer-stub.ts` | ResizeObserver 测试 stub（jsdom 缺失；测宽用例手动触发） |
 | `src/renderer/src/components/file-view.test.tsx` / `md-toc.test.tsx` | FileView 分发与二态切换 + TOC 行为测试（含窄屏默认隐藏）+ 相对图片用例（§2.8） |
 
@@ -139,4 +170,6 @@ GitHub Alerts 规范：blockquote 首段以 `[!NOTE]` / `[!TIP]` / `[!IMPORTANT]
 - ` ```mermaid ` 块：懒加载后渲染为图（明暗主题跟随 `[data-theme]`，切换重渲染）；语法错误/流式未完成回落代码块外壳（源码可见、可复制）；无 mermaid 块的文档不加载 mermaid chunk；消息流同样生效；
 - 有标题的 `.md` 预览：内容区 [600, 800] 自适应居中；侧缘够宽时 TOC 悬浮窗挂内容区左侧；滚动条贴窗口右缘、滚动时悬浮窗常驻可见、高度不超可见区（超出自滚）；悬浮窗会遮挡内容区时默认收起、工具条按钮可显式展开（悬浮覆盖内容区）；可按章节收起/展开、工具条按钮可整体收起/展开悬浮窗、点击条目平滑滚动锚定到对应标题；无标题文档无 TOC 无按钮；源码态无 TOC；
 - 相对路径图片（§2.8）：`![](./img/a.png)` 先占位 chip 后渲染图；`../` 上跳、`%20` 空格、svg 相对路径均正确解析渲染；引用不存在的图呈错误占位（title 可看详情，不静默破图）；同图多次引用只发一次请求（singleflight）；外链 `http(s)`/data URL 图照常渲染不经拉取；消息流 markdown 图片行为不变；
+- CJK 标点侧向修复（§2.9）：`**加粗，**汉字`（闭合侧）与 `字**，加粗**`（开侧）渲染加粗；单星斜体、三星粗斜体同；纯 ASCII `**foo,**bar` 维持字面（与 GitHub 一致）；行内代码/代码块内 `**` 不受触及；消息流（assistant/user）与文件预览三管线同生效；
+- 600 系字重（§2.10）：`<strong>`/`<b>` 在 CJK 单字重字体环境视觉上加粗（601 触发合成加粗）；标题/表头同；多字重字体环境观感不变（601≈600）；
 - `npm run test` / `npm run typecheck` 全绿。
