@@ -41,7 +41,7 @@ FileView 源码态是 `<pre className="file-content">`：无行号、无高亮�
 
 ### 2.3 只读视图行为
 
-- `EditorState.create({ doc, extensions: [lineNumbers(), syntaxHighlighting(classHighlighter), languageForPath(path), search 搜索, EditorState.readOnly] })`
+- `EditorState.create({ doc, extensions: [lineNumbers(), syntaxHighlighting(classHighlighter), languageForPath(path), foldGutter+foldKeymap（见 design-code-folding.md）, search 搜索, EditorState.readOnly] })`
 - **readonly + editable 并用**（editable 保持 true）：内容可聚焦——键盘滚动、Ctrl+F（searchKeymap，面板 top 汇报）可达；不可编辑。search 面板在 readonly 下自动隐藏 replace 控件（CM 内建）。面板短语按 locale 注入 `EditorState.phrases`（zh 本地化）。
 - **行号**：默认 gutter；不渲染当前行高亮（无光标语义）。
 - **软换行默认关**（桌面代码浏览惯例，长行横向滚动）；不做换行切换（见不做的事）。
@@ -67,7 +67,7 @@ FileView 源码态是 `<pre className="file-content">`：无行号、无高亮�
 |---|---|
 | 编辑/保存 | 文件 Tab 是浏览语义；编辑是独立大功能 |
 | 软换行切换按钮 | 无用户诉求；CM lineWrapping 后续一个 compartm­ent 就能加 |
-| 折叠/大纲 | basicSetup 级功能，浏览优先级低 |
+| 折叠/大纲 | ~~折叠~~已实现（design-code-folding.md）；大纲仍不做（浏览优先级低） |
 | 跳行（手动 go-to-line） | 无用户诉求；但从 diff 跳转的**自动行锚定**已实现（`revealLine` prop → CM `scrollIntoView`，见 design-diff-view §4.3「查看文件」），两者不同——自动锚定是外部携带的一次性意图，非用户交互式跳行面板 |
 | shiki 双轨高亮 | openchamber 为主题兼容所迫；本项目单一 CSS 变量体系无此需求 |
 | 大文件门限（异步高亮降级） | CM 增量解析天然延迟着色；移动端 >2000 行降级是 Flutter 手搓方案的补丁，不适用 |

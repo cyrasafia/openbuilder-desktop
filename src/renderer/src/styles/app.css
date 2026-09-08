@@ -2012,13 +2012,34 @@
 
 .code-view-host .cm-gutters {
   /* 不透明底（同中栏 --surface）：gutter 是 sticky 层，横向滚动时长代码行
-     从其下穿过，透明底会与行号重叠 */
+   * 从其下穿过，透明底会与行号重叠 */
   background: var(--surface);
   color: var(--outline);
   border: none;
   min-width: 44px;
-  /* 只读浏览无行交互，gutter 不抢指针 */
-  pointer-events: none;
+  /* 折叠标记挂 gutter（design-code-folding §2.3）：需可点折叠——行号本身
+   * 无交互处理器，多余点击被 CM gutter 分发忽略，放行无损 */
+}
+
+/* 折叠标记（cm-gutters 内，随行号列渲染）：颜色令牌化 + hover 反馈 */
+.code-view-host .cm-foldGutter span {
+  color: var(--outline);
+  cursor: pointer;
+}
+
+.code-view-host .cm-foldGutter span:hover {
+  color: var(--on-surface);
+}
+
+/* 折叠占位符：覆盖 CM baseTheme 浅灰底（dark 下突兀），令牌化 */
+.code-view-host .cm-foldPlaceholder {
+  background: var(--surface-container-high);
+  color: var(--on-surface-variant);
+  border: 1px solid var(--outline-variant);
+  border-radius: 4px;
+  margin: 0 1px;
+  padding: 0 4px;
+  cursor: pointer;
 }
 
 .code-view-host .cm-activeLineGutter,

@@ -265,6 +265,7 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { keys: "Enter", action: "scSend" },
       { keys: "Shift+Enter", action: "scNewline" },
       { keys: "Ctrl+F", macKeys: "⌘F", action: "scFileSearch" },
+      { keys: "Ctrl+Alt+[ / Ctrl+Alt+]", macKeys: "⌃⌥[ / ⌃⌥]", action: "scFoldCode" },
       { keys: "Ctrl+Shift+C", macKeys: "⌘C", action: "scTermCopy" },
       { keys: "Ctrl+Shift+V", macKeys: "⌘V", action: "scTermPaste" },
       { keys: "Esc", action: "scDismiss" },

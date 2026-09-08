@@ -9,12 +9,13 @@ import { useEffect, useRef } from "react"
 import { EditorState } from "@codemirror/state"
 import { EditorView, keymap, lineNumbers } from "@codemirror/view"
 import { search, searchKeymap } from "@codemirror/search"
+import { foldGutter, foldKeymap } from "@codemirror/language"
 import { languageForPath } from "./cm-lang"
 import { cmSyntaxTheme } from "./cm-theme"
 import type { Locale } from "../i18n"
 
-/** 搜索面板短语（CM 默认英文；zh 提供本地化，en 用内建默认） */
-const searchPhrasesZh: Record<string, string> = {
+/** CM 内建短语本地化（zh；en 用内建默认）：搜索面板 + 折叠 tooltip（design-code-folding §2.4） */
+const cmPhrasesZh: Record<string, string> = {
   Find: "查找",
   Replace: "替换",
   next: "下一处",
@@ -28,6 +29,14 @@ const searchPhrasesZh: Record<string, string> = {
   "current match": "当前匹配",
   "Go to line": "跳到行",
   go: "跳转",
+  "Fold line": "折叠此行",
+  "Unfold line": "展开此行",
+  "folded code": "已折叠代码",
+  unfold: "展开",
+  // foldKeymap 的 announce 短语（折叠/展开动作的无障碍播报）
+  "Folded lines": "已折叠行",
+  "Unfolded lines": "已展开行",
+  to: "至",
 }
 
 function buildExtensions(path: string, locale: Locale | undefined) {
@@ -36,9 +45,14 @@ function buildExtensions(path: string, locale: Locale | undefined) {
     lineNumbers(),
     cmSyntaxTheme,
     ...(lang ? [lang] : []),
+    // 折叠（design-code-folding §2.1/§2.2）：foldGutter 内部已含 codeFolding，
+    // 不得重复挂载；折叠范围来自语言包出厂 foldNodeProp，无范围语言自然降级
+    //（gutter 无标记、键无动作），故无语言文件也统一装配
+    foldGutter(),
+    keymap.of(foldKeymap),
     search({ top: true }),
     keymap.of(searchKeymap),
-    ...(locale === "zh" ? [EditorState.phrases.of(searchPhrasesZh)] : []),
+    ...(locale === "zh" ? [EditorState.phrases.of(cmPhrasesZh)] : []),
     EditorState.readOnly.of(true),
   ]
 }
