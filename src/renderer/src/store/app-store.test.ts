@@ -536,6 +536,102 @@ describe("先切换后加载：openProject 直达工作区", () => {
   })
 })
 
+describe("worktree.ready 后 skill 重新发现（实例缓存冻结防御）", () => {
+  const WT3 = "/repo/.git/opencode-worktrees/wt3"
+  let disposeCalls: string[]
+  let commandCalls: string[]
+
+  function dispatch(dir: string, ev: { type: string; properties: unknown }, meta?: { project?: string }) {
+    ;(store as unknown as { handleEvent: (d: string, e: unknown, m?: unknown) => void }).handleEvent(dir, ev, meta)
+  }
+
+  beforeEach(() => {
+    disposeCalls = []
+    commandCalls = []
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    client.disposeInstance = async (dir: string) => {
+      disposeCalls.push(dir)
+      return true
+    }
+    client.listCommands = async (dir: string) => {
+      commandCalls.push(dir)
+      return [{ name: "agent-eval", description: "评测", source: "skill" }]
+    }
+  })
+
+  it("ready → dispose 新 worktree 实例 → 等 disposed 回执 → 仅当前 chat 目录重拉命令；未打开项目整链跳过", async () => {
+    // 未打开的项目（meta.project 不匹配）：整链跳过（worktree 分支 gate）
+    dispatch(WT3, { type: "worktree.ready", properties: { name: "wt3" } }, { project: "unknown" })
+    expect(disposeCalls).toEqual([])
+
+    // 项目已打开但激活 chat 在别处：dispose 仍执行（修 server 侧冻结），不抢占命令缓存
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
+    store.activeTabKey = "chat:s1"
+    dispatch(WT3, { type: "worktree.ready", properties: { name: "wt3", branch: "opencode/wt3" } }, { project: "proj1" })
+    await vi.waitFor(() => expect(disposeCalls).toEqual([WT3]))
+    // 等 waiter 注册的微任务链跑完再发回执（teardown 完成事件，信封目录 = 新 worktree）
+    await new Promise((r) => setTimeout(r, 0))
+    dispatch(WT3, { type: "server.instance.disposed", properties: { directory: WT3 } })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(commandCalls).toEqual([])
+
+    // 激活 chat 切到新 worktree：dispose + 回执后重拉，skill 命令入缓存
+    store.tabs = [{ kind: "chat", key: "chat:s9", projectId: "proj1", title: "s9", directory: WT3 }]
+    store.activeTabKey = "chat:s9"
+    dispatch(WT3, { type: "worktree.ready", properties: { name: "wt3" } }, { project: "proj1" })
+    await vi.waitFor(() => expect(disposeCalls).toEqual([WT3, WT3]))
+    await new Promise((r) => setTimeout(r, 0))
+    dispatch(WT3, { type: "server.instance.disposed", properties: { directory: WT3 } })
+    await vi.waitFor(() => expect(commandCalls).toEqual([WT3]))
+    expect(store.commandsFor(WT3).map((c) => c.name)).toEqual(["agent-eval"])
+  })
+
+  it("dispose 失败（旧版 server 无端点）：静默放弃，不重拉", async () => {
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    client.disposeInstance = async () => {
+      throw new Error("404")
+    }
+    dispatch(WT3, { type: "worktree.ready", properties: { name: "wt3" } }, { project: "proj1" })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(commandCalls).toEqual([])
+  })
+
+  it("该目录有已知活跃会话（多客户端防御）：放弃 dispose，不取消他端运行", async () => {
+    store.sessionsByProject.set("proj1", sessionsOf(session("s9", WT3, { created: 1, updated: 1 })))
+    ;(store as unknown as { sessionStatus: Map<string, unknown> }).sessionStatus.set("s9", {
+      type: "busy",
+    })
+    dispatch(WT3, { type: "worktree.ready", properties: { name: "wt3" } }, { project: "proj1" })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(disposeCalls).toEqual([])
+    expect(commandCalls).toEqual([])
+  })
+
+  it("syncWorktrees diff 出新增 sandbox（断连丢 ready 补偿）：补跑 dispose 链", async () => {
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    client.listProjects = async () => [{ ...project(), sandboxes: [WT1, WT2, WT3] }]
+    await store.syncWorktrees()
+    await vi.waitFor(() => expect(disposeCalls).toEqual([WT3]))
+    dispatch(WT3, { type: "server.instance.disposed", properties: { directory: WT3 } })
+    await new Promise((r) => setTimeout(r, 0))
+    // 非 当前 chat 目录：只修 server 侧，不抢占命令缓存
+    expect(commandCalls).toEqual([])
+  })
+
+  it("waitInstanceDisposed 超时兜底：SSE 丢帧不永久阻塞", async () => {
+    vi.useFakeTimers()
+    try {
+      const p = (
+        store as unknown as { waitInstanceDisposed: (d: string, t: number) => Promise<void> }
+      ).waitInstanceDisposed(WT3, 10_000)
+      vi.advanceTimersByTime(10_000)
+      await p
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe("busy 补充发送（design-supplement-send）", () => {
   /** 直驱 handleEvent（SSE 已 mock off）：事件信封 { type, properties } */
   function dispatch(ev: { type: string; properties: unknown }) {
