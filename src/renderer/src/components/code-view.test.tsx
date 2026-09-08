@@ -1,14 +1,16 @@
 /**
- * CodeView 测试（design-code-view）：
+ * CodeView 测试（design-code-view / design-code-folding）：
  * 1. languageForPath 纯函数映射（扩展名/特殊文件名/未命中）；
  * 2. CodeView 渲染冒烟（jsdom + ResizeObserver stub）：行号 gutter、内容、只读、
- *    doc 同步（content 变化不重建视图）。
+ *    doc 同步（content 变化不重建视图）；
+ * 3. 折叠装配：JSON gutter 折叠标记、折叠→占位符、展开还原、无折叠范围纯文本无标记。
  */
 import { cleanup, fireEvent, render } from "@testing-library/react"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { CodeView } from "./code-view"
 import { languageForPath } from "./cm-lang"
 import { EditorView } from "@codemirror/view"
+import { foldable, foldEffect, unfoldEffect } from "@codemirror/language"
 import { ResizeObserverStub } from "./resize-observer-stub"
 
 beforeAll(() => {
@@ -93,5 +95,51 @@ describe("CodeView 渲染", () => {
     expect(input.placeholder).toBe("查找")
     // readonly：replace 输入与按钮自动隐藏（CM 内建）
     expect(panel?.querySelector("input[name=replace]")).toBeNull()
+  })
+})
+
+describe("代码折叠（design-code-folding）", () => {
+  const jsonDoc = `{\n  "a": {\n    "b": 1\n  },\n  "c": [1, 2]\n}\n`
+
+  /** CM 视口外行不渲染折叠标记；jsdom 无布局，viewport 停在 doc 开头，
+   * 前几行必在视口内（Object/ObjectProperty 起始行）。
+   * foldGutter 恒渲染一个 initialSpacer 兜底元素（spacer 的 .cm-gutterElement
+   * 内联 visibility:hidden），真实标记断言须按此过滤 */
+  function viewFrom(container: HTMLElement): EditorView {
+    const host = container.querySelector(".code-view-host") as HTMLElement
+    const view = EditorView.findFromDOM(host)
+    expect(view).not.toBeNull()
+    return view as EditorView
+  }
+
+  /** 可见折叠标记（排除 spacer：其外层 .cm-gutterElement 内联 visibility:hidden） */
+  function visibleFoldMarkers(container: HTMLElement): HTMLElement[] {
+    return Array.from(
+      container.querySelectorAll<HTMLElement>(".cm-foldGutter .cm-gutterElement:not([style*='hidden']) span"),
+    )
+  }
+
+  it("JSON 文件 gutter 出现折叠标记；折叠后行内占位符出现、展开还原", () => {
+    const { container } = render(<CodeView path="/repo/pkg.json" content={jsonDoc} />)
+    // 折叠标记挂 cm-gutters（与行号同容器）：Object 起始行可折叠 → 标记存在
+    expect(visibleFoldMarkers(container).length).toBeGreaterThan(0)
+    const view = viewFrom(container)
+    // 顶层 Object 整体折叠（foldable(0) = doc 首行可折叠范围）
+    const range = foldable(view.state, 0, view.state.doc.line(1).to)
+    expect(range).not.toBeNull()
+    view.dispatch({ effects: foldEffect.of(range!) })
+    expect(container.querySelector(".cm-foldPlaceholder")).not.toBeNull()
+    // 展开还原：占位符消失、内容全文可读
+    view.dispatch({ effects: unfoldEffect.of(range!) })
+    expect(container.querySelector(".cm-foldPlaceholder")).toBeNull()
+    expect(container.querySelector(".cm-content")?.textContent).toContain('"b": 1')
+  })
+
+  it("无折叠范围（纯文本）无标记，折叠指令无动作", () => {
+    const { container } = render(<CodeView path="/repo/notes.xyz" content={"line1\nline2\n"} />)
+    // 纯文本无 foldable 范围 → 无折叠标记（仅剩 spacer 兜底，被可见性过滤掉）
+    expect(visibleFoldMarkers(container)).toEqual([])
+    const view = viewFrom(container)
+    expect(foldable(view.state, 0, view.state.doc.line(1).to)).toBeNull()
   })
 })
