@@ -27,7 +27,7 @@
 ### 2.2 markdown mode
 
 - **默认预览态**；`<FileView key={tabKey}>` 隔离——Tab 切换/重开、同实例换文件均重置（与 ChatView 草稿隔离同模式）。模式为组件局部 state，挂载时从 store 按文件路径恢复（2026-08-26 修订，原"不持久化、重开成本为零"——运行期切换体验要求状态连续，见 [design-tab-state-memory.md](./design-tab-state-memory.md) §2.2；跨重启仍不持久化，关 Tab 即清）。
-- **工具条**：FileView 顶部右对齐的分段开关（预览 / 源码），markdown 文件**常驻渲染**（含 loading/error 态——避免内容落地时工具条弹入的布局跳动）。开关相对工具条**纵向居中**（上下等距 6px；2026-08-25 修订，原 `0` 底距使开关底对齐、与下方内容贴连）。分段控件复用 `.ms-segmented`/`.ms-seg`（单一来源）；语义用 `role="group"` + `aria-pressed` 分组按钮，不冒充 tabs（无方向键导航）。预览体复用消息流 `Markdown` 组件渲染。**TOC 收起/展开钮**（2026-08-25 增，见 §2.4）也在工具条：左对齐（`margin-right:auto` 推左，分段开关保持右对齐），仅在已扫出标题时出现，`aria-pressed` = 展开态。
+- **工具条**：FileView 顶部右对齐的分段开关（预览 / 源码），markdown 文件**常驻渲染**（含 loading/error 态——避免内容落地时工具条弹入的布局跳动）。开关相对工具条**纵向居中**（上下等距 6px；2026-08-25 修订，原 `0` 底距使开关底对齐、与下方内容贴连）。分段控件复用 `.ms-segmented`/`.ms-seg`（单一来源）；语义用 `role="group"` + `aria-pressed` 分组按钮，不冒充 tabs（无方向键导航）。预览体复用消息流 `Markdown` 组件渲染。**TOC 收起/展开钮**（2026-08-25 增，见 §2.4）也在工具条：左对齐（`margin-right:auto` 推左，分段开关保持右对齐），仅在已扫出标题时出现，`aria-pressed` = 展开态。**open / open-with 图标钮**（2026-09-08 增，[design-file-view-actions.md](./design-file-view-actions.md)）：分段开关左侧、与文件树右键菜单动作同源；该修订同时把「工具条常驻」从 markdown 专属推广到全部文件视图（代码/图片/PDF/占位）。
 - **源码态**：沿用现有 `<pre className="file-content mono">`（后续「代码浏览行号+语法高亮」功能覆盖文本文件后自然升级）。
 - **布局**：FileView 根改为列 flex（工具条 + 滚动层）；预览体限宽居中（`max-width 820px`，与聊天区 `--chat-max: 800px` 同一阅读度量级）；覆写 `.md-pre` 高度上限（消息流 300px 内滚在文档预览中放开——渲染阅读优先，长代码块不套内滚）。
 

@@ -14,7 +14,7 @@
 
 ## 1. 终态方案
 
-- **分支入口**：`isPdfPath`（`.pdf` 扩展名，大小写不敏感）→ 仅预览态（无工具条切换——源码对 PDF 无意义，同图片先例）
+- **分支入口**：`isPdfPath`（`.pdf` 扩展名，大小写不敏感）→ 仅预览态（无预览/源码切换——源码对 PDF 无意义，同图片先例；~~无工具条~~ **2026-09-08 修订**：操作条常驻带 open/open-with 入口，见 [design-file-view-actions.md](./design-file-view-actions.md)，选择器弹窗浮层计数同时修复本页被 PDFium 视图盖住的场景）
 - **可用性判定先行**：`/file/content` 快照——错误 → 错误态；非 binary → 二进制占位（同图片分支模式）；通过才挂视图
 - **渲染**：`PdfFrameView`（pdf-frame-view.tsx）——文件 Tab 内嵌**专用 WebContentsView**：
   - 懒建（挂载首帧 `browser:view-create`，view 的 webPreferences 带 `plugins: true`——PDFium 必需）→ 注册进 store `browserViewIds`（key = `file:<绝对路径>`，与浏览器 Tab 同注册表）→ `browser:navigate(fileUrlOf(path))`
