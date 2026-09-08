@@ -3807,12 +3807,17 @@
   margin-top: 4px;
 }
 
-.image-zoom {
+/* 附件放大 lightbox（.dialog-mask.image-zoom）专用覆写：加深遮罩 + 图限视口。
+ * 必须带 .dialog-mask 前缀——裸 .image-zoom 与文件 Tab 图片预览（design-image-preview
+ * §2.3，workspace.tsx 的 button.image-zoom）同名，本块在样式表靠后，不加限定会以
+ * 同等优先级覆盖预览钮的 background:transparent（近黑遮罩漏进预览）与 img 的
+ * max-width:100%（视口单位漏进适应窗口态）。预览钮无 .dialog-mask，不受影响 */
+.dialog-mask.image-zoom {
   z-index: 100;
   background: rgba(0, 0, 0, 0.78);
 }
 
-.image-zoom img {
+.dialog-mask.image-zoom img {
   max-width: 92vw;
   max-height: 92vh;
   object-fit: contain;
