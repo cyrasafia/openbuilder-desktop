@@ -42,7 +42,7 @@ FileView 源码态是 `<pre className="file-content">`：无行号、无高亮�
 ### 2.3 只读视图行为
 
 - `EditorState.create({ doc, extensions: [lineNumbers(), syntaxHighlighting(classHighlighter), languageForPath(path), foldGutter+foldKeymap（见 design-code-folding.md）, search 搜索, EditorState.readOnly] })`
-- **readonly + editable 并用**（editable 保持 true）：内容可聚焦——键盘滚动、Ctrl+F（searchKeymap，面板 top 汇报）可达；不可编辑。search 面板在 readonly 下自动隐藏 replace 控件（CM 内建）。面板短语按 locale 注入 `EditorState.phrases`（zh 本地化）。
+- **readonly + editable 并用**（editable 保持 true）：内容可聚焦——键盘滚动、Ctrl+F（searchKeymap，面板居底 = CM 默认，2026-09-08 修订自 top）可达；不可编辑。search 面板在 readonly 下自动隐藏 replace 控件（CM 内建）。面板短语按 locale 注入 `EditorState.phrases`（zh 本地化）。
 - **行号**：默认 gutter；不渲染当前行高亮（无光标语义）。
 - **软换行默认关**（桌面代码浏览惯例，长行横向滚动）；不做换行切换（见不做的事）。
 - **选中复制**：不装 drawSelection，选区走原生 `::selection`（app.css 令牌化）；Ctrl+C 浏览器默认。
@@ -53,7 +53,7 @@ FileView 源码态是 `<pre className="file-content">`：无行号、无高亮�
 
 - HighlightStyle 用 **class** 而非内联色（openchamber `syntax` 层同法）：`.cm-comment/.cm-keyword/.cm-string/.cm-number/.cm-function/.cm-type/.cm-tag/.cm-operator/.cm-punctuation/.cm-variable/.cm-link`。
 - 颜色在 app.css 用 `--syntax-*` 令牌（tokens.css 定义 dark/light 两套，GitHub light/dark 色板取值——两主题下代码可读性经过大规模验证）。`data-theme` 切换即生效，无需重建编辑器。
-- 编辑器 chrome（背景/前景/gutter/选区/搜索面板）同样令牌化；CM 自身不 import 任何显式 theme 扩展。注意 CM baseTheme 仍无条件注入（Prec.lowest、样式插在 head.firstChild）——app.css 文档序靠后，同特异性时后者胜（CM 设计的覆写途径，app.css 有注释言明）。选区不装 drawSelection，走原生 `::selection` 令牌化。
+- 编辑器 chrome（背景/前景/gutter/选区/搜索面板）同样令牌化；CM 自身不 import 任何显式 theme 扩展。注意 CM baseTheme 仍无条件注入（Prec.lowest、样式插在 head.firstChild）——app.css 文档序靠后，同特异性时后者胜（CM 设计的覆写途径）。**特异性陷阱（2026-09-08 修订）**：baseTheme 的选择器编译时全部带隐式编辑器类前缀（`buildTheme("." + baseThemeID)`，`.ͼN` 挂在 `.cm-editor` 上），`& label { fontSize: 80% }` 实为 `.ͼN .cm-panel.cm-search label`（0,3,1）——app.css 中"看似同级"的选择器（如 `.code-view-host .cm-panels label`，0,2,1）实际低一档、恒被压住，与文档序无关。覆盖 baseTheme 规则须显式叠类抬特异性（搜索面板组一律叠 `.cm-panel.cm-search` 至 4 类起步，见 app.css 注释）。选区不装 drawSelection，走原生 `::selection` 令牌化。
 
 ### 2.5 FileView 集成
 

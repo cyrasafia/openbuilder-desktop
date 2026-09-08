@@ -25,7 +25,7 @@
 ...(lang ? [lang] : []),
 foldGutter(),               // 折叠标记 + 行内占位符（自带 codeFolding）
 keymap.of(foldKeymap),       // Ctrl-Shift-[ / ] 折叠/展开光标行；Ctrl-Alt-[ / ] 全文
-search({ top: true }),
+search(),                    // 搜索面板居底（CM 默认）
 ```
 
 - **无语言文件（lang=null）也装配折叠**：StreamLanguage/纯文本无 foldable 范围，gutter 恒空、keymap 无动作——统一装配无副作用，换取装配表无分支。
