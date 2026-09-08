@@ -13,6 +13,7 @@ import {
   type WheelEvent,
 } from "react"
 import {
+  AppWindow,
   ChevronDown,
   ChevronRight,
   ChevronUp,
@@ -21,6 +22,7 @@ import {
   CircleDot,
   CircleHelp,
   CircleX,
+  ExternalLink,
   FileDiff,
   FolderGit2,
   Globe,
@@ -66,6 +68,7 @@ import { CodeView } from "./code-view"
 import { collectHeadings, MdToc, type TocHeading } from "./md-toc"
 import { DiffView } from "./diff-view"
 import { PdfFrameView } from "./pdf-frame-view"
+import { OpenWithDialog } from "./open-with-dialog"
 import { parseDiffTabKey, type TabEntity } from "../store/app-store"
 import { closeTabInteractive } from "./tab-actions"
 import { TerminalView } from "./terminal-view"
@@ -2622,8 +2625,10 @@ function ImagePreview({ src, title, zoomLabel, failedText }: {
 }
 
 /**
- * 文件 Tab 视图。图片（design-image-preview）：img data URL 渲染 + 点击缩放，
- * 无工具条。预览文件（design-markdown-preview）：`.md`/`.markdown` 渲染
+ * 文件 Tab 视图。所有分支统一骨架（design-file-view-actions §2.1）：常驻操作条
+ * （open / open with 入口，与文件树右键菜单动作同源）+ 内容层；markdown 另有
+ * TOC 钮（左）与预览/源码分段（右）。图片（design-image-preview）：img data URL
+ * 渲染 + 点击缩放。预览文件（design-markdown-preview）：`.md`/`.markdown` 渲染
  * markdown（内容区动态宽度 [600, 800] 居中，TOC 悬浮窗挂内容区左侧）；
  * 模式/滚动/TOC 状态挂载时从 store 按路径恢复（切走保存、切回恢复，
  * design-tab-state-memory §2.2/§2.4），仅换文件（key 隔离重挂载无条目）回默认。
@@ -2648,6 +2653,9 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
   )
   const fileScrollRef = useRef<HTMLDivElement>(null)
   const pendingScroll = useRef(savedView && savedView.top > 0 ? savedView.top : null)
+  // 「打开方式」弹窗目标路径（design-file-view-actions §2.2）：linux 平台经操作条
+  // 入口打开应用内自建选择器；null = 关闭。win32/darwin 点击即走系统对话框不开弹窗
+  const [openWith, setOpenWith] = useState<string | null>(null)
   // TOC 大纲（design-markdown-preview §2.4）：预览体 DOM 扫描 h1–h6
   const mdRef = useRef<HTMLDivElement | null>(null)
   const [tocHeadings, setTocHeadings] = useState<TocHeading[]>([])
@@ -2751,46 +2759,13 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, cached?.content, cached?.error])
 
-  // 图片分支（design-image-preview §2.2）：扩展名决定入口，渲染按服务端
-  // type/mimeType 兜底——不满足（如 .png 实为文本）继续走下方文本/二进制分支
-  if (isImage) {
-    if (!cached)
-      return (
-        <div className="file-view image-view">
-          <div className="file-state">{t.loading}</div>
-        </div>
-      )
-    if (cached.error) return <div className="file-view error">{cached.error}</div>
-    // ImagePreview 自持滚动容器（滚轮锚定/拖动平移都要操作其 scroll 位置）
-    if (imageSrc)
-      return (
-        <ImagePreview
-          src={imageSrc}
-          title={absolutePath.split("/").pop() ?? absolutePath}
-          zoomLabel={t.imageZoomToggle}
-          failedText={t.imageDecodeFailed}
-        />
-      )
-  }
-
-  // PDF 分支（design-pdf-preview §1 终态）：先经 /file/content 判可用性
-  // （错误/非二进制走占位），渲染 = 专用 WebContentsView（PDFium 顶层接管）
-  if (isPdf) {
-    if (!cached) return <div className="file-view pdf-view">{t.loading}</div>
-    if (cached.error) return <div className="file-view error">{cached.error}</div>
-    if (!cached.binary)
-      return (
-        <div className="file-view pdf-view">
-          <div className="file-state file-binary">{t.binaryUnsupported}</div>
-        </div>
-      )
-    return <PdfFrameView tabKey={`file:${absolutePath}`} absolutePath={absolutePath} />
-  }
-
-
   // 滚动偏移一次性恢复（§2.2）：预览 = 内容落地后设滚动层；源码 = 经
   // CodeView initialScrollTop prop 在同 commit 消费（rAF 布局落定后应用）。
-  // 内容未落地（loading/error）→ 等待，不清待恢复标记
+  // 内容未落地（loading/error）→ 等待，不清待恢复标记。
+  // 2026-09-08 起无条件执行（design-file-view-actions §2.1）：原位于图片/PDF
+  // 分支早退之后，仅文本文件注册——依赖「路径按实例恒定」才不违 Hook 规则；
+  // 分支改统一骨架（下方 content 解析）后不再依赖该前提，图片/PDF 分支
+  // fileScrollRef 未挂载为 null、无恢复条目，效果为纯 no-op
   useLayoutEffect(() => {
     if (pendingScroll.current == null) return
     if (!cached || cached.error) return
@@ -2802,17 +2777,99 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, cached?.content, cached?.error])
 
-  if (!previewable) {
-    if (!cached) return <div className="file-view">{t.loading}</div>
-    if (cached.error) return <div className="file-view error">{cached.error}</div>
+  // 内容分支解析（design-file-view-actions §2.1）：所有分支共用 wrap + 操作条
+  // 骨架（无早退），各分支标记/结构与原早退路径逐一等价——仅图片/PDF 加载态
+  // 容器类简化（image-view/pdf-view 于加载态无样式意义，统一走文本分支占位）
+  let content: ReactNode
+  if (isImage && cached && !cached.error && imageSrc) {
+    // 图片分支（design-image-preview §2.2）：扩展名决定入口，渲染按服务端
+    // type/mimeType 兜底——不满足（如 .png 实为文本）继续走下方文本/二进制分支。
+    // ImagePreview 自持滚动容器（滚轮锚定/拖动平移都要操作其 scroll 位置）
+    content = (
+      <ImagePreview
+        src={imageSrc}
+        title={absolutePath.split("/").pop() ?? absolutePath}
+        zoomLabel={t.imageZoomToggle}
+        failedText={t.imageDecodeFailed}
+      />
+    )
+  } else if (isPdf && cached && !cached.error) {
+    // PDF 分支（design-pdf-preview §1 终态）：先经 /file/content 判可用性
+    // （非二进制走占位），渲染 = 专用 WebContentsView（PDFium 顶层接管）
+    content = cached.binary ? (
+      <PdfFrameView tabKey={`file:${absolutePath}`} absolutePath={absolutePath} />
+    ) : (
+      <div className="file-view pdf-view">
+        <div className="file-state file-binary">{t.binaryUnsupported}</div>
+      </div>
+    )
+  } else if (previewable && cached && !cached.error && cached.binary) {
+    // md/html 被嗅探为二进制（内容含 NUL 等）：预览/源码两态都是同一占位
+    content = (
+      <div className="file-view">
+        <div className="file-state file-binary">{t.binaryUnsupported}</div>
+      </div>
+    )
+  } else if (previewable) {
+    // markdown 二态：loading/error 在滚动层内呈现（操作条常驻由外层骨架保证，
+    // 内容落地/重试成功不弹入）。
+    // onScroll 捕获仅预览态有效：源码态 CM 内滚（经 CodeView onScrollTop 上报）
+    // ——捕获写入不 emit（§2.2）
+    content = (
+      <div
+        className="file-view code-view"
+        ref={fileScrollRef}
+        onScroll={(e) => store.setFileViewState(absolutePath, { mode, top: e.currentTarget.scrollTop })}
+      >
+        {!cached && <div className="file-state">{t.loading}</div>}
+        {cached?.error && <div className="file-state file-error">{cached.error}</div>}
+        {cached && !cached.error && mode === "preview" && isMarkdown && (
+          // 内容区动态宽度 [600, 800] 相对全窗居中（§2.4）；滚动层全宽 →
+          // 滚动条贴窗口右缘；TOC 悬浮窗在滚动层之外（.file-view-wrap 绝对定位）
+          <div className="file-md" ref={mdRef}>
+            {/* front matter 元数据卡（§2.5）：仅顶层标量条目成卡；纯嵌套容器时
+                无卡但正文仍已剥离；卡在 markdown-body 之外（不受 vendor 排版） */}
+            {mdFrontMatter?.frontMatter && (
+              <dl className="md-frontmatter">
+                {mdFrontMatter.frontMatter.map((e, idx) => (
+                  <Fragment key={`${e.key}:${idx}`}>
+                    <dt className="md-fm-key">{e.key}</dt>
+                    <dd className="md-fm-val">{e.value}</dd>
+                  </Fragment>
+                ))}
+              </dl>
+            )}
+            <Markdown img={MarkdownImage} remarkPlugins={mdRemarkPlugins}>
+              {mdFrontMatter ? mdFrontMatter.body : cached.content}
+            </Markdown>
+          </div>
+        )}
+        {cached && !cached.error && mode === "source" && (
+          <CodeView
+            key={locale}
+            path={absolutePath}
+            content={cached.content}
+            locale={locale}
+            initialScrollTop={pendingScroll.current ?? undefined}
+            revealLine={revealLine}
+            onScrollTop={(top) => store.setFileViewState(absolutePath, { mode: "source", top })}
+          />
+        )}
+      </div>
+    )
+  } else if (!cached) {
+    content = <div className="file-view">{t.loading}</div>
+  } else if (cached.error) {
+    content = <div className="file-view error">{cached.error}</div>
+  } else if (cached.binary) {
     // 非图二进制：占位提示，不把 base64 当文本灌进代码视图（design-image-preview §2.5）
-    if (cached.binary)
-      return (
-        <div className="file-view">
-          <div className="file-state file-binary">{t.binaryUnsupported}</div>
-        </div>
-      )
-    return (
+    content = (
+      <div className="file-view">
+        <div className="file-state file-binary">{t.binaryUnsupported}</div>
+      </div>
+    )
+  } else {
+    content = (
       <div className="file-view code-view">
         {/* key 并入 locale：搜索面板短语随语言设置即时重建（CM phrases 是创建期 facet） */}
         <CodeView
@@ -2828,70 +2885,25 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
     )
   }
 
-  // md/html 被嗅探为二进制（内容含 NUL 等）：预览/源码两态都是同一占位，
-  // 工具条无意义，直接占位返回
-  if (cached && !cached.error && cached.binary)
-    return (
-      <div className="file-view">
-        <div className="file-state file-binary">{t.binaryUnsupported}</div>
-      </div>
-    )
-
   // TOC 可用 = markdown 且已扫出标题（加载/错误/源码态标题被清空，天然为 false）；
   // 悬浮窗可能遮挡内容区 → 默认收起（工具条按钮可显式展开，悬浮覆盖内容区）
   const hasToc = isMarkdown && tocHeadings.length > 0
   const tocOccluded = tocOccludesContent(paneWidth)
   const tocVisible = hasToc && (tocUserMode ?? !tocOccluded)
 
-  // 预览文件：工具条常驻（loading/error 也渲染）——避免内容落地/重试成功时
-  // 工具条弹入造成 ~32px 布局跳动
-  const view = (
-    // onScroll 捕获仅预览态有效：源码态 CM 内滚（经 CodeView onScrollTop 上报），
-    // html 沙箱 iframe 容器 overflow:hidden 不滚——捕获写入不 emit（§2.2）
-    <div
-      className="file-view code-view"
-      ref={fileScrollRef}
-      onScroll={(e) => store.setFileViewState(absolutePath, { mode, top: e.currentTarget.scrollTop })}
-    >
-      {!cached && <div className="file-state">{t.loading}</div>}
-      {cached?.error && <div className="file-state file-error">{cached.error}</div>}
-      {cached && !cached.error && mode === "preview" && isMarkdown && (
-        // 内容区动态宽度 [600, 800] 相对全窗居中（§2.4）；滚动层全宽 →
-        // 滚动条贴窗口右缘；TOC 悬浮窗在滚动层之外（.file-view-wrap 绝对定位）
-        <div className="file-md" ref={mdRef}>
-          {/* front matter 元数据卡（§2.5）：仅顶层标量条目成卡；纯嵌套容器时
-              无卡但正文仍已剥离；卡在 markdown-body 之外（不受 vendor 排版） */}
-          {mdFrontMatter?.frontMatter && (
-            <dl className="md-frontmatter">
-              {mdFrontMatter.frontMatter.map((e, idx) => (
-                <Fragment key={`${e.key}:${idx}`}>
-                  <dt className="md-fm-key">{e.key}</dt>
-                  <dd className="md-fm-val">{e.value}</dd>
-                </Fragment>
-              ))}
-            </dl>
-          )}
-          <Markdown img={MarkdownImage} remarkPlugins={mdRemarkPlugins}>
-            {mdFrontMatter ? mdFrontMatter.body : cached.content}
-          </Markdown>
-        </div>
-      )}
-      {cached && !cached.error && mode === "source" && (
-        <CodeView
-          key={locale}
-          path={absolutePath}
-          content={cached.content}
-          locale={locale}
-          initialScrollTop={pendingScroll.current ?? undefined}
-          revealLine={revealLine}
-          onScrollTop={(top) => store.setFileViewState(absolutePath, { mode: "source", top })}
-        />
-      )}
-    </div>
-  )
+  // 「打开方式」可见性（同文件树右键菜单，design-file-panel-context-menu §2.4）：
+  // win32/darwin 系统对话框、linux 自建选择器；纯浏览器 shim 无系统通道不显示
+  const showOpenWith =
+    window.desktop.platform === "win32" ||
+    window.desktop.platform === "darwin" ||
+    window.desktop.platform === "linux"
 
   return (
     <div className="file-view-wrap" ref={wrapRef}>
+      {/* 操作条（design-file-view-actions §2.1/§2.2）：所有文件视图常驻（加载/
+          错误/占位态不弹入，防 ~32px 布局跳动，沿 markdown 工具条常驻决策）——
+          open / open with 动作与文件树右键菜单同源；markdown 另有 TOC 钮（左，
+          margin-right:auto 推左）与预览/源码分段（右缘） */}
       <div className="file-toolbar">
         {hasToc && (
           <button
@@ -2910,37 +2922,64 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
             <ListTree size={16} aria-hidden />
           </button>
         )}
-        <div className="ms-segmented" role="group" aria-label={t.viewModeLabel}>
+        <button
+          type="button"
+          className="icon-btn"
+          title={t.fileOpen}
+          aria-label={t.fileOpen}
+          onClick={() => void window.desktop.shellOpenPath(absolutePath)}
+        >
+          <ExternalLink size={16} aria-hidden />
+        </button>
+        {showOpenWith && (
           <button
             type="button"
-            aria-pressed={mode === "preview"}
-            className={"ms-seg" + (mode === "preview" ? " active" : "")}
+            className="icon-btn"
+            title={t.fileOpenWith}
+            aria-label={t.fileOpenWith}
             onClick={() => {
-              setMode("preview")
-              // 模式切换归零偏移：非激活模式偏移不保留（两模式坐标系不可换算，§2.2）。
-              // 待恢复偏移同弃——内容未落地时切换，残留值会在落地后错灌入新模式
-              pendingScroll.current = null
-              store.setFileViewState(absolutePath, { mode: "preview", top: 0 })
+              // linux 走应用内自建选择器（design-linux-open-with）；
+              // win32/darwin 系统对话框（同右键菜单 §2.4）
+              if (window.desktop.platform === "linux") setOpenWith(absolutePath)
+              else void window.desktop.shellOpenWith(absolutePath)
             }}
           >
-            {t.previewMode}
+            <AppWindow size={16} aria-hidden />
           </button>
-          <button
-            type="button"
-            aria-pressed={mode === "source"}
-            className={"ms-seg" + (mode === "source" ? " active" : "")}
-            onClick={() => {
-              setMode("source")
-              // 同预览钮：待恢复偏移同弃（防内容未落地时切换、落地后错灌旧偏移）
-              pendingScroll.current = null
-              store.setFileViewState(absolutePath, { mode: "source", top: 0 })
-            }}
-          >
-            {t.sourceMode}
-          </button>
-        </div>
+        )}
+        {previewable && (
+          <div className="ms-segmented" role="group" aria-label={t.viewModeLabel}>
+            <button
+              type="button"
+              aria-pressed={mode === "preview"}
+              className={"ms-seg" + (mode === "preview" ? " active" : "")}
+              onClick={() => {
+                setMode("preview")
+                // 模式切换归零偏移：非激活模式偏移不保留（两模式坐标系不可换算，§2.2）。
+                // 待恢复偏移同弃——内容未落地时切换，残留值会在落地后错灌入新模式
+                pendingScroll.current = null
+                store.setFileViewState(absolutePath, { mode: "preview", top: 0 })
+              }}
+            >
+              {t.previewMode}
+            </button>
+            <button
+              type="button"
+              aria-pressed={mode === "source"}
+              className={"ms-seg" + (mode === "source" ? " active" : "")}
+              onClick={() => {
+                setMode("source")
+                // 同预览钮：待恢复偏移同弃（防内容未落地时切换、落地后错灌旧偏移）
+                pendingScroll.current = null
+                store.setFileViewState(absolutePath, { mode: "source", top: 0 })
+              }}
+            >
+              {t.sourceMode}
+            </button>
+          </div>
+        )}
       </div>
-      {view}
+      {content}
       {/* TOC 悬浮窗：滚动层之外绝对定位（常驻可见），遮挡内容区时默认收起（§2.4） */}
       {tocVisible && (
         <MdToc
@@ -2957,6 +2996,15 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
               tocHeadings.filter((h) => next.has(h.el)).map((h) => h.text),
             )
           }}
+        />
+      )}
+      {openWith && (
+        <OpenWithDialog
+          path={openWith}
+          onLaunch={(appId) => {
+            void window.desktop.shellOpenWithApp(openWith, appId)
+          }}
+          onClose={() => setOpenWith(null)}
         />
       )}
     </div>

@@ -35,7 +35,7 @@
 
 - 移动端格式集是 jpeg/png/gif/webp/svg（Flutter 引擎所限）；桌面 Chromium 原生解码 avif/bmp/ico，零成本纳入。
 - 分发只按扩展名（与 isMarkdownPath/isHtmlPath 一致），加载态即可确定分支；渲染时再按 §2.1 字段兜底（扩展名说图片但服务端返回 text/非 image mime → 回落代码视图/二进制占位，不硬渲染坏图）。
-- **无工具条**（无源码态可切——位图源码无阅读价值；svg 源码想看可走代码文件路径打开，不为此加分支；移动端同决策「图片/二进制：无额外 action」）。
+- ~~**无工具条**~~（**2026-09-08 修订**：文件 Tab 全视图统一常驻操作条——open/open-with 入口（图片恰是系统级消费高频场景），见 [design-file-view-actions.md](./design-file-view-actions.md)；「无预览/源码切换」维持——位图源码无阅读价值，svg 源码想看可走代码文件路径打开，不为此加分支；移动端「无额外 action」对桌面不适用）。
 
 ### 2.3 图片渲染
 

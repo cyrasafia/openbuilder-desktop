@@ -4,6 +4,9 @@
  * + 预览/源码切换 + 加载/错误态工具条常驻 + TOC 大纲（§2.4）
  * + 图片预览（design-image-preview）：扩展名分发、data URL 构建、缩放切换、
  * 解码失败兜底、非图二进制占位。
+ * + 操作条（design-file-view-actions，2026-09-08）：所有分支常驻
+ * open/open-with 入口；平台分支（linux 自建选择器 / win32·darwin 系统对话框 /
+ * browser 隐藏）；浮层计数压制原生视图。
  * jsdom 无 IntersectionObserver（streamdown 依赖），测试前补 stub。
  */
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
@@ -21,6 +24,14 @@ import { ResizeObserverStub } from "./resize-observer-stub"
 const loadFileContent = vi.fn(async () => {})
 const ensureFileImage = vi.fn()
 const scrollIntoView = vi.fn()
+
+// desktop 桩（design-file-view-actions）：platform 可变（按用例切换），
+// shell 动作 mock 供操作条断言
+let platform: "linux" | "win32" | "darwin" | "browser" = "linux"
+const shellOpenPath = vi.fn(async () => "")
+const shellOpenWith = vi.fn(async () => "")
+const shellOpenWithApp = vi.fn(async () => "")
+const shellListOpenWithApps = vi.fn(async () => [] as { id: string; name: string; icon: string | null; matches: boolean }[])
 
 /** store.subscribe 收集的监听器（md 相对图片 useSyncExternalStore 直订后，测试手动通知） */
 let storeListeners: Array<() => void> = []
@@ -42,6 +53,17 @@ vi.mock("../app", () => ({
       imageZoomToggle: "切换缩放",
       imageDecodeFailed: "图片解码失败",
       mdImageFailed: "图片加载失败",
+      // 操作条（design-file-view-actions；文案键复用右键菜单）
+      fileOpen: "打开",
+      fileOpenWith: "打开方式…",
+      close: "关闭",
+      openWithSearch: "搜索应用…",
+      openWithLoading: "正在枚举应用…",
+      openWithEmpty: "无匹配的应用",
+      openWithMatched: "推荐应用",
+      openWithOther: "其他应用",
+      openWithLastUsed: "上次使用",
+      openWithNoResult: "无匹配结果",
     },
     locale: "zh" as const,
   }),
@@ -52,11 +74,19 @@ vi.mock("../app", () => ({
  *  MarkdownImage 的 [target, store] effect 依赖失效——重复 ensureFileImage） */
 let storeStub: Record<string, unknown>
 
+/** OpenWithDialog（design-file-view-actions 内嵌）断言用浮层计数 mock */
+const pushOverlay = vi.fn()
+const popOverlay = vi.fn()
+
 function buildStoreStub() {
+  pushOverlay.mockClear()
+  popOverlay.mockClear()
   storeStub = {
     fileContents: fileContentsStub,
     loadFileContent,
     ensureFileImage,
+    pushOverlay,
+    popOverlay,
     subscribe: (fn: () => void) => {
       storeListeners.push(fn)
       return () => {
@@ -107,6 +137,18 @@ beforeAll(() => {
   globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver
   // TOC 点击锚定走 scrollIntoView（jsdom 未实现）
   Element.prototype.scrollIntoView = scrollIntoView
+  // desktop 桩（design-file-view-actions）：FileView 操作条读 platform /
+  // 调 shell 动作（真实 app 由 preload 或 browser-shim 恒提供）
+  Object.defineProperty(window, "desktop", {
+    configurable: true,
+    get: () => ({
+      platform,
+      shellOpenPath,
+      shellOpenWith,
+      shellOpenWithApp,
+      shellListOpenWithApps,
+    }),
+  })
 })
 
 afterAll(() => {
@@ -120,6 +162,12 @@ beforeEach(() => {
   loadFileContent.mockClear()
   ensureFileImage.mockClear()
   scrollIntoView.mockClear()
+  platform = "linux"
+  shellOpenPath.mockClear()
+  shellOpenWith.mockClear()
+  shellOpenWithApp.mockClear()
+  shellListOpenWithApps.mockClear()
+  shellListOpenWithApps.mockResolvedValue([])
   storeListeners = []
   fileContentsStub = new Map()
   fileViewStateStub = new Map()
@@ -181,7 +229,7 @@ describe("FileView markdown 预览", () => {
     expect((await screen.findAllByText("B")).some((el) => el.tagName === "H1")).toBe(true)
   })
 
-  it(".mdx / 点文件 .md / 无扩展名：均不识别（纯文本代码视图、无工具条）", () => {
+  it(".mdx / 点文件 .md / 无扩展名：均不识别（纯文本代码视图，无预览/源码分段；操作条常驻）", () => {
     for (const [path, text] of [
       ["/repo/page.mdx", "# not md"],
       ["/repo/.md", "dotfile named .md"],
@@ -192,15 +240,19 @@ describe("FileView markdown 预览", () => {
       render(<FileView absolutePath={path} />)
       expect(document.querySelector(".cm-content")?.textContent, path).toContain(text)
       expect(document.querySelector(".ms-segmented"), path).toBeNull()
+      // 操作条（design-file-view-actions）：无分段也有 open/open-with 入口
+      expect(document.querySelector(".file-toolbar"), path).not.toBeNull()
+      expect(screen.getByRole("button", { name: "打开" }), path).toBeTruthy()
     }
   })
 
-  it("非 markdown 文件行为不变：代码视图（行号 + 内容）、无工具条", () => {
+  it("非 markdown 文件：代码视图（行号 + 内容）+ 操作条（open/open-with；无预览/源码分段）", () => {
     fileContentsStub.set("/repo/src/main.ts", { content: "const x = 1\nconst y = 2" })
     render(<FileView absolutePath="/repo/src/main.ts" />)
     expect(document.querySelector(".cm-content")?.textContent).toContain("const x = 1")
     expect(document.querySelector(".cm-gutters")).not.toBeNull()
     expect(document.querySelector(".ms-segmented")).toBeNull()
+    expect(document.querySelector(".file-toolbar")).not.toBeNull()
   })
 
   it("markdown 源码态：代码视图渲染原文", async () => {
@@ -467,6 +519,97 @@ describe("FileView markdown TOC（design-markdown-preview §2.4）", () => {
     expect(screen.queryByRole("button", { name: "收起目录" })).toBeNull()
     fireEvent.click(screen.getByRole("button", { name: "预览" }))
     expect(await screen.findByRole("navigation")).not.toBeNull()
+  })
+})
+
+describe("FileView 操作条（design-file-view-actions）", () => {
+  it("代码视图：操作条常驻；open → shellOpenPath(当前文件路径)", () => {
+    fileContentsStub.set("/repo/src/main.ts", { content: "const x = 1" })
+    render(<FileView absolutePath="/repo/src/main.ts" />)
+    expect(document.querySelector(".file-toolbar")).not.toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "打开" }))
+    expect(shellOpenPath).toHaveBeenCalledWith("/repo/src/main.ts")
+  })
+
+  it("所有分支常驻入口：markdown（与分段共存）/图片/PDF/二进制占位/加载态", () => {
+    // markdown：open/open-with 与预览/源码分段同条
+    fileContentsStub.set("/repo/doc.md", { content: "# 甲" })
+    render(<FileView absolutePath="/repo/doc.md" />)
+    expect(screen.getByRole("button", { name: "预览" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "打开" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "打开方式…" })).toBeTruthy()
+    cleanup()
+
+    // 图片
+    fileContentsStub.set("/repo/a.png", { content: "QUJD", binary: true, mimeType: "image/png" })
+    render(<FileView absolutePath="/repo/a.png" />)
+    expect(document.querySelector(".image-zoom")).not.toBeNull()
+    expect(screen.getByRole("button", { name: "打开方式…" })).toBeTruthy()
+    fireEvent.click(screen.getByRole("button", { name: "打开" }))
+    expect(shellOpenPath).toHaveBeenCalledWith("/repo/a.png")
+    cleanup()
+
+    // PDF（宿主 stub 之下操作条仍在）
+    fileContentsStub.set("/repo/doc.pdf", { content: btoa("PDF"), binary: true, mimeType: "application/pdf" })
+    render(<FileView absolutePath="/repo/doc.pdf" />)
+    expect(document.querySelector(".pdf-frame-stub")).not.toBeNull()
+    expect(screen.getByRole("button", { name: "打开方式…" })).toBeTruthy()
+    cleanup()
+
+    // 二进制占位（应用内不可预览——open 恰是主出口）
+    fileContentsStub.set("/repo/a.zip", { content: "UEsDBAo=", binary: true, mimeType: "application/zip" })
+    render(<FileView absolutePath="/repo/a.zip" />)
+    expect(document.querySelector(".file-binary")).not.toBeNull()
+    expect(screen.getByRole("button", { name: "打开方式…" })).toBeTruthy()
+    cleanup()
+
+    // 加载态（无缓存）：入口不依赖内容
+    render(<FileView absolutePath="/repo/whatever.bin" />)
+    expect(screen.getByText("加载中…")).not.toBeNull()
+    expect(screen.getByRole("button", { name: "打开" })).toBeTruthy()
+  })
+
+  it("linux open-with → 应用内自建选择器：枚举当前文件，选择行 → shellOpenWithApp + 关闭 + 浮层计数", async () => {
+    shellListOpenWithApps.mockResolvedValue([
+      { id: "editor.desktop", name: "文本编辑器", icon: null, matches: true },
+    ])
+    fileContentsStub.set("/repo/src/main.ts", { content: "x" })
+    render(<FileView absolutePath="/repo/src/main.ts" />)
+    fireEvent.click(screen.getByRole("button", { name: "打开方式…" }))
+    expect(shellListOpenWithApps).toHaveBeenCalledWith("/repo/src/main.ts")
+    // 弹窗存续期间浮层计数（PDF/浏览器原生视图隐藏的 z-order 对策）
+    expect(pushOverlay).toHaveBeenCalledTimes(1)
+    fireEvent.click(await screen.findByRole("button", { name: "文本编辑器" }))
+    expect(shellOpenWithApp).toHaveBeenCalledWith("/repo/src/main.ts", "editor.desktop")
+    // 选择即关闭 → 计数平衡
+    expect(popOverlay).toHaveBeenCalledTimes(1)
+    expect(document.querySelector(".open-with-dialog")).toBeNull()
+  })
+
+  it("win32/darwin open-with → 系统对话框 shellOpenWith（不弹自建选择器）；browser 平台不显示该项", () => {
+    platform = "win32"
+    fileContentsStub.set("/repo/a.ts", { content: "x" })
+    render(<FileView absolutePath="/repo/a.ts" />)
+    fireEvent.click(screen.getByRole("button", { name: "打开方式…" }))
+    expect(shellOpenWith).toHaveBeenCalledWith("/repo/a.ts")
+    expect(shellListOpenWithApps).not.toHaveBeenCalled()
+    expect(document.querySelector(".open-with-dialog")).toBeNull()
+    cleanup()
+
+    // darwin 同系统对话框
+    platform = "darwin"
+    fileContentsStub.set("/repo/a.ts", { content: "x" })
+    render(<FileView absolutePath="/repo/a.ts" />)
+    fireEvent.click(screen.getByRole("button", { name: "打开方式…" }))
+    expect(shellOpenWith).toHaveBeenCalledTimes(2)
+    cleanup()
+
+    // 纯浏览器 shim：open-with 不渲染（无系统通道），open 仍在（同右键菜单恒显）
+    platform = "browser"
+    fileContentsStub.set("/repo/a.ts", { content: "x" })
+    render(<FileView absolutePath="/repo/a.ts" />)
+    expect(screen.queryByRole("button", { name: "打开方式…" })).toBeNull()
+    expect(screen.getByRole("button", { name: "打开" })).toBeTruthy()
   })
 })
 

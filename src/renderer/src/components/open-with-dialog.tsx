@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react"
 import { X } from "lucide-react"
-import { useI18n } from "../app"
+import { useI18n, useStore } from "../app"
 
 /**
  * Linux「打开方式」选择器弹窗（design-linux-open-with §1.3）：全量应用列表
@@ -18,11 +18,24 @@ export function OpenWithDialog({
   onClose: () => void
 }) {
   const { t } = useI18n()
+  const store = useStore()
   const [apps, setApps] = useState<{ id: string; name: string; icon: string | null; matches: boolean; lastUsed?: boolean }[] | null>(null)
   const [query, setQuery] = useState("")
   const [sel, setSel] = useState(0)
   const listRef = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
+
+  // 浮层计数（design-browser-tab §1.2 z-order，同 ConfirmDialog 模式）：弹窗是
+  // DOM，盖不住浏览器/PDF 文件 Tab 的原生 WebContentsView（OS 层在 DOM 之上），
+  // 存续期间必须计数隐藏。2026-09-08 修订（design-file-view-actions §2.3）：
+  // 原组件不计数——文件树入口下右键菜单卸载（pop）与弹窗挂载之间计数归零，
+  // 浏览器/PDF Tab 激活时弹窗被原生视图盖住属既有缺口，随文件预览操作条
+  // （PDF 页直接弹本选择器）一并修复，两处入口共享
+  useEffect(() => {
+    store.pushOverlay()
+    return () => store.popOverlay()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     let alive = true
