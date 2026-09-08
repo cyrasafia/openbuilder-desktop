@@ -2146,13 +2146,17 @@
   color: var(--syntax-punctuation);
 }
 
-/* 工具条：右对齐分段开关（预览/源码），markdown 文件常驻渲染；
- * 分段控件复用 .ms-segmented/.ms-seg（单一来源，不另起一套）；
- * 上下等距——开关相对工具条纵向居中，不与下方内容贴连（2026-08-25，原 0 底距底对齐） */
+/* 工具条（操作条）：右对齐动作组——open / open with 图标钮 + 预览/源码分段开关
+ * （markdown），所有文件视图常驻渲染（design-file-view-actions，2026-09-08 起
+ * 对全部分支生效——加载/错误/占位态不弹入，防 ~32px 布局跳动；原仅 markdown）；
+ * 分段控件复用 .ms-segmented/.ms-seg（单一来源，不另起一套）；gap = 右组内
+ * 间距（TOC 钮 margin-right:auto 推左不受影响）；
+ * 上下等距——控件相对工具条纵向居中，不与下方内容贴连（2026-08-25，原 0 底距底对齐） */
 .file-toolbar {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  gap: 8px;
   /* 显式高度 = --file-toolbar-h（TOC 悬浮窗定位/限高 calc 的契约，勿改回 padding 撑高） */
   height: var(--file-toolbar-h);
   padding: 0 16px;
