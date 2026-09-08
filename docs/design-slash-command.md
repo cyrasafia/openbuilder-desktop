@@ -3,6 +3,7 @@
 > 参考移动端同类设计：`../openbuilder/docs/design-slash-command-refresh.md`（列表缓存与空响应防护）、
 > `../openbuilder/docs/design-slash-command-echo.md`（回显 part 契约与渲染）。
 > 本文落地桌面端，交互按桌面习惯调整（键盘导航菜单替代移动端点选列表）。
+> **2026-09-08 修订**：斜杠命令扩展至**新 Tab 引导页**（guide composer），见文末修订记录。
 
 ## 问题
 
@@ -255,4 +256,44 @@ server 源码核实无回填风险：`runner.cancel` 使在途 command 请求走
   悬挂、乐观消息滞留：SSE 同死，重连/对账与状态行 degraded 提示兜底，与移动端同暴露面，
   接受（官方 app 同行为）；
 - 菜单 `key={c.name}` 依赖 server 注册表命令名全局唯一：builtin/config/MCP/skill 四类
-  共享一个命名空间，server 侧注册时已保证（同名后注册覆盖前注册），接受。
+   共享一个命名空间，server 侧注册时已保证（同名后注册覆盖前注册），接受。
+
+## 修订记录
+
+### 2026-09-08：引导页（guide composer）同构支持
+
+原设计只覆盖会话 Tab（ChatView）。引导页是新会话的实际入口（首条消息即在此发送），
+无斜杠支持意味着 `/review` 类命令必须在"先随便发条消息"之后才可用——补齐：
+
+- **菜单/键盘/分流全部同构 ChatView**：`CommandHints` 组件复用（锚定依赖
+  `.guide-composer` 已有的 `position:relative`，design-file-reference H1 先例）；
+  cmdMode 判定（`/` 开头且其后无空白）、按需拉取 effect（未拉过或 degraded 才拉）、
+  ↑/↓ 循环 + Enter/Tab 补全 + Esc 关闭 + mousedown 点选、发送前强制重拉 +
+  命中走 `sendCommand` / 未注册按字面 `sendPrompt`（决策 3/4 同源）。
+- **注册表目录 = 作用域目录**：引导页无会话，`refreshCommands(directory)` 用
+  `scopeQuery.directory`——与 `createSession` 的目录来源同一（store 契约），新会话
+  目录恒等于当前作用域目录，命令匹配不会跑错注册表。缓存仍是全局单份 +
+  `cacheDir` 隔离（决策 6），与 ChatView 共享同一份缓存与 in-flight Promise。
+- **发送时序**：附件守卫（design-session-attachments review P2-2）→ 建会话
+  （`pendingSession` 复用既有语义）→ 斜杠分流。命中命令走
+  `store.sendCommand(pendingSession.id, ...)`——乐观回显/真实回显清除/SSE 渲染
+  全在 store 侧，与 ChatView 调用无差异；发送成功路径不变（清草稿/引用/附件 +
+  开 Tab），`sendCommand` 侧只清 session 键，directory 键仍由引导页显式清。
+- **`parseSlash` 提升为模块级函数**（原 ChatView 内局部）：ChatView 守卫/分流与
+  引导页共用单一来源，防两处解析漂移（review 第二轮 P3 教训的再延伸）。
+- **再入闩用 ref 而非 `sending` state（review 修复）**：引导页独有的坑——附件守卫
+  `await refreshCommands` 插在"空守卫 → `setSending(true)`"之间，在途期间第二次
+  Enter 读到的仍是同渲染闭包里的 `sending === false`，两次并发走到 `createSession`
+  → **建出两个会话 + 发两遍 + 开两个 Tab**。ChatView 无此问题（它无 `sending`
+  闩，并发发送本就是 supplement-send 语义）。修复：`sendingRef` 同步置起于任何
+  await 之前，出口统一 `finally` 双清（ref + state）。仅把 `setSending(true)`
+  上移**不够**——state 更新对同 tick 的第二次调用仍是旧值；且上移会改变
+  "被守卫拦下不进 sending 态"的语义。回归用例：附件 + 未注册 `/xxx` + 悬挂的
+  refreshCommands 下连按两次 Enter，断言 `createSession`/`sendPrompt` 各一次。
+- **已知冗余（接受）**：附件 + **未注册** `/xxx` 路径上 `refreshCommands` 被 await
+  两次（守卫一次、分流一次）——串行两次 GET。与 ChatView 完全同构，store 侧
+  in-flight 共享使并发路径无重复；为保持两处单一语义不做单侧优化。
+- 测试：`workspace-guide.test.tsx` 新增 8 用例（菜单触发/过滤、Enter 补全不发送、
+  ↑/↓/Tab/Esc、命中走 sendCommand、未注册字面降级、经菜单后发送前重拉、
+  附件 + 非命令不拦、守卫在途连按 Enter 不再入）；jsdom 缺 `scrollIntoView`
+  按 file-view.test 先例 stub。
