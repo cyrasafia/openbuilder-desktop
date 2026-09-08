@@ -178,6 +178,20 @@ export function registerIpc() {
     return shell.openPath(path)
   })
 
+  // 浏览器 Tab「在系统浏览器打开」（design-browser-tab §1.3）：协议白名单
+  // （http/https/file——about: 等交系统无意义）；分支/净化 env 注记同上
+  ipcMain.handle("shell:openExternal", (_e, url: string): Promise<string> => {
+    if (typeof url !== "string" || !/^(https?|file):\/\//.test(url)) return Promise.resolve("invalid url")
+    if (process.platform === "linux") return xdgOpen(url)
+    if (process.platform === "darwin") return spawnSessionApp("open", [url], 5000)
+    // openExternal 失败是 reject——规整为错误信息串（保持 ""=成功 约定，
+    // renderer 侧 fire-and-forget void 调用不产生未处理 rejection）
+    return shell.openExternal(url).then(
+      () => "",
+      () => "open failed",
+    )
+  })
+
   ipcMain.handle("shell:openWith", (_e, path: string): string | Promise<string> => {
     if (typeof path !== "string" || path.length === 0) return "invalid path"
     if (process.platform === "win32") {

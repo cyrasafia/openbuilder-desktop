@@ -49,6 +49,9 @@ function createBrowserDesktopApi(): DesktopApi {
     async shellOpenPath() {
       return "系统打开仅 Electron 环境可用"
     },
+    async shellOpenExternal() {
+      return "系统打开仅 Electron 环境可用"
+    },
     async shellOpenWith() {
       return "系统打开仅 Electron 环境可用"
     },

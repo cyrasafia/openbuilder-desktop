@@ -9,6 +9,7 @@ import { BrowserTabView } from "./browser-tab-view"
 import { ResizeObserverStub } from "./resize-observer-stub"
 
 const browser = {
+  platform: "linux" as const,
   browserViewBounds: vi.fn(),
   browserViewShow: vi.fn(),
   browserViewHide: vi.fn(),
@@ -19,6 +20,7 @@ const browser = {
   browserReload: vi.fn(),
   browserStop: vi.fn(),
   openHtmlFilePicker: vi.fn(async (): Promise<string | null> => "/repo/x.html"),
+  shellOpenExternal: vi.fn(async () => ""),
 }
 
 let stateStub: { viewId: number; url: string; title: string; loading: boolean; canGoBack: boolean; canGoForward: boolean } | null
@@ -31,6 +33,7 @@ vi.mock("../app", () => ({
       browserReload: "刷新",
       browserStop: "停止",
       browserOpenFile: "打开本地文件…",
+      browserOpenExternal: "在系统浏览器打开",
       browserAddressPlaceholder: "输入地址",
     },
     locale: "zh" as const,
@@ -96,6 +99,25 @@ describe("BrowserTabView", () => {
     screen.getByTitle("打开本地文件…").click()
     await waitFor(() => expect(browser.openHtmlFilePicker).toHaveBeenCalledTimes(2))
     expect(browser.browserNavigate).not.toHaveBeenCalled()
+  })
+
+  it("在系统浏览器打开：走当前页 URL（store 权威而非 key）；about: 禁用；纯浏览器 shim 不显示", () => {
+    const first = render(<BrowserTabView tabKey="browser:https://initial.dev/" viewId={1} />)
+    const btn = screen.getByTitle("在系统浏览器打开") as HTMLButtonElement
+    expect(btn.disabled).toBe(false)
+    btn.click()
+    // 当前页 URL（stateStub.url）而非 key 里的初始 URL
+    expect(browser.shellOpenExternal).toHaveBeenCalledWith("https://example.com/")
+    first.unmount()
+    // about: 等不可外开协议：禁用（白名单同 main 侧 handler）
+    stateStub = { ...stateStub!, url: "about:blank" }
+    const second = render(<BrowserTabView tabKey="browser:about:blank" viewId={1} />)
+    expect((screen.getByTitle("在系统浏览器打开") as HTMLButtonElement).disabled).toBe(true)
+    second.unmount()
+    // shim 环境（platform === "browser"）：入口不渲染
+    ;(window as unknown as { desktop: unknown }).desktop = { ...browser, platform: "browser" as const }
+    render(<BrowserTabView tabKey="browser:https://example.com/" viewId={1} />)
+    expect(screen.queryByTitle("在系统浏览器打开")).toBeNull()
   })
 
   it("bounds 同步：挂载推送 + resize 重推（rAF 合帧）", async () => {

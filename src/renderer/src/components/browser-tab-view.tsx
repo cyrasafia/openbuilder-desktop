@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { ArrowLeft, ArrowRight, FolderOpen, RotateCw, X } from "lucide-react"
+import { ArrowLeft, ArrowRight, ExternalLink, FolderOpen, RotateCw, X } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import { fileUrlOf } from "@shared/file-url"
 
@@ -59,6 +59,11 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
       : fileUrlOf(value)
     window.desktop.browserNavigate(viewId, url)
   }
+
+  // 系统浏览器打开的目标：当前页 URL（store 权威，导航事件持续覆写）；
+  // 协议白名单同 main 侧 shell:openExternal——about: 等不可外开协议禁用
+  const currentUrl = state?.url ?? ""
+  const externalUrl = /^(https?|file):\/\//.test(currentUrl) ? currentUrl : null
 
   return (
     <div className="browser-tab">
@@ -140,6 +145,21 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
         >
           <FolderOpen size={14} />
         </button>
+        {/* 系统浏览器打开当前页（design-browser-tab §1.3）：当前页 URL（store
+            state，无 state 兜底 key 前缀）；纯浏览器 shim 不显示 */}
+        {window.desktop.platform !== "browser" && (
+          <button
+            className="icon-btn"
+            title={t.browserOpenExternal}
+            aria-label={t.browserOpenExternal}
+            disabled={!externalUrl}
+            onClick={() => {
+              if (externalUrl) void window.desktop.shellOpenExternal(externalUrl)
+            }}
+          >
+            <ExternalLink size={14} />
+          </button>
+        )}
       </div>
       {/* 内容宿主：占位 + bounds 源（渲染在 main 侧原生视图） */}
       <div ref={hostRef} className="browser-host" />
