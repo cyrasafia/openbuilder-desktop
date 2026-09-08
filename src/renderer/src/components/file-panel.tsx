@@ -7,6 +7,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react"
 import { createPortal } from "react-dom"
+import { ChevronDown, ChevronRight } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import type { FileNode } from "@shared/api-types"
 import { PanelResizeHandle } from "./panel-resize"
@@ -192,7 +193,11 @@ function FileRow({
           }}
           onDragEnd={() => setDraggingFileRef(null)}
         >
-          <span className="chevron">{expanded ? "▾" : "▸"}</span>
+          {expanded ? (
+            <ChevronDown className="chevron" size={12} aria-hidden />
+          ) : (
+            <ChevronRight className="chevron" size={12} aria-hidden />
+          )}
           <span className="tree-label">{node.name}</span>
         </div>
         {expanded && children.length > 0 && (

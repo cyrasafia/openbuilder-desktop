@@ -1389,6 +1389,13 @@
   background: var(--surface-container-high);
 }
 
+/* chip 家族折叠标记（DESIGN.md 图标章「折叠 chevron」：chip 行内 = 12 档，与同排
+   `ui-sm`(12px) 工具名同尺寸）：ToolChip / ReasoningChip / SubagentPanel 同族同尺寸 */
+.chip-chevron {
+  color: var(--outline);
+  flex-shrink: 0;
+}
+
 .chip-label {
   font-size: var(--text-sm);
   color: var(--outline);
@@ -1406,9 +1413,7 @@
 }
 
 .chevron {
-  font-size: 10px;
   color: var(--outline);
-  width: 12px;
   flex-shrink: 0;
 }
 
@@ -1643,7 +1648,6 @@
   color: var(--outline);
 }
 .ms-chev {
-  font-size: 10px;
   color: var(--outline);
   flex-shrink: 0;
 }
@@ -2041,14 +2045,26 @@
    * 无交互处理器，多余点击被 CM gutter 分发忽略，放行无损 */
 }
 
-/* 折叠标记（cm-gutters 内，随行号列渲染）：颜色令牌化 + hover 反馈 */
+/* 折叠标记（cm-gutters 内，随行号列渲染）：颜色令牌化 + hover 反馈。
+ * span 自身也须 flex：SVG 是 inline 替换元素，按基线对齐会在 span 行盒底部留出
+ * descender 空隙，只居中 gutterElement 等于「span 居中而 SVG 在 span 内偏上」，
+ * 残留偏移仍随字体度量漂移——两层都去掉行盒才真正与字体解耦 */
 .code-view-host .cm-foldGutter span {
+  display: flex;
+  align-items: center;
   color: var(--outline);
   cursor: pointer;
 }
 
 .code-view-host .cm-foldGutter span:hover {
   color: var(--on-surface);
+}
+
+/* 标记垂直居中（外层）：CM 给 gutterElement 设显式行高 px（GutterElement.update
+ * 写 style.height），flex 居中把 span 钉在该高度的几何中心（design-code-folding §2.3） */
+.code-view-host .cm-foldGutter .cm-gutterElement {
+  display: flex;
+  align-items: center;
 }
 
 /* 折叠占位符：覆盖 CM baseTheme 浅灰底（dark 下突兀），令牌化 */
@@ -2088,8 +2104,9 @@
   background: color-mix(in srgb, var(--primary) 26%, transparent);
 }
 
-/* 搜索面板（Ctrl+F，面板居底——CM 默认，原 top，2026-09-08 修订）：密度对齐
- * 工具条 idiom——28 高控件（--control-h）
+/* 搜索面板（Ctrl+F，面板居底——CM 默认，原 top: true，2026-09-08 修订）：
+ * chrome 底与 .file-toolbar 同档统一（surface-container-low，原 container-high
+ * 过深与工具条割裂）；密度对齐工具条 idiom——28 高控件（--control-h）
  * + 上下 6 padding（面板高 = --file-toolbar-h，与文件操作条等高衔接）；flex 单行
  * 纵向居中（readonly 恒单行，CM 内建的 <br> 分行与 .2em margin 换 gap；close 钮
  * 由 CM 的绝对定位 top:0 收编为流内 margin-left:auto 右推——原贴顶右缘不居中）；
@@ -2100,7 +2117,7 @@
  * label`（0,2,1）看似同级实则低一档、恒被压住（2026-09-08 实测）。故本组一律
  * 叠 .cm-panel.cm-search 抬至 4 类起步，不依赖文档序稳赢 */
 .code-view-host .cm-editor .cm-panels {
-  background: var(--surface-container-high);
+  background: var(--surface-container-low);
   color: var(--on-surface);
 }
 
@@ -2253,25 +2270,44 @@
   color: var(--syntax-punctuation);
 }
 
-/* 工具条（操作条）：右对齐动作组——open / open with 图标钮 + 预览/源码分段开关
- * （markdown），所有文件视图常驻渲染（design-file-view-actions，2026-09-08 起
- * 对全部分支生效——加载/错误/占位态不弹入，防 ~32px 布局跳动；原仅 markdown）；
- * 分段控件复用 .ms-segmented/.ms-seg（单一来源，不另起一套）；gap = 右组内
- * 间距（TOC 钮 margin-right:auto 推左不受影响）；
+/* 工具条（操作条）：文件名（左，flex:1）+ TOC 钮 + open / open with 图标钮 +
+ * 预览/源码分段开关（右缘），所有文件视图常驻渲染（design-file-view-actions，
+ * 2026-09-08 起对全部分支生效——加载/错误/占位态不弹入，防 ~32px 布局跳动；
+ * 原仅 markdown）；分段控件复用 .ms-segmented/.ms-seg（单一来源，不另起一套）；
+ * gap = 相邻子项间距（2026-09-08 文件名接入后推左职责移交 .file-toolbar-name
+ * 的 flex:1，justify-content 不再参与主轴排布）；
  * 上下等距——控件相对工具条纵向居中，不与下方内容贴连（2026-08-25，原 0 底距底对齐） */
 .file-toolbar {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
   gap: 8px;
   /* 显式高度 = --file-toolbar-h（TOC 悬浮窗定位/限高 calc 的契约，勿改回 padding 撑高） */
   height: var(--file-toolbar-h);
   padding: 0 16px;
+  /* chrome 底与下边线：统一工具条语言（同 .browser-toolbar idiom），与内容区
+   * 拉开一档作分层信号 */
+  background: var(--surface-container-low);
+  border-bottom: 1px solid var(--outline-variant);
 }
 
-/* TOC 收起/展开钮：左对齐（margin-right:auto 推左），分段开关保持右对齐 */
-.file-toolbar-toc {
-  margin-right: auto;
+/* 文件名（design-file-view-actions §2.2 增补）：basename + title 全路径。
+ * flex:1 + min-width:0 吃满主轴剩余空间，长名省略截断让位右侧动作组。
+ * 色 = on-surface-variant（非 outline）：同排 .icon-btn 即该色——沿 2026-08-29
+ * 栏标题修订先例（outline 与同排图标钮明度倒挂），chrome 行内文字与图标同明度 */
+.file-toolbar-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  color: var(--on-surface-variant);
+}
+
+/* 动作组不收缩（TOC 钮随文件名之后，其余右缘）：窄 pane 空间不足时由文件名
+ * （basis 0）让位，按钮与分段恒整宽 */
+.file-toolbar > :not(.file-toolbar-name) {
+  flex-shrink: 0;
 }
 
 .file-error {
@@ -3761,9 +3797,10 @@
   padding: 8px 24px 12px;
 }
 
+/* 复制成功反馈（lucide Check，语义强调色——DESIGN.md 图标「语义强调例外」） */
 .welcome-copied {
   color: var(--primary);
-  font-size: var(--text-sm);
+  flex-shrink: 0;
 }
 
 .install-cmd {

@@ -96,9 +96,13 @@ rest-client 的 `dirQuery` 已统一编码，新增端点必须复用，不得�
 
 | 控件 | 形态 | 行为 |
 |---|---|---|
-| **Agent** | 可见 agent **恰好 2**（build/plan）→ 分段开关（segmented toggle），点击即切、无下拉；**≥3** → 退化为 pill + ▾ + popover；**≤1** → 静态 pill | 自适应规则沿用移动端（2 agent 胶囊开关），形态桌面化：扁平分段、当前项 `primary-container` 填充、150ms 高亮迁移（不做平移动画——桌面控件小，无需测量定位那套机制） |
-| **Model** | pill + ▾，点击弹 **popover**：顶部搜索框（autofocus）+ 按 provider 分组（组头 = provider id + 数量，保序）+ 当前项打勾 | 搜索匹配 name/id/providerID（大小写不敏感）；高度上限 `min(60vh, 480px)` 内部滚动；provider 整组无匹配时隐藏。无底部动作——默认值隐式（见「全局默认模型」） |
-| **思考强度** | pill + ▾，**仅当前模型 `variants` 非空时显示**；选项 = 「默认」+ variants keys（low/high/max…） | 「默认」= 切 model 时省略 variant 字段；选中项打勾 |
+| **Agent** | 可见 agent **恰好 2**（build/plan）→ 分段开关（segmented toggle），点击即切、无下拉；**≥3** → 退化为 pill + chevron + popover；**≤1** → 静态 pill | 自适应规则沿用移动端（2 agent 胶囊开关），形态桌面化：扁平分段、当前项 `primary-container` 填充、150ms 高亮迁移（不做平移动画——桌面控件小，无需测量定位那套机制） |
+| **Model** | pill + chevron，点击弹 **popover**：顶部搜索框（autofocus）+ 按 provider 分组（组头 = provider id + 数量，保序）+ 当前项打勾 | 搜索匹配 name/id/providerID（大小写不敏感）；高度上限 `min(60vh, 480px)` 内部滚动；provider 整组无匹配时隐藏。无底部动作——默认值隐式（见「全局默认模型」） |
+| **思考强度** | pill + chevron，**仅当前模型 `variants` 非空时显示**；选项 = 「默认」+ variants keys（low/high/max…） | 「默认」= 切 model 时省略 variant 字段；选中项打勾 |
+
+> 表中 chevron = lucide `ChevronDown` 12px（`.ms-chev`，档位见 DESIGN.md 图标章「折叠 chevron」）。
+> 上方 ASCII 示意图内的 `▾` 只是纸面画法，**不得照字面渲染 Unicode 字形**（DESIGN.md 禁用；
+> 2026-09-08 订正——初版实现即误把示意图的 `▾` 当规格落地，已换 lucide）。
 
 **切模型时 variant 的携带规则**：从 picker 选中**另一个模型**时，仅当新模型有**同名 variant**才沿用当前思考强度，否则省略 variant（重置为「默认」）——保留用户意图（如 high 普遍存在）且不发送新模型不认识的值；thinking pill 随之立即反映新模型的 variants（可能隐藏）。
 
