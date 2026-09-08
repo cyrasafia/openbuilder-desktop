@@ -50,7 +50,7 @@ function buildExtensions(path: string, locale: Locale | undefined) {
     //（gutter 无标记、键无动作），故无语言文件也统一装配
     foldGutter(),
     keymap.of(foldKeymap),
-    search({ top: true }),
+    search(), // 搜索面板居底（CM 默认；原 top: true，2026-09-08 修订）
     keymap.of(searchKeymap),
     ...(locale === "zh" ? [EditorState.phrases.of(cmPhrasesZh)] : []),
     EditorState.readOnly.of(true),
