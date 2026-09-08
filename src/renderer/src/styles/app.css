@@ -1389,8 +1389,8 @@
   background: var(--surface-container-high);
 }
 
-/* chip 家族折叠标记（DESIGN.md §组件「工具调用 = 可折叠 chip」chevron 16）：
-   ToolChip / ReasoningChip / SubagentPanel 同族同尺寸 */
+/* chip 家族折叠标记（DESIGN.md 图标章「折叠 chevron」：chip 行内 = 12 档，与同排
+   `ui-sm`(12px) 工具名同尺寸）：ToolChip / ReasoningChip / SubagentPanel 同族同尺寸 */
 .chip-chevron {
   color: var(--outline);
   flex-shrink: 0;

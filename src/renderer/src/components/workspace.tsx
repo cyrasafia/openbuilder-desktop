@@ -1969,9 +1969,9 @@ function ReasoningChip({ part }: { part: Part }) {
     <div className={"chip" + (open ? " open" : "")}>
       <button className="chip-header" tabIndex={-1} onClick={() => setOpen(!open)}>
         {open ? (
-          <ChevronDown className="chip-chevron" size={16} aria-hidden />
+          <ChevronDown className="chip-chevron" size={12} aria-hidden />
         ) : (
-          <ChevronRight className="chip-chevron" size={16} aria-hidden />
+          <ChevronRight className="chip-chevron" size={12} aria-hidden />
         )}
         <span className="chip-label">{t.thinking}</span>
       </button>
@@ -2000,9 +2000,9 @@ function ToolChip({ part }: { part: ToolPart }) {
     <div className={"chip" + (open ? " open" : "")}>
       <button className="chip-header" tabIndex={-1} onClick={() => setOpen(!open)}>
         {open ? (
-          <ChevronDown className="chip-chevron" size={16} aria-hidden />
+          <ChevronDown className="chip-chevron" size={12} aria-hidden />
         ) : (
-          <ChevronRight className="chip-chevron" size={16} aria-hidden />
+          <ChevronRight className="chip-chevron" size={12} aria-hidden />
         )}
         <span className="chip-label">{part.tool}</span>
         {summary && <span className="chip-summary">{summary}</span>}
@@ -2212,9 +2212,9 @@ export function SubagentPanel({ part, parentSessionID }: { part: ToolPart; paren
         title={open ? t.subagentCollapse : t.subagentExpand}
       >
         {open ? (
-          <ChevronDown className="chip-chevron" size={16} aria-hidden />
+          <ChevronDown className="chip-chevron" size={12} aria-hidden />
         ) : (
-          <ChevronRight className="chip-chevron" size={16} aria-hidden />
+          <ChevronRight className="chip-chevron" size={12} aria-hidden />
         )}
         <span
           className="subagent-status-icon"
