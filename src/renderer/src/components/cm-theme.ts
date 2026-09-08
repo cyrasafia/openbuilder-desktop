@@ -4,7 +4,11 @@
  * data-theme 切换即时生效、无需重建编辑器（openchamber flexokiTheme 的
  * class 层同法）。结构性样式（布局/字体/颜色）全部在 app.css 单一来源；
  * CM 自身样式（含 baseTheme，无条件注入于 Prec.lowest）插在 head.firstChild，
- * app.css 文档序靠后，同特异性时后者胜——这是 CM 设计的覆写途径。
+ * app.css 文档序靠后，同特异性时后者胜。**特异性陷阱**：baseTheme 的选择器
+ * 编译时全部带隐式编辑器类前缀（buildTheme("." + baseThemeID)，.ͼN 挂在
+ * .cm-editor 上），`.cm-panel.cm-search label` 实为 `.ͼN .cm-panel.cm-search
+ * label`（0,3,1）——app.css 里"看似同级"的选择器实际低一档、恒被压住
+ * （2026-09-08 搜索面板 label 字号实测）。覆盖 baseTheme 须显式叠类抬特异性。
  */
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language"
 import { tags as t } from "@lezer/highlight"
