@@ -30,8 +30,9 @@
 
 `task` 工具的 ToolChip 替换为 SubagentPanel 组件：
 - **收起态**：与现有 ToolChip 收起态同构——灰色填充 chip（`surface-container-highest`）
-  + 折叠 chevron（lucide `ChevronDown` 展开 / `ChevronRight` 收起，16px，`.chip-chevron`
-  同 ToolChip 家族）+ 状态图标（14px，见 D4）+ agent 名 + 描述。点击 header 切换展开/收起。
+  + 折叠 chevron（lucide `ChevronDown` 展开 / `ChevronRight` 收起，12px，`.chip-chevron`
+  同 ToolChip 家族；2026-09-08 订正，原 16px 超出同排 `ui-sm` 文字，见 DESIGN.md 图标章
+  「折叠 chevron」）+ 状态图标（14px，见 D4）+ agent 名 + 描述。点击 header 切换展开/收起。
 - **展开态**：面板整体保持 chip 灰底（与消息区同宽），子会话消息流嵌入圆角矩形块——
   观感对齐工具 input/output 的 `.code-block`（`color-code-bg` 底 + `color-border` 边），
   内嵌模块与面板通过底色差自然分层。模块有**独立滚动**
