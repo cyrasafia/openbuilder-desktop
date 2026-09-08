@@ -495,6 +495,21 @@ export class RestClient {
     })
   }
 
+  /**
+   * 销毁指定目录的 server 实例（v1 instance 路由，?directory= 定位同 /command）。
+   * 响应返回后 teardown 才异步执行，完成时该目录广播 server.instance.disposed；
+   * 下一次带 directory 的请求会懒加载新实例（skill/命令注册表随之重新扫盘）。
+   * 用于 worktree.ready 后解除实例级缓存冻结（skill ScopedCache 无失效机制，
+   * 见 app-store.reDiscoverInstanceCatalog 注释）。副作用：该目录进行中会话被
+   * 取消、LSP/MCP 重启——仅在新建 worktree 这种必然无会话的时点调用。
+   * 旧版 server 无此端点时 404，调用方按失败放弃。
+   */
+  disposeInstance(directory: string): Promise<boolean> {
+    return this.request<boolean>(`/instance/dispose${RestClient.dirQuery(directory)}`, {
+      method: "POST",
+    })
+  }
+
   listFiles(directory: string, path: string, workspace?: string): Promise<FileNode[]> {
     const q = new URLSearchParams()
     q.set("path", path)
