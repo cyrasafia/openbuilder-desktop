@@ -17,6 +17,7 @@ import {
   type StreamdownProps,
 } from "streamdown"
 import { useI18n } from "../app"
+import { cjkEmphasis } from "./markdown-cjk-emphasis"
 import { MermaidDiagram } from "./mermaid-diagram"
 
 /* ---------- GFM Alerts（[!NOTE]/[!TIP]/…，design-markdown-preview §2.6） ----------
@@ -255,11 +256,16 @@ const softBreaks = () => (tree: MdNode) => {
   walk(tree)
 }
 
-/** remarkPlugins 传入即整体替换默认集（gfm + codeMeta），需拼回默认件；模块级常量防 memo 失效 */
-const userRemarkPlugins: StreamdownProps["remarkPlugins"] = [
+/** remarkPlugins 传入即整体替换默认集（gfm + codeMeta），需拼回默认件；模块级常量防 memo 失效。
+ *  cjkEmphasis（design-markdown-preview §2.9 CJK 标点侧向修复）统一注入三条管线
+ *  （assistant / user / 文件预览）；置于 softBreaks 之前——补救配对要在软换行
+ *  拆分 text 节点之前看到完整段落文本 */
+const baseRemarkPlugins: StreamdownProps["remarkPlugins"] = [
   ...Object.values(defaultRemarkPlugins),
-  softBreaks,
+  cjkEmphasis,
 ]
+
+const userRemarkPlugins: StreamdownProps["remarkPlugins"] = [...baseRemarkPlugins, softBreaks]
 
 export function Markdown({
   children,
@@ -276,17 +282,23 @@ export function Markdown({
   /** remark 插件整体替换默认集（同 streamdown 语义；§2.8 文件预览传
    *  relativeImageRewrite 拼默认件）。与 softLineBreak 互斥——同时传入时
    *  softLineBreak 优先、本 prop 被忽略（当前调用方天然不并存）。调用方
-   *  须保持引用稳定 */
+   *  须保持引用稳定；cjkEmphasis 由本组件自动追加（§2.9），调用方无需感知 */
   remarkPlugins?: StreamdownProps["remarkPlugins"]
 }) {
   // img 覆写存在才生成新对象（消息流零成本）；引用稳定时 memo 不失效
   const components = useMemo(() => (img ? { ...mdComponents, img } : mdComponents), [img])
+  // cjkEmphasis 追加在调用方插件之后（relativeImageRewrite 改 image/link 节点，
+  // 与 text 节点补救互不相关）；无传入时走 base 常量，引用稳定
+  const mergedPlugins = useMemo<StreamdownProps["remarkPlugins"]>(
+    () => (remarkPlugins ? [...remarkPlugins, cjkEmphasis] : baseRemarkPlugins),
+    [remarkPlugins],
+  )
   return (
     <Streamdown
       className="markdown-body md"
       components={components}
       linkSafety={mdLinkSafety}
-      remarkPlugins={softLineBreak ? userRemarkPlugins : remarkPlugins}
+      remarkPlugins={softLineBreak ? userRemarkPlugins : mergedPlugins}
     >
       {children}
     </Streamdown>

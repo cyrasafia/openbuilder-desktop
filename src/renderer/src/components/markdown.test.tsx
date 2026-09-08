@@ -125,6 +125,40 @@ describe("Markdown", () => {
     expect(container.querySelector("blockquote")!.classList.contains("markdown-alert")).toBe(false)
   })
 
+  // design-markdown-preview §2.9：CommonMark 侧向规则 CJK 缺陷——micromark 严格
+  // 遵循规范，闭合 ** 前是全角标点、后紧跟汉字时无法闭合，加粗退化为字面文本
+  it("CJK 标点侧向修复：闭合 ** 前是全角逗号仍渲染加粗（用户实测样例）", () => {
+    render(
+      <Markdown>
+        {
+          "职责：你的首要职责是激发用户的旅行灵感。**每一张订单都是双赢的结果，**只有在用户满意的基础上，才能实现商业价值。"
+        }
+      </Markdown>,
+    )
+    const strong = screen.getByText("每一张订单都是双赢的结果，")
+    expect(strong.tagName).toBe("STRONG")
+  })
+
+  it("CJK 标点侧向修复：开侧 ** 后是全角标点补救；纯 ASCII 维持严格语义（与 GitHub 一致）", () => {
+    const { container } = render(<Markdown>{"字**，加粗**尾 **foo,**bar"}</Markdown>)
+    expect(screen.getByText("，加粗").tagName).toBe("STRONG")
+    expect(container.textContent).toContain("**foo,**bar")
+  })
+
+  it("CJK 标点侧向修复：remarkPlugins 传入（文件预览管线）同样自动注入", () => {
+    const { container } = render(
+      <Markdown remarkPlugins={[...Object.values(defaultRemarkPlugins)]}>{"**加粗，**尾"}</Markdown>,
+    )
+    const strong = container.querySelector("strong")!
+    expect(strong.textContent).toBe("加粗，")
+  })
+
+  it("CJK 标点侧向修复：softLineBreak（用户回显）管线同样生效", () => {
+    const { container } = render(<Markdown softLineBreak>{"**加粗，**尾\n第二行"}</Markdown>)
+    const strong = container.querySelector("strong")!
+    expect(strong.textContent).toBe("加粗，")
+  })
+
   it("mermaid 块：渲染为图容器（防抖后 SVG 落地）", async () => {
     const { container } = render(<Markdown>{"```mermaid\ngraph TD\nA-->B\n```"}</Markdown>)
     // 防抖窗内先呈加载骨架
