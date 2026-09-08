@@ -54,6 +54,12 @@ if (!projectId || !openedProjects.some(p => p.id === projectId)) return
 **处理**：
 - `worktree.ready`：`void refreshWorkspacesForProject(project)`（重拉 `listProjects()`，
   `sandboxes` 即时含新 directory，左栏多一行）。本端创建已 `await` 刷新，此事件对他端创建生效。
+  另触发 `void reDiscoverInstanceCatalog(directory)`（信封 directory = 新 worktree 路径）：
+  `POST /instance/dispose` → 等 SSE `server.instance.disposed` 回执 → 仅当该目录是当前
+  chat 目录时重拉命令注册表。背景：server 的 skill 状态是实例级 ScopedCache（首访扫盘后
+  冻结、无失效钩子），worktree 创建两段式（`--no-checkout` + 后台 `reset --hard`）下 ready
+  前的 instance 请求可能把空目录结果冻结到 server 重启。副作用防御：该目录有已知活跃会话
+  则放弃 dispose（多客户端下他端可能已开跑）；dispose 端点缺失（旧版 server 404）静默跳过。
 - `worktree.failed`：忽略（`createWorkspace` 是同步 `await`，无 busy UI 需复位，不崩溃即可）。
 
 **为什么不在 createWorkspace 内乐观更新 sandboxes？** SSE 事件到达即刷新更简单可靠；乐观
@@ -73,12 +79,16 @@ async syncWorktrees(): Promise<void> {
     for (const d of old.sandboxes) {
       if (!next.sandboxes.has(d)) toUnload.push({directory: d, projectId: old.id, isCurrent})
     }
+    for (const d of next.sandboxes) {
+      if (!old.sandboxes.has(d)) appeared.push(d)  // ready 丢失的补偿入口
+    }
   }
   this.projects = fresh
   for ({directory, projectId, isCurrent} of toUnload) {
     const restored = await this.unloadWorktreeDirectory(directory, projectId, isCurrent)
     if (restored) restoreScopeTabs(project.worktree, true)
   }
+  for (const d of appeared) void this.reDiscoverInstanceCatalog(d)
 }
 ```
 
@@ -108,7 +118,8 @@ worktree 列表），且 `unloadWorktreeDirectory` 对未打开项目无意义�
 
 | 场景 | 行为 |
 |------|------|
-| SSE 丢 `worktree.ready`（断连窗口内他端创建） | 重连时 `syncWorktrees` 兜底（diff 出新 directory，已在 sandboxes，无副作用——`syncWorktrees` 只处理删除，新增靠 sandboxes 随 projects 更新自然出现在左栏） |
+| SSE 丢 `worktree.ready`（断连窗口内他端创建） | 重连时 `syncWorktrees` 兜底：新增 sandbox diff 出即补跑 `reDiscoverInstanceCatalog`（skill 缓存冻结防御，ready 只发一次不补发）；左栏展示本身随 sandboxes 随 projects 更新自然出现 |
+| 冷启动窗口（应用未运行期间创建的 worktree） | 不在补偿范围内：`connect()` 首次拉取即含该 sandbox，`appeared` diff 恒空。若冻结已发生且无其他在线客户端治愈，持续到 server 重启（接受：本端无法区分"新建"与"既有"，对既有 worktree 全量 dispose 的代价大于收益） |
 | `syncWorktrees` 在途时 disconnect | `client !== client` 闸门丢弃（同 reconciler 模式） |
 | 同一目录被 global 会话和 git worktree 共用 | `unloadWorktreeDirectory` 按 `projectId` 过滤 Tab（同 `removeWorkspace`），不误关 global entry 的 Tab |
 | 删除当前 worktree（当前作用域） | `currentWorkspaceId` 复位 null + `restoreScopeTabs(project.worktree)`（同 `removeWorkspace`） |

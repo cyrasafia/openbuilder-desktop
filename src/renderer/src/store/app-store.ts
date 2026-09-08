@@ -911,6 +911,9 @@ export class AppStore {
     this.commandCache = initialCommandCache()
     // 在途 fetch 无法中断；迟到的结果由 refreshCommands 的 client 身份守卫丢弃
     this.commandsInFlight.clear()
+    // dispose 等待全部兑现放弃（后续 client 身份守卫丢弃），防跨连接误等
+    for (const set of this.instanceDisposedWaiters.values()) for (const w of [...set]) w()
+    this.instanceDisposedWaiters.clear()
     if (this.catalogRefreshTimer != null) {
       clearTimeout(this.catalogRefreshTimer)
       this.catalogRefreshTimer = null
@@ -1046,6 +1049,15 @@ export class AppStore {
   // ============ 事件处理（闸门 + 应用） ============
 
   private handleEvent(directory: string, ev: OpencodeEvent, meta?: SseEventMeta) {
+    // ---- 实例销毁回执：基础设施事件，被销毁目录可能尚未/不再属于打开集合，
+    // 须在目录闸门之前放行（reDiscoverInstanceCatalog 的等待点）
+    if (ev.type === "server.instance.disposed") {
+      // 防御式解析（同 file.watcher.updated）：信封 directory 兜底
+      const dir = typeof ev.properties.directory === "string" ? ev.properties.directory : directory
+      const waiters = this.instanceDisposedWaiters.get(dir)
+      if (waiters) for (const w of [...waiters]) w()
+      return
+    }
     // ---- worktree 生命周期（design-worktree-sync）：目录闸门不适用——新 directory
     // 尚未进本地 sandboxes，按信封 project 字段（projectID）判断"该项目是否打开"。
     // ready → 重拉项目列表拿 sandboxes（左栏即时多一行）；failed 仅日志（createWorkspace
@@ -1059,6 +1071,9 @@ export class AppStore {
         // project 参数仅为文档化作用域，不参与请求——见该函数注释）
         const project = this.projects.find((p) => p.id === projectId)
         if (project) void this.refreshWorkspacesForProject(project)
+        // skill 缓存冻结防御（directory 信封 = 新 worktree 路径）：dispose 该目录
+        // 实例并重拉命令注册表，见 reDiscoverInstanceCatalog
+        void this.reDiscoverInstanceCatalog(directory)
       }
       return
     }
@@ -1357,6 +1372,81 @@ export class AppStore {
   private activeChatDirectory(): string | null {
     const tab = this.activeTab
     return tab?.kind === "chat" ? (tab.directory ?? null) : null
+  }
+
+  // ============ worktree.ready 后 skill 重新发现（实例缓存冻结防御） ============
+
+  /** 等待 server.instance.disposed 的挂起回调（键 = 目录），handleEvent 顶部兑现 */
+  private instanceDisposedWaiters = new Map<string, Set<() => void>>()
+
+  /**
+   * worktree.ready 后强制 server 重新发现该目录的 skill/命令注册表。
+   *
+   * 背景：server 的 skill 状态是实例级 ScopedCache——首次访问扫盘后冻结，
+   * 无任何失效钩子；worktree 创建是 `git worktree add --no-checkout` + 后台
+   * `git reset --hard` 两段式，ready 前任何触发首次 skill 发现的 instance 请求
+   * 都可能扫到空目录并把空结果冻结到 server 进程重启。ready 时点 reset 已完成
+   * （事件在 checkout 之后才发），本端创建场景无会话；多客户端下他端收到同一
+   * ready 后可能已开跑会话——dispose 会取消其运行中会话/重启 LSP/MCP，故先查
+   * 已知活跃会话（hasActiveSessionIn）。守卫是 best-effort 单次快照：他端新建
+   * 会话尚未经 SSE 同步到本端、以及本端 prompt 已发出但 busy 状态事件先于
+   * ready 到达被观察之前的在途窗口，同样不被覆盖（如 createWorkspace 自动切
+   * 作用域后立即发送的场景）——有则放弃（冻结自愈推迟，活跃会话本身不依赖
+   * skill 重新发现）。
+   *
+   * 流程：POST /instance/dispose → 等 SSE server.instance.disposed（teardown
+   * 在响应后异步执行，立即重拉会命中待销毁实例拿到冻结的旧缓存）→ 重拉命令
+   * 注册表。重拉仅当该目录是当前 chat 目录——"当前所见"口径同
+   * scheduleCatalogRefresh，避免他端/他项目 ready 抢占单槽命令缓存；其余场景
+   * 服务端已修好，用户输入 `/` 惰性拉取时自然是新实例。端点缺失（404）/SSE
+   * 丢帧（10s 超时兜底）均静默放弃，不阻塞 ready 主流程。
+   */
+  private async reDiscoverInstanceCatalog(directory: string) {
+    const client = this.client
+    if (!client) return
+    if (this.hasActiveSessionIn(directory)) return
+    try {
+      await client.disposeInstance(directory)
+    } catch {
+      return
+    }
+    if (this.client !== client) return
+    await this.waitInstanceDisposed(directory, 10_000)
+    if (this.client !== client) return
+    if (this.activeChatDirectory() === directory) void this.refreshCommands(directory)
+  }
+
+  /** 该目录是否存在已知活跃（busy/retry）会话（sessionStatus 由 SSE/状态快照驱动） */
+  private hasActiveSessionIn(directory: string): boolean {
+    for (const sessionID of this.sessionStatus.keys()) {
+      if (this.findSession(sessionID)?.directory === directory) return true
+    }
+    return false
+  }
+
+  /** 等待某目录的 server.instance.disposed（超时兜底：SSE 丢帧不永久阻塞） */
+  private waitInstanceDisposed(directory: string, timeoutMs: number): Promise<void> {
+    return new Promise((resolve) => {
+      let settled = false
+      const done = () => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        const set = this.instanceDisposedWaiters.get(directory)
+        if (set) {
+          set.delete(done)
+          if (set.size === 0) this.instanceDisposedWaiters.delete(directory)
+        }
+        resolve()
+      }
+      const timer = setTimeout(done, timeoutMs)
+      let set = this.instanceDisposedWaiters.get(directory)
+      if (!set) {
+        set = new Set()
+        this.instanceDisposedWaiters.set(directory, set)
+      }
+      set.add(done)
+    })
   }
 
   private pendingPartsMap = new Map<string, Map<string, Part[]>>()
@@ -2704,7 +2794,9 @@ export class AppStore {
   /**
    * 刷新对账检测他端 worktree 增删（design-worktree-sync §2）：删除无 SSE 事件，
    * 靠 listProjects() diff sandboxes 检测。新建由 worktree.ready SSE 实时刷新，
-   * 此方法是 SSE 丢消息/断连/未收事件的补偿兜底（启动/focus/定时/reconnect 触发）。
+   * 此方法是 SSE 丢消息/断连/未收事件的补偿兜底（启动/focus/定时/reconnect 触发）——
+   * 删除走 unloadWorktreeDirectory 清理，新增 sandbox 补跑 skill 缓存冻结防御
+   * （reDiscoverInstanceCatalog，ready 只发一次不补发）。
    * 幂等：无变化时只重拉 projects（同 refreshWorkspacesForProject，无害 emit）。
    */
   async syncWorktrees(): Promise<void> {
@@ -2717,6 +2809,10 @@ export class AppStore {
     if (this.client !== client) return
     // 比对每个打开项目（含未打开项目的 worktree 变化不影响左栏展示，跳过）
     const toUnload: Array<{ directory: string; projectId: string; isCurrent: boolean }> = []
+    // 新增 sandbox：`worktree.ready` 只发一次不补发，断连窗口内他端创建的事件
+    // 丢失时，此 diff 是 skill 缓存冻结防御（reDiscoverInstanceCatalog）的唯一
+    // 补偿入口（左栏展示本身随 projects 更新自然出现，无需处理）
+    const appeared: string[] = []
     for (const old of before) {
       if (old.id === GLOBAL_PROJECT_ID) continue
       const opened = this.openedProjects.some((p) => p.id === old.id)
@@ -2733,6 +2829,9 @@ export class AppStore {
           })
         }
       }
+      for (const d of nextDirs) {
+        if (!oldDirs.has(d)) appeared.push(d)
+      }
     }
     this.projects = fresh
     for (const { directory, projectId, isCurrent } of toUnload) {
@@ -2742,6 +2841,11 @@ export class AppStore {
         if (p) this.restoreScopeTabs(p.worktree, true)
       }
     }
+    // 与 ready 路径重复触发的无害性有限：busy 会话守卫挡住主要风险，正确性不受
+    // 影响；多客户端各自对同一 ready dispose，后到者的 POST 会销毁先到者触发
+    // 懒加载的新实例（多一轮 LSP/MCP 起停，冻结果不变）——正确性换简单性，接受。
+    // 正常链路 ready 到达即刷新 projects，此 diff 多数时候为空
+    for (const d of appeared) void this.reDiscoverInstanceCatalog(d)
     this.emit()
   }
 

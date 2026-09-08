@@ -477,6 +477,11 @@ export type OpencodeEvent =
   // 在信封里，由订阅层透传给 onEvent 的 meta 参数（事件闸门按 projectID 判断）。
   | { id: string; type: "worktree.ready"; properties: { name: string; branch?: string } }
   | { id: string; type: "worktree.failed"; properties: { message: string } }
+  // ---- 实例生命周期：POST /instance/dispose 响应后 teardown 完成时广播，
+  // directory（信封与 properties 一致）= 被销毁实例的目录。dispose 后立即发往
+  // 该目录的请求可能命中待销毁实例（旧缓存），重拉注册表须先等此事件
+  // （见 app-store.reDiscoverInstanceCatalog）。
+  | { id: string; type: "server.instance.disposed"; properties: { directory: string } }
   // ---- 待处理人机交互（授权/问题）。properties 防御式解析（pending-requests.ts 归一化）----
   | { id: string; type: "permission.asked" | "permission.v2.asked" | "permission.updated"; properties: Record<string, unknown> }
   | { id: string; type: "permission.replied" | "permission.v2.replied"; properties: Record<string, unknown> }
