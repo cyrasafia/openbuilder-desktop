@@ -11,6 +11,7 @@
 - `browser:view-create` → `new WebContentsView({ webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true } })`，`mainWindow.contentView.addChildView(view)`，初始隐藏（bounds 0）。返回 viewId（自增）
 - `browser:view-bounds(viewId, {x,y,w,h})` / `browser:view-show(viewId)` / `browser:view-hide(viewId)` / `browser:view-dispose(viewId)`（removeChildView + webContents.destroy）
 - `browser:navigate(viewId, url)` / `browser:goBack/goForward/reload(viewId)`
+- `shell:openExternal(url)`（**2026-09-08 增**，浏览器 Tab「在系统浏览器打开」按钮）：协议白名单 http/https/file（about: 交系统无意义拒收）；Linux/darwin 自管 spawn 净化 env（分支注记同 `shell:openPath`——dev 模式 NODE_ENV 泄漏事故，见 linux-open-with.ts 实证注释）、win32 `shell.openExternal`
 - **事件推送** `browser:view-state`（viewId + {url, title, loading, canGoBack, canGoForward}）：`did-navigate`/`did-navigate-in-page`/`page-title-updated`/`did-start-loading`/`did-stop-loading` 聚合
 - **导航安全**（view 的 webContents）：
   - `will-navigate`：当前页面是 http(s) 且目标是 `file://` → preventDefault（远端页面禁读本地文件；file→file 本地页面互链放行，http(s) 链接放行）
@@ -30,7 +31,7 @@
 
 - `TabKind` 扩 `"browser"`；key = `browser:<初始 URL>`（稳定标识；导航后 URL 变化不改 key，Tab 条标题取当前页 title）
 - `store.openBrowserTab(url)`：建 Tab（directory = 当前作用域）+ `browser:view-create` + `navigate`；**浏览器 shim（无 IPC）不可用**：入口隐藏（platform === "browser" 时引导页网页按钮 disabled、file 树 .html 点击回退文件 Tab）
-- `BrowserTabView` 组件（激活时挂载）：工具条（后退/前进/刷新或停止、地址输入框（Enter 导航）、打开本地文件按钮 → `openPathPicker` 选 .html → `navigate(file://…)`）+ 内容宿主 div；ResizeObserver → `view-bounds`；**卸载 = 隐藏 view**（Tab 切走/作用域切换，view 与内容保留）
+- `BrowserTabView` 组件（激活时挂载）：工具条（后退/前进/刷新或停止、地址输入框（Enter 导航）、打开本地文件按钮 → `openPathPicker` 选 .html → `navigate(file://…)`、**「在系统浏览器打开」按钮（2026-09-08 增，`shell:openExternal` 当前页 URL——store 权威非 key 初始 URL；仅 http/https/file 可用（白名单同 main 侧 handler，about: 等禁用）；纯浏览器 shim 不显示）**）+ 内容宿主 div；ResizeObserver → `view-bounds`；**卸载 = 隐藏 view**（Tab 切走/作用域切换，view 与内容保留）
 - view 状态：store `browserStates: Map<viewId, BrowserState>`（SSE 无关，纯 IPC 事件驱动）
 - 关闭 Tab：`view-dispose` + 关闭栈（恢复 = 按 key 中 URL 重开——URL 取**当前页 URL**（关 Tab 时的 browserState.url），不是初始 key）
 
@@ -53,6 +54,7 @@
 |---|---|
 | `src/main/browser-views.ts` | 新：WebContentsView 注册表 + IPC handlers + 事件推送 + 导航安全 |
 | `src/main/index.ts` | 注册 browser IPC；窗口关闭清理 |
+| `src/main/ipc.ts` | `shell:openExternal` handler（2026-09-08 增，平台分支同 `shell:openPath`） |
 | `src/shared/ipc.ts` | DesktopApi 扩 browser:* 方法与 BrowserState 类型 |
 | `src/preload/index.ts` | 暴露通道 |
 | `src/renderer/src/browser-shim.ts` | browser:* 不可用桩（unsupported） |
@@ -62,13 +64,14 @@
 | `src/renderer/src/components/file-panel.tsx` | .html 点击路由 + 右键「查看源码」 |
 | `src/renderer/src/components/file-view.tsx`（含 workspace 内 FileView） | html 预览分支移除 |
 | 删除 | `src/renderer/src/components/html-preview.ts` + `html-preview.test.ts` |
-| `src/renderer/src/i18n/index.ts` | browserBack/Forward/Reload/Stop/Address/OpenFile/ViewSource 等 |
+| `src/renderer/src/i18n/index.ts` | browserBack/Forward/Reload/Stop/Address/OpenFile/OpenExternal/ViewSource 等 |
 | 测试 | store（openBrowserTab/关闭栈含未导航/并发重入/dispose/shim 回退）；browser-tab-view 组件（工具条/地址导航/文件选择器）；file-panel .html 路由与查看源码；shortcuts 转发用例。main 侧为薄 IPC 装配层（视图/事件表驱动），逻辑收敛 renderer，不另立 node 单测 |
 
 ## 4. 验收（对齐 spec #6）
 
 - 点击 .html 开浏览器 Tab 渲染正确（本地相对资源加载）；右键「查看源码」在文件 Tab 打开源码
 - 地址栏导航/前进/后退/刷新/打开本地文件可用；Tab 切走隐藏（内容保留）切回恢复
+- 「在系统浏览器打开」按钮：当前页（导航后随动）交系统默认浏览器打开；纯浏览器 shim 不显示该按钮
 - 远端页面（http 页内链接 file://）被拦；window.open 走系统浏览器
 - 设置弹窗/右键菜单打开时浏览器视图隐藏，关闭恢复
 - 浏览器 shim（纯浏览器 dev）入口隐藏/回退；`npm run test`/`typecheck`/`build` 全绿
