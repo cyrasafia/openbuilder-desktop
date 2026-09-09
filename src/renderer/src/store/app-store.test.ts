@@ -4047,6 +4047,28 @@ describe("createProjectFromDirectory（design-new-project）", () => {
     expect(store.openedEntries.some((e) => e.key === globalEntryKey("/plain"))).toBe(true)
   })
 
+  it("非 git 新目录（global，零会话）：切换后激活不残留旧项目 Tab（引导页显示的前提）", async () => {
+    // 复现 2026-09-09：新 global 目录无会话 → globalKnownDirectories 不含它 →
+    // findProjectOwningDirectory 返回 null → restoreScopeTabs owner 闸门整段
+    // no-op，跨作用域激活清算不执行——中栏渲染旧项目 Tab 内容、引导页不显示
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
+    store.activeTabKey = "chat:s1"
+    const globalProj: Project = { id: "global", worktree: "/", time: { created: 0, updated: 0 }, sandboxes: [] }
+    clientOf().resolveProject = async () => globalProj
+    clientOf().listProjects = async () => [project(), globalProj]
+    snapshots.set("/plain", [])
+
+    await store.createProjectFromDirectory("/plain")
+    // 同步段即清算：切换跟手，不等快照
+    expect(store.activeTabKey).toBeNull()
+    // 快照落地后的完整恢复段维持引导页（空目录写空记忆哨兵，§3.3）
+    expect(store.tabMemory.default?.["/plain"]).toEqual({ projectId: "global", tabs: [], active: null })
+    // 旧项目 Tab 不关不归档（Tab 跨项目混排语义）
+    expect(store.tabs.some((t) => t.key === "chat:s1")).toBe(true)
+  })
+
   it("解析失败：异常上抛，打开状态不变（弹窗不关可重试的前提）", async () => {
     clientOf().resolveProject = async () => {
       throw new Error("目录不存在")
