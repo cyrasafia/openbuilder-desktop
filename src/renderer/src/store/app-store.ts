@@ -2197,7 +2197,20 @@ export class AppStore {
         (p.worktree === directory || (p.sandboxes ?? []).includes(directory)),
     )
     if (normal) return normal
-    return this.globalKnownDirectories().has(directory) ? this.globalProject : null
+    // global 兜底 = 已知会话目录 ∪ **已打开 entry 目录**（口径同 applySessionsSnapshot
+    // 的 global 闸门）：后者覆盖「未 git、零会话」的新目录——首个会话建立前
+    // globalKnownDirectories 不含它，漏掉会使 restoreScopeTabs 的 owner 闸门整段
+    // no-op，跨作用域激活清算不执行（旧项目 Tab 残留中栏、引导页不显示，
+    // 2026-09-09 修复）。sessionEntryOwned 的 openedGlobalDirectories 兜底随之幂等
+    const gp = this.globalProject
+    if (
+      gp &&
+      (this.globalKnownDirectories().has(directory) ||
+        this.openedGlobalDirectories.includes(directory))
+    ) {
+      return gp
+    }
+    return null
   }
 
   /** live tabs → 记忆派生落盘（§5 挂点：openChatTab/closeTab/setActiveTab） */
