@@ -294,7 +294,7 @@ v0.2 上翻加载方向（预留）：保持正序 DOM + scroll-anchor 锚定（
 - **作用域复用 currentWorkspaceId**：global 目录行的当前作用域经该字段表达（`currentWorkspace` getter 放行"已打开 global 目录"，仍拒陈旧值）；根目录 `/` 行 = 项目根语义（workspace null，作用域经 worktree 兜底）
 - **SSE（rebase main 单全局流后适配）**：`/global/event` 单流覆盖全部目录，无逐目录订阅/预算概念（§7.5-9 的连接池约束由 2ed27fb 消除）；`openedDirectories()` 的 global 分支 = 已打开 entry 目录（worktree "/" 仅根 entry 打开时入集），事件闸门/对账/状态快照同源消费
 - **关闭 global 目录**（`closeGlobalDirectory`）：卸载该目录会话域 + 状态 + chat Tab（不归档）+ 该目录 Tab 记忆（须在关 Tab 后删——closeTab 的记忆同步会重建条目），其余 global 目录不受影响；当前作用域回退 = 其余已打开 global 目录最活跃者，无则最近活跃普通项目
-- **闸门适配**：`applySessionsSnapshot`/`isOpenedDirectory`/状态快照 still 校验对 global 走"已打开目录 ∪ 已知会话域"；`findProjectOwningDirectory`（Tab 记忆归属）对 global 走已知目录集。发现快照本身不经逐目录闸门（新目录必须能进 map）；关目录后迟到的发现快照可能复活其会话域——entry 已关不展示，重开时重拉覆盖，无可见影响
+- **闸门适配**：`applySessionsSnapshot`/`isOpenedDirectory`/状态快照 still 校验对 global 走"已打开目录 ∪ 已知会话域"；`findProjectOwningDirectory`（Tab 记忆归属）对 global 同口径（2026-09-09 修订，原仅已知会话目录集——未 git、零会话的新 global 目录不被认领，`restoreScopeTabs` 的 owner 闸门整段 no-op，切入后旧项目激活 Tab 残留中栏、引导页不显示）。发现快照本身不经逐目录闸门（新目录必须能进 map）；关目录后迟到的发现快照可能复活其会话域——entry 已关不展示，重开时重拉覆盖，无可见影响
 - **双行目录所有权**（第三轮 review 修复）：目录既有 git 项目又有 global 会话时（先建会话后 init git），`findProjectOwningDirectory` **普通项目精确匹配优先**、global 只兜底无人认领的目录（global 在 projects 数组首位，不区分顺序会把双行目录永远解析到 global——污染 Tab 恢复会话集与记忆归属）；`closeGlobalDirectory` 的 Tab 关闭/记忆删除均按 `projectId === global` 收窄，不误伤 git 项目侧；`closeProject` 的 worktree 兜底关 Tab 分支同样排除 global Tab。残余歧义（两 entry 共享同一 scope directory，Tab 条/记忆天然按目录聚合）接受——作用域 = directory 是锁定语义
 - **已知局限**：目录排序活跃度随归档下沉（未做 openbuilder 式单调活动表，量级小接受）；目录显示名可能同名（title 提示全路径）
 
