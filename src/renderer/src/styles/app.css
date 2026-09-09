@@ -2115,7 +2115,9 @@
  * baseThemeID)，.ͼN 挂在 .cm-editor 上）——`& label { fontSize: 80% }` 实为
  * `.ͼN .cm-panel.cm-search label`（0,3,1），旧写法 `.code-view-host .cm-panels
  * label`（0,2,1）看似同级实则低一档、恒被压住（2026-09-08 实测）。故本组一律
- * 叠 .cm-panel.cm-search 抬至 4 类起步，不依赖文档序稳赢 */
+ * 叠 .cm-panel.cm-search 抬至 4 类起步，不依赖文档序稳赢。
+ * 2026-09-09 起本 idiom 为四视图查找条统一基准：页面内搜索条（.find-bar，
+ * markdown 预览/浏览器 Tab/PDF，见文末）居底同款密度与控件语言 */
 .code-view-host .cm-editor .cm-panels {
   background: var(--surface-container-low);
   color: var(--on-surface);
@@ -2162,12 +2164,15 @@
   accent-color: var(--primary);
 }
 
+/* 搜索输入框与 FindBar .find-input 等宽（2026-09-09 统一 220px，原 CM 内建
+ * intrinsic ~20ch 默认宽）；padding/border 两侧同款，渲染宽度一致 */
 .code-view-host .cm-panels .cm-panel.cm-search input.cm-textfield {
   background: var(--surface-container-lowest);
   color: var(--on-surface);
   border: 1px solid var(--outline-variant);
   border-radius: var(--radius-chip);
   height: var(--control-h);
+  width: 220px;
   padding: 0 8px;
 }
 
@@ -2194,13 +2199,26 @@
   color: var(--on-surface);
 }
 
-/* close（×）：流内右推方钮（宽=高），× 字符提一档补偿视觉偏小 */
+/* close（×，2026-09-09 对齐 tab 关闭钮 idiom）：流内右推条尾，ghost 方钮——
+ * 无边框透明底 22×22（.icon-btn 标准尺寸，原 18 偏小同日上调）、radius 4、
+ * hover container-highest 底（盖过上方 button 基样）；× 为 CM 内建文本字形，
+ * 字号 20px 补偿至与 FindBar 侧 14px lucide 图标视觉等高 */
 .code-view-host .cm-panels .cm-panel.cm-search button[name="close"] {
   position: static;
   margin-left: auto;
-  width: var(--control-h);
+  width: 22px;
+  height: 22px;
   padding: 0;
-  font-size: var(--text-title-sm);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  font-size: 20px;
+}
+
+.code-view-host .cm-panels .cm-panel.cm-search button[name="close"]:hover,
+.code-view-host .cm-panels .cm-panel.cm-search button[name="close"]:focus-visible {
+  background: var(--surface-container-highest);
+  border-color: transparent;
 }
 
 .code-view-host .cm-searchMatch {
@@ -4207,27 +4225,29 @@
   color: #adb6ab;
 }
 /* ---------- 页面内搜索条（design-find-in-page §2.5） ----------
- * 三视图共用（markdown 预览/浏览器 Tab/PDF）：结构对齐 CM 搜索面板 idiom——
- * 高 = --file-toolbar-h 与操作条等高衔接，背景/底边框同 .browser-toolbar 视觉
- * 家族；输入框复用 .browser-address 圆角文本框 idiom（等高 26px） */
+ * 三视图共用（markdown 预览/浏览器 Tab/PDF），统一居底（2026-09-09 修订，原
+ * 工具条下方）：与代码视图 CM 搜索面板同位同 idiom——四视图查找条视觉一致。
+ * 密度对齐 CM 面板：28 高控件（--control-h）+ 上下 6 padding（条高 =
+ * --file-toolbar-h，与文件操作条等高衔接）；背景 --surface-container-low +
+ * 顶边框（底部行的分隔线，同 .cm-panels-bottom）；输入框/按钮复用 CM 搜索
+ * 面板 cm-textfield / button 同款（chip 圆角、container 底、outline-variant 边） */
 .find-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: var(--file-toolbar-h);
-  padding: 0 16px;
+  gap: 4px 8px;
+  padding: 6px 8px;
   flex-shrink: 0;
   background: var(--surface-container-low);
-  border-bottom: 1px solid var(--outline-variant);
+  border-top: 1px solid var(--outline-variant);
 }
 
 .find-input {
   width: 220px;
-  height: 26px;
-  padding: 0 10px;
+  height: var(--control-h);
+  padding: 0 8px;
   border: 1px solid var(--outline-variant);
-  border-radius: 13px;
-  background: var(--surface);
+  border-radius: var(--radius-chip);
+  background: var(--surface-container-lowest);
   color: var(--on-surface);
   font-size: var(--text-mono);
 }
@@ -4238,21 +4258,64 @@
 }
 
 /* 无匹配：输入框描红（计数同时为 0/0） */
-.find-input.no-match {
-  border-color: var(--error);
-}
-
+.find-input.no-match,
 .find-input.no-match:focus {
   border-color: var(--error);
 }
 
+/* 计数随内容伸缩（2026-09-09 移除 min-width 48px——idle 空串不渲染 span，
+ * 原占位使输入框与按钮间常驻一段空白） */
 .find-count {
-  min-width: 48px;
-  text-align: center;
   font-size: var(--text-sm);
   color: var(--on-surface-variant);
   user-select: none;
   white-space: nowrap;
+}
+
+/* 下一处/上一处/关闭：CM 搜索面板 button 同款文案钮（28 高 chip、container 底 +
+ * outline-variant 边，文案与 CM phrases 同源、顺序同 CM——next 在前 prev 在后，
+ * 2026-09-09 统一）；hover/focus 仅提边框与文字色（同 CM 面板按钮，底色不变） */
+.find-bar .find-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--control-h);
+  padding: 0 10px;
+  background: var(--surface-container);
+  color: var(--on-surface-variant);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-chip);
+  font: inherit;
+  font-size: var(--text-md);
+  cursor: pointer;
+}
+
+.find-bar .find-btn:hover,
+.find-bar .find-btn:focus-visible {
+  border-color: var(--outline);
+  color: var(--on-surface);
+}
+
+/* 关闭（× 图标 ghost 方钮，2026-09-09 对齐 tab 关闭钮 idiom）：无边框透明底
+ * 22×22（.icon-btn 标准尺寸，原 18 偏小同日上调）、radius 4、hover
+ * container-highest 底——与 Tab 关闭钮同款视觉（tab 内为紧凑区 18，查找条
+ * 40 高行取工具栏标准 22）；右推条尾同 CM 面板 close 的 margin-left:auto
+ * idiom（× 用 lucide 图标，DESIGN.md 禁 Unicode 字形） */
+.find-bar .find-close {
+  margin-left: auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+}
+
+.find-bar .find-close:hover,
+.find-bar .find-close:focus-visible {
+  background: var(--surface-container-highest);
+  border-color: transparent;
+  color: var(--on-surface);
 }
 
 /* markdown 预览 DOM 扫描高亮（CSS Custom Highlighting；浏览器/PDF 走原生
@@ -4318,7 +4381,7 @@
 }
 
 /* PDF 预览宿主（design-pdf-preview §1 终态）：渲染在 main 侧原生视图（PDFium）。
- * flex:1 占位（页面内搜索条在上方时收窄，ResizeObserver 自动跟随 bounds——
+ * flex:1 占位（页面内搜索条居底时收窄，ResizeObserver 自动跟随 bounds——
  * design-find-in-page §2.5）；无查找条时铺满 */
 .file-view.pdf-view .pdf-host {
   position: relative;

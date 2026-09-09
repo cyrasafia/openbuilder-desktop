@@ -13,7 +13,7 @@
 
 ### 2.1 统一查找条（自建，三视图共用）
 
-- **UI 形态**：视图顶部一条横向 bar（结构对齐 CM 搜索面板 idiom——居底/居顶与各视图现状协调，见 §2.4/§2.5 落点）：输入框（自动聚焦/全选）+ 匹配计数 `n/m` + 上一个/下一个 + 关闭钮。无 replace（三视图均只读，无替换语义）。
+- **UI 形态**：视图底部一条横向 bar（2026-09-09 修订统一居底，原「视图顶部/工具条下方」——与代码视图 CM 搜索面板同位同 idiom，四视图查找条视觉一致）：输入框（自动聚焦/全选，与 CM 面板搜索框等宽 220px）+ 匹配计数 `n/m` + 文案钮「下一个/上一个」（与 CM 搜索面板同文案同序——next 在前 prev 在后，文案精简为一般习惯用语，原 ▲▼ 图标钮同日弃用）+ 关闭 × ghost 方钮（右推条尾、无边框透明底 18×18 对齐 Tab 关闭钮，同 CM close）。无 replace（三视图均只读，无替换语义）。
 - **交互语义**（三视图统一）：
   - Ctrl+F（mac ⌘F）唤起并聚焦输入框；已开时重新聚焦（不重复渲染）；
   - 输入即搜：markdown 侧防抖 150ms（DOM 扫描成本自担）；浏览器/PDF 侧逐键发起（`findInPage` 增量更新、Chromium 侧自持节流，无防抖）；Enter = 下一个、Shift+Enter = 上一个；
@@ -21,7 +21,7 @@
   - 计数文案无匹配时输入框描红（`--error` 边），有匹配恢复；
   - 空输入 = 无动作（不发起搜索、计数占位）。
 - **组件落点**：新组件 `find-bar.tsx`（`FindBar`）——纯展示 + 回调驱动，不持有匹配状态本身（各视图自带匹配模型，见 §2.4/§2.5）；三视图复用同一组件，样式 `.find-bar` 全套在 app.css。
-- **快捷键语义**：FindBar 输入框是 renderer DOM，`window` keydown 可达——Ctrl+F 全局分发新增分支：激活 Tab 是三视图之一（或 FileView markdown 预览态）时唤起该视图的查找条，否则放行（代码视图 CM 搜索自持 Ctrl+F，消息流/终端/引导页无页面内搜索语义，维持放行）。**浏览器/PDF Tab 原生视图持焦时**经既有 `before-input-event` 转发（browser-views.ts 已转发全部 Ctrl 系 keyDown）走同一分发——无新增转发面。
+- **快捷键语义**：FindBar 输入框是 renderer DOM，`window` keydown 可达——Ctrl+F 全局分发新增分支：激活 Tab 已注册唤起回调即消费唤起，无注册回调 = 放行（消息流/终端/引导页无页面内搜索语义，维持放行）。**2026-09-09 修订：markdown 源码态与代码文件亦注册**——CM 未聚焦正文时 Ctrl+F 经回调 `openSearchPanel` 唤起 CM 搜索面板（原须先点击正文；CM 已聚焦时事件先被 searchKeymap 消费、到不了分发，两路互不干扰）。**浏览器/PDF Tab 原生视图持焦时**经既有 `before-input-event` 转发（browser-views.ts 已转发全部 Ctrl 系 keyDown）走同一分发——无新增转发面。
 
 ### 2.2 浏览器 Tab / PDF：`webContents.findInPage`
 
@@ -46,7 +46,7 @@
 
 ### 2.3 markdown 预览态：DOM 文本扫描
 
-- **实现落点**：FileView 内新子组件 `MdFind`（workspace.tsx，或独立文件——见 §5 决策：**落 workspace.tsx 内**，与 TOC 扫描同文件，避免为单一调用点拆文件）。查找条渲染在 `.file-toolbar` 下方（wrap 列 flex 第二行）；匹配模型自持（`useState` 纯局部，不入 store——关闭即清，切走重挂载重搜，与 TOC 状态记忆不同：搜索是瞬时任务态，无「切走再回恢复」诉求）。
+- **实现落点**：FileView 内新子组件 `MdFind`（workspace.tsx，或独立文件——见 §5 决策：**落 workspace.tsx 内**，与 TOC 扫描同文件，避免为单一调用点拆文件）。查找条渲染在内容滚动层之下（wrap 列 flex 末行，2026-09-09 居底统一）；匹配模型自持（`useState` 纯局部，不入 store——关闭即清，切走重挂载重搜，与 TOC 状态记忆不同：搜索是瞬时任务态，无「切走再回恢复」诉求）。
 - **扫描算法**：TreeWalker（`NodeFilter.SHOW_TEXT`）遍历 `.file-md` 内文本节点，收集命中区间 [start, end)（大小写不敏感、纯文本 indexOf——不支持正则/全字，与 CM search 基础档一致）；**跳过**：`script/style`（无此节点，防御）与已命中节点的属性（TreeWalker 天然只走 text node，无需处理）。
 - **高亮渲染**：CSS Custom Highlighting API（`CSS.highlights.set("md-find", …)`，`new Highlight()` 后逐 range `add()` 登记——不用展开传参构造，spread 实参受 V8 ~65k 上限约束，大文件高频词命中数可越界抛 RangeError，2026-09-09 二轮复审 #3；`::highlight(md-find)`）——零 DOM 变更，不侵入 streamdown 渲染树（块级 memo 下 DOM 改写会破坏 React 托管，§2.8 MarkdownImage 同结论）；当前匹配单独 registry `md-find-active`（更强底色）。回退：`CSS.highlights` 不存在（旧 Chromium/jsdom）时降级为无高亮滚动定位（Chromium 105+ 支持，Electron 43 恒可用；jsdom 测试走降级断言结构）。
 - **当前匹配定位**：命中区间 `Range.getBoundingClientRect()` → 滚动层 `scrollTop` 对齐（`scrollIntoView({block:"center"})` 不适用——Range 非 Element；手动算 rect 相对滚动容器偏移）。上一处/下一处环绕（wrap-around）。
@@ -60,22 +60,23 @@
 
 | 视图 | 查找条位置 | 匹配来源 | Ctrl+F 唤起路径 |
 |---|---|---|---|
-| FileView markdown 预览态 | 工具条下方（wrap 内第二行） | DOM 扫描（§2.3） | window keydown → dispatch 分支（FileView 传唤起 ref 经 store 转发，见下） |
-| 浏览器 Tab | 工具条（地址栏行）下方第二行 | `findInPage`（§2.2） | 同上；视图持焦时经 browser:shortcut 转发 |
-| PDF 文件 Tab | 文件操作条下方第二行 | `findInPage`（§2.2，viewId 复用注册表） | 同上 |
+| FileView markdown 预览态 | 内容滚动层下方（wrap 内末行） | DOM 扫描（§2.3） | window keydown → dispatch 分支（FileView 传唤起 ref 经 store 转发，见下） |
+| FileView 源码态/代码文件 | CM 搜索面板（居底） | CM search（既有） | 同上；2026-09-09 起注册——CM 未聚焦时经回调 `openSearchPanel` 唤起（CodeView `onViewReady` 上报 EditorView），已聚焦时 keymap 先消费 |
+| 浏览器 Tab | 内容宿主下方（列 flex 末行） | `findInPage`（§2.2） | 同上；视图持焦时经 browser:shortcut 转发 |
+| PDF 文件 Tab | 内容宿主下方（列 flex 末行） | `findInPage`（§2.2，viewId 复用注册表） | 同上 |
 
 - **唤起通道**：dispatch 是全局单点，视图组件在挂载时注册「唤起回调」——`useFindRequester` hook（find-bar.tsx，§2.4 表内的 `useFindBarController` 为初稿名，实现即它）：组件树内自持 `open` 状态 + 挂载时向 store 注册回调（`store.registerFindRequester(tabKey, fn)`，切走/卸载注销）。dispatch 分支：激活 Tab 有注册回调即消费唤起，无注册回调 = 放行；**overlay 闸门**（review 二轮 #5）：弹窗/右键菜单遮挡时（overlayCount>0）仅消费不动作——查找条会开在弹窗之下且其挂载聚焦抢走弹窗控件焦点（同 Alt 域四键闸门语义）。**不复用事件总线**：三视图都是受 React 生命周期管理的组件，回调注册制与 Tab 注册制（AGENTS.md「Tab 注册制」精神）同构，且卸载自动清理。
-  - FileView 特例（2026-09-09 review 三轮修订）：kind=file 的 Tab 可能是 markdown 预览/源码/图片/代码——**markdown 恒注册**（Tab 存续期，闸门在回调内：active ref 判定「预览态且内容落地」，源码态 Ctrl+F 消费但无动作——CM 聚焦时事件已被其 keymap 消费根本到不了分发，未聚焦时无动作即无干扰）；**非 markdown 文件不注册**（`file:` 注册键让给 PDF 分支的 PdfFrameView——父子组件共用键会后注册覆盖前者，PDF Ctrl+F 即失效；代码/图片无页面内搜索语义）。
+  - FileView 特例（2026-09-09 review 三轮修订；同日扩至代码态）：kind=file 的 Tab 可能是 markdown 预览/源码/图片/代码——**markdown 恒注册**（Tab 存续期；回调按态分发：预览态且内容落地 → 开 FindBar，源码态 → `openSearchPanel` 开 CM 面板）；**代码/文本文件内容落地即注册**（`codeViewLive` = 内容分支渲染期镜像；2026-09-09 起未聚焦正文也能 Ctrl+F，原「CM 自持、不注册」语义修订——未聚焦时事件无人消费，必须先点正文是缺陷）；**PDF/图片/二进制不注册**（`file:` 注册键让给 PDF 分支的 PdfFrameView——父子组件共用键会后注册覆盖前者，PDF Ctrl+F 即失效；图片/占位无页面内搜索语义）。
   - 浏览器/PDF 视图的注册以 viewId 落地为前提（PDF 加载窗口/shim 不注册，Ctrl+F 无动作）。
 - **Esc 冒泡**：FindBar 输入框 Esc 先关查找条（不冒泡成全局语义——`stopPropagation`；全局 Esc 关弹窗/菜单语义不受扰）。关闭后焦点回落视图。
 - **焦点守卫**：查找条开着时 Ctrl+F 重新聚焦（不动作）；Tab 切走即卸载（组件随视图卸载），无跨 Tab 残留。
 
 ### 2.5 布局细节
 
-- **通用**：`.find-bar` 高 = `--file-toolbar-h`（同操作条等高衔接，CM 搜索面板 idiom 同源）；背景 `--surface-container-low` + 底边框（同 browser-toolbar 视觉家族）；输入框复用 `.browser-address` 的圆角文本框 idiom（新类 `.find-input`，等高 26px）。计数 `n/m` 用 mono 字体弱色；无匹配计数为 `0/0` + 输入框 `--error` 边。
-- **浏览器 Tab**：`.browser-tab` 列 flex 第二行（browser-toolbar 与 browser-host 之间），常驻结构（开着才渲染）。
-- **PDF**（2026-09-09 review 三轮修订）：查找条渲染在 **PdfFrameView 内部**（`.file-view.pdf-view` 改列 flex，查找条为宿主上方第一行）——find 会话状态机与 viewId 同属 PdfFrameView（懒建/复用），拆到 wrap 层会跨组件借 viewId。视觉上等价于「操作条下方第二行」（原生视图 bounds 随宿主 div，插入行使宿主自动缩短，ResizeObserver 链路天然跟随——同 §2.4 先例）。
-- **markdown**：同 wrap 层插入位（工具条与滚动层之间），不占 `.file-md` 宽度。
+- **通用**（2026-09-09 居底统一修订；同日按钮文案/位置/关闭钮统一）：`.find-bar` 居视图底部，密度对齐 CM 搜索面板 idiom——28 高控件（`--control-h`）+ 上下 6 padding（条高 = `--file-toolbar-h`，与文件操作条等高衔接）；背景 `--surface-container-low` + **顶边框**（底部行的分隔线，同 `.cm-panels-bottom`）；输入框 `.find-input` 同 CM cm-textfield idiom（`--surface-container-lowest` 底、`--outline-variant` 边、`--radius-chip` 圆角、28 高、**宽 220px 两侧统一**——CM 侧覆写 `input.cm-textfield` 等宽，原内建 intrinsic 默认宽）；「下一个/上一个」为文案钮（`.find-btn`，t.findNext/findPrev 文案）同 CM 面板 button idiom（container 底 chip 圆角、next 在前 prev 在后）；关闭 × 钮为 **ghost 方钮对齐 Tab 关闭钮 idiom**（无边框透明底 **22×22** = `.icon-btn` 工具栏标准尺寸（原 18 偏小同日上调；tab 内为紧凑区 18）、radius 4、hover container-highest 底，`margin-left:auto` 右推条尾；CM 侧 × 文本字形字号 20px 补偿至与 14px lucide 图标视觉等高）。**文案两侧同源**：CM 侧 phrases 的 Find/next/previous 与本条 i18n 同文案（zh「查找…/下一个/上一个」、en "Find…/Next/Previous"，见 code-view cmPhrasesZh/cmPhrasesEn；文案取一般习惯用语，原「下一处/上一处」「Next match/Previous match」同日精简弃用）；计数 `n/m` 用 mono 字体弱色（本条特有，CM 无匹配计数），**idle 空串不渲染 span**（2026-09-09 移除原 min-width 48px 占位——空计数在输入框与按钮间留一段空白）；无匹配计数为 `0/0` + 输入框 `--error` 边。
+- **浏览器 Tab**：`.browser-tab` 列 flex 末行（browser-host 之后），常驻结构（开着才渲染）。
+- **PDF**（2026-09-09 review 三轮修订；同日居底修订）：查找条渲染在 **PdfFrameView 内部**（`.file-view.pdf-view` 列 flex，查找条为宿主下方末行）——find 会话状态机与 viewId 同属 PdfFrameView（懒建/复用），拆到 wrap 层会跨组件借 viewId（原生视图 bounds 随宿主 div，插入行使宿主自动缩短，ResizeObserver 链路天然跟随——同 §2.4 先例）。
+- **markdown**：同 wrap 层插入位（内容滚动层之下、wrap 末行），不占 `.file-md` 宽度。
 
 ## 3. 不做的事
 
@@ -110,7 +111,7 @@
 
 ## 5. 验收
 
-- markdown 预览态 Ctrl+F：查找条出现在操作条下方、输入即高亮全部匹配（当前匹配深色）、计数正确、Enter/Shift+Enter 环绕跳转且滚动定位、Esc 关闭清高亮；源码态 Ctrl+F 走 CM 既有面板（不受影响）；图片/代码/二进制文件 Ctrl+F 放行无动作（无注册回调）；
+- markdown 预览态 Ctrl+F：查找条出现在视图底部、输入即高亮全部匹配（当前匹配深色）、计数正确、Enter/Shift+Enter 环绕跳转且滚动定位、Esc 关闭清高亮；源码态/代码文件 Ctrl+F **无需先聚焦正文**即唤起 CM 搜索面板（2026-09-09 修订；已聚焦时仍由 keymap 先消费）；图片/二进制文件 Ctrl+F 放行无动作（无注册回调）；
 - 浏览器 Tab：页面内 Ctrl+F（视图持焦，经转发）与应用侧 Ctrl+F 均唤起查找条；输入即原生高亮 + 计数；Enter/上一处跳转；Esc 清除；导航到新页面后计数清零、旧词重输即搜；
 - PDF Tab：Ctrl+F 唤起、findInPage 高亮计数正常（含多页跳转）；扫描件 PDF 计数 0 输入框描红；
 - 三视图查找条开合无布局跳动（常驻位预留与否——查找条不常驻，开合有 ~32px 行高变化，同 CM 面板先例，接受）；浏览器/PDF 原生视图 bounds 随开合自动跟随；

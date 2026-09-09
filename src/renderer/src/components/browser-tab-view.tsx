@@ -179,7 +179,10 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
           </button>
         )}
       </div>
-      {/* 页面内搜索条（design-find-in-page §2.4）：工具条下方第二行 */}
+      {/* 内容宿主：占位 + bounds 源（渲染在 main 侧原生视图） */}
+      <div ref={hostRef} className="browser-host" />
+      {/* 页面内搜索条（design-find-in-page §2.4）：统一居底——与代码视图 CM
+          搜索面板同位（2026-09-09）；原生视图 bounds 随宿主自动跟随 */}
       {find.open && (
         <FindBar
           value={find.query}
@@ -192,8 +195,6 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
           onClose={find.close}
         />
       )}
-      {/* 内容宿主：占位 + bounds 源（渲染在 main 侧原生视图） */}
-      <div ref={hostRef} className="browser-host" />
     </div>
   )
 }
