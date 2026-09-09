@@ -2866,10 +2866,14 @@
   gap: 8px;
 }
 
+/* 卡片自身无 padding：内边距归头部按钮/body——头部按钮占满整卡宽高
+   （收起时整卡可点击，展开时整个头部可点击，padding 区域不再是死区）。
+   overflow hidden 裁剪头部 hover 底色到圆角 */
 .pending-card {
   border-radius: var(--radius-card);
   border: 1px solid;
-  padding: 8px 12px;
+  padding: 0;
+  overflow: hidden;
 }
 
 /* 配色同移动端 _PermissionCard/_QuestionCard：权限 = primary 系，问题 = tertiary 系 */
@@ -2890,6 +2894,7 @@
   width: 100%;
   min-width: 0;
   text-align: left;
+  padding: 8px 12px;
 }
 
 .pending-card-icon {
@@ -2942,8 +2947,11 @@
   color: var(--outline);
 }
 
+/* margin-top 0（头部 padding-bottom 8px 即原头部与 body 的间距）。
+   左右/下用 margin 不用 padding：margin 在滚动容器外，>320px 出滚动条时
+   距卡片边框 12px（与卡片自带 padding 时代的几何一致） */
 .pending-card-body {
-  margin-top: 8px;
+  margin: 0 12px 8px;
   display: flex;
   flex-direction: column;
   gap: 10px;
