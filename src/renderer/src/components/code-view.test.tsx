@@ -92,7 +92,8 @@ describe("CodeView 渲染", () => {
     const panel = container.querySelector(".cm-panels")
     expect(panel).not.toBeNull()
     const input = panel?.querySelector("input.cm-textfield") as HTMLInputElement
-    expect(input.placeholder).toBe("查找")
+    // 占位符与 FindBar i18n 同文案（2026-09-09 四视图查找条统一）
+    expect(input.placeholder).toBe("查找…")
     // readonly：replace 输入与按钮自动隐藏（CM 内建）
     expect(panel?.querySelector("input[name=replace]")).toBeNull()
   })

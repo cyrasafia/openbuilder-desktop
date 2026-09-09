@@ -58,8 +58,8 @@ vi.mock("../app", () => ({
       findPlaceholder: "查找…",
       findMatchCount: "{active}/{matches}",
       findIdle: "",
-      findPrev: "上一处",
-      findNext: "下一处",
+      findPrev: "上一个",
+      findNext: "下一个",
       findClose: "关闭",
       // 操作条（design-file-view-actions；文案键复用右键菜单）
       fileOpen: "打开",
@@ -555,7 +555,7 @@ describe("FileView markdown 页面内搜索（design-find-in-page §2.3/§2.4）
     fireEvent.keyDown(bar, { key: "Escape" })
   }
 
-  it("预览态注册唤起回调；源码态回调不动作（active ref 闸门）；非 md 文件不注册（键让给 PDF 子组件）", async () => {
+  it("预览态唤起 FindBar；源码态/代码文件唤起 CM 面板（未聚焦正文可直接 Ctrl+F，2026-09-09 修订）；图片不注册（PDF 同，键让给 PdfFrameView 子组件）", async () => {
     fileContentsStub.set("/repo/doc.md", { content: "# 标题\n\n正文若干" })
     render(<FileView absolutePath="/repo/doc.md" />)
     await screen.findAllByText("标题")
@@ -563,18 +563,29 @@ describe("FileView markdown 页面内搜索（design-find-in-page §2.3/§2.4）
     openFindBar("/repo/doc.md")
     expect(document.querySelector(".find-bar")).not.toBeNull()
     mdFindClose()
-    // 切源码：注册回调保留（active ref 闸门设计），但唤起无效——CM 自持搜索
+    // 切源码：同一注册回调改开 CM 搜索面板（openSearchPanel）——原「不动作」
+    // 语义 2026-09-09 修订：未聚焦正文也能 Ctrl+F
     fireEvent.click(screen.getByRole("button", { name: "源码" }))
     const fn = findRequestersStub.get("file:/repo/doc.md")!
     expect(fn).toBeTruthy()
     act(() => fn())
     expect(document.querySelector(".find-bar")).toBeNull()
+    expect(document.querySelector(".cm-panel.cm-search")).not.toBeNull()
     cleanup()
 
-    // 非 md：不注册（PDF 文件 Tab 下 `file:` 键归 PdfFrameView，防父组件覆盖）
+    // 代码文件：同样注册，未聚焦正文即可唤起 CM 面板
     fileContentsStub.set("/repo/main.ts", { content: "const x" })
     render(<FileView absolutePath="/repo/main.ts" />)
-    expect(findRequestersStub.has("file:/repo/main.ts")).toBe(false)
+    const fnTs = findRequestersStub.get("file:/repo/main.ts")
+    expect(fnTs, "代码文件应注册唤起回调").toBeTruthy()
+    act(() => fnTs!())
+    expect(document.querySelector(".cm-panel.cm-search")).not.toBeNull()
+    cleanup()
+
+    // 图片：不注册（PDF 文件 Tab 下 `file:` 键归 PdfFrameView，防父组件覆盖）
+    fileContentsStub.set("/repo/pic.png", { content: "x", binary: true, mimeType: "image/png" })
+    render(<FileView absolutePath="/repo/pic.png" />)
+    expect(findRequestersStub.has("file:/repo/pic.png")).toBe(false)
   })
 
   it("唤起 → 输入即扫描计数（大小写不敏感）；Enter 环绕跳转；Esc 关闭清条", async () => {
@@ -626,8 +637,8 @@ describe("FileView markdown 页面内搜索（design-find-in-page §2.3/§2.4）
     openFindBar("/repo/doc.md")
     const input = document.querySelector(".find-bar input") as HTMLInputElement
     fireEvent.change(input, { target: { value: "alpha" } })
-    // 防抖 150ms 内：idle 占位（非 0/0），无描红
-    expect(document.querySelector(".find-count")?.textContent).toBe("")
+    // 防抖 150ms 内：idle 无计数（2026-09-09 起空串不渲染，非 0/0），无描红
+    expect(document.querySelector(".find-count")).toBeNull()
     expect(document.querySelector(".find-input.no-match")).toBeNull()
     await waitFor(() => expect(screen.getByText("1/2")).toBeTruthy())
   })

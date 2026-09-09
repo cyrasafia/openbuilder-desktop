@@ -16,12 +16,14 @@ import { languageForPath } from "./cm-lang"
 import { cmSyntaxTheme } from "./cm-theme"
 import type { Locale } from "../i18n"
 
-/** CM 内建短语本地化（zh；en 用内建默认）：搜索面板 + 折叠 tooltip（design-code-folding §2.4） */
+/** CM 内建短语本地化（zh；en 用内建默认）：搜索面板 + 折叠 tooltip（design-code-folding §2.4）。
+ *  Find/next/previous 与 FindBar 的 i18n 同文案（2026-09-09 四视图查找条统一：
+ *  占位符「查找…」、按钮「下一个/上一个」两侧一致，en 侧 override 内建默认） */
 const cmPhrasesZh: Record<string, string> = {
-  Find: "查找",
+  Find: "查找…",
   Replace: "替换",
-  next: "下一处",
-  previous: "上一处",
+  next: "下一个",
+  previous: "上一个",
   all: "全部",
   "match case": "区分大小写",
   regexp: "正则表达式",
@@ -39,6 +41,13 @@ const cmPhrasesZh: Record<string, string> = {
   "Folded lines": "已折叠行",
   "Unfolded lines": "已展开行",
   to: "至",
+}
+
+/** en 只 override 搜索面板三处（与 FindBar i18n 同文案；其余用 CM 内建英文） */
+const cmPhrasesEn: Record<string, string> = {
+  Find: "Find…",
+  next: "Next",
+  previous: "Previous",
 }
 
 /** 折叠标记 SVG 字符串（design-code-folding §2.3 修订）：lucide ChevronDown/
@@ -108,7 +117,7 @@ function buildExtensions(path: string, locale: Locale | undefined) {
     keymap.of(foldKeymap),
     search(), // 搜索面板居底（CM 默认；原 top: true，2026-09-08 修订）
     keymap.of(searchKeymap),
-    ...(locale === "zh" ? [EditorState.phrases.of(cmPhrasesZh)] : []),
+    ...(locale === "en" ? [EditorState.phrases.of(cmPhrasesEn)] : locale ? [EditorState.phrases.of(cmPhrasesZh)] : []),
     EditorState.readOnly.of(true),
   ]
 }
@@ -120,6 +129,7 @@ export function CodeView({
   initialScrollTop,
   revealLine,
   onScrollTop,
+  onViewReady,
 }: {
   path: string
   content: string
@@ -130,6 +140,10 @@ export function CodeView({
   revealLine?: number
   /** 滚动偏移上报（上层落 store，供切走再回恢复；高频，上层写入不得触发重渲染） */
   onScrollTop?: (top: number) => void
+  /** EditorView 生命周期上报（挂载 → view；卸载 → null）。上层（FileView）
+   *  借此在 Ctrl+F 分发里 openSearchPanel（2026-09-09：未聚焦正文亦可唤起，
+   *  mount 期捕获——上层传稳定 ref 写入器即可） */
+  onViewReady?: (view: EditorView | null) => void
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
@@ -142,6 +156,7 @@ export function CodeView({
       parent: host,
     })
     viewRef.current = view
+    onViewReady?.(view)
     // CM 内滚（.cm-scroller）：布局落定（rAF）后一次性恢复偏移——创建当帧
     // scrollHeight 未建立，直接设会被 clamp 到 0；另挂滚动监听上报
     let raf = 0
@@ -166,6 +181,7 @@ export function CodeView({
     return () => {
       if (raf) cancelAnimationFrame(raf)
       scroller.removeEventListener("scroll", onScroll)
+      onViewReady?.(null)
       view.destroy()
       viewRef.current = null
     }

@@ -29,8 +29,8 @@ vi.mock("../app", () => ({
       findPlaceholder: "查找…",
       findMatchCount: "{active}/{matches}",
       findIdle: "",
-      findPrev: "上一处",
-      findNext: "下一处",
+      findPrev: "上一个",
+      findNext: "下一个",
       findClose: "关闭",
     },
     locale: "zh" as const,
@@ -105,16 +105,17 @@ describe("FindBar UI", () => {
     )
   }
 
-  it("计数 n/m 展示；上一处/下一处/关闭点击回调", () => {
+  it("计数 n/m 展示；下一个/上一个/关闭点击回调（文案钮与 CM 搜索面板同序，2026-09-09 统一）", () => {
     const onPrev = vi.fn()
     const onNext = vi.fn()
     const onClose = vi.fn()
     renderBar({ onPrev, onNext, onClose })
     expect(screen.getByText("1/3")).toBeTruthy()
-    screen.getByTitle("上一处").click()
-    expect(onPrev).toHaveBeenCalledTimes(1)
-    screen.getByTitle("下一处").click()
+    // 文案可见即无障碍名（无 title）；next 在 prev 前（CM 同序）
+    screen.getByText("下一个").click()
     expect(onNext).toHaveBeenCalledTimes(1)
+    screen.getByText("上一个").click()
+    expect(onPrev).toHaveBeenCalledTimes(1)
     screen.getByTitle("关闭").click()
     expect(onClose).toHaveBeenCalledTimes(1)
   })
