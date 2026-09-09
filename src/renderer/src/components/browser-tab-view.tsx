@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { ArrowLeft, ArrowRight, ExternalLink, FolderOpen, RotateCw, X } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import { fileUrlOf } from "@shared/file-url"
+import { FindBar, useWebContentsFind } from "./find-bar"
 
 /**
  * 浏览器 Tab 内容（design-browser-tab §1.3）：工具条 + 内容宿主。
@@ -17,6 +18,23 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
   // 地址栏本地态：聚焦编辑时不被 store url 回写打断；失焦/导航后同步
   const [address, setAddress] = useState(state?.url ?? tabKey.slice("browser:".length))
   const addressFocused = useRef(false)
+  // 页面内搜索（design-find-in-page §2.2/§2.4）：Ctrl+F 唤起（经 store 注册）
+  const find = useWebContentsFind(viewId, tabKey)
+
+  // 导航/刷新即失效（§2.2）：Chromium 搜索态随页面重载作废，无 end 帧——
+  // 两种信号任一触发清零（查询词保留，用户可重搜）：url 变化（导航）或
+  // loading false→true 翻转（**同 URL 刷新不发 url 变化**，但 loading 翻转
+  // 恒有；review 三轮 #3）
+  const lastNav = useRef<{ url?: string; loading?: boolean }>({})
+  useEffect(() => {
+    if (!state) return
+    const prev = lastNav.current
+    const urlChanged = prev.url !== undefined && prev.url !== state.url
+    const loadStarted = prev.loading === false && state.loading
+    if (urlChanged || loadStarted) find.reset()
+    lastNav.current = { url: state.url, loading: state.loading }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state?.url, state?.loading])
 
   // bounds 同步：挂载 + 尺寸变化（rAF 合帧，拖拽调宽高频）
   useEffect(() => {
@@ -161,6 +179,19 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
           </button>
         )}
       </div>
+      {/* 页面内搜索条（design-find-in-page §2.4）：工具条下方第二行 */}
+      {find.open && (
+        <FindBar
+          value={find.query}
+          onValueChange={find.onValueChange}
+          active={find.count?.active ?? null}
+          matches={find.count?.matches ?? null}
+          focusRequest={find.focusRequest}
+          onPrev={find.prev}
+          onNext={find.next}
+          onClose={find.close}
+        />
+      )}
       {/* 内容宿主：占位 + bounds 源（渲染在 main 侧原生视图） */}
       <div ref={hostRef} className="browser-host" />
     </div>

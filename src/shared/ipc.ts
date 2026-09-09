@@ -99,6 +99,17 @@ export interface BrowserViewRect {
   height: number
 }
 
+/** 页面内搜索结果推送（design-find-in-page §2.2；main → renderer，finalUpdate 末帧） */
+export interface BrowserFindState {
+  viewId: number
+  /** findInPage 返回的请求 id（browser:find-request 同步回传）：旧请求迟到帧守卫 */
+  requestId: number
+  /** 当前匹配序号（1-based） */
+  active: number
+  /** 匹配总数 */
+  matches: number
+}
+
 /** IPC 通道类型（preload ↔ main） */
 export interface DesktopApi {
   platform: DesktopPlatform
@@ -154,6 +165,19 @@ export interface DesktopApi {
   browserGoForward(viewId: number): void
   browserReload(viewId: number): void
   browserStop(viewId: number): void
+  /** 页面内搜索（design-find-in-page §2.2）：browser:find-request 同步回传
+   *  requestId（旧请求守卫）；结果经 onBrowserFindState 推送（末帧） */
+  browserFindStart(viewId: number, text: string, opts: { forward: boolean; findNext: boolean }): void
+  /** 清除搜索高亮（stopFindInPage clearSelection；关闭查找条/清空输入时） */
+  browserFindStop(viewId: number): void
+  /** 唤起查找条时收回键盘焦点到主窗口（浏览器/PDF 原生视图持焦场景——跨
+   *  webContents 焦点转移只能从 main 侧发起；design-find-in-page §2.2） */
+  browserFocusMain(): void
+  /** findInPage 请求 id 同步回传（main → renderer；请求发起当帧）——renderer 端
+   *  useWebContentsFind 比对 requestId 丢弃旧请求迟到帧 */
+  onBrowserFindRequest(cb: (payload: { viewId: number; requestId: number }) => void): () => void
+  /** 搜索结果推送（main → renderer），返回取消订阅 */
+  onBrowserFindState(cb: (state: BrowserFindState) => void): () => void
   /** 视图状态推送（main → renderer），返回取消订阅 */
   onBrowserViewState(cb: (state: BrowserViewState) => void): () => void
   /** 浏览器视图内快捷键转发（main → renderer；页面聚焦时 window keydown 不可达，评审 M5）。

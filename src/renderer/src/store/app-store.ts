@@ -438,12 +438,16 @@ export class AppStore {
    */
   private browserViewIds = new Map<string, number>()
   browserStates = new Map<number, BrowserViewState>()
-  /**
-   * 全局浮层计数（design-browser-tab §1.2 z-order 对策）：>0 时隐藏全部浏览器
+  /** 全局浮层计数（design-browser-tab §1.2 z-order 对策）：>0 时隐藏全部浏览器
    * 视图（原生视图恒在 DOM 之上，设置弹窗/右键菜单等会被挡）。设置弹窗与
-   * 文件树右键菜单挂/卸时 +1/-1
-   */
+   * 文件树右键菜单挂/卸时 +1/-1 */
   overlayCount = 0
+  /**
+   * 页面内搜索唤起注册表（design-find-in-page §2.4）：tabKey → Ctrl+F 唤起回调。
+   * 挂载注册/卸载注销由组件自持（Tab 注册制精神）——无注册回调的视图 Ctrl+F
+   * 放行（代码视图 CM 自持搜索不注册）
+   */
+  private findRequesters = new Map<string, () => void>()
   /**
    * 作用域最后激活（design-tab-state-memory §2.1）：directory → 最后激活 Tab key；
    * null = 引导页。纯内存（重启无记录，冷启动激活仍走 design-tab-memory §7 记忆
@@ -840,6 +844,9 @@ export class AppStore {
     this.browserViewIds.clear()
     this.browserStates.clear()
     this.overlayCount = 0
+    // 搜索唤起注册随连接拆除清空（design-find-in-page：组件随后全部卸载自注销，
+    // 此处防御 teardown 时序下的陈旧回调引用）
+    this.findRequesters.clear()
     // 项目选择器随连接拆除复位（overlayCount 已清零，同步标志位防重连后残留：
     // openProjectPicker 的已开短路会吃掉新一次直达）
     this.pickerOpen = false
@@ -4273,6 +4280,19 @@ export class AppStore {
   popOverlay() {
     this.overlayCount = Math.max(0, this.overlayCount - 1)
     this.emit()
+  }
+
+  /** 页面内搜索唤起注册（design-find-in-page §2.4）：组件挂载时注册、卸载注销 */
+  registerFindRequester(tabKey: string, fn: () => void) {
+    this.findRequesters.set(tabKey, fn)
+  }
+
+  unregisterFindRequester(tabKey: string) {
+    this.findRequesters.delete(tabKey)
+  }
+
+  findRequesterFor(tabKey: string): (() => void) | null {
+    return this.findRequesters.get(tabKey) ?? null
   }
 
   /** 激活视图显隐（Tab 切换协调：激活显示，其余隐藏；PDF 文件 Tab 视图同规则） */

@@ -30,6 +30,8 @@ const actions = {
   activeTab: null as { kind: string; key: string } | null,
   overlayCount: 0,
   currentWorkspace: null as { directory: string } | null,
+  // 页面内搜索（design-find-in-page）：注册表桩
+  findRequesterFor: vi.fn(() => null),
 }
 
 vi.mock("../app", () => ({
@@ -193,6 +195,40 @@ describe("useShortcuts 分发", () => {
     const ev = press({ key: "w", ctrlKey: true })
     expect(ev.defaultPrevented).toBe(true)
     expect(actions.closeTab).toHaveBeenCalledWith("file:/repo/a.md", { pushClosed: true })
+  })
+
+  it("Ctrl+F：激活 Tab 有注册回调 → 消费并唤起（design-find-in-page）；无回调/无激活 Tab → 放行", () => {
+    render(<Harness />)
+    const requester = vi.fn()
+    ;(actions.findRequesterFor as ReturnType<typeof vi.fn>).mockReturnValue(requester)
+
+    // 无激活 Tab：放行（无调用）
+    const ev0 = press({ key: "f", ctrlKey: true })
+    expect(ev0.defaultPrevented).toBe(false)
+    expect(requester).not.toHaveBeenCalled()
+
+    // 有激活 Tab 且已注册：消费 + 唤起
+    actions.activeTab = { kind: "browser", key: "browser:https://x/" }
+    const ev = press({ key: "f", ctrlKey: true })
+    expect(ev.defaultPrevented).toBe(true)
+    expect(requester).toHaveBeenCalledTimes(1)
+
+    // 有激活 Tab 但未注册（代码视图/消息流）：放行
+    ;(actions.findRequesterFor as ReturnType<typeof vi.fn>).mockReturnValue(null)
+    const ev2 = press({ key: "f", ctrlKey: true })
+    expect(ev2.defaultPrevented).toBe(false)
+
+    // 浏览器视图转发路径（onBrowserShortcut）同分发：Ctrl+F 亦唤起
+    ;(actions.findRequesterFor as ReturnType<typeof vi.fn>).mockReturnValue(requester)
+    shortcutCb!({ key: "f", code: "KeyF", control: true, meta: false, shift: false, alt: false, up: false, isAutoRepeat: false })
+    expect(requester).toHaveBeenCalledTimes(2)
+
+    // overlay 闸门（review 二轮 #5）：弹窗遮挡时仅消费不动作
+    actions.overlayCount = 1
+    const ev3 = press({ key: "f", ctrlKey: true })
+    expect(ev3.defaultPrevented).toBe(true)
+    expect(requester).toHaveBeenCalledTimes(2)
+    actions.overlayCount = 0
   })
 
   it("Ctrl+W chat 流式中先确认，取消则不关闭", () => {

@@ -112,6 +112,17 @@ export function registerBrowserViewIpc() {
       Object.assign(agg, patch)
       pushState(viewId)
     }
+    // 页面内搜索结果推送（design-find-in-page §2.2）：只透传 finalUpdate 末帧
+    //（多帧增量直接透传会闪计数）；requestId 原样带出供 renderer 旧请求守卫
+    wc.on("found-in-page", (_e, result) => {
+      if (!result?.finalUpdate) return
+      mainWindow?.webContents.send("browser:find-state", {
+        viewId,
+        requestId: result.requestId,
+        active: result.activeMatchOrdinal,
+        matches: result.matches,
+      })
+    })
     wc.on("did-navigate", (_e, url) => update({ url, canGoBack: wc.navigationHistory.canGoBack(), canGoForward: wc.navigationHistory.canGoForward() }))
     wc.on("did-navigate-in-page", (_e, url) =>
       update({ url, canGoBack: wc.navigationHistory.canGoBack(), canGoForward: wc.navigationHistory.canGoForward() }),
@@ -164,6 +175,27 @@ export function registerBrowserViewIpc() {
   })
   ipcMain.on("browser:stop", (_e, viewId: number) => {
     views.get(viewId)?.view.webContents.stop()
+  })
+  // 页面内搜索（design-find-in-page §2.2）：webContents.findInPage ——
+  // 返回 requestId 供 renderer 作旧请求守卫；findInPage 对同一 query 会发多帧
+  // 增量（finalUpdate=false 逐帧），此处只透传末帧（计数稳定语义，不闪变）
+  ipcMain.on("browser:find-start", (_e, viewId: number, text: string, opts: { forward: boolean; findNext: boolean }) => {
+    const wc = views.get(viewId)?.view.webContents
+    if (!wc || typeof text !== "string") return
+    const requestId = wc.findInPage(text, { forward: opts?.forward !== false, findNext: !!opts?.findNext })
+    mainWindow?.webContents.send("browser:find-request", { viewId, requestId })
+  })
+  // 焦点收回（design-find-in-page §2.2，review 三轮 #1）：浏览器/PDF 视图持焦时
+  // Ctrl+F 唤起查找条，但 renderer 的 element.focus() 不与持焦的原生兄弟视图
+  // 竞争键盘焦点（跨 webContents 焦点转移须从 main 侧收回）——**必须在唤起时**
+  // 收回：等 find-start 再收是循环依赖（焦点不回主窗口，键入落进页面，
+  // onValueChange 根本不触发）。唤起时主窗口多半已持焦，此调用无害幂等
+  ipcMain.on("browser:focus-main", () => {
+    mainWindow?.webContents.focus()
+  })
+  ipcMain.on("browser:find-stop", (_e, viewId: number) => {
+    // clearSelection：关闭查找即清除原生高亮（keepSelection 会残留当前选区）
+    views.get(viewId)?.view.webContents.stopFindInPage("clearSelection")
   })
 }
 
