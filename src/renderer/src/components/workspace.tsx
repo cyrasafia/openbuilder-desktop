@@ -10,6 +10,7 @@ import {
   type ImgHTMLAttributes,
   type KeyboardEvent,
   type ReactNode,
+  type RefObject,
   type WheelEvent,
 } from "react"
 import {
@@ -66,6 +67,7 @@ import { createPortal } from "react-dom"
 import { ModelSwitcherBar } from "./model-switcher"
 import { CodeView } from "./code-view"
 import { collectHeadings, MdToc, type TocHeading } from "./md-toc"
+import { FindBar, useFindRequester } from "./find-bar"
 import { DiffView } from "./diff-view"
 import { PdfFrameView } from "./pdf-frame-view"
 import { OpenWithDialog } from "./open-with-dialog"
@@ -2401,6 +2403,244 @@ function isPdfPath(path: string): boolean {
   return base.toLowerCase().endsWith(".pdf")
 }
 
+/* ---------- markdown 预览态页面内搜索（design-find-in-page §2.3） ----------
+ * TreeWalker 扫描 .file-md 文本节点收集命中区间（大小写不敏感 indexOf），
+ * CSS Custom Highlighting 渲染高亮（零 DOM 变更，不侵入 streamdown 块级
+ * memo 托管树）；当前匹配单独 registry 深色。jsdom/旧环境无 CSS.highlights
+ * 时降级为无高亮（扫描仍驱动计数与滚动定位）。 */
+export interface MdFindRange {
+  range: Range
+  text: string
+  node: Text
+  start: number
+}
+
+/** 扫描 root 内全部命中（导出供测试）。跳过 script/style（防御性）。 */
+export function scanFindMatches(root: ParentNode, query: string): MdFindRange[] {
+  if (!query) return []
+  const needle = query.toLowerCase()
+  const out: MdFindRange[] = []
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement
+      if (parent && (parent.tagName === "SCRIPT" || parent.tagName === "STYLE")) return NodeFilter.FILTER_REJECT
+      return NodeFilter.FILTER_ACCEPT
+    },
+  })
+  for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+    const text = node.data.toLowerCase()
+    let idx = text.indexOf(needle)
+    while (idx !== -1) {
+      const range = document.createRange()
+      range.setStart(node, idx)
+      range.setEnd(node, idx + needle.length)
+      out.push({ range, text: node.data.slice(idx, idx + needle.length), node, start: idx })
+      idx = text.indexOf(needle, idx + needle.length)
+    }
+  }
+  return out
+}
+
+/** CSS Custom Highlighting 登记（无 API 降级 no-op）。返回清理函数。 */
+const MD_FIND_HIGHLIGHT = "md-find"
+const MD_FIND_ACTIVE_HIGHLIGHT = "md-find-active"
+
+function applyFindHighlights(matches: MdFindRange[], activeIdx: number): () => void {
+  const registry = (window as unknown as { CSS?: { highlights?: Map<string, unknown> } }).CSS
+  const highlights = registry?.highlights
+  if (!highlights) return () => {}
+  type HighlightLike = { add(range: Range): void }
+  const HighlightClass = (window as unknown as { Highlight?: new () => HighlightLike }).Highlight
+  if (typeof HighlightClass !== "function") return () => {}
+  // 逐个 add 而非展开传参构造：spread 实参受 V8 上限（~65k）约束，大文件
+  // 高频词命中数可越界抛 RangeError（2026-09-09 二轮复审 #3）
+  const make = (ranges: Range[]) => {
+    const h = new HighlightClass()
+    for (const r of ranges) h.add(r)
+    return h
+  }
+  highlights.set(MD_FIND_HIGHLIGHT, make(matches.map((m) => m.range)))
+  highlights.set(
+    MD_FIND_ACTIVE_HIGHLIGHT,
+    activeIdx >= 0 && activeIdx < matches.length ? make([matches[activeIdx].range]) : make([]),
+  )
+  return () => {
+    highlights.delete(MD_FIND_HIGHLIGHT)
+    highlights.delete(MD_FIND_ACTIVE_HIGHLIGHT)
+  }
+}
+
+/** 滚动定位当前匹配：Range rect 相对滚动层手动对齐（block:center）。
+ *  相对布局未建立（jsdom rect 全 0）或 Range 无 rect API 时 no-op。 */
+function scrollMatchIntoView(range: Range, scroller: HTMLElement | null) {
+  if (!scroller || typeof range.getBoundingClientRect !== "function") return
+  const rect = range.getBoundingClientRect()
+  if (rect.top === 0 && rect.height === 0) return
+  const scrollerRect = scroller.getBoundingClientRect()
+  const target = scroller.scrollTop + (rect.top - scrollerRect.top) - (scroller.clientHeight - rect.height) / 2
+  scroller.scrollTop = Math.max(0, target)
+}
+
+/**
+ * markdown 预览态查找状态机（design-find-in-page §2.3/§2.4）：状态全部局部
+ * （瞬时任务态——关闭即清，切走重挂载重搜）；Ctrl+F 经 useFindRequester
+ * 注册唤起（仅预览态且内容落地时可搜，其余态放行给 CM/全局）。
+ *
+ * scanKey（mode + content 引用派生）变化 = 预览 DOM 被替换（模式切换 /
+ * file watch 重拉）——Range 全部失联，立即清态并（仍开着时）对新 DOM 重扫
+ * （防僵尸：切回预览自动恢复搜索，见 review 2026-09-09）。首扫完成前
+ * matches 为 null（pending——不闪 0/0 描红，同浏览器侧 in-flight 语义）。
+ */
+function useMdFind(
+  rootRef: RefObject<HTMLDivElement | null>,
+  scrollerRef: RefObject<HTMLDivElement | null>,
+  /** 变化即代表预览 DOM 重建（「预览态 + 内容」联合键）；null = 无预览体 */
+  scanKey: string | null,
+) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState("")
+  const [active, setActive] = useState(0)
+  // null = 未扫描（pending）；数值 = 匹配数
+  const [matchCount, setMatchCount] = useState<number | null>(null)
+  // 重聚焦请求计数（FindBar focusRequest prop）
+  const [focusRequest, setFocusRequest] = useState(0)
+  const matchesRef = useRef<MdFindRange[]>([])
+  // active 镜像（review 三轮 #4）：clamp/跳转在事件与 effect 体内计算需要
+  // 「当前值」——setState updater 必须纯（不得在里面 mutate refs/调
+  // CSS.highlights），镜像 ref 承担读取侧
+  const activeRef = useRef(0)
+  const prevCleanupRef = useRef<(() => void) | null>(null)
+
+  const clearMatches = useCallback(() => {
+    prevCleanupRef.current?.()
+    prevCleanupRef.current = null
+    matchesRef.current = []
+    activeRef.current = 0
+    setMatchCount(null)
+    setActive(0)
+  }, [])
+
+  // 预览 DOM 重建（scanKey 变化，模式切换/内容重拉）：立即清失联 Range/
+  // 高亮/计数（重扫由主 effect 的 scanKey 依赖承担）。原为渲染期比对
+  // （mutate refs 不纯，review 三轮 #4），移入 effect——先于主 effect 声明
+  // 保证同次 commit 内清态先于重扫排程
+  useEffect(() => {
+    clearMatches()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scanKey])
+
+  // 扫描 + 高亮：query / scanKey 变化即重扫（防抖 150ms）；关闭/清空即清。
+  // 防抖后统一以「clamp 后 active」重设高亮（消除旧 active 闭包错位——
+  // 防抖窗口内 Enter 跳转后扫描落地，clamp 不动时 [active] effect 不重跑，
+  // 深色高亮会停在旧序号）。**streamdown 首帧可能未完成**（内部延迟渲染，
+  // 同 TOC 扫描的 MutationObserver 先例）：+150ms 扫描后观察 DOM 变更补扫
+  // ——不因「已有命中」跳过/断开（部分命中同样可能少计：迟渲染块内还有
+  // 命中，review 二轮 #4 原稿只覆盖零命中，2026-09-09 二轮复审 #1 修订）。
+  // 观察器随 effect 清理（词变/scanKey 变/关闭）断开，DOM 静止时零成本；
+  // 微任务合帧：同帧多次变更只扫一次
+  useEffect(() => {
+    const root = rootRef.current
+    if (!open || !root || !scanKey || query.length === 0) {
+      clearMatches()
+      return
+    }
+    let mo: MutationObserver | null = null
+    let scheduled = false
+    const scan = (): void => {
+      matchesRef.current = scanFindMatches(root, query)
+      setMatchCount(matchesRef.current.length)
+      // clamp + 高亮重设在 effect 体内完成（updater 保持纯；review 三轮 #4）
+      const next = Math.min(activeRef.current, Math.max(0, matchesRef.current.length - 1))
+      activeRef.current = next
+      prevCleanupRef.current?.()
+      prevCleanupRef.current = applyFindHighlights(matchesRef.current, next)
+      setActive(next)
+      // 初扫/重扫落地时 next 多为 0：setActive(0) 同值 bail-out 不触发
+      // [active] effect——首匹配滚动定位须在扫描体内自带（§2.3 当前匹配
+      // 定位），否则首匹配在视口外时视口不动、Enter 直跳匹配 2
+      const m = matchesRef.current[next]
+      if (m) scrollMatchIntoView(m.range, scrollerRef.current)
+    }
+    const handle = setTimeout(() => {
+      scan()
+      mo = new MutationObserver(() => {
+        if (scheduled) return
+        scheduled = true
+        queueMicrotask(() => {
+          scheduled = false
+          scan()
+        })
+      })
+      mo.observe(root, { childList: true, subtree: true })
+    }, 150)
+    return () => {
+      clearTimeout(handle)
+      mo?.disconnect()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, query, scanKey])
+
+  // active 变化：重设高亮（当前匹配深色）+ 滚动定位
+  useEffect(() => {
+    if (!open || query.length === 0) return
+    prevCleanupRef.current?.()
+    prevCleanupRef.current = applyFindHighlights(matchesRef.current, active)
+    const m = matchesRef.current[active]
+    if (m) scrollMatchIntoView(m.range, scrollerRef.current)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active])
+
+  // 卸载清理高亮（React 不托管 CSS.highlights）
+  useEffect(() => {
+    return () => {
+      prevCleanupRef.current?.()
+      prevCleanupRef.current = null
+    }
+  }, [])
+
+  const jump = useCallback((dir: 1 | -1) => {
+    const total = matchesRef.current.length
+    if (total === 0) return
+    // 事件体内经镜像计算（updater 保持纯；review 三轮 #4）
+    const next = (activeRef.current + dir + total) % total
+    activeRef.current = next
+    setActive(next)
+  }, [])
+
+  const openFind = useCallback(() => {
+    setOpen(true)
+    // 已开时重按 Ctrl+F → 重聚焦重选（FindBar focusRequest prop）
+    setFocusRequest((n) => n + 1)
+  }, [])
+
+  const close = useCallback(() => {
+    clearMatches()
+    setOpen(false)
+    setQuery("")
+  }, [clearMatches])
+
+  // 查找条开着但预览体消失（切源码/loading/error）：直接关闭——
+  // 源码态 CM 自持搜索，开着无内容可搜
+  useEffect(() => {
+    if (open && scanKey == null) close()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, scanKey])
+
+  return {
+    open,
+    openFind,
+    query,
+    onValueChange: setQuery,
+    active,
+    focusRequest,
+    // null = pending/空闲（FindBar 显示 idle 占位不描红）；0 = 确认无匹配
+    matches: open && query.length > 0 ? matchCount : null,
+    next: () => jump(1),
+    prev: () => jump(-1),
+    close,
+  }
+}
+
 /**
  * 图片 data URL 构建（design-image-preview §2.3）：渲染依据是服务端返回的
  * type/mimeType（扩展名只决定分支入口）——位图须 binary + image/*（mimeType
@@ -2864,6 +3104,24 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, cached?.content, cached?.error])
 
+  // markdown 预览态页面内搜索（design-find-in-page §2.3/§2.4）：DOM 扫描 +
+  // CSS.highlights 高亮；仅 markdown 参与注册（**代码/图片/PDF 不得注册**——
+  // PDF 文件 Tab 下本组件与 PdfFrameView 共用 `file:` 键，后注册覆盖前者会使
+  // PDF 的 findInPage 回调失效；代码态 CM 自持搜索）。注册表键 = Tab key。
+  // scanKey = 「预览态 + 内容引用」联合键：变化（模式切换/file watch 重拉）
+  // 即代表预览 DOM 重建，useMdFind 清失联 Range 并重扫（review 2026-09-09）。
+  // memo 同 mdFrontMatter/imageSrc 决策（上方注释）：FileView 非 memo，SSE
+  // emit 高频重渲染下不重复付出 O(内容长) 字符串拼接（review 二轮 #2）
+  const fileTabKey = `file:${absolutePath}`
+  const mdPreviewLive = !!(previewable && cached && !cached.error && mode === "preview" && !cached.binary)
+  const mdFindScanKey = useMemo(
+    () => (mdPreviewLive ? `preview:${cached?.content ?? ""}` : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [mdPreviewLive, cached?.content],
+  )
+  const mdFind = useMdFind(mdRef, fileScrollRef, mdFindScanKey)
+  useFindRequester(fileTabKey, isMarkdown, mdPreviewLive, mdFind.openFind)
+
   // 滚动偏移一次性恢复（§2.2）：预览 = 内容落地后设滚动层；源码 = 经
   // CodeView initialScrollTop prop 在同 commit 消费（rAF 布局落定后应用）。
   // 内容未落地（loading/error）→ 等待，不清待恢复标记。
@@ -3084,6 +3342,19 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
           </div>
         )}
       </div>
+      {/* 页面内搜索条（design-find-in-page §2.4）：markdown 预览态，工具条下方 */}
+      {mdFind.open && (
+        <FindBar
+          value={mdFind.query}
+          onValueChange={mdFind.onValueChange}
+          active={mdFind.matches != null && mdFind.matches > 0 ? mdFind.active + 1 : 0}
+          matches={mdFind.matches}
+          focusRequest={mdFind.focusRequest}
+          onPrev={mdFind.prev}
+          onNext={mdFind.next}
+          onClose={mdFind.close}
+        />
+      )}
       {content}
       {/* TOC 悬浮窗：滚动层之外绝对定位（常驻可见），遮挡内容区时默认收起（§2.4） */}
       {tocVisible && (

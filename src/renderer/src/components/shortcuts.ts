@@ -117,6 +117,20 @@ function dispatch(
     store.showGuidePage()
     return true
   }
+  // Ctrl+F：页面内搜索（design-find-in-page §2.4）——激活 Tab 已注册唤起回调
+  // 即开查找条；未注册放行（代码视图 CM searchKeymap 自持 Ctrl+F 不经这里，
+  // 消息流/终端/引导页无页面内搜索语义）。overlay 闸门（review 二轮 #5）：
+  // 弹窗/右键菜单遮挡时仅消费不动作——查找条会开在弹窗之下且其挂载聚焦会
+  // 抢走弹窗控件焦点（同 Alt 域四键 §1.2 的闸门语义）
+  if (key.toLowerCase() === "f") {
+    const active = store.activeTab
+    if (!active) return false
+    const requester = store.findRequesterFor(active.key)
+    if (!requester) return false
+    if (store.overlayCount > 0) return true
+    requester()
+    return true
+  }
   if (key.toLowerCase() === "w") {
     const active = store.activeTab
     // 无激活 Tab 也吞（禁用而非放行）：Electron 默认菜单的 close 加速键会关窗口
@@ -265,6 +279,8 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { keys: "Enter", action: "scSend" },
       { keys: "Shift+Enter", action: "scNewline" },
       { keys: "Ctrl+F", macKeys: "⌘F", action: "scFileSearch" },
+      { keys: "Ctrl+F", macKeys: "⌘F", action: "scPageSearch" },
+      { keys: "Enter / Shift+Enter", action: "scFindNext" },
       { keys: "Ctrl+Alt+[ / Ctrl+Alt+]", macKeys: "⌃⌥[ / ⌃⌥]", action: "scFoldCode" },
       { keys: "Ctrl+Shift+C", macKeys: "⌘C", action: "scTermCopy" },
       { keys: "Ctrl+Shift+V", macKeys: "⌘V", action: "scTermPaste" },

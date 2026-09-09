@@ -8,7 +8,7 @@
 
 ### 0.1 原则
 
-- **Ctrl 系 = Tab/面板/编辑域**：Tab 新建/关闭/恢复/切换、面板开关（Ctrl+B / Ctrl+Alt+B）、code-view 搜索（Ctrl+F）、终端复制粘贴——维持现状不动
+- **Ctrl 系 = Tab/面板/编辑域**：Tab 新建/关闭/恢复/切换、面板开关（Ctrl+B / Ctrl+Alt+B）、code-view 搜索（Ctrl+F）、终端复制粘贴——维持现状不动；**页面内搜索（2026-09-09 增，[design-find-in-page](./design-find-in-page.md)）**：Ctrl+F 分发新增激活 Tab 注册回调分支——markdown 预览态/浏览器 Tab/PDF 经 store 注册表唤起共用查找条（代码视图 CM searchKeymap 自持不注册、其余视图放行），浏览器/PDF 视图持焦时经既有 browser:shortcut 转发同分发
 - **Alt 系 = 项目/worktree 域，强关联且互斥**：该域动作全部用 Alt 系（mac ⌘⌥ 前缀），Alt 系不再给其他域用——用户心智"按住 Alt 就在操作左栏的项目/工作区"
 - mac 全系 ⌘⌥ 前缀：裸 ⌥+字母产特殊字符（⌥O=ø、⌥C=ç、⌥N=死键 ˜），⌘ 同按则不产字符；⌘⌥ 与 VoiceOver（⌃⌥）不撞
 - **修订原 §1 注**："裸 Alt 组合仅方向键进分发、Alt+字母仍页面/输入框自用"——进分发的 Alt 组合从"仅方向键"扩为"方向键 + 项目/worktree 域四键（O/C/N/⌫）"，其余 Alt+字母仍页面/输入框自用不变
@@ -174,6 +174,6 @@ private closedTabs: ClosedTabEntry[] = []   // push 尾 / pop 尾，上限 20（
 
 - **数据源单一**：渲染数据 `SHORTCUT_GROUPS` 定义在 `shortcuts.ts`（与 `dispatch` 同文件维护，防表-码漂移）；行结构 `{ keys, macKeys?, action(i18n key), only?: "mac" | "non-mac" }`，" / " 分隔的等效键拆独立 chip
 - **平台分支渲染**：`window.desktop.platform === "darwin"` 时显示 `macKeys`（缺省回退 `keys`）；`only` 行互斥——mac 切 Tab 惯例键（⌘⌥←/→、⌘⇧[/]）与非 mac Ctrl+Tab/PgUp/PgDn 系各只在本平台展示，与 §1 分发表绑定语义一致
-- **范围**：全局组 = §1 表全量（2026-09-06 更新：Ctrl+O 行改 Alt+O / ⌘⌥O，新增 Alt+C 关闭项目、Alt+N 新建工作区、Alt+⌫ 删除工作区行）；「输入与视图」组收分发之外的局部键——Enter/Shift+Enter（聊天输入）、Ctrl+F（code-view，CodeMirror searchKeymap）、终端复制/粘贴（Linux Ctrl+Shift+C/V、mac ⌘C/⌘V，键位随平台展示）、Esc（关闭弹窗/菜单，含确认弹窗取消——§4.1 的 Enter 确认随 Enter 行标注）
+- **范围**：全局组 = §1 表全量（2026-09-06 更新：Ctrl+O 行改 Alt+O / ⌘⌥O，新增 Alt+C 关闭项目、Alt+N 新建工作区、Alt+⌫ 删除工作区行）；「输入与视图」组收分发之外的局部键——Enter/Shift+Enter（聊天输入）、Ctrl+F（code-view CodeMirror searchKeymap + 页面内查找条 design-find-in-page，2026-09-09 起两行分列：文件内查找/页面内查找 + 查找条 Enter/Shift+Enter 行）、终端复制/粘贴（Linux Ctrl+Shift+C/V、mac ⌘C/⌘V，键位随平台展示）、Esc（关闭弹窗/菜单，含确认弹窗取消——§4.1 的 Enter 确认随 Enter 行标注）
 - 设置页签本地类型为 store `settingsInitialTab` 的超集（store 不加宽——无 shortcuts 直达调用方）
 - 样式：`.sc-row`（动作左、键位 chip 右）+ `.sc-kbd`（mono chip），组间 gap 呼吸，token 全复用（DESIGN.md 无新增 token）

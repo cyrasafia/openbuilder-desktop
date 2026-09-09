@@ -4169,6 +4169,66 @@
   background: #2c312c;
   color: #adb6ab;
 }
+/* ---------- 页面内搜索条（design-find-in-page §2.5） ----------
+ * 三视图共用（markdown 预览/浏览器 Tab/PDF）：结构对齐 CM 搜索面板 idiom——
+ * 高 = --file-toolbar-h 与操作条等高衔接，背景/底边框同 .browser-toolbar 视觉
+ * 家族；输入框复用 .browser-address 圆角文本框 idiom（等高 26px） */
+.find-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--file-toolbar-h);
+  padding: 0 16px;
+  flex-shrink: 0;
+  background: var(--surface-container-low);
+  border-bottom: 1px solid var(--outline-variant);
+}
+
+.find-input {
+  width: 220px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--outline-variant);
+  border-radius: 13px;
+  background: var(--surface);
+  color: var(--on-surface);
+  font-size: var(--text-mono);
+}
+
+.find-input:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+/* 无匹配：输入框描红（计数同时为 0/0） */
+.find-input.no-match {
+  border-color: var(--error);
+}
+
+.find-input.no-match:focus {
+  border-color: var(--error);
+}
+
+.find-count {
+  min-width: 48px;
+  text-align: center;
+  font-size: var(--text-sm);
+  color: var(--on-surface-variant);
+  user-select: none;
+  white-space: nowrap;
+}
+
+/* markdown 预览 DOM 扫描高亮（CSS Custom Highlighting；浏览器/PDF 走原生
+ * findInPage 选区高亮不经此） */
+::highlight(md-find) {
+  background-color: color-mix(in srgb, var(--primary) 26%, transparent);
+}
+
+::highlight(md-find-active) {
+  background-color: color-mix(in srgb, var(--primary) 60%, transparent);
+  color: var(--on-primary);
+}
+
 /* ---------- 浏览器 Tab（design-browser-tab §1.3） ---------- */
 .browser-tab {
   flex: 1;
@@ -4214,14 +4274,19 @@
 /* ---------- PDF 预览（design-pdf-preview §1 终态：专用 WebContentsView + PDFium） ---------- */
 .file-view.pdf-view {
   position: relative;
+  display: flex;
+  flex-direction: column;
   padding: 0;
   overflow: hidden;
 }
 
-/* PDF 预览宿主（design-pdf-preview §1 终态）：渲染在 main 侧原生视图（PDFium） */
+/* PDF 预览宿主（design-pdf-preview §1 终态）：渲染在 main 侧原生视图（PDFium）。
+ * flex:1 占位（页面内搜索条在上方时收窄，ResizeObserver 自动跟随 bounds——
+ * design-find-in-page §2.5）；无查找条时铺满 */
 .file-view.pdf-view .pdf-host {
-  position: absolute;
-  inset: 0;
+  position: relative;
+  flex: 1;
+  min-height: 0;
 }
 
 /* ---------- Linux「打开方式」选择器（design-linux-open-with §1.3） ---------- */
