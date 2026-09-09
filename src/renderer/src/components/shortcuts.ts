@@ -118,10 +118,12 @@ function dispatch(
     return true
   }
   // Ctrl+F：页面内搜索（design-find-in-page §2.4）——激活 Tab 已注册唤起回调
-  // 即开查找条；未注册放行（代码视图 CM searchKeymap 自持 Ctrl+F 不经这里，
-  // 消息流/终端/引导页无页面内搜索语义）。overlay 闸门（review 二轮 #5）：
-  // 弹窗/右键菜单遮挡时仅消费不动作——查找条会开在弹窗之下且其挂载聚焦会
-  // 抢走弹窗控件焦点（同 Alt 域四键 §1.2 的闸门语义）
+  // 即开查找条/CM 面板；未注册放行（消息流/终端/引导页无页面内搜索语义。
+  // 2026-09-09 起代码文件亦注册：CM 已聚焦时事件先被其 keymap 消费到不了
+  // 这里，未聚焦时经回调 openSearchPanel 唤起——原「必须先点正文」消除）。
+  // overlay 闸门（review 二轮 #5）：弹窗/右键菜单遮挡时仅消费不动作——查找条
+  // 会开在弹窗之下且其挂载聚焦会抢走弹窗控件焦点（同 Alt 域四键 §1.2 的闸门
+  // 语义）
   if (key.toLowerCase() === "f") {
     const active = store.activeTab
     if (!active) return false

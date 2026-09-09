@@ -66,6 +66,8 @@ import {
 import { createPortal } from "react-dom"
 import { ModelSwitcherBar } from "./model-switcher"
 import { CodeView } from "./code-view"
+import { openSearchPanel } from "@codemirror/search"
+import type { EditorView } from "@codemirror/view"
 import { collectHeadings, MdToc, type TocHeading } from "./md-toc"
 import { FindBar, useFindRequester } from "./find-bar"
 import { DiffView } from "./diff-view"
@@ -3116,23 +3118,44 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, cached?.content, cached?.error])
 
-  // markdown 预览态页面内搜索（design-find-in-page §2.3/§2.4）：DOM 扫描 +
-  // CSS.highlights 高亮；仅 markdown 参与注册（**代码/图片/PDF 不得注册**——
-  // PDF 文件 Tab 下本组件与 PdfFrameView 共用 `file:` 键，后注册覆盖前者会使
-  // PDF 的 findInPage 回调失效；代码态 CM 自持搜索）。注册表键 = Tab key。
+  // 页面内搜索注册（design-find-in-page §2.4；2026-09-09 修订扩至代码态）：
+  // markdown 预览态 = FindBar（DOM 扫描）；markdown 源码态/代码文件 = CM 搜索
+  // 面板——**未聚焦正文时 Ctrl+F 也能唤起**（openSearchPanel；CM 已聚焦时
+  // keymap 先消费、事件到不了分发，两路互不干扰）。注册表键 = Tab key；
+  // **PDF/图片/二进制不注册**（PDF 文件 Tab 下本组件与 PdfFrameView 共用
+  // `file:` 键，父组件后注册会覆盖子组件的 findInPage 回调；图片/占位无
+  // 页面内搜索语义）。
   // scanKey = 「预览态 + 内容引用」联合键：变化（模式切换/file watch 重拉）
   // 即代表预览 DOM 重建，useMdFind 清失联 Range 并重扫（review 2026-09-09）。
   // memo 同 mdFrontMatter/imageSrc 决策（上方注释）：FileView 非 memo，SSE
   // emit 高频重渲染下不重复付出 O(内容长) 字符串拼接（review 二轮 #2）
   const fileTabKey = `file:${absolutePath}`
   const mdPreviewLive = !!(previewable && cached && !cached.error && mode === "preview" && !cached.binary)
+  // CodeView 渲染中的渲染期镜像（内容分支条件的子集）：md 源码态，或
+  // 非图片/PDF 的文本文件内容落地（图片文本回退的边角不注册——Ctrl+F
+  // 聚焦后仍可走 CM keymap）
+  const codeViewLive = !!(
+    cached &&
+    !cached.error &&
+    !cached.binary &&
+    (isMarkdown ? mode === "source" : !isPdf && !isImage)
+  )
   const mdFindScanKey = useMemo(
     () => (mdPreviewLive ? `preview:${cached?.content ?? ""}` : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [mdPreviewLive, cached?.content],
   )
   const mdFind = useMdFind(mdRef, fileScrollRef, mdFindScanKey)
-  useFindRequester(fileTabKey, isMarkdown, mdPreviewLive, mdFind.openFind)
+  // CM EditorView 生命周期（CodeView onViewReady）：源码/代码态 Ctrl+F 经它开面板
+  const cmViewRef = useRef<EditorView | null>(null)
+  const openFindForTab = useCallback(() => {
+    if (mdPreviewLive) {
+      mdFind.openFind()
+    } else if (cmViewRef.current) {
+      openSearchPanel(cmViewRef.current)
+    }
+  }, [mdPreviewLive, mdFind.openFind])
+  useFindRequester(fileTabKey, isMarkdown || codeViewLive, mdPreviewLive || codeViewLive, openFindForTab)
 
   // 滚动偏移一次性恢复（§2.2）：预览 = 内容落地后设滚动层；源码 = 经
   // CodeView initialScrollTop prop 在同 commit 消费（rAF 布局落定后应用）。
@@ -3227,7 +3250,8 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
             locale={locale}
             initialScrollTop={pendingScroll.current ?? undefined}
             revealLine={revealLine}
-            onScrollTop={(top) => store.setFileViewState(absolutePath, { mode: "source", top })}
+            onScrollTop={(top) => store.setFileViewState(absolutePath, { mode, top })}
+            onViewReady={(v) => (cmViewRef.current = v)}
           />
         )}
       </div>
@@ -3255,6 +3279,7 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
           initialScrollTop={pendingScroll.current ?? undefined}
           revealLine={revealLine}
           onScrollTop={(top) => store.setFileViewState(absolutePath, { mode: "source", top })}
+          onViewReady={(v) => (cmViewRef.current = v)}
         />
       </div>
     )
@@ -3358,7 +3383,9 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
           </div>
         )}
       </div>
-      {/* 页面内搜索条（design-find-in-page §2.4）：markdown 预览态，工具条下方 */}
+      {content}
+      {/* 页面内搜索条（design-find-in-page §2.4）：markdown 预览态，统一居底
+          （内容滚动层下方——与代码视图 CM 搜索面板同位，2026-09-09） */}
       {mdFind.open && (
         <FindBar
           value={mdFind.query}
@@ -3371,7 +3398,6 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
           onClose={mdFind.close}
         />
       )}
-      {content}
       {/* TOC 悬浮窗：滚动层之外绝对定位（常驻可见），遮挡内容区时默认收起（§2.4） */}
       {tocVisible && (
         <MdToc

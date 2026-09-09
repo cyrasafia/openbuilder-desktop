@@ -1,15 +1,18 @@
 /**
  * 页面内搜索（design-find-in-page）：
  *
- * - `FindBar`：三视图共用查找条 UI（输入框 + 计数 + 上一处/下一处 + 关闭），
- *   纯展示 + 回调驱动，匹配模型由调用方自带（DOM 扫描或 findInPage 推送）。
- * - `useWebContentsFind`：浏览器 Tab / PDF 的 findInPage 会话状态机
+ * - `FindBar`：三视图共用查找条 UI（输入框 + 计数 + 「下一个/上一个」文案钮 +
+ *   关闭 × ghost 方钮），纯展示 + 回调驱动，匹配模型由调用方自带（DOM 扫描或
+ *   findInPage 推送）。按钮文案/顺序与代码视图 CM 搜索面板一致（2026-09-09
+ *   统一：next 在前 prev 在后、文案同源、关闭右推条尾且对齐 tab 关闭钮），
+ *   计数 `n/m` 为本条特有（CM 无匹配计数）。
+ * - `useWebContentsFind`：浏览器 TAB / PDF 的 findInPage 会话状态机
  *   （输入即新 query、findNext 前后跳、requestId 旧帧守卫、导航清零）。
  * - `useFindBarController`：视图挂载时向 store 注册 Ctrl+F 唤起回调（Tab 注册制
  *   精神——无注册回调的视图全局分发放行）；返回查找条开合态 + 打开函数。
  */
 import { useCallback, useEffect, useRef, useState } from "react"
-import { ChevronDown, ChevronUp, X } from "lucide-react"
+import { X } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import { format } from "../i18n"
 
@@ -56,6 +59,10 @@ export function FindBar({
   }, [focusRequest])
   const empty = value.length === 0
   const noMatch = !empty && matches === 0
+  const countText =
+    empty || active == null || matches == null
+      ? t.findIdle
+      : format(t.findMatchCount, { active, matches })
   return (
     <div className="find-bar" role="search">
       <input
@@ -80,18 +87,28 @@ export function FindBar({
           }
         }}
       />
-      <span className="find-count mono" aria-live="polite">
-        {empty || active == null || matches == null
-          ? t.findIdle
-          : format(t.findMatchCount, { active, matches })}
-      </span>
-      <button type="button" className="icon-btn" title={t.findPrev} aria-label={t.findPrev} onClick={onPrev}>
-        <ChevronUp size={14} aria-hidden />
+      {/* 计数仅在非空时渲染（idle 占位为空串）——空 span 会以 flex gap 在
+           输入框与按钮间留出一段空白（2026-09-09 移除原 min-width 48px 占位） */}
+      {countText !== "" && (
+        <span className="find-count mono" aria-live="polite">
+          {countText}
+        </span>
+      )}
+      {/* 文案钮与 CM 搜索面板同序（next 在前 prev 在后）；文案可见即无障碍名，
+       * 不加 title/aria-label（CM 面板同款） */}
+      <button type="button" className="find-btn" onClick={onNext}>
+        {t.findNext}
       </button>
-      <button type="button" className="icon-btn" title={t.findNext} aria-label={t.findNext} onClick={onNext}>
-        <ChevronDown size={14} aria-hidden />
+      <button type="button" className="find-btn" onClick={onPrev}>
+        {t.findPrev}
       </button>
-      <button type="button" className="icon-btn" title={t.findClose} aria-label={t.findClose} onClick={onClose}>
+      <button
+        type="button"
+        className="find-btn find-close"
+        title={t.findClose}
+        aria-label={t.findClose}
+        onClick={onClose}
+      >
         <X size={14} aria-hidden />
       </button>
     </div>
@@ -237,10 +254,13 @@ export function useWebContentsFind(viewId: number | null, tabKey: string) {
 
 /** Ctrl+F 唤起注册（DOM 扫描视图用——markdown 预览态自带匹配模型，
  *  只需要注册回调 + 开合态；匹配状态机由调用方自持）。
- *  register = 是否参与注册（**非 markdown 文件必须 false**——PDF 文件 Tab 下
+ *  register = 是否参与注册（**PDF 文件必须 false**——PDF 文件 Tab 下
  *  FileView 与 PdfFrameView 共用 `file:` 前缀注册键，父组件后注册会覆盖子组件
- *  的 findInPage 回调，PDF Ctrl+F 即失效；代码视图 CM 自持搜索亦不注册）；
- *  active = 当前态是否可搜索（markdown 预览态且内容落地），false 时回调不动作 */
+ *  的 findInPage 回调，PDF Ctrl+F 即失效；2026-09-09 起 markdown 源码态与
+ *  代码文件亦注册——未聚焦正文时 Ctrl+F 经回调 openSearchPanel 唤起 CM 面板，
+ *  CM 已聚焦时事件先被其 keymap 消费、到不了分发，两路互不干扰）；
+ *  active = 当前态是否可搜索（markdown 预览态且内容落地 / CodeView 渲染中），
+ *  false 时回调不动作 */
 export function useFindRequester(tabKey: string, register: boolean, active: boolean, onOpen: () => void) {
   const store = useStore()
   const activeRef = useRef(active)

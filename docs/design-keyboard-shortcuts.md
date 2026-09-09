@@ -8,7 +8,7 @@
 
 ### 0.1 原则
 
-- **Ctrl 系 = Tab/面板/编辑域**：Tab 新建/关闭/恢复/切换、面板开关（Ctrl+B / Ctrl+Alt+B）、code-view 搜索（Ctrl+F）、终端复制粘贴——维持现状不动；**页面内搜索（2026-09-09 增，[design-find-in-page](./design-find-in-page.md)）**：Ctrl+F 分发新增激活 Tab 注册回调分支——markdown 预览态/浏览器 Tab/PDF 经 store 注册表唤起共用查找条（代码视图 CM searchKeymap 自持不注册、其余视图放行），浏览器/PDF 视图持焦时经既有 browser:shortcut 转发同分发
+- **Ctrl 系 = Tab/面板/编辑域**：Tab 新建/关闭/恢复/切换、面板开关（Ctrl+B / Ctrl+Alt+B）、code-view 搜索（Ctrl+F）、终端复制粘贴——维持现状不动；**页面内搜索（2026-09-09 增，[design-find-in-page](./design-find-in-page.md)）**：Ctrl+F 分发新增激活 Tab 注册回调分支——markdown 预览态/浏览器 Tab/PDF 经 store 注册表唤起共用查找条，源码态/代码文件亦注册（同日修订：CM 未聚焦正文时经回调 openSearchPanel 唤起，已聚焦时 keymap 先消费），其余视图放行；浏览器/PDF 视图持焦时经既有 browser:shortcut 转发同分发
 - **Alt 系 = 项目/worktree 域，强关联且互斥**：该域动作全部用 Alt 系（mac ⌘⌥ 前缀），Alt 系不再给其他域用——用户心智"按住 Alt 就在操作左栏的项目/工作区"
 - mac 全系 ⌘⌥ 前缀：裸 ⌥+字母产特殊字符（⌥O=ø、⌥C=ç、⌥N=死键 ˜），⌘ 同按则不产字符；⌘⌥ 与 VoiceOver（⌃⌥）不撞
 - **修订原 §1 注**："裸 Alt 组合仅方向键进分发、Alt+字母仍页面/输入框自用"——进分发的 Alt 组合从"仅方向键"扩为"方向键 + 项目/worktree 域四键（O/C/N/⌫）"，其余 Alt+字母仍页面/输入框自用不变
