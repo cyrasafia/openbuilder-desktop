@@ -42,7 +42,7 @@ FileView 源码态是 `<pre className="file-content">`：无行号、无高亮�
 ### 2.3 只读视图行为
 
 - `EditorState.create({ doc, extensions: [lineNumbers(), syntaxHighlighting(classHighlighter), languageForPath(path), foldGutter+foldKeymap（见 design-code-folding.md）, search 搜索, EditorState.readOnly] })`
-- **readonly + editable 并用**（editable 保持 true）：内容可聚焦——键盘滚动、Ctrl+F（searchKeymap，面板居底 = CM 默认，2026-09-08 修订自 top）可达；不可编辑。search 面板在 readonly 下自动隐藏 replace 控件（CM 内建）。面板短语按 locale 注入 `EditorState.phrases`（zh 本地化）。
+- **readonly + editable 并用**（editable 保持 true）：内容可聚焦——键盘滚动、Ctrl+F（searchKeymap，面板居底 = CM 默认，2026-09-08 修订自 top）可达；不可编辑。search 面板在 readonly 下自动隐藏 replace 控件（CM 内建）。面板短语按 locale 注入 `EditorState.phrases`（zh 全量本地化；2026-09-09 起 en 亦 override Find/next/previous 三处，与页面内查找条 FindBar 的 i18n 同文案——四视图查找条统一，见 design-find-in-page §2.5；搜索框宽度同日统一 220px、close 钮对齐 Tab 关闭钮 ghost 样式）。
 - **行号**：默认 gutter；不渲染当前行高亮（无光标语义）。
 - **软换行默认关**（桌面代码浏览惯例，长行横向滚动）；不做换行切换（见不做的事）。
 - **选中复制**：不装 drawSelection，选区走原生 `::selection`（app.css 令牌化）；Ctrl+C 浏览器默认。

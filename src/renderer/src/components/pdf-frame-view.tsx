@@ -84,8 +84,11 @@ export function PdfFrameView({ tabKey, absolutePath }: { tabKey: string; absolut
 
   return (
     <div className="file-view pdf-view">
-      {/* 页面内搜索条（design-find-in-page §2.4）：满幅宿主上方第二行——
-          原生视图 bounds 随宿主 ResizeObserver 自动跟随（同操作条先例） */}
+      {viewId == null && <div className="file-state">{t.loading}</div>}
+      <div ref={hostRef} className="pdf-host" />
+      {/* 页面内搜索条（design-find-in-page §2.4）：统一居底——与代码视图 CM
+          搜索面板同位（2026-09-09）；原生视图 bounds 随宿主 ResizeObserver
+          自动跟随（同操作条先例） */}
       {find.open && (
         <FindBar
           value={find.query}
@@ -98,8 +101,6 @@ export function PdfFrameView({ tabKey, absolutePath }: { tabKey: string; absolut
           onClose={find.close}
         />
       )}
-      {viewId == null && <div className="file-state">{t.loading}</div>}
-      <div ref={hostRef} className="pdf-host" />
     </div>
   )
 }
