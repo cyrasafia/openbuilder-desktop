@@ -9,7 +9,7 @@
  * browser 隐藏）；浮层计数压制原生视图。
  * jsdom 无 IntersectionObserver（streamdown 依赖），测试前补 stub。
  */
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   clampImageScale,
@@ -17,6 +17,7 @@ import {
   IMAGE_MAX_SCALE,
   IMAGE_MIN_SCALE,
   normalizeWheelDeltaY,
+  scanFindMatches,
   wheelScaleFactor,
 } from "./workspace"
 import { ResizeObserverStub } from "./resize-observer-stub"
@@ -53,6 +54,13 @@ vi.mock("../app", () => ({
       imageZoomToggle: "切换缩放",
       imageDecodeFailed: "图片解码失败",
       mdImageFailed: "图片加载失败",
+      // 页面内搜索（design-find-in-page）
+      findPlaceholder: "查找…",
+      findMatchCount: "{active}/{matches}",
+      findIdle: "",
+      findPrev: "上一处",
+      findNext: "下一处",
+      findClose: "关闭",
       // 操作条（design-file-view-actions；文案键复用右键菜单）
       fileOpen: "打开",
       fileOpenWith: "打开方式…",
@@ -93,6 +101,14 @@ function buildStoreStub() {
         storeListeners = storeListeners.filter((l) => l !== fn)
       }
     },
+    // 页面内搜索（design-find-in-page）：注册表桩（真实注册语义，供断言）
+    registerFindRequester: (key: string, fn: () => void) => {
+      findRequestersStub.set(key, fn)
+    },
+    unregisterFindRequester: (key: string) => {
+      findRequestersStub.delete(key)
+    },
+    findRequesterFor: (key: string) => findRequestersStub.get(key) ?? null,
     fileViewStateFor: (path: string) => fileViewStateStub.get(path) ?? null,
     setFileViewState: (path: string, state: { mode: "preview" | "source"; top: number }) => {
       fileViewStateStub.set(path, state)
@@ -114,6 +130,8 @@ let fileContentsStub: Map<
   string,
   { content: string; binary?: boolean; mimeType?: string; error?: string }
 >
+/** findRequester 注册表桩（design-find-in-page：FileView 经 useFindRequester 注册） */
+let findRequestersStub = new Map<string, () => void>()
 /** 文件视图状态记忆表（design-tab-state-memory §2.2；测试内可预置恢复态） */
 let fileViewStateStub: Map<string, { mode: "preview" | "source"; top: number }>
 /** TOC 状态记忆表（design-tab-state-memory §2.4；测试内可预置恢复态） */
@@ -172,6 +190,7 @@ beforeEach(() => {
   fileContentsStub = new Map()
   fileViewStateStub = new Map()
   tocStateStub = new Map()
+  findRequestersStub = new Map()
   buildStoreStub()
 })
 
@@ -519,6 +538,193 @@ describe("FileView markdown TOC（design-markdown-preview §2.4）", () => {
     expect(screen.queryByRole("button", { name: "收起目录" })).toBeNull()
     fireEvent.click(screen.getByRole("button", { name: "预览" }))
     expect(await screen.findByRole("navigation")).not.toBeNull()
+  })
+})
+
+describe("FileView markdown 页面内搜索（design-find-in-page §2.3/§2.4）", () => {
+  /** 唤起（经注册表桩——真实链路：全局 dispatch Ctrl+F 调 findRequesterFor） */
+  function openFindBar(path: string) {
+    const fn = findRequestersStub.get(`file:${path}`)
+    expect(fn, "预览态应注册唤起回调").toBeTruthy()
+    act(() => fn!())
+  }
+
+  /** 关闭当前打开的查找条（Esc 路径） */
+  function mdFindClose() {
+    const bar = document.querySelector(".find-bar input") as HTMLInputElement
+    fireEvent.keyDown(bar, { key: "Escape" })
+  }
+
+  it("预览态注册唤起回调；源码态回调不动作（active ref 闸门）；非 md 文件不注册（键让给 PDF 子组件）", async () => {
+    fileContentsStub.set("/repo/doc.md", { content: "# 标题\n\n正文若干" })
+    render(<FileView absolutePath="/repo/doc.md" />)
+    await screen.findAllByText("标题")
+    expect(findRequestersStub.has("file:/repo/doc.md")).toBe(true)
+    openFindBar("/repo/doc.md")
+    expect(document.querySelector(".find-bar")).not.toBeNull()
+    mdFindClose()
+    // 切源码：注册回调保留（active ref 闸门设计），但唤起无效——CM 自持搜索
+    fireEvent.click(screen.getByRole("button", { name: "源码" }))
+    const fn = findRequestersStub.get("file:/repo/doc.md")!
+    expect(fn).toBeTruthy()
+    act(() => fn())
+    expect(document.querySelector(".find-bar")).toBeNull()
+    cleanup()
+
+    // 非 md：不注册（PDF 文件 Tab 下 `file:` 键归 PdfFrameView，防父组件覆盖）
+    fileContentsStub.set("/repo/main.ts", { content: "const x" })
+    render(<FileView absolutePath="/repo/main.ts" />)
+    expect(findRequestersStub.has("file:/repo/main.ts")).toBe(false)
+  })
+
+  it("唤起 → 输入即扫描计数（大小写不敏感）；Enter 环绕跳转；Esc 关闭清条", async () => {
+    fileContentsStub.set("/repo/doc.md", {
+      content: "# Alpha\n\nalpha 版本说明\n\n无匹配行\n\nALPHA again",
+    })
+    render(<FileView absolutePath="/repo/doc.md" />)
+    await screen.findAllByText("Alpha")
+    openFindBar("/repo/doc.md")
+    const input = document.querySelector(".find-bar input") as HTMLInputElement
+    // 挂载自动聚焦
+    expect(document.activeElement).toBe(input)
+    fireEvent.change(input, { target: { value: "alpha" } })
+    // 防抖 150ms（真实 timers 等待——fake timers 会卡 RTL 轮询）
+    await waitFor(() => expect(screen.getByText("1/3")).toBeTruthy())
+    // Enter 下一处 → 2/3 → 3/3 → 环绕回 1/3
+    fireEvent.keyDown(input, { key: "Enter" })
+    expect(screen.getByText("2/3")).toBeTruthy()
+    fireEvent.keyDown(input, { key: "Enter" })
+    expect(screen.getByText("3/3")).toBeTruthy()
+    fireEvent.keyDown(input, { key: "Enter" })
+    expect(screen.getByText("1/3")).toBeTruthy()
+    // Shift+Enter 上一处
+    fireEvent.keyDown(input, { key: "Enter", shiftKey: true })
+    expect(screen.getByText("3/3")).toBeTruthy()
+    // Esc 关闭：查找条移除
+    fireEvent.keyDown(input, { key: "Escape" })
+    expect(document.querySelector(".find-bar")).toBeNull()
+  })
+
+  it("无匹配：计数 0/0 + 输入框描红；有匹配恢复", async () => {
+    fileContentsStub.set("/repo/doc.md", { content: "# 标题\n\n正文" })
+    render(<FileView absolutePath="/repo/doc.md" />)
+    await screen.findAllByText("标题")
+    openFindBar("/repo/doc.md")
+    const input = document.querySelector(".find-bar input") as HTMLInputElement
+    fireEvent.change(input, { target: { value: "不存在" } })
+    await waitFor(() => expect(screen.getByText("0/0")).toBeTruthy())
+    expect(document.querySelector(".find-input.no-match")).not.toBeNull()
+    fireEvent.change(input, { target: { value: "正文" } })
+    await waitFor(() => expect(screen.getByText("1/1")).toBeTruthy())
+    expect(document.querySelector(".find-input.no-match")).toBeNull()
+  })
+
+  it("防抖窗口内不闪 0/0（pending 无描红）；首扫落地才显计数（review 2026-09-09）", async () => {
+    fileContentsStub.set("/repo/doc.md", { content: "# Alpha\n\nalpha" })
+    render(<FileView absolutePath="/repo/doc.md" />)
+    await screen.findAllByText("Alpha")
+    openFindBar("/repo/doc.md")
+    const input = document.querySelector(".find-bar input") as HTMLInputElement
+    fireEvent.change(input, { target: { value: "alpha" } })
+    // 防抖 150ms 内：idle 占位（非 0/0），无描红
+    expect(document.querySelector(".find-count")?.textContent).toBe("")
+    expect(document.querySelector(".find-input.no-match")).toBeNull()
+    await waitFor(() => expect(screen.getByText("1/2")).toBeTruthy())
+  })
+
+  it("首扫落地滚动定位第 1 处匹配（setActive(0) 同值 bail-out 不触发 [active] effect，review 2026-09-09）", async () => {
+    fileContentsStub.set("/repo/scroll.md", { content: "# Alpha\n\nalpha" })
+    render(<FileView absolutePath="/repo/scroll.md" />)
+    await screen.findAllByText("Alpha")
+    const layer = document.querySelector(".file-view") as HTMLElement
+    layer.scrollTop = 500 // 用户滚在别处（首匹配在视口外）
+    // jsdom 无布局：手动供 Range/滚动层 rect，令 scrollMatchIntoView 非 no-op
+    const rangeRectOrig = Range.prototype.getBoundingClientRect
+    Range.prototype.getBoundingClientRect = () => ({ top: 100, height: 20 }) as DOMRect
+    layer.getBoundingClientRect = () => ({ top: 50 }) as DOMRect
+    try {
+      openFindBar("/repo/scroll.md")
+      const input = document.querySelector(".find-bar input") as HTMLInputElement
+      fireEvent.change(input, { target: { value: "alpha" } })
+      await waitFor(() => expect(screen.getByText("1/2")).toBeTruthy())
+      // block:center 对齐：500 + (100 - 50) - (0 - 20)/2 = 560
+      expect(layer.scrollTop).toBe(560)
+    } finally {
+      Range.prototype.getBoundingClientRect = rangeRectOrig
+    }
+  })
+
+  it("部分命中下迟渲染块仍补扫计数（MutationObserver 不因已有命中断开，2026-09-09 二轮复审 #1）", async () => {
+    fileContentsStub.set("/repo/late.md", { content: "# Alpha\n\nalpha" })
+    render(<FileView absolutePath="/repo/late.md" />)
+    await screen.findAllByText("Alpha")
+    openFindBar("/repo/late.md")
+    const input = document.querySelector(".find-bar input") as HTMLInputElement
+    fireEvent.change(input, { target: { value: "alpha" } })
+    await waitFor(() => expect(screen.getByText("1/2")).toBeTruthy())
+    // 迟渲染块（streamdown 延迟）落入：已有 2 处命中也要重扫——原实现仅
+    // 零命中时观察，部分命中下计数停留少计
+    const mdRoot = document.querySelector(".file-md") as HTMLElement
+    const p = document.createElement("p")
+    p.textContent = "more alpha"
+    act(() => {
+      mdRoot.appendChild(p)
+    })
+    await waitFor(() => expect(screen.getByText("1/3")).toBeTruthy())
+  })
+
+  it("切源码自动关查找条；切回预览重新唤起对新 DOM 重扫（防僵尸，review 2026-09-09）", async () => {
+    fileContentsStub.set("/repo/doc.md", { content: "# Alpha\n\nalpha 文本" })
+    const { rerender } = render(<FileView absolutePath="/repo/doc.md" />)
+    await screen.findAllByText("Alpha")
+    openFindBar("/repo/doc.md")
+    const input = document.querySelector(".find-bar input") as HTMLInputElement
+    fireEvent.change(input, { target: { value: "alpha" } })
+    await waitFor(() => expect(screen.getByText("1/2")).toBeTruthy())
+    // 切源码：查找条关闭（源码态 CM 自持搜索）
+    fireEvent.click(screen.getByRole("button", { name: "源码" }))
+    expect(document.querySelector(".find-bar")).toBeNull()
+    // 切回预览：重新唤起 → 对新 DOM 重扫恢复计数
+    fireEvent.click(screen.getByRole("button", { name: "预览" }))
+    await screen.findAllByText("Alpha")
+    openFindBar("/repo/doc.md")
+    const input2 = document.querySelector(".find-bar input") as HTMLInputElement
+    expect(input2.value).toBe("") // 关闭时已清词（瞬时任务态）
+    fireEvent.change(input2, { target: { value: "alpha" } })
+    await waitFor(() => expect(screen.getByText("1/2")).toBeTruthy())
+    // 内容重拉（file watch）同样重扫：改内容为 3 处命中
+    fileContentsStub.set("/repo/doc.md", { content: "# Alpha\n\nalpha\n\nmore alpha" })
+    rerender(<FileView absolutePath="/repo/doc.md" />)
+    await waitFor(() => expect(screen.getByText("1/3")).toBeTruthy())
+  })
+
+  it("查找条已开时重按 Ctrl+F：重新聚焦全选（focusRequest，review 2026-09-09）", async () => {
+    fileContentsStub.set("/repo/doc.md", { content: "# Alpha\n\nalpha" })
+    render(<FileView absolutePath="/repo/doc.md" />)
+    await screen.findAllByText("Alpha")
+    openFindBar("/repo/doc.md")
+    const input = document.querySelector(".find-bar input") as HTMLInputElement
+    fireEvent.change(input, { target: { value: "alpha" } })
+    await waitFor(() => expect(screen.getByText("1/2")).toBeTruthy())
+    // 模拟焦点被抢走（点到页面）
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    expect(document.activeElement).not.toBe(input)
+    // 重按 Ctrl+F：重新聚焦并全选
+    openFindBar("/repo/doc.md")
+    expect(document.activeElement).toBe(input)
+    expect(input.selectionStart).toBe(0)
+    expect(input.selectionEnd).toBe("alpha".length)
+  })
+
+  it("扫描纯函数 scanFindMatches：多节点/同节点多命中/大小写/空查询", () => {
+    fileContentsStub.set("/repo/x.md", { content: "x" })
+    const root = document.createElement("div")
+    root.innerHTML = "<p>Hello hello world</p><p>say HELLO</p><script>hello()</script>"
+    const matches = scanFindMatches(root, "hello")
+    expect(matches.length).toBe(3)
+    expect(matches.map((m) => m.text)).toEqual(["Hello", "hello", "HELLO"])
+    expect(scanFindMatches(root, "")).toEqual([])
+    expect(scanFindMatches(root, "zzz")).toEqual([])
   })
 })
 

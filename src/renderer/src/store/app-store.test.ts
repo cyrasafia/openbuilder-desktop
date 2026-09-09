@@ -63,6 +63,11 @@ beforeEach(() => {
     browserGoForward: vi.fn(),
     browserReload: vi.fn(),
     browserStop: vi.fn(),
+    browserFindStart: vi.fn(),
+    browserFindStop: vi.fn(),
+    browserFocusMain: vi.fn(),
+    onBrowserFindRequest: () => () => {},
+    onBrowserFindState: () => () => {},
     onBrowserViewState: () => () => {},
   }
   browserCalls.length = 0
