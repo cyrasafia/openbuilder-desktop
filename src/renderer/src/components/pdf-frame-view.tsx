@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { useI18n, useStore } from "../app"
 import { fileUrlOf } from "@shared/file-url"
+import { FindBar, useWebContentsFind } from "./find-bar"
 
 /**
  * PDF 预览宿主（design-pdf-preview §1 终态）：文件 Tab 内嵌**专用
@@ -17,6 +18,9 @@ export function PdfFrameView({ tabKey, absolutePath }: { tabKey: string; absolut
   const { t } = useI18n()
   const hostRef = useRef<HTMLDivElement>(null)
   const [viewId, setViewId] = useState<number | null>(() => store.browserViewIdFor(tabKey))
+  // 页面内搜索（design-find-in-page §2.2/§2.4）：Ctrl+F 唤起，findInPage 对
+  // PDFium 查看器同语义（无文本层的扫描件恒 0 匹配）
+  const find = useWebContentsFind(viewId, tabKey)
 
   // 懒建视图 + 导航（一次）
   useEffect(() => {
@@ -80,6 +84,20 @@ export function PdfFrameView({ tabKey, absolutePath }: { tabKey: string; absolut
 
   return (
     <div className="file-view pdf-view">
+      {/* 页面内搜索条（design-find-in-page §2.4）：满幅宿主上方第二行——
+          原生视图 bounds 随宿主 ResizeObserver 自动跟随（同操作条先例） */}
+      {find.open && (
+        <FindBar
+          value={find.query}
+          onValueChange={find.onValueChange}
+          active={find.count?.active ?? null}
+          matches={find.count?.matches ?? null}
+          focusRequest={find.focusRequest}
+          onPrev={find.prev}
+          onNext={find.next}
+          onClose={find.close}
+        />
+      )}
       {viewId == null && <div className="file-state">{t.loading}</div>}
       <div ref={hostRef} className="pdf-host" />
     </div>

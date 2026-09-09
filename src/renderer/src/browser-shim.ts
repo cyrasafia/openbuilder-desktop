@@ -76,6 +76,17 @@ function createBrowserDesktopApi(): DesktopApi {
     browserGoForward() {},
     browserReload() {},
     browserStop() {},
+    // 页面内搜索（design-find-in-page）：无 main 进程，桩 no-op（浏览器 Tab
+    // 本就因 view-create 失败不可达；renderer 组件不依赖回传）
+    browserFindStart() {},
+    browserFindStop() {},
+    browserFocusMain() {},
+    onBrowserFindRequest() {
+      return () => {}
+    },
+    onBrowserFindState() {
+      return () => {}
+    },
     onBrowserViewState() {
       return () => {}
     },

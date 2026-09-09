@@ -45,6 +45,20 @@ const api = {
   browserGoForward: (viewId: number) => ipcRenderer.send("browser:goForward", viewId),
   browserReload: (viewId: number) => ipcRenderer.send("browser:reload", viewId),
   browserStop: (viewId: number) => ipcRenderer.send("browser:stop", viewId),
+  browserFindStart: (viewId: number, text: string, opts: { forward: boolean; findNext: boolean }) =>
+    ipcRenderer.send("browser:find-start", viewId, text, opts),
+  browserFindStop: (viewId: number) => ipcRenderer.send("browser:find-stop", viewId),
+  browserFocusMain: () => ipcRenderer.send("browser:focus-main"),
+  onBrowserFindState: (cb: (state: unknown) => void) => {
+    const listener = (_e: unknown, state: unknown) => cb(state)
+    ipcRenderer.on("browser:find-state", listener)
+    return () => ipcRenderer.removeListener("browser:find-state", listener)
+  },
+  onBrowserFindRequest: (cb: (payload: unknown) => void) => {
+    const listener = (_e: unknown, payload: unknown) => cb(payload)
+    ipcRenderer.on("browser:find-request", listener)
+    return () => ipcRenderer.removeListener("browser:find-request", listener)
+  },
   onBrowserViewState: (cb: (state: unknown) => void) => {
     const listener = (_e: unknown, state: unknown) => cb(state)
     ipcRenderer.on("browser:view-state", listener)
