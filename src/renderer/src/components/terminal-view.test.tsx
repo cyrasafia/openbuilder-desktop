@@ -476,15 +476,23 @@ describe("TerminalView", () => {
     expect(keyHandler!(evCsC)).toBe(true)
   })
 
-  it("live 态 Ctrl 系组合仍归 xterm（Ctrl+W 归 pty、Ctrl+Tab/Ctrl+Shift+Tab 归 pty，事件被 xterm 消费）；Alt 域四键同归 pty（readline M- 系键位保住）", async () => {
+  it("live 态 Ctrl+W 归 pty、Ctrl+Tab/Ctrl+Shift+Tab 释放给应用切 Tab（2026-09-10 修订，非 mac）；Alt 域四键同归 pty（readline M- 系键位保住）", async () => {
     vi.useFakeTimers()
     await bootLive()
     const evW = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, code: "KeyW" })
     expect(keyHandler!(evW)).toBe(true)
+    // Tab 系释放：xterm 对 Tab 忽略 ctrl 修饰——Ctrl+Tab 发 \t、Ctrl+Shift+Tab
+    // 发 CSI Z，与裸 Tab/Shift+Tab 同字节，无 CLI 绑定 Ctrl+Tab。false =
+    // 不消费（不 preventDefault），事件冒泡到 shortcuts.ts 全局分发
     const evTab = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, key: "Tab" })
-    expect(keyHandler!(evTab)).toBe(true)
+    expect(keyHandler!(evTab)).toBe(false)
+    expect(evTab.defaultPrevented).toBe(false)
     const evTabS = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, shiftKey: true, key: "Tab" })
-    expect(keyHandler!(evTabS)).toBe(true)
+    expect(keyHandler!(evTabS)).toBe(false)
+    expect(evTabS.defaultPrevented).toBe(false)
+    // Ctrl+Alt+Tab 不释放（dispatch Tab 分支 !alt 守卫——不留释放却切不了的空洞）
+    const evTabAlt = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, altKey: true, key: "Tab" })
+    expect(keyHandler!(evTabAlt)).toBe(true)
     const evAlt = new KeyboardEvent("keydown", { cancelable: true, altKey: true, key: "ArrowDown" })
     expect(keyHandler!(evAlt)).toBe(true)
     // Alt 域（design-keyboard-shortcuts §0.2）：live 终端内 Alt+O/C/N/⌫ 归 pty
@@ -495,6 +503,18 @@ describe("TerminalView", () => {
     expect(keyHandler!(evAltC)).toBe(true)
     const evAltBs = new KeyboardEvent("keydown", { cancelable: true, altKey: true, code: "Backspace" })
     expect(keyHandler!(evAltBs)).toBe(true)
+  })
+
+  it("macOS live 态 Ctrl+Tab 系不释放（mac 无 Ctrl+Tab 系绑定——切 Tab 走 ⌘⌥←/→ 惯例键，释放只丢 Tab 键入无收益）；Ctrl+W 归 pty 不变", async () => {
+    vi.useFakeTimers()
+    platform = "darwin"
+    await bootLive()
+    const evTab = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, key: "Tab" })
+    expect(keyHandler!(evTab)).toBe(true)
+    const evTabS = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, shiftKey: true, key: "Tab" })
+    expect(keyHandler!(evTabS)).toBe(true)
+    const evCmdW = new KeyboardEvent("keydown", { cancelable: true, metaKey: true, code: "KeyW" })
+    expect(keyHandler!(evCmdW)).toBe(true)
   })
 
   it("断开态不拦截应用快捷键：已退出后 Ctrl+W/Ctrl+Tab/Ctrl+Shift+Tab 返回 false（不 preventDefault，事件冒泡到全局分发）；无修饰键仍归 xterm", async () => {
