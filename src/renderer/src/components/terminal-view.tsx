@@ -126,6 +126,16 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true
       if (deadRelease(ev)) return false
+      // live 态切 Tab 释放（2026-09-10 修订，design-terminal-tab §1.4）：xterm
+      // 对 Tab 类按键忽略 ctrl 修饰——Ctrl+Tab 发 \t、Ctrl+Shift+Tab 发 CSI Z，
+      // 与裸 Tab/Shift+Tab 字节相同（CLI 无法感知 ctrl 是否按下），且无主流
+      // CLI 绑定 Ctrl+Tab，释放给应用切 Tab 零损失。仅非 mac：mac 无
+      // Ctrl+Tab 系绑定（切 Tab 走 ⌘⌥←/→ 惯例键，shortcuts §1），释放只丢
+      // Tab 键入无收益。Ctrl+W（readline backward-kill-word、vim 窗口前缀、
+      // nano 搜索、emacs kill-region）与 Ctrl+PgUp/PgDn 维持归 pty。排除
+      // alt/meta：Ctrl+Alt+Tab 非 dispatch 的 Tab 分支（!alt 守卫），不放行
+      // 才不留"释放了却切不了 Tab"的空洞
+      if (!mac && ev.key === "Tab" && ev.ctrlKey && !ev.altKey && !ev.metaKey) return false
       const mod = mac ? ev.metaKey && !ev.ctrlKey : ev.ctrlKey && ev.shiftKey
       if (!mod) return true
       if (ev.code === "KeyC" || ev.key === "C" || ev.key === "c") {

@@ -44,8 +44,8 @@
 | Ctrl+W | 关闭激活 Tab；**无激活 Tab 时仅消费不动作**（放行会命中默认菜单关窗，见下注）；chat Tab 流式中先 confirm（复用 `confirmCloseStreamingTab`），确认后 abort+归档——与 Tab 栏关闭按钮**同一代码路径**（§4 tab-actions） |
 | Ctrl+Shift+T | 恢复刚关闭的 Tab（§2 关闭栈） |
 | Ctrl+1 / Ctrl+2 / Ctrl+3（**仅引导页**，2026-09-06 增，§1.1） | 分别开 diff / 终端 / 网页 Tab（与引导页磁贴点击同路径、同禁用态）；Ctrl 按住期间磁贴右上角显示对应数字角标 |
-| Ctrl+Tab / Ctrl+PageDown | 下一个可见 Tab（作用域内循环；Shift 反转方向；**仅非 macOS**） |
-| Ctrl+Shift+Tab / Ctrl+PageUp | 上一个可见 Tab（循环；Shift+PgUp/PgDn 同样反转；**仅非 macOS**） |
+| Ctrl+Tab / Ctrl+PageDown | 下一个可见 Tab（作用域内循环；Shift 反转方向；**仅非 macOS**）。终端聚焦时 Ctrl+Tab 亦生效（2026-09-10 修订，见 §5 终端注）；Ctrl+PgUp/PgDn 在终端内仍归 pty |
+| Ctrl+Shift+Tab / Ctrl+PageUp | 上一个可见 Tab（循环；Shift+PgUp/PgDn 同样反转；**仅非 macOS**）。终端聚焦时 Ctrl+Shift+Tab 亦生效（同上） |
 | ⌘⌥→ / ⌘⌥←（macOS） | 下/上一个可见 Tab（2026-09-03 修订：macOS 浏览器惯例主键；⌘Tab/⌘⇧Tab 是系统应用切换器，永远到不了应用） |
 | ⌘⇧] / ⌘⇧[（macOS） | 下/上一个可见 Tab（浏览器惯例别名；**按 code 匹配** `BracketRight`/`BracketLeft`——US 布局 shift+[ 的 key 是 `"{"`，code 布局无关。浏览器视图转发载荷因此增加 `code` 字段） |
 | Alt+↓ / Alt+↑（mac ⌘⌥↓ / ⌘⌥↑） | 左栏项目/工作区行**预览-提交**遍历（§3，循环）：按下修饰键左栏显光标，↑/↓ 只移动光标不切换，松开修饰键一次切换到光标行；鼠标点击切换行为不变。2026-09-06 修订（原逐按立即切换），同日归入 Alt 域（§0.1）。键位沿革：2026-09-04 替换原 `Ctrl+Alt+↑/↓`——GNOME/KDE 合成器抢作工作区切换（Wayland 下应用收不到，gsettings `switch-to-workspace-up/down` 实测），`Ctrl+Alt+Shift+↑/↓` 亦被 GNOME `move-to-workspace` 占用；mac 不用裸 ⌥↑/↓（NSText 段落首/尾移动惯例，劫持破坏输入框打字），维持 ⌘⌥↑/↓ |
@@ -56,7 +56,7 @@
 - **无激活 Tab 的 Ctrl+W 也消费**（2026-08-29 修订，推翻原"无加速键冲突"断言）：Electron 默认菜单并未因 autoHideMenuBar 消失，其 role:close 的 Ctrl+W 加速键对 **renderer 未消费**的按键生效（Chromium 对 renderer 未处理的键回调 `HandleKeyboardEvent` 触发加速键）——实测无 Tab 时 Ctrl+W 直接把窗口关掉。故 dispatch 对无激活 Tab 的 Ctrl+W 返回"已消费"（preventDefault、不动作）；其余未映射组合仍放行。Ctrl+数字跳转不做（用户决策，系统/输入法易冲突）
 - 修饰键判定以 ctrlKey 为准（macOS 开发态 Cmd 亦生效——metaKey 等价 Ctrl，成本零）；Alt 系进分发的组合 = 方向键 + O/C/N/⌫（§0.1 修订），其余 Alt+字母仍页面/输入框自用；Alt+↑/↓ 与 AltGr 的组合风险仅限"AltGr+方向键产生字符"的场景，不存在（方向键非字符键）
 - **macOS 切 Tab 仅惯例键**（2026-09-03 修订 + 2026-09-04 用户决策，`window.desktop.platform === "darwin"`）：darwin 只绑 ⌘⌥←/→ 与 ⌘⇧[/]，**Ctrl+Tab / ⌘PgUp/PgDn 不绑定**——mac 下切 Tab 不留非惯例组合；linux 上 Ctrl+Alt+←/→ 是 GNOME/KDE 工作区切换（不可占用），Ctrl+Shift+[/] 维持原放行语义；macOS 上 ⌘⌥↑/↓（作用域遍历）与 ⌘⌥←/→（切 Tab）按轴分工，与浏览器惯例一致
-- **面板开关键冲突核查结论**（2026-09-04 修订：全平台统一 VS Code 系 `Ctrl+B` / `Ctrl+Alt+B`，替换原 `Ctrl+[/]`——mac ⌘[ 是浏览器后退惯例且 BrowserView 内与面板开关双触发，⌘B/⌥⌘B 无此冲突；原"欧陆 AltGr 产生 `[` 上报 ctrl+alt"的误触顾虑对新键不成立，B 无常见 AltGr 字符映射，VS Code 同绑定先例）：Electron 默认菜单加速键无 `B` 系（无 Ctrl+W 式放行风险）；Chromium 在 Linux/Win/mac 均无 Ctrl+B/⌘B 绑定（富文本编辑器的加粗是页面内行为）；**按 code `KeyB` 匹配**——mac ⌥B 的 key 是 `"∫"`（Option 产特殊字符），key 不可靠，code 布局无关；code-view 只装 searchKeymap 无 defaultKeymap，无 Mod-B 冲突。**终端 Tab 聚焦时 xterm 在 textarea capture 监听器内 `cancel(e, force)` → preventDefault+stopPropagation 抢先消费 Ctrl+B（STX 0x02 归 pty，readline backward-char）**，事件到不了 window 分发——快捷键在终端内不生效，与 Ctrl+T/W 同行为，属预期而非缺陷，且保住了终端用户习惯
+- **面板开关键冲突核查结论**（2026-09-04 修订：全平台统一 VS Code 系 `Ctrl+B` / `Ctrl+Alt+B`，替换原 `Ctrl+[/]`——mac ⌘[ 是浏览器后退惯例且 BrowserView 内与面板开关双触发，⌘B/⌥⌘B 无此冲突；原"欧陆 AltGr 产生 `[` 上报 ctrl+alt"的误触顾虑对新键不成立，B 无常见 AltGr 字符映射，VS Code 同绑定先例）：Electron 默认菜单加速键无 `B` 系（无 Ctrl+W 式放行风险）；Chromium 在 Linux/Win/mac 均无 Ctrl+B/⌘B 绑定（富文本编辑器的加粗是页面内行为）；**按 code `KeyB` 匹配**——mac ⌥B 的 key 是 `"∫"`（Option 产特殊字符），key 不可靠，code 布局无关；code-view 只装 searchKeymap 无 defaultKeymap，无 Mod-B 冲突。**终端 Tab 聚焦时 xterm 在 textarea capture 监听器内 `cancel(e, force)` → preventDefault+stopPropagation 抢先消费 Ctrl+B（STX 0x02 归 pty，readline backward-char）**，事件到不了 window 分发——快捷键在终端内不生效，与 Ctrl+T/W 同行为，属预期而非缺陷，且保住了终端用户习惯。**例外——Tab 切换系（2026-09-10 修订，design-terminal-tab §1.4）**：非 mac 的 Ctrl+Tab / Ctrl+Shift+Tab 在终端聚焦时**释放生效**（xterm 对 Tab 类忽略 ctrl 修饰——Ctrl+Tab 发 `\t`、Ctrl+Shift+Tab 发 `CSI Z`，与裸 Tab / Shift+Tab 字节相同，CLI 无法感知，且无主流 CLI 绑定 Ctrl+Tab，释放零损失；排除 Ctrl+Alt+Tab——非本表 Tab 分支）；Ctrl+W（readline backward-kill-word、vim 窗口前缀、nano 搜索、emacs kill-region，且关终端 Tab 即销毁 pty 误按代价过高）、Ctrl+T/B 及 Ctrl+PgUp/PgDn 维持归 pty；mac 无 Ctrl+Tab 系绑定，不涉及
 
 ### 1.1 引导页磁贴快捷键（2026-09-06 增）
 
