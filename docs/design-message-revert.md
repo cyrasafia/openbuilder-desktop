@@ -85,7 +85,7 @@ summary?: { additions: number; deletions: number; files: number }
 - **回滚条**（`RevertBar`，composer 内、textarea 上方）：`session.revert` 存在时渲染——文案「已回滚：回滚点起 N 条消息将在发送后删除」+ 按钮「撤销回滚」（`btn-tonal`）；busy 时按钮禁用（409 前置防御）。
 - **隐藏**：`message id >= revert.messageID` 的消息从渲染列表剔除——纯函数 `filterRevertedEntries`（`message-merge.ts`，含边界单测；乐观消息恒显）——对齐官方 timeline 只渲染 `visibleUserMessages`（`session.tsx:2109`）。纯呈现层：store entries 不动，撤销回滚即恢复显示；分页头部基准/游标不受尾部隐藏影响。滚动布局 effect 依赖切到 `visibleEntries`——隐藏尾部引起条数变化时贴底重定位仍触发（条数减少走 auto 无动画）。回滚条计数 = `entries.length - visibleEntries.length`（与隐藏共用同一边界，无二份比较逻辑）。
 - **跨客户端覆盖窗口**：他端暂存的回滚点可能早于本端已加载窗口（此时全部已加载消息被隐藏、计数偏小）——ChatView effect 检测「无已加载消息落在回滚点之前」即持续 `loadEarlierMessages`，直到窗口覆盖回滚点或历史穷尽（复用分页 loading/exhausted/error 守卫）。本地发起的回滚不受影响（回滚点必然已加载）。
-- **busy confirm**：`confirm(t.confirmRevertBusy)` 通过才走 store（同 `confirmCloseStreamingTab` 模式）。
+- **busy confirm**：应用内 ConfirmDialog（文案 `confirmRevertBusy`，标题复用 `revertToHere`；2026-09-11 替换原生 confirm，同关流式 Tab 弹窗体系）。确认后弹窗即关、进度由消息动作钮 `reverting` 态承载（同工作区非阻塞删除模式）；`revertToMessage` 内部仍重估 busy——弹窗期间流式结束则不再多余 abort。
 
 ### 3.5 i18n（zh/en 对称）
 

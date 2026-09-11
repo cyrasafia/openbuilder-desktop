@@ -41,7 +41,7 @@
 | **Alt+C（mac ⌘⌥C）** | 关闭**当前激活 entry**（普通项目或 global 目录，§1.2） |
 | **Alt+N（mac ⌘⌥N）** | 当前项目下**新建 worktree**（§1.2） |
 | **Alt+⌫（mac ⌘⌥⌫）** | 删除**当前作用域 worktree**，二次确认（§1.2 + §4.1；键位选型见 §0.2——⌘⌥D 系统占用弃用） |
-| Ctrl+W | 关闭激活 Tab；**无激活 Tab 时仅消费不动作**（放行会命中默认菜单关窗，见下注）；chat Tab 流式中先 confirm（复用 `confirmCloseStreamingTab`），确认后 abort+归档——与 Tab 栏关闭按钮**同一代码路径**（§4 tab-actions） |
+| Ctrl+W | 关闭激活 Tab；**无激活 Tab 时仅消费不动作**（放行会命中默认菜单关窗，见下注）；chat Tab 流式中 / 终端运行中先二次确认——应用内 ConfirmDialog（`store.pendingTabClose`，**2026-09-11 替换原生 confirm**），chat 确认后 abort+归档；**overlay 遮挡时仅消费不动作**（§1.2 闸门，非阻塞弹窗化后必拦）——与 Tab 栏关闭按钮**同一代码路径**（§4 tab-actions） |
 | Ctrl+Shift+T | 恢复刚关闭的 Tab（§2 关闭栈） |
 | Ctrl+1 / Ctrl+2 / Ctrl+3（**仅引导页**，2026-09-06 增，§1.1） | 分别开 diff / 终端 / 网页 Tab（与引导页磁贴点击同路径、同禁用态）；Ctrl 按住期间磁贴右上角显示对应数字角标 |
 | Ctrl+Tab / Ctrl+PageDown | 下一个可见 Tab（作用域内循环；Shift 反转方向；**仅非 macOS**）。终端聚焦时 Ctrl+Tab 亦生效（2026-09-10 修订，见 §5 终端注）；Ctrl+PgUp/PgDn 在终端内仍归 pty |
@@ -117,11 +117,11 @@ private closedTabs: ClosedTabEntry[] = []   // push 尾 / pop 尾，上限 20（
 
 ## 4. 用户关闭路径的收敛（tab-actions）
 
-`closeTabInteractive(store, tab, t)`（模块 `src/renderer/src/components/tab-actions.ts`）：chat 流式确认 + abort + 归档；非 chat 直接 `closeTab(key, { pushClosed: true })`。Tab 栏关闭按钮与 Ctrl+W 共用，语义单一来源（原 Tab 栏内联逻辑迁出）。
+`closeTabInteractive(store, tab)`（模块 `src/renderer/src/components/tab-actions.ts`）：chat 流式中 / 终端运行中置位 `store.pendingTabClose` 挂**应用内 ConfirmDialog**（**2026-09-11 替换原生 confirm**——原生阻塞式改非阻塞后，Ctrl+W 由 §1.2 overlay 闸门协调、Tab 栏 X 钮被遮罩盖住，二者均无重入风险；确认回调 `confirmTabClose` **届时重估**流式/运行态再关——弹窗期间流式可能已结束、pty 可能已退出，Tab 已被关则 no-op；取消 `cancelTabClose`）；其余直接关闭（chat 非流式 `closeChatTab`、终端非运行 `closeTerminalTab`、browser/file/diff `closeTab(key, { pushClosed: true })`）。Tab 栏关闭按钮与 Ctrl+W 共用，语义单一来源（原 Tab 栏内联逻辑迁出）。
 
 ### 4.1 确认弹窗键：Enter 确认 / Esc 取消（2026-09-06 增）
 
-> 用户决策 2026-09-06：删除 worktree 的二次确认（Alt+⌫ 入口）增加键盘操作——回车确认、Esc 取消。实现为 **ConfirmDialog 通用增强**，受益面覆盖全部确认弹窗（删除 worktree、设置页 provider key 删除），键位一致。
+> 用户决策 2026-09-06：删除 worktree 的二次确认（Alt+⌫ 入口）增加键盘操作——回车确认、Esc 取消。实现为 **ConfirmDialog 通用增强**，受益面覆盖全部确认弹窗（删除 worktree、设置页 provider key 删除；2026-09-11 起关流式 chat Tab、关运行中终端 Tab、回滚 busy 确认加入——原生 `confirm()` 全部替换为 ConfirmDialog，仓库内不再有系统确认弹窗），键位一致。
 
 - **Enter = 确认**（调 handleConfirm）、**Esc = 取消**（既有行为）；`loading` 中两者均不动作（防重复提交/误关）
 - Enter 需 **preventDefault + stopPropagation**：打开即聚焦的是取消钮（danger 弹窗的安全默认，同 OpenWithDialog 的 focus-on-mount），原生行为下 Enter 会点击聚焦钮 = 取消——dialog 容器 onKeyDown 先行拦截改道确认；stopPropagation 防嵌套宿主弹窗（设置的 provider 删除确认嵌在设置弹窗内，Esc 既有同处理）
@@ -155,7 +155,7 @@ private closedTabs: ClosedTabEntry[] = []   // push 尾 / pop 尾，上限 20（
 | `src/renderer/src/components/ctrl-held.ts` | Ctrl 按住态模块级单例跟踪 + `useCtrlHeld`（2026-09-06 修复：挂载晚于 keydown 的初始态） |
 | `src/renderer/src/styles/app.css` | `.tree-row.scope-cursor`（§3 修订）；§1.1 `.btn-tile` relative + `.btn-tile-badge` |
 | `docs/spec-v0.4.md` | 新增 #7（Alt 系重构范围行）+ 验收口径行；#6 设置页快捷键列表行同步 Alt 系键位（spec-v0.3 不回溯修订——Ctrl+O 随 v0.3 发布，v0.4 替换） |
-| 测试 | store（关闭栈入/弹/跳过/跨作用域/上限、cycleTab 循环、scopePreview 预览-提交/环游/no-op/作废/虚拟边界、Alt 域 requestWorktreeDelete/closeActiveEntry）；shortcuts（分发表 + begin/commit/cancel + 转发 up + Alt 域四键/overlay 闸门/code 匹配/AltGr 排除/Ctrl+O 移除）；confirm-dialog（Enter/Esc）；terminal-view（live 归 pty/dead 释放/copy 例外修饰守卫）；workspace-guide（§1.1 分发/禁用态/角标/卸载） |
+| 测试 | store（关闭栈入/弹/跳过/跨作用域/上限、cycleTab 循环、scopePreview 预览-提交/环游/no-op/作废/虚拟边界、Alt 域 requestWorktreeDelete/closeActiveEntry）；shortcuts（分发表 + begin/commit/cancel + 转发 up + Alt 域四键/overlay 闸门/code 匹配/AltGr 排除/Ctrl+O 移除/Ctrl+W 流式挂 pendingTabClose + overlay 闸门）；confirm-dialog（Enter/Esc）；terminal-view（live 归 pty/dead 释放/copy 例外修饰守卫）；workspace-guide（§1.1 分发/禁用态/角标/卸载） |
 
 ## 7. 验收
 
