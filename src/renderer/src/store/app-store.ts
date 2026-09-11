@@ -486,12 +486,14 @@ export class AppStore {
   private tocStates = new Map<string, { visible?: boolean; folded: string[] }>()
   /**
    * diff 视图状态（design-tab-state-memory §2.5）：diffTabKey(directory) →
-   * {foldOpen 全局折叠意图, closedFiles 折叠文件路径集, scrollTop 滚动偏移}。
-   * 纯内存、不跨重启；写入不 emit（滚动高频 + 折叠低频同 fileViewState 模式）
+   * {foldOpen 全局折叠意图, fileOpens 逐文件开合覆盖表, scrollTop 滚动偏移}。
+   * 开合单一事实源 = 默认意图 + 覆盖表（open = 覆盖值 ?? foldOpen），手动展开/
+   * 折叠均可跨卸载表达。纯内存、不跨重启；写入不 emit（滚动高频 + 折叠低频
+   * 同 fileViewState 模式）
    */
   private diffViewStates = new Map<
     string,
-    { foldOpen: boolean; closedFiles: ReadonlySet<string>; scrollTop: number }
+    { foldOpen: boolean; fileOpens: ReadonlyMap<string, boolean>; scrollTop: number }
   >()
 
   // ---- 内部 ----
@@ -4052,6 +4054,17 @@ export class AppStore {
     this.emit()
   }
 
+  /** file Tab 行锚定一次性消费（FileView 挂载/锚点更新后调用清残留）：
+   *  锚定行是「从 diff 跳转」的瞬时意图，常驻 TabEntity 会让切 Tab 往返被
+   *  过时行号反复强制源码模式（FileView 模式初始化）+ 重滚锚定行（CodeView），
+   *  压掉 store 保存的浏览模式（design-tab-state-memory §2.2） */
+  consumeFileReveal(absolutePath: string) {
+    const tab = this.tabs.find((t) => t.key === `file:${absolutePath}`)
+    if (!tab || tab.revealLine == null) return
+    tab.revealLine = undefined
+    this.emit()
+  }
+
   // ============ 终端 Tab（design-terminal-tab） ============
 
   /** pty 运行时读（TerminalView 挂载判断已退出态；无条目 = 全新） */
@@ -5068,14 +5081,14 @@ export class AppStore {
   }
 
   /** diff 视图状态读（无条目 = 缺省全展开 + 顶部） */
-  diffViewStateFor(tabKey: string): { foldOpen: boolean; closedFiles: ReadonlySet<string>; scrollTop: number } | null {
+  diffViewStateFor(tabKey: string): { foldOpen: boolean; fileOpens: ReadonlyMap<string, boolean>; scrollTop: number } | null {
     return this.diffViewStates.get(tabKey) ?? null
   }
 
   /** diff 视图状态写。不 emit（滚动高频 + 折叠低频同 fileViewState 模式） */
   setDiffViewState(
     tabKey: string,
-    state: { foldOpen: boolean; closedFiles: ReadonlySet<string>; scrollTop: number },
+    state: { foldOpen: boolean; fileOpens: ReadonlyMap<string, boolean>; scrollTop: number },
   ) {
     this.diffViewStates.set(tabKey, state)
   }

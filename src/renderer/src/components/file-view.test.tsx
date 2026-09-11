@@ -24,6 +24,7 @@ import { ResizeObserverStub } from "./resize-observer-stub"
 
 const loadFileContent = vi.fn(async () => {})
 const ensureFileImage = vi.fn()
+const consumeFileReveal = vi.fn()
 const scrollIntoView = vi.fn()
 
 // desktop 桩（design-file-view-actions）：platform 可变（按用例切换），
@@ -113,6 +114,8 @@ function buildStoreStub() {
     setFileViewState: (path: string, state: { mode: "preview" | "source"; top: number }) => {
       fileViewStateStub.set(path, state)
     },
+    // revealLine 一次性消费桩（真实语义见 app-store consumeFileReveal）
+    consumeFileReveal,
     tocStateFor: (path: string) => tocStateStub.get(path) ?? null,
     setTocVisible: (path: string, visible: boolean) => {
       const cur = tocStateStub.get(path)
@@ -179,6 +182,7 @@ beforeEach(() => {
   ResizeObserverStub.reset()
   loadFileContent.mockClear()
   ensureFileImage.mockClear()
+  consumeFileReveal.mockClear()
   scrollIntoView.mockClear()
   platform = "linux"
   shellOpenPath.mockClear()
@@ -322,6 +326,38 @@ describe("FileView markdown 预览", () => {
     await screen.findAllByText("标题")
     const layer = document.querySelector(".file-view") as HTMLElement
     expect(layer.scrollTop).toBe(0)
+  })
+
+  it("revealLine 一次性消费：强制源码仅首次挂载，消费后切 Tab 往返恢复保存的模式", async () => {
+    fileContentsStub.set("/repo/from-diff.md", { content: "# 标题\n\n正文" })
+    // 从 diff 跳转打开：锚定行强制源码模式（行锚定仅对 CodeView 有意义），挂载即消费
+    render(<FileView absolutePath="/repo/from-diff.md" revealLine={42} />)
+    expect(document.querySelector(".cm-content")?.textContent).toContain("# 标题")
+    expect(consumeFileReveal).toHaveBeenCalledWith("/repo/from-diff.md")
+
+    // 用户改选预览（写 store）；切走再回：锚定已消费（重挂载无 revealLine）
+    fireEvent.click(screen.getByRole("button", { name: "预览" }))
+    expect(fileViewStateStub.get("/repo/from-diff.md")).toEqual({ mode: "preview", top: 0 })
+    cleanup()
+    consumeFileReveal.mockClear()
+    render(<FileView absolutePath="/repo/from-diff.md" />)
+    expect(consumeFileReveal).not.toHaveBeenCalled()
+    const matches = await screen.findAllByText("标题")
+    expect(matches.some((el) => el.tagName === "H1")).toBe(true)
+  })
+
+  it("revealLine 消费时序：未缓存不消费（CodeView 晚挂载仍得锚定），内容落地后才清", async () => {
+    // 从 diff 跳转未打开过的文件（主路径）：挂载时无缓存，CodeView 未挂载
+    const { rerender } = render(<FileView absolutePath="/repo/fresh.md" revealLine={42} />)
+    expect(screen.getByText("加载中…")).not.toBeNull()
+    // 挂载即清会让晚挂载的 CodeView 拿到 undefined（锚定静默失效）——须等内容落地
+    expect(consumeFileReveal).not.toHaveBeenCalled()
+
+    // 内容落地：CodeView 同 commit 挂载（prop 仍锚定值），效果随后清 entity
+    fileContentsStub.set("/repo/fresh.md", { content: "# 标题\n\nconst x = 1" })
+    rerender(<FileView absolutePath="/repo/fresh.md" revealLine={42} />)
+    expect(document.querySelector(".cm-content")?.textContent).toContain("const x = 1")
+    expect(consumeFileReveal).toHaveBeenCalledWith("/repo/fresh.md")
   })
 
   it(".html 恒源码态（预览已迁浏览器 Tab，design-browser-tab §1.4）：无 iframe、无预览/源码切换工具条", () => {
