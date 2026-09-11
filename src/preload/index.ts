@@ -25,6 +25,7 @@ const api = {
   openPathPicker: () => ipcRenderer.invoke("dialog:openPath"),
   openHtmlFilePicker: () => ipcRenderer.invoke("dialog:openHtmlFile") as Promise<string | null>,
   getAppVersion: () => ipcRenderer.invoke("app:getVersion"),
+  ptyDisplayEnv: () => ipcRenderer.invoke("pty:displayEnv") as Promise<Record<string, string>>,
   shellOpenPath: (path: string) => ipcRenderer.invoke("shell:openPath", path) as Promise<string>,
   shellOpenExternal: (url: string) => ipcRenderer.invoke("shell:openExternal", url) as Promise<string>,
   shellOpenWith: (path: string) => ipcRenderer.invoke("shell:openWith", path) as Promise<string>,

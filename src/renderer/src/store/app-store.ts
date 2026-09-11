@@ -53,6 +53,7 @@ import {
   type SessionDotState,
 } from "@shared/pending-requests"
 import { normalizeTodoList } from "@shared/session-todos"
+import { isLoopbackBaseUrl } from "@shared/loopback"
 import {
   GLOBAL_PROJECT_ID,
   globalDirectoryName,
@@ -4073,11 +4074,17 @@ export class AppStore {
       return false
     }
     // 入口同步捕获（M1）：await 期间作用域可能已切走——directory/projectId 用
-    // 捕获值（Tab 归属创建时作用域），激活只在仍在该作用域时抢
+    // 捕获值（Tab 归属创建时作用域），激活只在仍在该作用域时抢；client 同步捕获
+    // （显示环境 IPC 的 await 会放大窗口：teardown 置 null 后 this.client.createPty
+    // 抛 TypeError 落 catch 变晦涩 connectionError——review 2026-09-11）
+    const client = this.client
     const directory = this.scopeDirectory()
     const projectId = this.currentProject?.id ?? ""
     try {
-      const pty = await this.client.createPty(directory, { cwd: directory })
+      const pty = await client.createPty(directory, {
+        cwd: directory,
+        env: await this.ptyDisplayEnvForServer(),
+      })
       this.ptyRuntimes.set(pty.id, { exited: false, disconnected: false, title: pty.title ?? "terminal" })
       const key = `terminal:${pty.id}`
       this.tabs.push({
@@ -4101,6 +4108,27 @@ export class AppStore {
       this.connectionError = e instanceof Error ? e.message : String(e)
       this.emit()
       return false
+    }
+  }
+
+  /**
+   * pty 显示环境注入（design-terminal-tab §1.1 显示环境注入，2026-09-11）：
+   * server 侧 pty 完全继承 server 进程 env，server 若自非图形上下文启动
+   * （实证：systemd user 服务先于图形会话变量导入，快照缺 DISPLAY/
+   * WAYLAND_DISPLAY），终端内 GUI 程序（smerge 等）静默失败开不了窗。
+   * Electron 主进程必在图形会话内——取其 env 白名单切片随 createPty
+   * body.env 回填（server 合并序 payload env 优先，core pty.ts）。
+   * **仅回环 server 注入**：远程 attach 的 DISPLAY 语义属远端（如 ssh -X
+   * 转发 localhost:10.0），本地值覆盖反而破坏远端 GUI 启动。
+   * IPC 失败/空切片 = undefined（不注入，保持现行为，终端创建不受阻）。
+   */
+  private async ptyDisplayEnvForServer(): Promise<Record<string, string> | undefined> {
+    if (!isLoopbackBaseUrl(this.baseUrl)) return undefined
+    try {
+      const env = await window.desktop.ptyDisplayEnv?.()
+      return env && Object.keys(env).length > 0 ? env : undefined
+    } catch {
+      return undefined
     }
   }
 
