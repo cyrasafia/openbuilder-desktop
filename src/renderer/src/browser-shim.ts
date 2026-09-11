@@ -46,6 +46,10 @@ function createBrowserDesktopApi(): DesktopApi {
     async getAppVersion() {
       return "0.1.0-browser"
     },
+    // pty 显示环境：无主进程 env 可取，空 = 不注入（保持 server 原生 env）
+    async ptyDisplayEnv() {
+      return {}
+    },
     async shellOpenPath() {
       return "系统打开仅 Electron 环境可用"
     },
