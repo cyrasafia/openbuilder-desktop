@@ -376,6 +376,16 @@ export class AppStore {
    */
   pendingWorktreeDelete: { directory: string; projectId: string } | null = null
   /**
+   * 待确认关闭的 Tab（tab-actions closeTabInteractive 置位，Tab 栏 X 钮与
+   * Ctrl+W 同入口）：非空 = ConfirmDialog 挂载中；chat 流式中 / 终端运行中
+   * 关闭需二次确认——确认走 confirmTabClose（届时重估流式/运行态，弹窗期间
+   * 状态可能已变），取消走 cancelTabClose。不设重入守卫：弹窗在时 overlay
+   * 闸门拦 Ctrl+W、遮罩盖住 Tab 栏，用户无从再触发。弹窗期间 Tab 被卸载路径
+   * 关闭时随 closeTab 清除（防同键重建复挂）；渲染侧另按 Tab 存在性过滤
+   *（清空与 emit 之间的瞬态兜底）
+   */
+  pendingTabClose: { tabKey: string } | null = null
+  /**
    * 本端 closeChatTab 在途集合（§17 修订二，SSE 归档回环关闭抑制）：关 Tab=归档
    * 流程"先 PATCH 后 closeTab(pushClosed 入关闭栈)"，SSE 归档回环可能先到——
    * 实时收敛分支抢先关会丢 Ctrl+Shift+T 关闭栈条目，在途期间抑制、交本地收尾
@@ -4501,6 +4511,11 @@ export class AppStore {
     const idx = this.tabs.findIndex((t) => t.key === key)
     if (idx < 0) return
     const closed = this.tabs[idx]
+    // 关 Tab 确认弹窗挂着的 Tab 被卸载路径关闭（SSE 归档/session.deleted/关项目
+    // 等）：随关清 pending——渲染侧存在性过滤只遮不清，同键 Tab 重建（chat 取消
+    // 归档/Ctrl+Shift+T）时会复挂残留弹窗。确认路径（confirmTabClose）先清
+    // pending 再关，此处恒 no-op
+    if (this.pendingTabClose?.tabKey === key) this.pendingTabClose = null
     // 用户主动关闭 → 记入关闭栈（design-keyboard-shortcuts §2，Ctrl+Shift+T 恢复）。
     // 卸载路径（关项目/删工作区/死会话收敛/session.deleted）不传 pushClosed
     if (_opts.pushClosed) this.pushClosedTab(closed)
@@ -4564,6 +4579,38 @@ export class AppStore {
     // 不经 recordScopeActive，须在此挂）
     this.persistTabSession()
     this.emit()
+  }
+
+  /** 请求关闭 Tab（二次确认入口，closeTabInteractive）：chat 流式中 / 终端
+   *  运行中的关闭置位 pendingTabClose 挂 ConfirmDialog，确认走
+   *  confirmTabClose、取消走 cancelTabClose（原生 confirm → 应用内弹窗） */
+  requestTabCloseConfirm(tabKey: string) {
+    this.pendingTabClose = { tabKey }
+    this.emit()
+  }
+
+  /** 取消关闭确认（ConfirmDialog onClose / Esc，design-keyboard-shortcuts §4.1） */
+  cancelTabClose() {
+    if (!this.pendingTabClose) return
+    this.pendingTabClose = null
+    this.emit()
+  }
+
+  /** 确认关闭（ConfirmDialog onConfirm）：届时重估状态——弹窗期间流式可能已
+   *  结束（abort 仅在仍 active 时执行）、pty 可能已退出；Tab 已不存在 = no-op */
+  confirmTabClose() {
+    const pending = this.pendingTabClose
+    if (!pending) return
+    this.pendingTabClose = null
+    this.emit()
+    const tab = this.tabs.find((t) => t.key === pending.tabKey)
+    if (!tab) return
+    if (tab.kind === "chat") {
+      const sessionID = tab.key.slice(5)
+      void this.closeChatTab(sessionID, { streaming: this.isSessionActive(sessionID) })
+    } else if (tab.kind === "terminal") {
+      void this.closeTerminalTab(tab.key.slice("terminal:".length))
+    }
   }
 
   setActiveTab(key: string) {

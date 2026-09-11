@@ -2763,6 +2763,52 @@ describe("快捷键支撑（design-keyboard-shortcuts）", () => {
     expect(store.activeTabKey).toBe("chat:s1")
   })
 
+  it("关 Tab 确认（2026-09-11 原生 confirm 替换）：request 置 pending，confirm 届时重估流式再关，cancel 清空", async () => {
+    const closeChat = vi.spyOn(store, "closeChatTab").mockResolvedValue(true)
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
+    // 请求时流式中（closeTabInteractive 侧判定），确认时已结束——streaming 须重估为 false
+    vi.spyOn(store, "isSessionActive").mockReturnValue(false)
+    store.requestTabCloseConfirm("chat:s1")
+    expect(store.pendingTabClose).toEqual({ tabKey: "chat:s1" })
+    store.cancelTabClose()
+    expect(store.pendingTabClose).toBeNull()
+    expect(closeChat).not.toHaveBeenCalled()
+    store.requestTabCloseConfirm("chat:s1")
+    store.confirmTabClose()
+    expect(store.pendingTabClose).toBeNull()
+    expect(closeChat).toHaveBeenCalledWith("s1", { streaming: false })
+  })
+
+  it("关 Tab 确认：terminal 确认走 closeTerminalTab；弹窗期间 Tab 被 SSE 关闭 = 确认 no-op", async () => {
+    const closeChat = vi.spyOn(store, "closeChatTab").mockResolvedValue(true)
+    const closeTerm = vi.spyOn(store, "closeTerminalTab").mockResolvedValue(undefined)
+    store.tabs = [{ kind: "terminal", key: "terminal:t1", projectId: "proj1", title: "t1", directory: ROOT }]
+    store.requestTabCloseConfirm("terminal:t1")
+    store.confirmTabClose()
+    expect(closeTerm).toHaveBeenCalledWith("t1")
+
+    // 弹窗期间 Tab 已不存在（closeTab 卸载路径/他端删除）：确认不动作
+    store.tabs = []
+    closeTerm.mockClear()
+    store.requestTabCloseConfirm("terminal:t1")
+    store.confirmTabClose()
+    expect(closeTerm).not.toHaveBeenCalled()
+    expect(closeChat).not.toHaveBeenCalled()
+    expect(store.pendingTabClose).toBeNull()
+  })
+
+  it("关 Tab 确认：弹窗期间 Tab 被卸载路径关闭随 closeTab 清 pending（防同键 Tab 重建复挂弹窗，review 回归）", () => {
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
+    store.requestTabCloseConfirm("chat:s1")
+    expect(store.pendingTabClose).toEqual({ tabKey: "chat:s1" })
+    // SSE 归档回环/session.deleted → closeTab（无 pushClosed = 卸载路径）
+    store.closeTab("chat:s1")
+    expect(store.pendingTabClose).toBeNull()
+    // 同键 Tab 重建（取消归档/Ctrl+Shift+T）：pending 已清，不复挂弹窗
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
+    expect(store.pendingTabClose).toBeNull()
+  })
+
   it("已删除会话的栈项被跳过，恢复下一个", () => {
     store.tabs = []
     // 栈顶（数组尾）在先：chat:gone 弹出后会话不存在 → 跳过 → 恢复更早的 file 项

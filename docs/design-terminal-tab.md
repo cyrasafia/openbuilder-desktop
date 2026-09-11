@@ -11,7 +11,7 @@
 - `TabKind` 扩 `"terminal"`；key = `terminal:<ptyID>`；directory = 创建时作用域目录（cwd）
 - 创建入口：引导页「终端」按钮（解禁）→ `store.openTerminalTab()`：`POST /pty`（cwd = 作用域目录；**command 省略**——server 走 `Shell.preferred($SHELL)`，与 server 进程默认登录 shell 一致，如 fish）→ Tab 入列 + 激活。**不取 `/pty/shells` 首个 acceptable**：那是 `/etc/shells` 顺序首个（实测 /bin/sh），反而覆盖 server 正确的 $SHELL；`/pty/shells` 留待将来做 shell 选择器（源码 `pty.ts: command = input.command || Shell.preferred(...)`，`Shell.preferred` 取 `process.env.SHELL`）
 - 标题 = `Pty.title`（server 给，如进程名）；无则 "terminal"
-- **关 Tab = DELETE /pty/{id}**；**仅 live 连接态二次确认**（2026-09-02 修订，文案同关流式 chat Tab 风格）——已退出（exited）与断连退避中（disconnected，§1.2a）连接已不可用，确认"将终止进程"无意义直接关（closeTerminalTab 仍尝试 DELETE 防孤儿，404 容忍）；pty exited 后关 Tab 仅清理本地（DELETE 404 静默）
+- **关 Tab = DELETE /pty/{id}**；**仅 live 连接态二次确认**（2026-09-02 修订，文案同关流式 chat Tab 风格；2026-09-11 确认改应用内 ConfirmDialog——`store.pendingTabClose`，见 design-keyboard-shortcuts §4）——已退出（exited）与断连退避中（disconnected，§1.2a）连接已不可用，确认"将终止进程"无意义直接关（closeTerminalTab 仍尝试 DELETE 防孤儿，404 容忍）；pty exited 后关 Tab 仅清理本地（DELETE 404 静默）
 - restoreClosedTab 的 terminal 分支（spec #2）：在原 directory **新建**终端（原 pty 已销毁）
 - teardown/关项目/删工作区：pty 由 server 持有，客户端只关 Tab 不删 pty？**否**——孤儿 pty 会常驻 server；关项目/删工作区/断开连接时对运行中 pty 逐个 DELETE（fire-and-forget），与"关 Tab = 杀"语义一致
 
