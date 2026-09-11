@@ -24,6 +24,7 @@ import { ResizeObserverStub } from "./resize-observer-stub"
 
 const loadFileContent = vi.fn(async () => {})
 const ensureFileImage = vi.fn()
+const consumeFileReveal = vi.fn()
 const scrollIntoView = vi.fn()
 
 // desktop 桩（design-file-view-actions）：platform 可变（按用例切换），
@@ -113,6 +114,8 @@ function buildStoreStub() {
     setFileViewState: (path: string, state: { mode: "preview" | "source"; top: number }) => {
       fileViewStateStub.set(path, state)
     },
+    // revealLine 一次性消费桩（真实语义见 app-store consumeFileReveal）
+    consumeFileReveal,
     tocStateFor: (path: string) => tocStateStub.get(path) ?? null,
     setTocVisible: (path: string, visible: boolean) => {
       const cur = tocStateStub.get(path)
@@ -179,6 +182,7 @@ beforeEach(() => {
   ResizeObserverStub.reset()
   loadFileContent.mockClear()
   ensureFileImage.mockClear()
+  consumeFileReveal.mockClear()
   scrollIntoView.mockClear()
   platform = "linux"
   shellOpenPath.mockClear()
@@ -322,6 +326,24 @@ describe("FileView markdown 预览", () => {
     await screen.findAllByText("标题")
     const layer = document.querySelector(".file-view") as HTMLElement
     expect(layer.scrollTop).toBe(0)
+  })
+
+  it("revealLine 一次性消费：强制源码仅首次挂载，消费后切 Tab 往返恢复保存的模式", async () => {
+    fileContentsStub.set("/repo/from-diff.md", { content: "# 标题\n\n正文" })
+    // 从 diff 跳转打开：锚定行强制源码模式（行锚定仅对 CodeView 有意义），挂载即消费
+    render(<FileView absolutePath="/repo/from-diff.md" revealLine={42} />)
+    expect(document.querySelector(".cm-content")?.textContent).toContain("# 标题")
+    expect(consumeFileReveal).toHaveBeenCalledWith("/repo/from-diff.md")
+
+    // 用户改选预览（写 store）；切走再回：锚定已消费（重挂载无 revealLine）
+    fireEvent.click(screen.getByRole("button", { name: "预览" }))
+    expect(fileViewStateStub.get("/repo/from-diff.md")).toEqual({ mode: "preview", top: 0 })
+    cleanup()
+    consumeFileReveal.mockClear()
+    render(<FileView absolutePath="/repo/from-diff.md" />)
+    expect(consumeFileReveal).not.toHaveBeenCalled()
+    const matches = await screen.findAllByText("标题")
+    expect(matches.some((el) => el.tagName === "H1")).toBe(true)
   })
 
   it(".html 恒源码态（预览已迁浏览器 Tab，design-browser-tab §1.4）：无 iframe、无预览/源码切换工具条", () => {

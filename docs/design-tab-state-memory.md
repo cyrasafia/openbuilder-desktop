@@ -62,6 +62,7 @@ private fileViewStates = new Map<string, { mode: "preview" | "source"; top: numb
 - **已知限制**：html 预览是 `sandbox=""` iframe（opaque origin，滚动不可达）——条目记容器值（恒 0），恢复 no-op；DiffView、TOC 悬浮窗滚动不做（无诉求）
 - **一次性应用时序**：预览偏移在 `cached` 落地 commit 应用一次，无重试——markdown 首挂载是同步出块（评审实证：`useState(fe)` 初始化即渲染，transition 只作用于后续更新），落地帧 `scrollHeight` 即终值。异步加载图片使内容后续增高 → 恢复点轻微漂移，clamp 兜底、可接受误差（移动端 design-file-browser-collapse 同款取舍）
 - **模式切换弃待恢复偏移**：内容未落地的加载窗口内切模式，残留 `pendingScroll` 会在落地后错灌入新模式——切换处理器显式置空（与"归零"写入同步）
+- **revealLine 一次性消费（2026-09-11 修订）**：从 diff 跳转携带的 `TabEntity.revealLine` 是**瞬时意图**——FileView 初始化模式时优先于条目（强制 source，行锚定仅对 CodeView 有意义），但挂载/锚点更新即调 `store.consumeFileReveal` 清 TabEntity 残留。否则锚定常驻会让切 Tab 往返被过时行号反复强制源码模式 + 重滚锚定行，压掉本条目保存的浏览模式（`openFileTab` 无锚点复用清残留是另一条防线，消费兜住"不再 openFileTab 直接切 Tab"的主路径）
 - 修订 design-markdown-preview §2.1/§3 原决策"模式不持久化、重开成本为零"→ 运行期内按文件路径记忆（重开成本仍为零，但切换体验要求状态连续）
 
 ### 2.3 消息流滚动位置（app-store：`chatScrollTops`）
