@@ -2056,6 +2056,24 @@ describe("回滚到指定消息（design-message-revert）", () => {
     expect(store.takeRevertDraft("s1")).toBeNull()
   })
 
+  it("seedChatDraft 手动置种：不参与撤销回滚清输入框（误清回归，2026-09-11）", async () => {
+    const s1 = seedSession()
+    store.sessionsByProject.set("proj1", sessionsOf({ ...s1, revert: { messageID: "msg_u1" } }))
+    // 引导页命令分发失败的手动置种已被 ChatView 消费（输入框承载回填文本）
+    store.seedChatDraft("s1", "/review --help")
+    expect(store.takeRevertDraft("s1")).toBe("/review --help")
+    const client = (store as unknown as { client: Record<string, unknown> }).client
+    client.unrevertSession = async () => ({
+      ...session("s1", ROOT, { created: 1, updated: 3 }),
+      revert: null,
+    })
+
+    const res = await store.unrevertSession("s1")
+    expect(res.ok).toBe(true)
+    // 手动置种非回滚回填：撤销回滚不得据此清空用户自输内容
+    expect(store.takeRevertDraft("s1")).toBeNull()
+  })
+
   it("unrevertSession 无暂存回滚：不置种子（不误清用户输入）", async () => {
     seedSession()
     const client = (store as unknown as { client: Record<string, unknown> }).client

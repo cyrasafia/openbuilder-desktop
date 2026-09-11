@@ -260,6 +260,40 @@ server 源码核实无回填风险：`runner.cancel` 使在途 command 请求走
 
 ## 修订记录
 
+### 2026-09-11：引导页命中命令「分发即开 Tab」（同步长端点不等响应）
+
+2026-09-08 修订的"发送成功路径不变（清草稿/引用/附件 + 开 Tab）"被实现为
+**等 `sendCommand` 响应后再开 Tab**——与 command 端点的同步性冲突（本文档
+「联调契约事实」：server 执行完整循环才响应，`timeoutMs: 0` 无限等待）。
+症状：引导页发 `/cmd` → 会话已建（侧栏可见）→ POST 分钟级在途，消息经 SSE
+流入 store 却无 Tab 展示，引导页全程停留；POST 失败（400/404/断网）则**永不**
+切换。prompt 路径无此问题（`prompt_async` 即时返回），故只有斜杠命令复现。
+
+修复（`workspace.tsx` GuidePage.send 重构）：
+
+- **命中命令**：`sendSlash` 返回 `{ command, res }`——分发（乐观回显同步入
+  store）后**立即**清引导页草稿/引用/附件 + `openChatTab`（原 settle 逻辑
+  提为局部函数，prompt 路径复用）；POST 只用于失败善后。
+- **失败回填换通道**：引导页已卸载，原"草稿留在输入框、重试复用会话"不可达；
+  `res.ok === false` 时文本经 `store.seedChatDraft(session.id, text)` 置入新
+  会话输入框，引用/附件经 `addFileRef`/`addAttachments` **重键**到 sessionID
+  （引导页 directory 键已被 settle 清空）——重试携带重发，同 ChatView 发送
+  失败 `setDraft(text)` + "引用保留 store 供重发"语义；重试在该会话内复用
+  ChatView 的 sendSlash。
+- **seedChatDraft 与回滚回填的差异**：复用 take-once 种子通道但不记
+  `revertDraftConsumed`（`manualDraftSeeds` 标记区分来源）——手动置种的文本
+  非"回滚回填"，不得让日后的撤销回滚据此清空用户自输内容（review 2 修复；
+  consumed 判定规则见 app-store revertDraftConsumed 注释）。
+- **prompt 路径（含未注册 /xxx 字面降级）不变**：异步端点即时返回，等响应按
+  结果落地，失败草稿留在引导页、pendingSession 复用。
+- **接受的边缘**：命令 POST 在途期间关掉新会话 Tab（= 归档），迟到的失败
+  回填会重新置种——重开该 Tab 时文本/引用恢复，恰是"文本不丢"意图的延伸；
+  下次关 Tab 随 `cleanupSessionState` 清除。
+- 回归用例：`workspace-guide.test.tsx`——悬挂的 sendCommand Promise 下断言
+  Tab 已开 + 引导页草稿已清；分发失败断言 seedChatDraft/addFileRef/addAttachments
+  回填（附件路径经"守卫时未注册、发送时已注册"竞态构造）；`app-store.test.ts`
+  ——手动置种不触发撤销回滚清输入框。
+
 ### 2026-09-08：引导页（guide composer）同构支持
 
 原设计只覆盖会话 Tab（ChatView）。引导页是新会话的实际入口（首条消息即在此发送），
