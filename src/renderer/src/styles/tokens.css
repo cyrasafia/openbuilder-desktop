@@ -216,7 +216,11 @@
   /* 同深色主题：冷侧红消偏橙感（见上方暗色注释） */
   --status-error: #e5484d;
   --status-pending: #8b949e;
-  --status-waiting: #92400e;
+  /* 待输入：与暗色 #fbbf24 同色相（≈43°）。原 #92400e 色相 23° 偏橙红，
+     亮色下易与 --status-error 混淆；压暗方案（#916b0d/#956c04）该明度下
+     琥珀读作土褐/灰绿，改提亮到金琥珀（dark goldenrod #b8860b）才成立，
+     代价是白底对比降至 3.3:1（状态点/计数 chip 可接受） */
+  --status-waiting: #b8860b;
 
   /* 语法高亮（design-code-view §2.4）：GitHub light 色板 */
   --syntax-comment: #6e7781;
