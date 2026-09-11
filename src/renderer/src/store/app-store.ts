@@ -4054,6 +4054,17 @@ export class AppStore {
     this.emit()
   }
 
+  /** file Tab 行锚定一次性消费（FileView 挂载/锚点更新后调用清残留）：
+   *  锚定行是「从 diff 跳转」的瞬时意图，常驻 TabEntity 会让切 Tab 往返被
+   *  过时行号反复强制源码模式（FileView 模式初始化）+ 重滚锚定行（CodeView），
+   *  压掉 store 保存的浏览模式（design-tab-state-memory §2.2） */
+  consumeFileReveal(absolutePath: string) {
+    const tab = this.tabs.find((t) => t.key === `file:${absolutePath}`)
+    if (!tab || tab.revealLine == null) return
+    tab.revealLine = undefined
+    this.emit()
+  }
+
   // ============ 终端 Tab（design-terminal-tab） ============
 
   /** pty 运行时读（TerminalView 挂载判断已退出态；无条目 = 全新） */
