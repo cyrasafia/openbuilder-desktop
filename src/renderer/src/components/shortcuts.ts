@@ -1,5 +1,5 @@
 import { useEffect } from "react"
-import { useI18n, useStore } from "../app"
+import { useStore } from "../app"
 import type { MessageKey } from "../i18n"
 import { closeTabInteractive } from "./tab-actions"
 
@@ -32,7 +32,6 @@ function isAltFamilyCode(code: string): boolean {
  *  放行会命中 Electron 默认菜单 role:close 加速键，把窗口整个关掉） */
 function dispatch(
   store: ReturnType<typeof useStore>,
-  t: ReturnType<typeof useI18n>["t"],
   key: string,
   ctrl: boolean,
   shift: boolean,
@@ -137,7 +136,11 @@ function dispatch(
     const active = store.activeTab
     // 无激活 Tab 也吞（禁用而非放行）：Electron 默认菜单的 close 加速键会关窗口
     if (!active) return true
-    closeTabInteractive(store, active, t)
+    // overlay 闸门（同 Alt 域/Ctrl+F，§1.2）：弹窗遮挡时仅消费不动作——关 Tab
+    // 二次确认改非阻塞应用内弹窗（2026-09-11 替换原生 confirm）后必须拦，
+    // 否则确认弹窗/设置等浮层下 Ctrl+W 会直关遮罩下的 Tab
+    if (store.overlayCount > 0) return true
+    closeTabInteractive(store, active)
     return true
   }
   return false
@@ -157,7 +160,6 @@ function isTraversalModifierKey(mac: boolean, key: string): boolean {
 
 export function useShortcuts() {
   const store = useStore()
-  const { t } = useI18n()
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -179,7 +181,7 @@ export function useShortcuts() {
         (e.key === "ArrowUp" || e.key === "ArrowDown" || isAltFamilyCode(e.code))
       if (!ctrl && !altCombo) return
       // 消费才吞（未映射组合放行——Ctrl+S 浏览器保存；Ctrl+W 无激活 Tab 也吞，见 dispatch）
-      if (dispatch(store, t, e.key, ctrl, e.shiftKey, e.altKey, e.code, e.repeat))
+      if (dispatch(store, e.key, ctrl, e.shiftKey, e.altKey, e.code, e.repeat))
         e.preventDefault()
     }
     // 松开 Alt（mac ⌘ 或 ⌥ 任一）→ 提交切换（未预览/未移动 = no-op）
@@ -197,7 +199,7 @@ export function useShortcuts() {
       window.removeEventListener("keyup", onKeyUp)
       window.removeEventListener("blur", onBlur)
     }
-  }, [store, t])
+  }, [store])
   // 浏览器视图内快捷键转发（main → renderer；无 preventDefault 语义——页面
   // 原按键已发生，转发仅驱动应用侧动作）；keyDown 载荷附带 begin，keyUp 载荷
   // （仅修饰键，browser-views 过滤）驱动 commit；顶层窗口失焦（视图持焦时
@@ -218,7 +220,6 @@ export function useShortcuts() {
         }
         dispatch(
           store,
-          t,
           input.key,
           ctrl,
           input.shift,
@@ -232,7 +233,7 @@ export function useShortcuts() {
     return () => {
       for (const u of unsubs) u?.()
     }
-  }, [store, t])
+  }, [store])
 }
 
 // ============ 设置页快捷键列表（§8） ============
