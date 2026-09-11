@@ -90,16 +90,17 @@ private tocStates = new Map<string, { visible?: boolean; folded: string[] }>()  
 ### 2.5 diff 视图状态（app-store：`diffViewStates`）
 
 ```ts
-private diffViewStates = new Map<string, { foldOpen: boolean; closedFiles: ReadonlySet<string>; scrollTop: number }>()  // key = diffTabKey(directory)
+private diffViewStates = new Map<string, { foldOpen: boolean; fileOpens: ReadonlyMap<string, boolean>; scrollTop: number }>()  // key = diffTabKey(directory)
 ```
 
-- `foldOpen`：全局折叠意图（工具条「全部折叠/展开」按钮方向）。true = 展开态；手动折叠/展开单文件块不回写——按钮在两种意图间交替，手动操作不改变标签
-- `closedFiles`：手动折叠的文件路径集（`file.file` 相对路径）。恢复时 `foldOpen=true` → 集合内文件收起、其余展开；`foldOpen=false` → 全部收起（全局意图优先，手动展开的单文件不跨卸载保留——取舍：全局意图 + 集合已足够覆盖主要场景，逐文件精确状态需追踪手动展开与全局意图的交叉态，复杂度不值）
+- `foldOpen`：全局折叠意图（工具条「全部折叠/展开」按钮方向）。true = 展开态；作为**无覆盖条目**文件的默认开合；按钮在两种意图间交替，手动开合不改变标签
+- `fileOpens`：逐文件开合覆盖表（`file.file` 相对路径 → 显式开/合）。开合单一事实源 = 「默认意图 + 覆盖表」：`open = fileOpens.get(path) ?? foldOpen`。手动点击文件头写覆盖表（新值等于默认意图时删条目，表保持最小）；「全部折叠/展开」翻转 foldOpen **并清空覆盖表**（新意图覆盖一切手动增量）
 - `scrollTop`：滚动容器（`.diff-view.scroll`）偏移。`onScroll` 写 ref（不触发重渲染）；卸载落 store
-- **恢复时序**：foldOpen/closedFiles 经 `useState` 初始化值恢复（挂载即生效）；scrollTop 经 `useLayoutEffect` 在 `data.files` 落地后一次性应用（内容未渲染时 scrollHeight=0，设值被 clamp）
-- **卸载落 store**：`useEffect(() => { return cleanup }, [])` 经 ref 读最新值（foldOpen/closedFiles 的 state 闭包在挂载时捕获、不随 state 更新）；**复活闸门**——Tab 仍在（`store.tabs.some`）才写，否则 closeTab 已清的条目被卸载写复活（同 §2.3 chatScrollTops 模式）
+- **恢复时序**：foldOpen/fileOpens 经 `useState` 初始化值恢复（挂载即生效）；scrollTop 经 `useLayoutEffect` 在 `data.files` 落地后一次性应用（内容未渲染时 scrollHeight=0，设值被 clamp）
+- **卸载落 store**：`useEffect(() => { return cleanup }, [])` 经 ref 读最新值（foldOpen/fileOpens 的 state 闭包在挂载时捕获、不随 state 更新）；**复活闸门**——Tab 仍在（`store.tabs.some`）才写，否则 closeTab 已清的条目被卸载写复活（同 §2.3 chatScrollTops 模式）
 - 写入不 emit（滚动高频 + 折叠低频同 §2.2 fileViewStates 模式）
-- **首次挂载跳过 foldOpen 覆盖**：FileDiffBlock 的 `useLayoutEffect([foldOpen])` 在首次挂载时跳过（`firstMount` ref 标记），避免全局意图覆盖从 closedFiles 恢复的逐文件状态；仅在 foldOpen **变化**（工具条按钮触发）时覆盖所有文件块
+- **FileDiffBlock 无本地开合 state**：`open` 完全派生自 props（覆盖表 ?? foldOpen）——数据刷新（新文件块跟随默认意图）、全局折叠/展开、重挂载恢复均经 props 直达，不存在「本地 state 与全局意图覆盖时序」问题（2026-09-11 修订前的 firstMount/useLayoutEffect 覆盖机制随之删除）
+- **2026-09-11 修订**：原「foldOpen + closedFiles 单侧折叠集合」模型有两个盲区——(1) foldOpen=false 下手动展开的文件无法表达（toggle 无条件写 closedFiles，往返后被全局意图压回折叠）；(2)「全部折叠/展开」不清集合，全部展开后陈旧手动折叠在往返后复活。~~逐文件精确状态复杂度不值~~（原取舍记载）：覆盖表模型反而**更简**（删 FileDiffBlock 本地 state/firstMount/布局效果，状态全部上提父级单一事实源），且两个方向的手动状态均精确跨卸载保留
 
 ## 3. 生命周期清理（与草稿同构，防无界增长/跨作用域残留）
 
@@ -136,6 +137,9 @@ private diffViewStates = new Map<string, { foldOpen: boolean; closedFiles: Reado
 | 15 | 窄屏显式展开 TOC + 折叠甲章 → 切走再回 | 显隐选择与折叠均恢复（visible 覆盖宽度默认态；甲章按文本匹配重新折叠） |
 | 16 | 折叠甲章 → 文件内容更新（甲章仍在）→ 切走再回 | 甲章仍折叠（文本标识跨内容更新存活）；挂载内标题集更换的重置语义不变 |
 | 17 | 关文件 Tab → 重开 | TOC 回宽度默认态、章节全展开（条目随关闭清除） |
+| 18 | diff 手动折叠甲文件 → 切走再回 | 甲仍折叠、其余展开（覆盖表恢复） |
+| 19 | diff 全部折叠 → 手动展开甲 → 切走再回 | 甲仍展开、其余仍折叠（foldOpen=false + 甲覆盖 open） |
+| 20 | diff 手动折叠甲 → 全部折叠 → 全部展开 → 切走再回 | 全部展开（折叠/展开清覆盖表，陈旧手动折叠不复活） |
 
 ## 5. 不做的事
 
@@ -152,7 +156,7 @@ private diffViewStates = new Map<string, { foldOpen: boolean; closedFiles: Reado
 |---|---|
 | `src/renderer/src/store/app-store.ts` | 五个内存 Map + 读写方法（不 emit）；记录点（setActiveTab/open*Tab/closeTab 回退/showGuidePage）；restoreScopeTabs 规则 1.5；清理挂点 |
 | `src/renderer/src/components/workspace.tsx` | ChatView 滚动捕获/恢复（pinned 初始化、卸载落 store、布局效果恢复）；FileView 模式/滚动恢复（含非预览文件分支）+ TOC 显隐/折叠恢复（标题引用记账防 StrictMode 覆盖） |
-| `src/renderer/src/components/diff-view.tsx` | diff 视图状态恢复（foldOpen/closedFiles useState 初始化 + scrollTop useLayoutEffect）+ 卸载落 store（ref 读最新值 + 复活闸门） |
+| `src/renderer/src/components/diff-view.tsx` | diff 视图状态恢复（foldOpen/fileOpens useState 初始化 + scrollTop useLayoutEffect）+ 卸载落 store（ref 读最新值 + 复活闸门）；文件块开合完全派生自父级（覆盖表 ?? foldOpen，无本地 state） |
 | `src/renderer/src/components/code-view.tsx` | `initialScrollTop` / `onScrollTop` 接线（创建后设 scrollDOM + 滚动监听） |
 | `src/renderer/src/store/app-store.test.ts` | store 级用例 |
 | `docs/design-tab-memory.md` / `docs/design-markdown-preview.md` / `docs/spec-v0.1.md` | 决策修订与范围同步 |
