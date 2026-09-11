@@ -1149,6 +1149,47 @@
   border-left-color: var(--color-user-outline);
 }
 
+/* 用户气泡内的代码块/行内代码：与上方引用块同源问题（light）——气泡为深绿
+ * 倒装面（--emphasis-bg #2b573c），代码块却沿用按浅色 surface 校准的全局
+ * --color-code-bg（#e9edf0 浅灰蓝底），代码正文又继承气泡浅字 --color-user-text
+ * （#f9fcf7），浅字压浅底 ~1.1:1 不可读；行内代码则是深气泡内浮浅灰 chip、
+ * 块面突兀。接入 v0.1 已备未接的气泡代码 token（--color-user-code-bg /
+ * --color-user-code，此为其首个消费点），对齐 openbuilder _messagePalette(user)
+ * 整体换板的方案（移动端 codeblockDecoration 用 userCodeBackground、code 用
+ * userCode）：块底 #162b1c（对气泡底 1.55:1 暗一档的嵌面色，同 dark 侧
+ * #28513a 对 #1f3d2a 的关系）、代码正文 --color-user-text 14.5:1、语言标签/
+ * 复制钮 --color-user-outline ~4.8:1、行内代码 #ec407a 4.0:1（与移动端同值）。
+ * 仅 light 接入：dark 下气泡内代码块本就可读（全局 #1a2027 底 + 浅字 10.4:1、
+ * 标签 5.2:1），换 #28513a 反令标签降至 2.9:1、行内代码降至 2.4:1，不回归。
+ * mermaid 容器（.md-mermaid）不换：svg 自带 light 主题深色文字，须保留浅底 */
+:root[data-theme="light"] .msg.user .bubble .markdown-body.md .md-codeblock {
+  background: var(--color-user-code-bg);
+  border-color: var(--color-user-outline);
+}
+
+:root[data-theme="light"] .msg.user .bubble .markdown-body.md .md-codeblock-header {
+  border-bottom-color: var(--color-user-outline);
+}
+
+:root[data-theme="light"] .msg.user .bubble .markdown-body.md .md-codeblock-lang,
+:root[data-theme="light"] .msg.user .bubble .markdown-body.md .md-copy {
+  color: var(--color-user-outline);
+}
+
+:root[data-theme="light"] .msg.user .bubble .markdown-body.md .md-copy:hover {
+  color: var(--color-user-text);
+  background: color-mix(in srgb, var(--color-user-text) 12%, transparent);
+}
+
+:root[data-theme="light"] .msg.user .bubble .markdown-body.md .md-codeblock-code {
+  color: var(--color-user-text);
+}
+
+:root[data-theme="light"] .msg.user .bubble .markdown-body.md .md-code-inline {
+  background: var(--color-user-code-bg);
+  color: var(--color-user-code);
+}
+
 /* GFM alert 标题行图标间距（GitHub 用 mr-2 = 8px；配色/字重由 vendor 接管） */
 :root[data-theme] .markdown-body.md .markdown-alert-title svg {
   margin-right: 8px;
