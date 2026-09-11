@@ -142,6 +142,12 @@ export interface DesktopApi {
   /** 选 HTML 文件（浏览器 Tab「打开本地文件」，design-browser-tab §1.3） */
   openHtmlFilePicker(): Promise<string | null>
   getAppVersion(): Promise<string>
+  /** 终端 pty 显示环境（design-terminal-tab §1.1 显示环境注入）：主进程 env 的
+   *  显示会话白名单切片（DISPLAY/WAYLAND_DISPLAY/XAUTHORITY/XDG 系/DBUS）。
+   *  创建回环 server 的 pty 时随 createPty body.env 注入——server 侧 pty 完全
+   *  继承 server 进程 env，server 若自非图形上下文启动（systemd user 服务）则
+   *  终端内 GUI 程序无法开窗；主进程必在图形会话内，以此回填 */
+  ptyDisplayEnv(): Promise<Record<string, string>>
   /** 系统默认方式打开文件/目录（shell.openPath）；resolve ""=成功，否则错误信息 */
   shellOpenPath(path: string): Promise<string>
   /** 系统浏览器打开 URL（浏览器 Tab 工具条，design-browser-tab §1.3）：仅接受

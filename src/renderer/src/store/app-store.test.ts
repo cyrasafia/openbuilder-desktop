@@ -3603,6 +3603,61 @@ describe("终端 Tab（design-terminal-tab）", () => {
     expect(store.ptyRuntimeFor("pty_1")).toEqual({ exited: false, disconnected: false, title: "bash" })
   })
 
+  it("openTerminalTab 显示环境注入（design-terminal-tab §1.1）：回环 server 随 body.env 回填主进程显示切片", async () => {
+    const bodies: Array<{ command?: string; env?: Record<string, string> }> = []
+    ;(store as unknown as { client: unknown }).client = {
+      createPty: async (_dir: string, body: { command?: string; env?: Record<string, string> }) => {
+        bodies.push(body)
+        return { id: "pty_1", title: "bash", command: "bash", cwd: ROOT, status: "running", pid: 1 }
+      },
+    }
+    store.managedBaseUrl = "http://127.0.0.1:15120"
+    ;(window as unknown as { desktop: Record<string, unknown> }).desktop.ptyDisplayEnv = async () => ({
+      DISPLAY: ":0",
+      WAYLAND_DISPLAY: "wayland-1",
+      XDG_RUNTIME_DIR: "/run/user/1000",
+    })
+    await store.openTerminalTab()
+    expect(bodies[0]?.env).toEqual({
+      DISPLAY: ":0",
+      WAYLAND_DISPLAY: "wayland-1",
+      XDG_RUNTIME_DIR: "/run/user/1000",
+    })
+  })
+
+  it("远程 attach server 不注入（DISPLAY 语义属远端，覆盖破坏 ssh -X 等）；空切片/IPC 失败同不注入", async () => {
+    const bodies: Array<{ env?: Record<string, string> }> = []
+    let seq = 0
+    ;(store as unknown as { client: unknown }).client = {
+      createPty: async (_dir: string, body: { env?: Record<string, string> }) => {
+        bodies.push(body)
+        seq += 1
+        return { id: `pty_${seq}`, title: "bash", command: "bash", cwd: ROOT, status: "running", pid: seq }
+      },
+    }
+    const desktop = (window as unknown as { desktop: Record<string, unknown> }).desktop
+    const spy = vi.fn(async () => ({ DISPLAY: ":0" }))
+    // 远程 baseUrl：IPC 通道不该被触达（profile id 对齐 projectStates 键 "default"，
+    // 保证 scopeDirectory 非空走到 createPty）
+    store.profiles = [{ id: "default", name: "a", baseUrl: "http://192.168.1.5:15120", mode: "attach" }]
+    store.activeProfileId = "default"
+    desktop.ptyDisplayEnv = spy
+    await store.openTerminalTab()
+    expect(bodies[0]?.env).toBeUndefined()
+    expect(spy).not.toHaveBeenCalled()
+    // 回环但空切片（无显示环境/非图形会话）→ 不注入、终端照建
+    store.managedBaseUrl = "http://127.0.0.1:15120"
+    desktop.ptyDisplayEnv = async () => ({})
+    expect(await store.openTerminalTab()).toBe(true)
+    expect(bodies[1]?.env).toBeUndefined()
+    // 回环但 IPC reject → 不注入、终端照建（创建不被显示环境阻塞）
+    desktop.ptyDisplayEnv = async () => {
+      throw new Error("ipc down")
+    }
+    expect(await store.openTerminalTab()).toBe(true)
+    expect(bodies[2]?.env).toBeUndefined()
+  })
+
   it("markPtyDisconnected：断连标记置位/清除（关 Tab 免确认判定用）；exited 后 no-op", async () => {
     ptyClient()
     await store.openTerminalTab()

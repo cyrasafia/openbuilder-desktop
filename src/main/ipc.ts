@@ -5,6 +5,7 @@ import { join, dirname } from "node:path"
 import type { StoreShape } from "../shared/ipc"
 import { MIME_BY_EXT } from "../shared/attachment-pipeline"
 import { startManagedServer, stopManagedServer, killManagedSync } from "./managed-server"
+import { pickPtyDisplayEnv } from "./pty-env"
 import { scanBinaries, scanServers } from "./scan"
 import {
   listOpenWithApps,
@@ -153,6 +154,12 @@ export function registerIpc() {
   })
 
   ipcMain.handle("app:getVersion", () => app.getVersion())
+
+  // 终端 pty 显示环境（design-terminal-tab §1.1 显示环境注入）：主进程 env 的
+  // 显示会话白名单切片——renderer 创建回环 server 的 pty 时随 body.env 注入，
+  // 修复 server 自非图形上下文启动（systemd user 服务）导致终端内 GUI 程序
+  // 无法开窗（实证 2026-09-11）
+  ipcMain.handle("pty:displayEnv", () => pickPtyDisplayEnv(process.env))
 
   // 浏览器 Tab「打开本地文件」（design-browser-tab §1.3）：HTML 文件选择器
   ipcMain.handle("dialog:openHtmlFile", async () => {
