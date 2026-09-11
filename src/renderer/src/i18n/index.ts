@@ -248,6 +248,7 @@ const zh = {
   openWithNoResult: "无匹配结果",
   // 终端 Tab（design-terminal-tab）
   confirmCloseTerminal: "终端中有进程在运行，关闭将终止它。继续？",
+  confirmCloseTerminalTitle: "关闭运行中的终端？",
   terminalExited: "终端已退出",
   terminalDisconnected: "终端已断开",
   terminalReconnecting: "连接已断开，重连中…",
@@ -267,6 +268,7 @@ const zh = {
   diffViewFile: "查看文件",
   confirmCloseStreamingTab:
     "会话正在运行，关闭将停止并归档该会话。继续？",
+  confirmCloseStreamingTabTitle: "关闭进行中的会话？",
   confirmSwitchProject:
     "切换项目将关闭并归档当前所有打开的会话。继续？",
   confirmDeleteWorkspace: "删除工作区？",
@@ -527,6 +529,7 @@ const en: typeof zh = {
   openWithLastUsed: "Last used",
   openWithNoResult: "No matching apps",
   confirmCloseTerminal: "A process is running in this terminal. Closing will terminate it. Continue?",
+  confirmCloseTerminalTitle: "Close running terminal?",
   terminalExited: "Terminal exited",
   terminalDisconnected: "Terminal disconnected",
   terminalReconnecting: "Disconnected — reconnecting…",
@@ -544,6 +547,7 @@ const en: typeof zh = {
   diffExpandAll: "Expand all",
   diffViewFile: "View file",
   confirmCloseStreamingTab: "Session is running. Closing stops and archives it. Continue?",
+  confirmCloseStreamingTabTitle: "Close running session?",
   confirmSwitchProject: "Switching projects closes and archives all open sessions. Continue?",
   confirmDeleteWorkspace: "Delete worktree?",
   confirmDeleteWorkspaceMsg: "This cannot be undone. Sessions, file tree, and terminals under this worktree will be cleaned up.",

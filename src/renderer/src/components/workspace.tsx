@@ -75,6 +75,7 @@ import { PdfFrameView } from "./pdf-frame-view"
 import { OpenWithDialog } from "./open-with-dialog"
 import { parseDiffTabKey, type TabEntity } from "../store/app-store"
 import { closeTabInteractive } from "./tab-actions"
+import { ConfirmDialog } from "./confirm-dialog"
 import { TerminalView } from "./terminal-view"
 import { BrowserTabView } from "./browser-tab-view"
 import { FileRefChips, useFileRefInput, userFileChipItems } from "./file-ref"
@@ -341,7 +342,7 @@ export function Workspace() {
                 e.stopPropagation()
                 // 用户主动关闭统一路径（design-keyboard-shortcuts §4）：
                 // chat 流式确认 + 入关闭栈；与 Ctrl+W 同语义
-                closeTabInteractive(store, tab, t)
+                closeTabInteractive(store, tab)
               }}
             >
               <X size={14} aria-hidden />
@@ -405,6 +406,27 @@ export function Workspace() {
           onClose={() => setMenu(null)}
         />
       )}
+
+      {/* 关 Tab 二次确认（closeTabInteractive 置位，2026-09-11 替换原生 confirm）：
+          Tab 已不存在（弹窗期间被 SSE/他端关闭）或 kind 无确认语义时不渲染，
+          stale pending 由下一次请求覆写；确认时重估流式/运行态（store 侧） */}
+      {store.pendingTabClose &&
+        (() => {
+          const tab = store.tabs.find((x) => x.key === store.pendingTabClose!.tabKey)
+          if (!tab || (tab.kind !== "chat" && tab.kind !== "terminal")) return null
+          const chat = tab.kind === "chat"
+          return (
+            <ConfirmDialog
+              title={chat ? t.confirmCloseStreamingTabTitle : t.confirmCloseTerminalTitle}
+              message={chat ? t.confirmCloseStreamingTab : t.confirmCloseTerminal}
+              confirmLabel={t.confirm}
+              cancelLabel={t.cancel}
+              danger
+              onConfirm={() => store.confirmTabClose()}
+              onClose={() => store.cancelTabClose()}
+            />
+          )
+        })()}
     </main>
   )
 }
@@ -1941,6 +1963,9 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
   const { t } = useI18n()
   const store = useStore()
   const [reverting, setReverting] = useState(false)
+  // busy 回滚二次确认（2026-09-11 替换原生 confirm 为应用内 ConfirmDialog，
+  // design-message-revert §3.4）：确认后 revertToMessage 内部仍会重估并先停再滚
+  const [confirmRevertBusy, setConfirmRevertBusy] = useState(false)
 
   if (entry.kind === "optimistic") {
     return (
@@ -2011,12 +2036,16 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
     // 回滚到此消息（design-message-revert §3.4）：busy 时确认后先停止再回滚
     const revertHere = async () => {
       if (reverting) return
-      if (store.isSessionActive(info.sessionID) && !confirm(t.confirmRevertBusy)) return
+      if (store.isSessionActive(info.sessionID)) {
+        setConfirmRevertBusy(true)
+        return
+      }
       setReverting(true)
       await store.revertToMessage(info.sessionID, info.id)
       setReverting(false)
     }
     return (
+      <>
       <div className="msg user">
         {/* 动作行先于气泡（flex 顺序）：紧贴气泡左侧、纵向居中；常驻占位 hover 显形。
             斜杠命令回显（subtask/展开 text）有入口（2026-09-01 修订，design-message-revert
@@ -2067,6 +2096,26 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
           })}
         </UserBubble>
       </div>
+      {confirmRevertBusy && (
+        <ConfirmDialog
+          title={t.revertToHere}
+          message={t.confirmRevertBusy}
+          confirmLabel={t.confirm}
+          cancelLabel={t.cancel}
+          danger
+          onConfirm={() => {
+            // 弹窗即关（同步 onConfirm），进度由消息动作钮的 reverting 态承载
+            //（同工作区删除模式）；revertToMessage 内部仍重估 busy——弹窗期间
+            // 流式结束则不再多余 abort
+            setReverting(true)
+            void store
+              .revertToMessage(info.sessionID, info.id)
+              .finally(() => setReverting(false))
+          }}
+          onClose={() => setConfirmRevertBusy(false)}
+        />
+      )}
+      </>
     )
   }
 

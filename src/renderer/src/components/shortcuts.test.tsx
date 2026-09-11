@@ -26,6 +26,8 @@ const actions = {
   toggleRightPanel: vi.fn(),
   closeTab: vi.fn(),
   closeChatTab: vi.fn(async () => true),
+  closeTerminalTab: vi.fn(async () => undefined),
+  requestTabCloseConfirm: vi.fn(),
   isSessionActive: vi.fn(() => false),
   activeTab: null as { kind: string; key: string } | null,
   overlayCount: 0,
@@ -80,7 +82,6 @@ beforeEach(() => {
   actions.overlayCount = 0
   actions.currentWorkspace = null
   actions.isSessionActive.mockReturnValue(false)
-  vi.spyOn(window, "confirm").mockReturnValue(true)
   platform = "linux"
   const cur = (window as unknown as { desktop?: Record<string, unknown> }).desktop
   ;(window as unknown as { desktop: unknown }).desktop = {
@@ -231,17 +232,27 @@ describe("useShortcuts 分发", () => {
     actions.overlayCount = 0
   })
 
-  it("Ctrl+W chat 流式中先确认，取消则不关闭", () => {
+  it("Ctrl+W chat 流式中挂确认弹窗（requestTabCloseConfirm），不流式直接关；overlay 遮挡时仅消费不动作", () => {
     render(<Harness />)
     actions.activeTab = { kind: "chat", key: "chat:s1" }
     actions.isSessionActive.mockReturnValue(true)
-    vi.spyOn(window, "confirm").mockReturnValue(false)
-    press({ key: "w", ctrlKey: true })
+    const ev = press({ key: "w", ctrlKey: true })
+    expect(ev.defaultPrevented).toBe(true)
+    // 原生 confirm 已替换为应用内 ConfirmDialog（2026-09-11）：仅置位 pending，
+    // 关闭动作在确认回调里执行
+    expect(actions.requestTabCloseConfirm).toHaveBeenCalledWith("chat:s1")
     expect(actions.closeChatTab).not.toHaveBeenCalled()
 
-    vi.spyOn(window, "confirm").mockReturnValue(true)
+    // 弹窗遮挡（overlay 闸门，同 Alt 域/Ctrl+F）：仅消费不动作
+    actions.overlayCount = 1
     press({ key: "w", ctrlKey: true })
-    expect(actions.closeChatTab).toHaveBeenCalledWith("s1", { streaming: true })
+    expect(actions.requestTabCloseConfirm).toHaveBeenCalledTimes(1)
+    actions.overlayCount = 0
+
+    // 非流式：直接关闭
+    actions.isSessionActive.mockReturnValue(false)
+    press({ key: "w", ctrlKey: true })
+    expect(actions.closeChatTab).toHaveBeenCalledWith("s1", { streaming: false })
   })
 
   it("Ctrl+Tab / Ctrl+Shift+Tab / Ctrl+PgUp / Ctrl+PgDn → 循环切换", () => {
