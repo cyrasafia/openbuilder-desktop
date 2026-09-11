@@ -346,6 +346,20 @@ describe("FileView markdown 预览", () => {
     expect(matches.some((el) => el.tagName === "H1")).toBe(true)
   })
 
+  it("revealLine 消费时序：未缓存不消费（CodeView 晚挂载仍得锚定），内容落地后才清", async () => {
+    // 从 diff 跳转未打开过的文件（主路径）：挂载时无缓存，CodeView 未挂载
+    const { rerender } = render(<FileView absolutePath="/repo/fresh.md" revealLine={42} />)
+    expect(screen.getByText("加载中…")).not.toBeNull()
+    // 挂载即清会让晚挂载的 CodeView 拿到 undefined（锚定静默失效）——须等内容落地
+    expect(consumeFileReveal).not.toHaveBeenCalled()
+
+    // 内容落地：CodeView 同 commit 挂载（prop 仍锚定值），效果随后清 entity
+    fileContentsStub.set("/repo/fresh.md", { content: "# 标题\n\nconst x = 1" })
+    rerender(<FileView absolutePath="/repo/fresh.md" revealLine={42} />)
+    expect(document.querySelector(".cm-content")?.textContent).toContain("const x = 1")
+    expect(consumeFileReveal).toHaveBeenCalledWith("/repo/fresh.md")
+  })
+
   it(".html 恒源码态（预览已迁浏览器 Tab，design-browser-tab §1.4）：无 iframe、无预览/源码切换工具条", () => {
     fileContentsStub.set("/repo/page.html", { content: "<html><head><title>t</title></head><body><p>hi</p></body></html>" })
     render(<FileView absolutePath="/repo/page.html" />)
