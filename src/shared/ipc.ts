@@ -40,6 +40,10 @@ export interface StoreShape {
   /** Open With 上次使用记忆（design-linux-open-with §1.4，2026-08-31）：MIME →
    *  最近一次选择的 appId（全局生效；未用过的 MIME 无键 = 无「上次使用」段） */
   "openWith.lastUsed": Record<string, string>
+  /** 输入草稿持久层（design-compose-draft §5 磁盘层，2026-09-11 增补）：profileKey →
+   *  会话草稿（sessionID → 文本）+ 引导页草稿（作用域目录 → 文本）。空对象切片 =
+   *  无草稿；条目值恒非空串（空 = 删条目，同内存层语义） */
+  "drafts.state": Record<string, { chat: Record<string, string>; guide: Record<string, string> }>
 }
 
 export interface ConnectionProfile {

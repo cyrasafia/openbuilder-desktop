@@ -1,6 +1,7 @@
 import { ipcMain, dialog, app, shell, type BrowserWindow } from "electron"
 import { execFile, spawn } from "node:child_process"
-import { readFile, stat, writeFile, mkdir } from "node:fs/promises"
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { join, dirname } from "node:path"
 import type { StoreShape } from "../shared/ipc"
 import { MIME_BY_EXT } from "../shared/attachment-pipeline"
@@ -66,6 +67,19 @@ export function bindMainWindow(win: BrowserWindow) {
 }
 
 export function registerIpc() {
+  // 退出兜底（design-compose-draft §5 磁盘层）：渲染层 pagehide 冲刷的 store:set
+  // 落在写队列里排队时，退出会截断异步写——will-quit 以内存缓存同步落盘收尾。
+  // store.json 为小 JSON（KB 级），同步写阻塞可忽略；失败尽力而为不阻断退出
+  app.on("will-quit", () => {
+    if (!storeCache) return
+    try {
+      mkdirSync(dirname(storePath), { recursive: true })
+      writeFileSync(storePath, JSON.stringify(storeCache, null, 2), "utf8")
+    } catch {
+      /* 尽力而为 */
+    }
+  })
+
   ipcMain.handle("store:get", async (_e, key: keyof StoreShape) => {
     const store = await loadStore()
     return store[key] ?? null

@@ -108,6 +108,10 @@ export const DIFF_TAB_TYPES: readonly DiffTabType[] = ["round", "uncommitted", "
 /** 文件监听失效去抖窗口（design-file-watcher §3.1/§3.2） */
 export const FILE_WATCH_DEBOUNCE_MS = 300
 
+/** 草稿磁盘写去抖窗口（design-compose-draft §5）：键入高频，磁盘写只在停顿
+ *  500ms 后收尾一次；发送清空/关 Tab/目录卸载/teardown/pagehide 走即时冲刷 */
+const DRAFT_FLUSH_DEBOUNCE_MS = 500
+
 /** 面板宽度约束（design-layout §2 / design-layout-collapse） */
 const PANEL_LIMITS = {
   left: { min: 200, max: 360, def: 260 },
@@ -119,6 +123,28 @@ function clampPanelWidth(side: "left" | "right", px: number): number {
   const l = PANEL_LIMITS[side]
   if (!Number.isFinite(px)) return l.def
   return Math.round(Math.min(l.max, Math.max(l.min, px)))
+}
+
+/** drafts.state 读入校验（同 sanitizeTabSessionMap 防御口径）：坏切片/坏条目
+ *  丢弃，等效无记录——store.json 可能来自旧版本/手改 */
+function sanitizeDraftsState(
+  raw: unknown,
+): Record<string, { chat: Record<string, string>; guide: Record<string, string> }> {
+  if (!raw || typeof raw !== "object") return {}
+  const out: Record<string, { chat: Record<string, string>; guide: Record<string, string> }> = {}
+  for (const [key, slice] of Object.entries(raw as Record<string, unknown>)) {
+    if (!slice || typeof slice !== "object") continue
+    const pick = (v: unknown): Record<string, string> => {
+      const rec: Record<string, string> = {}
+      if (!v || typeof v !== "object") return rec
+      for (const [k, s] of Object.entries(v as Record<string, unknown>)) {
+        if (typeof s === "string" && s) rec[k] = s
+      }
+      return rec
+    }
+    out[key] = { chat: pick((slice as { chat?: unknown }).chat), guide: pick((slice as { guide?: unknown }).guide) }
+  }
+  return out
 }
 
 /** FileContentData → fileContents 缓存条目（design-image-preview §2.1） */
@@ -408,13 +434,24 @@ export class AppStore {
   diffSelectedTypes = new Map<string, DiffTabType>()
   /**
    * 输入草稿（design-compose-draft，移植移动端同名设计）：切 Tab/作用域时输入框
-   * 卸载，未发送内容暂存于此，重挂载恢复。纯内存（不跨重启持久化）；写入不
-   * emit——高频键入不得触发整树重渲染，草稿仅在视图挂载时读一次，无渲染订阅。
-   * 生命周期与清理点见 design-compose-draft §3
+   * 卸载，未发送内容暂存于此，重挂载恢复。写入不 emit——高频键入不得触发整树
+   * 重渲染，草稿仅在视图挂载时读一次，无渲染订阅。跨重启持久化经 draftsState
+   * 磁盘层（§5，2026-09-11 增补：connect 播种/去抖冲刷）；生命周期与清理点见
+   * design-compose-draft §3
    */
   private chatDrafts = new Map<string, string>()
   /** 引导页草稿：按作用域目录（引导页随作用域 key 隔离，见 Workspace 渲染处） */
   private guideDrafts = new Map<string, string>()
+  /**
+   * 草稿磁盘层（design-compose-draft §5，2026-09-11 增补）：profileKey → 持久
+   * 切片。内存 map 是**当前 profile** 的投影——connect 时从切片播种、teardown
+   * 前冲刷回切片再清空（切 profile/断连不丢，重启经 doInit → connect 播种恢复）。
+   * 写经 500ms 去抖（键入高频）+ 关键时机即时冲刷；快照去重免重复落盘（同
+   * persistTabSession 模式）
+   */
+  private draftsState: Record<string, { chat: Record<string, string>; guide: Record<string, string> }> = {}
+  private draftFlushTimer: ReturnType<typeof setTimeout> | null = null
+  private lastDraftSnapshot = ""
   /**
    * 输入引用（design-file-reference §2）：key 与草稿同构——sessionID（chat
    * composer）/ 作用域目录（引导页 composer）。纯内存（同草稿 D1）；写入 emit
@@ -561,6 +598,20 @@ export class AppStore {
     this.localeMode = (await window.desktop.storeGet("locale.mode")) ?? "auto"
     this.defaults = (await window.desktop.storeGet("model.defaults")) ?? {}
     this.showThinking = (await window.desktop.storeGet("chat.showThinking")) ?? false
+    // 草稿磁盘层读入（design-compose-draft §5）：坏切片丢弃等效无记录；播种在
+    // connect 的 teardown 之后（teardown 清内存 map，播种从本切片重建）
+    this.draftsState = sanitizeDraftsState(await window.desktop.storeGet("drafts.state"))
+    // 退出冲刷（§5）：关闭窗口/退出时去抖定时器不再有机会落地——pagehide/
+    // beforeunload 即时冲刷一次（幂等；main 侧 will-quit 同步写兜底队列截断）
+    const flushOnExit = () => {
+      if (this.draftFlushTimer != null) {
+        clearTimeout(this.draftFlushTimer)
+        this.draftFlushTimer = null
+      }
+      this.flushDrafts()
+    }
+    window.addEventListener("pagehide", flushOnExit)
+    window.addEventListener("beforeunload", flushOnExit)
     const layout = await window.desktop.storeGet("layout.state")
     if (layout) {
       // 读入 clamp：持久化值可能来自旧版本/手改 store.json，越界值收敛回约束区间，
@@ -628,6 +679,10 @@ export class AppStore {
     const stale = () => epoch !== this.connectEpoch
     // 连接前先拆干净旧连接（SSE、域数据、Tab）——防跨 profile 状态串台
     this.teardownConnection()
+    // 草稿播种（design-compose-draft §5 磁盘层）：teardown 已把内存 map 冲刷回
+    // 旧 profile 切片并清空，此处从**本 profile** 的持久切片重建——切 profile
+    // 各归其切片（防串，同 projectStates 键维度）、重启/断连重连恢复
+    this.seedDrafts()
     this.connectionState = "connecting"
     this.connectionError = null
     // 版本提示随新连接重算（review 第二轮：断开后不再残留上一台的告警）
@@ -884,6 +939,17 @@ export class AppStore {
     this.manualDraftSeeds.clear()
     this.commandEchoMessages.clear()
     this.commandEchoPending.clear()
+    // 草稿冲刷后清空（design-compose-draft §5 磁盘层）：内存 map 归属**连接切片键**
+    // （切 profile 时 activeProfileId 已指向新 profile，不能按它定位）；冲刷过才清
+    // ——同 profile 重连经 seedDrafts 原样恢复，切 profile 各归其切片。连接从未
+    // 建立（sessionProfileKey == null）时 map 必空，跳过。挂起的去抖定时器一并
+    // 取消——冲刷已序列化当前 map（定时器只是延迟的磁盘写，无新增信息），且
+    // 清除后不再有"teardown 后迟到触发"的写路径
+    if (this.draftFlushTimer != null) {
+      clearTimeout(this.draftFlushTimer)
+      this.draftFlushTimer = null
+    }
+    if (this.sessionProfileKey != null) this.flushDrafts(this.sessionProfileKey)
     this.chatDrafts.clear()
     this.guideDrafts.clear()
     this.scopeActiveKeys.clear()
@@ -1961,6 +2027,7 @@ export class AppStore {
     this.purgeStatusForDirectories([directory])
     // 目录卸载随清引导页草稿（目录失去订阅/展示，草稿同灭，design-compose-draft §3）
     this.guideDrafts.delete(directory)
+    this.scheduleDraftPersist()
     this.fileRefs.delete(directory)
     this.attachments.delete(directory)
     this.killPtyInDirectory(directory)
@@ -2086,6 +2153,8 @@ export class AppStore {
         this.killPtyInDirectory(d)
         this.disposeBrowserViewsInDirectory(d)
       }
+      // 引导页草稿的磁盘层随目录卸载同步（design-compose-draft §5：重启不复活）
+      this.scheduleDraftPersist()
       // 该项目的 pending（授权/问题）一并卸载：目录失去订阅，replied 事件收不到，
       // 留着只会假亮；重开项目时 backfill 会按 server 权威重建
       this.dropPendingForDirectories(dirs)
@@ -2557,6 +2626,7 @@ export class AppStore {
     this.commandEchoMessages.delete(sessionID)
     // 草稿随会话运行时卸载（关 Tab/删会话/关项目/删工作区都经此，防无界增长）
     this.chatDrafts.delete(sessionID)
+    this.scheduleDraftPersist()
     // 引用同随会话卸载（design-file-reference §2 清理挂点）
     this.fileRefs.delete(sessionID)
     this.attachments.delete(sessionID)
@@ -2773,6 +2843,7 @@ export class AppStore {
     this.snapshottedDirs.delete(directory)
     // 目录已死，引导页草稿同灭（design-compose-draft §3）
     this.guideDrafts.delete(directory)
+    this.scheduleDraftPersist()
     this.fileRefs.delete(directory)
     this.attachments.delete(directory)
     this.killPtyInDirectory(directory)
@@ -4594,7 +4665,10 @@ export class AppStore {
     }
     // chat 草稿随 Tab 关闭终结（关 Tab = 归档决断，重开不复活旧草稿；死会话收敛
     // 路径只经 closeTab 不经 cleanupSessionState，须在此清，design-compose-draft §3）
-    if (closed.kind === "chat") this.chatDrafts.delete(closed.key.slice(5))
+    if (closed.kind === "chat") {
+      this.chatDrafts.delete(closed.key.slice(5))
+      this.scheduleDraftPersist()
+    }
     // 引用随 Tab 关闭终结（同草稿"关闭 = 决断"；死会话收敛只经 closeTab 须在此清）
     if (closed.kind === "chat") {
       this.fileRefs.delete(closed.key.slice(5))
@@ -4941,10 +5015,12 @@ export class AppStore {
     return this.chatDrafts.get(sessionID) ?? ""
   }
 
-  /** chat 草稿写：空文本 = 删条目（发送成功即清）。不 emit（见 chatDrafts 注释） */
+  /** chat 草稿写：空文本 = 删条目（发送成功即清）。不 emit（见 chatDrafts 注释）；
+   *  磁盘层经去抖收尾（§5） */
   setChatDraft(sessionID: string, text: string) {
     if (text) this.chatDrafts.set(sessionID, text)
     else this.chatDrafts.delete(sessionID)
+    this.scheduleDraftPersist()
   }
 
   /** 引导页草稿读（无条目 = 空串）：GuidePage 挂载初始化取回，按作用域目录 */
@@ -4952,10 +5028,52 @@ export class AppStore {
     return this.guideDrafts.get(directory) ?? ""
   }
 
-  /** 引导页草稿写：空文本 = 删条目。不 emit（见 chatDrafts 注释） */
+  /** 引导页草稿写：空文本 = 删条目。不 emit（见 chatDrafts 注释）；磁盘层去抖（§5） */
   setGuideDraft(directory: string, text: string) {
     if (text) this.guideDrafts.set(directory, text)
     else this.guideDrafts.delete(directory)
+    this.scheduleDraftPersist()
+  }
+
+  /** 草稿内存条目直删后的磁盘同步（§5 清理语义：关 Tab/目录卸载与内存同灭，
+   *  重启不复活）。清理点是低频单发动作，仍走去抖（与键入共用收尾窗口） */
+  private scheduleDraftPersist() {
+    if (this.draftFlushTimer != null) clearTimeout(this.draftFlushTimer)
+    this.draftFlushTimer = setTimeout(() => {
+      this.draftFlushTimer = null
+      this.flushDrafts()
+    }, DRAFT_FLUSH_DEBOUNCE_MS)
+  }
+
+  /**
+   * 草稿磁盘冲刷（§5）：当前内存 map 序列化为本 profile 的切片落 store.json。
+   * 快照去重：序列无变化不写（同 persistTabSession 模式）。teardown 后（client
+   * 已拆、播种前）的迟到定时器不得把空 map 写成空切片覆盖磁盘——client 为空
+   * 且 map 为空时跳过（teardown 已在清空前冲刷过，此处无新信息）
+   */
+  private flushDrafts(profileKey?: string) {
+    if (this.client == null && this.chatDrafts.size === 0 && this.guideDrafts.size === 0) return
+    const key = profileKey ?? this.profileKey()
+    const record = {
+      ...this.draftsState,
+      [key]: { chat: Object.fromEntries(this.chatDrafts), guide: Object.fromEntries(this.guideDrafts) },
+    }
+    const snapshot = JSON.stringify(record)
+    if (snapshot === this.lastDraftSnapshot) return
+    this.lastDraftSnapshot = snapshot
+    this.draftsState = record
+    void window.desktop.storeSet("drafts.state", record).catch(() => {})
+  }
+
+  /** connect 起步从本 profile 持久切片播种内存 map（§5：teardown 清空后重建；
+   *  快照基线同步重置——播种内容与磁盘等值，不触发落盘） */
+  private seedDrafts() {
+    const slice = this.draftsState[this.profileKey()]
+    if (slice) {
+      for (const [id, text] of Object.entries(slice.chat)) this.chatDrafts.set(id, text)
+      for (const [dir, text] of Object.entries(slice.guide)) this.guideDrafts.set(dir, text)
+    }
+    this.lastDraftSnapshot = JSON.stringify(this.draftsState)
   }
 
   // ============ 输入引用（design-file-reference §2） ============
