@@ -486,12 +486,14 @@ export class AppStore {
   private tocStates = new Map<string, { visible?: boolean; folded: string[] }>()
   /**
    * diff 视图状态（design-tab-state-memory §2.5）：diffTabKey(directory) →
-   * {foldOpen 全局折叠意图, closedFiles 折叠文件路径集, scrollTop 滚动偏移}。
-   * 纯内存、不跨重启；写入不 emit（滚动高频 + 折叠低频同 fileViewState 模式）
+   * {foldOpen 全局折叠意图, fileOpens 逐文件开合覆盖表, scrollTop 滚动偏移}。
+   * 开合单一事实源 = 默认意图 + 覆盖表（open = 覆盖值 ?? foldOpen），手动展开/
+   * 折叠均可跨卸载表达。纯内存、不跨重启；写入不 emit（滚动高频 + 折叠低频
+   * 同 fileViewState 模式）
    */
   private diffViewStates = new Map<
     string,
-    { foldOpen: boolean; closedFiles: ReadonlySet<string>; scrollTop: number }
+    { foldOpen: boolean; fileOpens: ReadonlyMap<string, boolean>; scrollTop: number }
   >()
 
   // ---- 内部 ----
@@ -5068,14 +5070,14 @@ export class AppStore {
   }
 
   /** diff 视图状态读（无条目 = 缺省全展开 + 顶部） */
-  diffViewStateFor(tabKey: string): { foldOpen: boolean; closedFiles: ReadonlySet<string>; scrollTop: number } | null {
+  diffViewStateFor(tabKey: string): { foldOpen: boolean; fileOpens: ReadonlyMap<string, boolean>; scrollTop: number } | null {
     return this.diffViewStates.get(tabKey) ?? null
   }
 
   /** diff 视图状态写。不 emit（滚动高频 + 折叠低频同 fileViewState 模式） */
   setDiffViewState(
     tabKey: string,
-    state: { foldOpen: boolean; closedFiles: ReadonlySet<string>; scrollTop: number },
+    state: { foldOpen: boolean; fileOpens: ReadonlyMap<string, boolean>; scrollTop: number },
   ) {
     this.diffViewStates.set(tabKey, state)
   }
