@@ -2,8 +2,11 @@
  * Diff 详情视图（design-diff-view §4）：顶部 segment 切换三种来源
  * （上一轮/未提交/分支，同移动端 DiffListScreen 的 SegmentedButton），
  * 主体 = 文件块（可折叠）→ hunk（静态分节头，不可折叠）；工具条「全部折叠/
- * 全部展开」一键切换所有文件块。视图状态（segment 选中 / foldOpen / 文件折叠 /
- * 滚动位置）切 Tab 卸载前落 store、重挂载恢复（design-tab-state-memory §2.5）。
+ * 全部展开」一键切换所有文件块。文件开合 = 单一事实源「默认意图 foldOpen +
+ * 逐文件覆盖表 fileOpens」（open = 覆盖值 ?? foldOpen）：手动开合写覆盖表、
+ * 全部折叠/展开翻转默认意图并清空覆盖表——两个方向的手动状态均精确可存。
+ * 视图状态（segment 选中 / foldOpen / fileOpens / 滚动位置）切 Tab 卸载前
+ * 落 store、重挂载恢复（design-tab-state-memory §2.5）。
  * 行 = 双 gutter（old|new）+ marker + 内容；added/removed 底色 tint 为主标识，
  * token 走 --syntax-*（与代码视图同表）。高亮 = 双路重建（new/old 各整段
  * tokenize 再映射回行，openbuilder design-diff-view 同法），headless
@@ -159,19 +162,22 @@ export function DiffView({
   const type = store.diffTypeFor(tabKey)
   // 视图状态恢复（design-tab-state-memory §2.5）：切 Tab 卸载前落 store，重挂载恢复
   const savedState = store.diffViewStateFor(tabKey)
-  // 全局折叠意图（工具条「全部折叠/展开」）：true = 展开态。
-  // 只表达意图、不追踪各块本地状态——按钮在两种意图间交替，手动折叠不改变标签。
+  // 全局折叠意图（工具条「全部折叠/展开」）：true = 展开态。作为无覆盖条目
+  // 文件的默认开合；按钮在两种意图间交替，手动开合不改变标签
   const [foldOpen, setFoldOpen] = useState(savedState?.foldOpen ?? true)
-  /** 折叠中的文件路径集（手动点击文件头切换）；从 store 恢复 + 卸载落 store */
-  const [closedFiles, setClosedFiles] = useState<ReadonlySet<string>>(savedState?.closedFiles ?? new Set())
+  /** 逐文件开合覆盖表（手动点击文件头写入）：open = 覆盖值 ?? foldOpen。
+   *  从 store 恢复 + 卸载落 store；回到默认值即删条目，保持表最小 */
+  const [fileOpens, setFileOpens] = useState<ReadonlyMap<string, boolean>>(
+    savedState?.fileOpens ?? new Map(),
+  )
   // 滚动偏移：不设 state（避免高频 emit），ref 读写 + 卸载落 store
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const scrollTopRef = useRef(savedState?.scrollTop ?? 0)
   // 卸载落 store 需读最新值（cleanup 闭包在挂载时捕获、不随 state 更新）
   const foldOpenRef = useRef(foldOpen)
-  const closedFilesRef = useRef(closedFiles)
+  const fileOpensRef = useRef(fileOpens)
   foldOpenRef.current = foldOpen
-  closedFilesRef.current = closedFiles
+  fileOpensRef.current = fileOpens
 
   // 激活即重拉当前选中来源（同 FileView 语义；旧数据作首帧）
   useEffect(() => {
@@ -187,7 +193,7 @@ export function DiffView({
       if (store.tabs.some((t) => t.key === tabKey)) {
         store.setDiffViewState(tabKey, {
           foldOpen: foldOpenRef.current,
-          closedFiles: closedFilesRef.current,
+          fileOpens: fileOpensRef.current,
           scrollTop: scrollTopRef.current,
         })
       }
@@ -198,14 +204,22 @@ export function DiffView({
   const data = store.diffData.get(diffDataKey(type, directory))
   const hasFiles = !!data && !data.error && data.files.length > 0
 
-  // 文件折叠/展开切换 → 更新 closedFiles
+  // 文件开合切换 → 写覆盖表（新值等于默认意图时删条目，表保持最小）
   const toggleFile = (filePath: string) => {
-    setClosedFiles((prev) => {
-      const next = new Set(prev)
-      if (next.has(filePath)) next.delete(filePath)
-      else next.add(filePath)
-      return next
+    const next = !(fileOpens.get(filePath) ?? foldOpen)
+    setFileOpens((prev) => {
+      const m = new Map(prev)
+      if (next === foldOpen) m.delete(filePath)
+      else m.set(filePath, next)
+      return m
     })
+  }
+
+  // 全部折叠/展开：翻转默认意图 + 清空覆盖表（新意图覆盖一切手动增量，
+  // 陈旧手动状态不残留——否则切 Tab 往返后被清的意图又复活）
+  const toggleFoldAll = () => {
+    setFoldOpen((v) => !v)
+    setFileOpens(new Map())
   }
 
   // segment 常驻渲染（同 FileView 工具条——避免内容落地时工具条弹入的布局跳动）
@@ -229,7 +243,7 @@ export function DiffView({
           <button
             type="button"
             className="btn-tonal diff-fold-all"
-            onClick={() => setFoldOpen((v) => !v)}
+            onClick={toggleFoldAll}
           >
             {foldOpen ? t.diffCollapseAll : t.diffExpandAll}
           </button>
@@ -239,7 +253,7 @@ export function DiffView({
         type={type}
         directory={directory}
         foldOpen={foldOpen}
-        closedFiles={closedFiles}
+        fileOpens={fileOpens}
         onToggleFile={toggleFile}
         scrollRef={scrollRef}
         scrollTopRef={scrollTopRef}
@@ -252,7 +266,7 @@ function DiffBody({
   type,
   directory,
   foldOpen,
-  closedFiles,
+  fileOpens,
   onToggleFile,
   scrollRef,
   scrollTopRef,
@@ -260,7 +274,7 @@ function DiffBody({
   type: DiffTabType
   directory: string
   foldOpen: boolean
-  closedFiles: ReadonlySet<string>
+  fileOpens: ReadonlyMap<string, boolean>
   onToggleFile: (filePath: string) => void
   scrollRef: RefObject<HTMLDivElement | null>
   scrollTopRef: MutableRefObject<number>
@@ -324,7 +338,7 @@ function DiffBody({
           file={file}
           foldOpen={foldOpen}
           directory={directory}
-          closedFiles={closedFiles}
+          fileOpens={fileOpens}
           onToggleFile={onToggleFile}
         />
       ))}
@@ -336,44 +350,23 @@ function FileDiffBlock({
   file,
   foldOpen,
   directory,
-  closedFiles,
+  fileOpens,
   onToggleFile,
 }: {
   file: FileDiff
   foldOpen: boolean
   directory: string
-  closedFiles: ReadonlySet<string>
+  fileOpens: ReadonlyMap<string, boolean>
   onToggleFile: (filePath: string) => void
 }) {
   const { t } = useI18n()
   const store = useStore()
-  // 挂载恢复：foldOpen=false（全局折叠意图）→ 收起；否则看 closedFiles（手动折叠记录）
-  const [open, setOpen] = useState(!foldOpen ? false : !closedFiles.has(file.file))
+  // 开合完全派生（单一事实源在父级：open = 覆盖值 ?? foldOpen），无本地
+  // state——数据刷新/全局折叠/重挂载恢复都经 props 直达，不丢不复活
+  const open = fileOpens.get(file.file) ?? foldOpen
   const [hunkMenu, setHunkMenu] = useState<HunkMenuState | null>(null)
   // 解析 + 高亮一次成型（重渲染零重活，移动端教训：build 路径零重活）
   const prepared = useMemo(() => prepareFile(file), [file])
-  // 首次挂载标记：foldOpen 的 useLayoutEffect 仅在意图变化时覆盖，不覆盖恢复值
-  const firstMount = useRef(true)
-
-  // 全局折叠/展开：意图覆盖文件块开关（含后续挂载的新文件块）；数据刷新不重置
-  // 手动状态（deps 仅 foldOpen）。useLayoutEffect 免折叠态首帧闪现。
-  // 首次挂载跳过——open 已从 closedFiles 恢复，不应被 foldOpen 覆盖。
-  useLayoutEffect(() => {
-    if (firstMount.current) {
-      firstMount.current = false
-      return
-    }
-    setOpen(foldOpen)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [foldOpen])
-
-  const toggleOpen = () => {
-    setOpen((v) => {
-      const next = !v
-      onToggleFile(file.file)
-      return next
-    })
-  }
 
   // 查看文件：在新 Tab 中打开，锚定至首个 hunk 的 newStart 行（1-based）
   const viewFile = () => {
@@ -389,7 +382,7 @@ function FileDiffBlock({
         type="button"
         className="diff-file-header"
         aria-expanded={open}
-        onClick={toggleOpen}
+        onClick={() => onToggleFile(file.file)}
       >
         {open ? (
           <ChevronDown className="diff-chevron" size={14} aria-hidden />

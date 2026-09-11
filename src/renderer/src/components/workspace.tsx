@@ -3087,6 +3087,16 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
   const [mode, setMode] = useState<"preview" | "source">(
     revealLine != null ? "source" : savedView?.mode ?? "preview",
   )
+  // revealLine 一次性消费（挂载或锚点更新即清 TabEntity 残留）：锚定是
+  // 「从 diff 跳转」的瞬时意图，常驻会让切 Tab 往返被过时行号反复强制源码
+  // 模式 + 重滚，压掉 store 保存的浏览模式（design-tab-state-memory §2.2）。
+  // 消费须等内容落地（cached 无错误）——CodeView 挂载门控于此，未缓存文件
+  // （从 diff 跳转的主路径）挂载即清会让晚挂载的 CodeView 拿不到锚定行；
+  // 落地 commit 先挂 CodeView（prop 仍锚定值），效果随后清 entity，滚动送达
+  useEffect(() => {
+    if (revealLine != null && cached && !cached.error) store.consumeFileReveal(absolutePath)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealLine, cached])
   const fileScrollRef = useRef<HTMLDivElement>(null)
   const pendingScroll = useRef(savedView && savedView.top > 0 ? savedView.top : null)
   // 「打开方式」弹窗目标路径（design-file-view-actions §2.2）：linux 平台经操作条
