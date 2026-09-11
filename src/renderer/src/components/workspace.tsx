@@ -658,6 +658,19 @@ function GuidePage() {
     // 第二次 Enter 不得再入，见 sendingRef 注释）；出口统一在 finally 清
     sendingRef.current = true
     setSending(true)
+    /** 发送落地：清引导页草稿/引用/附件并开 Tab 激活。store 侧显式清——
+     *  开 Tab 后引导页同 commit 卸载，React 丢弃卸载组件的待定 effect，
+     *  同步 effect 的 setGuideDraft("") 不会执行（不清则旧草稿残留，关 Tab
+     *  回引导页会复活已发送文本）；引用同因（sendPrompt/sendCommand 只清
+     *  session 键，directory 键在此显式清） */
+    const settle = (session: Session) => {
+      setDraft("")
+      store.setGuideDraft(directory, "")
+      store.clearFileRefs(directory)
+      store.clearAttachments(directory)
+      store.openChatTab(session)
+      pendingSession.current = null
+    }
     try {
       // 斜杠命令 + 附件守卫（同 ChatView，design-session-attachments review P2-2）：
       // 命中注册命令的 /cmd 是否消费 data URL 附件未经验证——阻止并提示，
@@ -672,49 +685,64 @@ function GuidePage() {
         }
       }
       if (!pendingSession.current) {
-        // openTab:false——首条消息发送成功才开 Tab 激活（引导页退出）
+        // openTab:false——首条消息落地即开 Tab 激活（见下方命令/prompt 两路径）
         const session = await store.createSession({ openTab: false })
         if (!session) return
         pendingSession.current = session
       }
-      // 斜杠命令分流（design-slash-command 决策 3/4，同 ChatView sendSlash）：发送前
-      // 强制重拉注册表，命中走 POST /session/:id/command（服务端展开模板）；未注册
-      // 的 /xxx 按字面文本走 prompt（服务端不会展开模板）。会话已建，注册表与
-      // 匹配仍按作用域目录（新会话目录 = scopeQuery.directory，createSession 契约）
-      const res = await sendSlash(text, refs, attachments)
-      if (res.ok) {
-        // store 侧显式清：发送成功开 Tab → 引导页同 commit 卸载，React 丢弃卸载
-        // 组件的待定 effect，同步 effect 的 setGuideDraft("") 不会执行（不清则
-        // 旧草稿残留，关 Tab 回引导页会复活已发送文本）；引用同因（sendPrompt/
-        // sendCommand 只清 session 键，directory 键在此显式清）
-        setDraft("")
-        store.setGuideDraft(directory, "")
-        store.clearFileRefs(directory)
-        store.clearAttachments(directory)
-        store.openChatTab(pendingSession.current!)
-        pendingSession.current = null
+      const session = pendingSession.current
+      const { command, res } = await sendSlash(text, refs, attachments)
+      if (command) {
+        // 命中命令 = 同步长端点（server 执行完整循环才响应，rest-client sendCommand
+        // 注释）——不等响应即落地开 Tab：乐观回显已同步入 store，SSE 流由挂起的
+        // ChatView 承接渲染；若等响应再开 Tab，命令执行期间（秒~分钟级）一直停留
+        // 在引导页、失败则永不切换（2026-09-11 修复）
+        settle(session)
+        const r = await res
+        if (!r.ok) {
+          // POST 只用于失败善后：文本/引用/附件全部回填进新会话（引导页
+          // directory 键已被 settle 清空，重键到 sessionID 供 ChatView 消费，
+          // 同 ChatView 发送失败「setDraft(text) + 引用保留 store 供重发」语义）；
+          // 重试在该会话内复用 ChatView 的 sendSlash
+          store.seedChatDraft(session.id, text)
+          for (const ref of refs) store.addFileRef(session.id, ref)
+          if (attachments.length > 0) store.addAttachments(session.id, attachments)
+        }
+      } else {
+        // prompt（含未注册 /xxx 字面降级）：异步端点即时返回，等响应按结果
+        // 落地；失败草稿保留在输入框，connectionError 经左栏状态行可见，
+        // 重试复用同一会话（pendingSession 不清）
+        const r = await res
+        if (r.ok) settle(session)
       }
-      // 失败：草稿保留在输入框，connectionError 经左栏状态行可见，重试复用同一会话
     } finally {
       sendingRef.current = false
       setSending(false)
     }
   }
 
-  /** 发送分流：非斜杠 = 字面 prompt；斜杠 = 强制重拉后命中 command / 未命中 prompt */
+  /** 发送分流：非斜杠/未注册 = 字面 prompt；斜杠命中 = command（服务端展开模板）。
+   *  返回 { command, res }：command 端点是同步长端点，调用方不得等 res 再开
+   *  Tab（见 send 内注释）——分发（乐观回显同步入 store）后立即消费。发送前
+   *  强制重拉注册表（最新命令集）；会话已建，注册表与匹配仍按作用域目录
+   *  （新会话目录 = scopeQuery.directory，createSession 契约） */
   const sendSlash = async (
     text: string,
     refs: ReturnType<typeof store.fileRefsFor>,
     attachments: ReturnType<typeof store.attachmentsFor>,
-  ): Promise<{ ok: boolean; error?: string }> => {
+  ): Promise<{ command: boolean; res: Promise<{ ok: boolean; error?: string }> }> => {
     const session = pendingSession.current!
-    if (!text.startsWith("/")) return store.sendPrompt(session.id, text, refs, attachments)
+    if (!text.startsWith("/"))
+      return { command: false, res: store.sendPrompt(session.id, text, refs, attachments) }
     await store.refreshCommands(directory)
     const { token, args } = parseSlash(text)
     const matched = store.commandsFor(directory).find((c) => c.name.toLowerCase() === token)
     return matched
-      ? store.sendCommand(session.id, matched.name, args, refs, attachments)
-      : store.sendPrompt(session.id, text, refs, attachments)
+      ? {
+          command: true,
+          res: store.sendCommand(session.id, matched.name, args, refs, attachments),
+        }
+      : { command: false, res: store.sendPrompt(session.id, text, refs, attachments) }
   }
 
   return (

@@ -870,6 +870,7 @@ export class AppStore {
     this.sessionTodos.clear()
     this.revertDrafts.clear()
     this.revertDraftConsumed.clear()
+    this.manualDraftSeeds.clear()
     this.commandEchoMessages.clear()
     this.commandEchoPending.clear()
     this.chatDrafts.clear()
@@ -2539,6 +2540,7 @@ export class AppStore {
     this.sessionPages.delete(sessionID)
     this.revertDrafts.delete(sessionID)
     this.revertDraftConsumed.delete(sessionID)
+    this.manualDraftSeeds.delete(sessionID)
     // 命令回显标记同随会话卸载（重开 Tab 经快照重建，text 展开型回显不可再判——
     // 接受：回滚到它仅误回填展开文本，与跨端发送同暴露面）
     this.commandEchoMessages.delete(sessionID)
@@ -3324,15 +3326,37 @@ export class AppStore {
    * 以此为据——跨客户端回滚（本端从未回填）或无文本回滚不得误清用户自输内容
    */
   private revertDraftConsumed = new Set<string>()
+  /**
+   * 手动置种（seedChatDraft）来源的会话：take 时不记 revertDraftConsumed——
+   * 非「回滚回填」的输入框文本不参与撤销回滚的清输入框判定（否则置种后
+   * 会话长出消息，跨客户端回滚 + 本端撤销回滚会误清用户自输内容，
+   * 违反 revertDraftConsumed 自述的判定规则）
+   */
+  private manualDraftSeeds = new Set<string>()
   revertDraftVersion = 0
 
   takeRevertDraft(sessionID: string): string | null {
     const v = this.revertDrafts.get(sessionID)
     if (v == null) return null
     this.revertDrafts.delete(sessionID)
-    // 空种子是「清输入框」指令，不记消费（防二次撤销误判）
-    if (v) this.revertDraftConsumed.add(sessionID)
+    // 空种子是「清输入框」指令，不记消费（防二次撤销误判）；手动置种非回滚
+    // 回填，同样不记（见 manualDraftSeeds 注释）
+    if (v && !this.manualDraftSeeds.delete(sessionID)) this.revertDraftConsumed.add(sessionID)
     return v
+  }
+
+  /**
+   * 会话输入框外部置种（design-slash-command 2026-09-11 修订：引导页命令分发
+   * 失败回填）。复用回滚回填的 take-once 通道（ChatView 消费 effect 不变），
+   * 不新增机制；置种即 emit 驱动已挂载 ChatView 的种子 effect。仅非空文本
+   * （空值无回填语义）。与回滚回填的差异（不记 consumed）见 manualDraftSeeds。
+   */
+  seedChatDraft(sessionID: string, text: string) {
+    if (!text) return
+    this.revertDrafts.set(sessionID, text)
+    this.manualDraftSeeds.add(sessionID)
+    this.revertDraftVersion++
+    this.emit()
   }
 
   /**

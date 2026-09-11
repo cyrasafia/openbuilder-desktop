@@ -86,11 +86,14 @@ function makeStore(overrides: Record<string, unknown> = {}): Record<string, unkn
     scopeDisplayName: "a",
     fileRefsFor: vi.fn(() => []),
     attachmentsFor: vi.fn(() => []),
+    addFileRef: vi.fn(),
+    addAttachments: vi.fn(),
     clearFileRefs: vi.fn(),
     clearAttachments: vi.fn(),
     createSession: vi.fn(),
     sendPrompt: vi.fn(async () => ({ ok: true })),
     sendCommand: vi.fn(async () => ({ ok: true })),
+    seedChatDraft: vi.fn(),
     openChatTab: vi.fn(),
     openDiffTab: vi.fn(),
     openTerminalTab: vi.fn(async () => true),
@@ -384,6 +387,70 @@ describe("引导页斜杠命令（design-slash-command 2026-09-08 修订）", ()
     })
     expect(storeStub.sendCommand).not.toHaveBeenCalled()
     expect(storeStub.sendPrompt).toHaveBeenCalledWith("s1", "/不存在", [], [])
+  })
+
+  it("命中命令不等 sendCommand 响应即开 Tab（同步长端点，2026-09-11 修复）", async () => {
+    guideCommands = [{ name: "review" }]
+    const session = sessionStub()
+    ;(storeStub.createSession as ReturnType<typeof vi.fn>).mockResolvedValue(session)
+    // 悬挂的 command 响应（同步端点分钟级在途的等价物）：Tab 必须先开
+    let resolveCmd!: (v: { ok: boolean }) => void
+    const pending = new Promise<{ ok: boolean }>((r) => {
+      resolveCmd = r
+    })
+    ;(storeStub.sendCommand as ReturnType<typeof vi.fn>).mockReturnValue(pending)
+    render(<Workspace />)
+    type("/review --help")
+    key("Enter")
+    // 响应在途即已落地：开 Tab + 清引导页草稿（store 侧显式清；lastCalled——
+    // 挂载草稿同步 effect 与键入都会写 setGuideDraft，非 last 断言恒真）
+    await act(async () => {
+      await vi.waitFor(() => expect(storeStub.openChatTab).toHaveBeenCalled())
+    })
+    expect(storeStub.sendCommand).toHaveBeenCalledWith("s1", "review", "--help", [], [])
+    expect(storeStub.openChatTab).toHaveBeenCalledWith(session)
+    expect(storeStub.setGuideDraft).toHaveBeenLastCalledWith("/repo/a", "")
+    expect(storeStub.clearFileRefs).toHaveBeenCalledWith("/repo/a")
+    expect(storeStub.clearAttachments).toHaveBeenCalledWith("/repo/a")
+    // 响应成功到达：无回填
+    await act(async () => {
+      resolveCmd({ ok: true })
+      await pending
+    })
+    expect(storeStub.seedChatDraft).not.toHaveBeenCalled()
+  })
+
+  it("命令分发失败：文本/引用/附件回填进新会话（seedChatDraft + 重键，同 ChatView 失败回填语义）", async () => {
+    // 附件 + 命中命令本会被引导页守卫拦下——用「守卫时未注册、发送时已注册」的
+    // 注册表竞态构造 dispatch 携带附件的路径（两次 refreshCommands 间命令出现）
+    let refreshCalls = 0
+    ;(storeStub.refreshCommands as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      refreshCalls++
+      guideCommands = refreshCalls >= 2 ? [{ name: "review" }] : []
+    })
+    const session = sessionStub()
+    const ref = { absolute: "/repo/a/src/a.ts", display: "src/a.ts" }
+    const attach = {
+      id: "a1",
+      mime: "image/png",
+      filename: "x.png",
+      dataUrl: "data:image/png;base64,AAAA",
+    }
+    ;(storeStub.createSession as ReturnType<typeof vi.fn>).mockResolvedValue(session)
+    ;(storeStub.sendCommand as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: false })
+    ;(storeStub.fileRefsFor as ReturnType<typeof vi.fn>).mockReturnValue([ref])
+    ;(storeStub.attachmentsFor as ReturnType<typeof vi.fn>).mockReturnValue([attach])
+    render(<Workspace />)
+    type("/review --help")
+    key("Enter")
+    await act(async () => {
+      await vi.waitFor(() => expect(storeStub.seedChatDraft).toHaveBeenCalled())
+    })
+    // Tab 已开（分发即落地），失败仅回填新会话：文本 + 引用/附件重键到 sessionID
+    expect(storeStub.openChatTab).toHaveBeenCalledWith(session)
+    expect(storeStub.seedChatDraft).toHaveBeenCalledWith("s1", "/review --help")
+    expect(storeStub.addFileRef).toHaveBeenCalledWith("s1", ref)
+    expect(storeStub.addAttachments).toHaveBeenCalledWith("s1", [attach])
   })
 
   it("附件守卫在途连按 Enter 不再入：只建一个会话、只发一次（review 修复回归）", async () => {
