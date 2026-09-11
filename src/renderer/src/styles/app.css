@@ -1137,6 +1137,18 @@
   color: var(--on-surface-variant);
 }
 
+/* 用户气泡内的引用块：light 下气泡底是深绿倒装面（--emphasis-bg #2b573c），
+ * 上面的全局引用色按浅色 surface 校准（light --on-surface-variant #414941），
+ * 深灰压深绿对比度仅 ~1.1:1 不可读。参考 openbuilder conversation_screen
+ * 的 blockquote 方案：引用语义靠边条区分，文字保持正文色不二次压暗——
+ * color 用气泡既定 --color-user-text（两主题对气泡底 7–8:1），边条用气泡
+ * 弱化色 --color-user-outline（与折叠提示/待发送态同源，v0.1 起 token
+ * 已备而未接，此为其气泡 markdown 语义的首个消费点） */
+:root[data-theme] .msg.user .bubble .markdown-body.md blockquote:not(.markdown-alert) {
+  color: var(--color-user-text);
+  border-left-color: var(--color-user-outline);
+}
+
 /* GFM alert 标题行图标间距（GitHub 用 mr-2 = 8px；配色/字重由 vendor 接管） */
 :root[data-theme] .markdown-body.md .markdown-alert-title svg {
   margin-right: 8px;
