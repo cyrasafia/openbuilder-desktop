@@ -89,6 +89,15 @@ beforeEach(() => {
   }
 })
 
+// 草稿去抖定时器跨用例清理（design-compose-draft §5）：set*Draft/清理点武装的
+// 500ms 真实定时器若残留，会在后续用例体内触发并把杂散 drafts.state 写进当时
+// 的 storeSet 捕获（不调 disconnect 的用例不经过 teardown 的取消挂点）
+afterEach(() => {
+  const timer = (store as unknown as { draftFlushTimer: ReturnType<typeof setTimeout> | null })
+    .draftFlushTimer
+  if (timer != null) clearTimeout(timer)
+})
+
 describe("先切换后加载：setCurrentWorkspace", () => {
   it("同步段立即生效：作用域/文件树/记忆 Tab 即时切换，快照在途不阻塞", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
@@ -2166,6 +2175,100 @@ describe("输入草稿（design-compose-draft）", () => {
     await store.disconnect()
     expect(store.chatDraftFor("s1")).toBe("")
     expect(store.guideDraftFor(ROOT)).toBe("")
+  })
+
+  // ---- 磁盘层（design-compose-draft §5，2026-09-11 增补：跨重启持久化）----
+
+  type DraftsRecord = Record<string, { chat: Record<string, string>; guide: Record<string, string> }>
+
+  /** 捕获 storeSet 调用的 drafts.state 切片。注意：直接覆写 window.desktop.storeSet
+   *  不恢复——仅因全局 beforeEach 每用例重建 window.desktop 而安全，勿复制到无此
+   *  重置的 suite */
+  function spyDraftStoreSet(): Array<[string, unknown]> {
+    const sets: Array<[string, unknown]> = []
+    ;(window as unknown as { desktop: { storeSet: (k: string, v: unknown) => Promise<void> } }).desktop.storeSet =
+      async (key, value) => {
+        sets.push([key, value])
+      }
+    return sets
+  }
+
+  it("磁盘层：键入去抖落盘（500ms 收尾一次），快照去重不重复写", () => {
+    vi.useFakeTimers()
+    try {
+      const sets = spyDraftStoreSet()
+      store.setChatDraft("s1", "未发送内容")
+      store.setGuideDraft(ROOT, "引导页草稿")
+      expect(sets).toHaveLength(0) // 去抖窗口内不落盘
+      vi.advanceTimersByTime(500)
+      expect(sets).toHaveLength(1)
+      expect(sets[0]![0]).toBe("drafts.state")
+      expect((sets[0]![1] as DraftsRecord).default).toEqual({
+        chat: { s1: "未发送内容" },
+        guide: { [ROOT]: "引导页草稿" },
+      })
+      // 同值重写：序列无变化，不重复落盘
+      store.setChatDraft("s1", "未发送内容")
+      vi.advanceTimersByTime(500)
+      expect(sets).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("磁盘层：关 chat Tab 清草稿随去抖落盘删除条目（关 = 决断，重启不复活）", () => {
+    vi.useFakeTimers()
+    try {
+      const sets = spyDraftStoreSet()
+      const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+      store.sessionsByProject.set("proj1", sessionsOf(s1))
+      store.openChatTab(s1)
+      store.setChatDraft("s1", "未发送内容")
+      vi.advanceTimersByTime(500)
+      expect((sets.at(-1)![1] as DraftsRecord).default.chat.s1).toBe("未发送内容")
+      store.closeTab("chat:s1")
+      vi.advanceTimersByTime(500)
+      expect((sets.at(-1)![1] as DraftsRecord).default.chat.s1).toBeUndefined()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("磁盘层：拆连接前按连接切片键冲刷（断连/切 profile 不丢，重连经播种恢复）", async () => {
+    const sets = spyDraftStoreSet()
+    ;(store as unknown as { sessionProfileKey: string | null }).sessionProfileKey = "default"
+    store.setChatDraft("s1", "断连前的草稿")
+    await store.disconnect()
+    // 内存清空（既有 CD-24/30 语义不变），磁盘切片保留
+    expect(store.chatDraftFor("s1")).toBe("")
+    expect(sets.length).toBeGreaterThan(0)
+    const last = sets.at(-1)!
+    expect(last[0]).toBe("drafts.state")
+    expect((last[1] as DraftsRecord).default.chat.s1).toBe("断连前的草稿")
+  })
+
+  it("磁盘层：connect 播种——重启后从 drafts.state 恢复输入框内容", async () => {
+    ;(window as unknown as { desktop: unknown }).desktop = {
+      storeGet: async (key: string) =>
+        key === "drafts.state"
+          ? { p1: { chat: { s1: "会话草稿恢复" }, guide: { [ROOT]: "引导页草稿恢复" } } }
+          : key === "connection.profiles"
+            ? {
+                profiles: [{ id: "p1", name: "t", baseUrl: "http://127.0.0.1:9", mode: "attach" as const }],
+                activeId: "p1",
+              }
+            : null,
+      storeSet: async () => {},
+    }
+    const health = vi.spyOn(RestClient.prototype, "health").mockRejectedValue(new Error("offline"))
+    try {
+      const s = new AppStore()
+      await s.init() // 连接失败（health 拒绝）但播种发生在 teardown 之后、探针之前
+      expect(s.chatDraftFor("s1")).toBe("会话草稿恢复")
+      expect(s.guideDraftFor(ROOT)).toBe("引导页草稿恢复")
+    } finally {
+      health.mockRestore()
+    }
   })
 })
 
