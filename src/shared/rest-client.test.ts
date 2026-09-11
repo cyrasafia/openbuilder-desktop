@@ -222,6 +222,21 @@ describe("pty 端点（design-terminal-tab §1）", () => {
     expect(hit).toBe('POST http://server/pty?directory=%2Frepo {"command":"/bin/bash","cwd":"/repo"}')
   })
 
+  it("createPty env：显示环境切片随 body 序列化（server 合并序 payload env 优先）；env undefined 不落键", async () => {
+    const bodies: string[] = []
+    const client = mkClient((url, init) => {
+      bodies.push(String(init.body))
+      return new Response(JSON.stringify({ id: "pty_1", command: "bash", cwd: "/repo", status: "running", pid: 1 }))
+    })
+    await client.createPty("/repo", {
+      cwd: "/repo",
+      env: { DISPLAY: ":0", WAYLAND_DISPLAY: "wayland-1" },
+    })
+    await client.createPty("/repo", { cwd: "/repo", env: undefined })
+    expect(bodies[0]).toBe('{"cwd":"/repo","env":{"DISPLAY":":0","WAYLAND_DISPLAY":"wayland-1"}}')
+    expect(bodies[1]).toBe('{"cwd":"/repo"}')
+  })
+
   it("ptyConnectToken：POST + x-opencode-ticket 头（缺头 403；GET 会落 SPA fallback，实测）", async () => {
     let header = ""
     let method = ""
