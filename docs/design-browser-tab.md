@@ -12,7 +12,7 @@
 - `browser:view-bounds(viewId, {x,y,w,h})` / `browser:view-show(viewId)` / `browser:view-hide(viewId)` / `browser:view-dispose(viewId)`（removeChildView + webContents.destroy）
 - `browser:navigate(viewId, url)` / `browser:goBack/goForward/reload(viewId)`
 - `shell:openExternal(url)`（**2026-09-08 增**，浏览器 Tab「在系统浏览器打开」按钮）：协议白名单 http/https/file（about: 交系统无意义拒收）；Linux/darwin 自管 spawn 净化 env（分支注记同 `shell:openPath`——dev 模式 NODE_ENV 泄漏事故，见 linux-open-with.ts 实证注释）、win32 `shell.openExternal`
-- **事件推送** `browser:view-state`（viewId + {url, title, loading, canGoBack, canGoForward}）：`did-navigate`/`did-navigate-in-page`/`page-title-updated`/`did-start-loading`/`did-stop-loading` 聚合
+- **事件推送** `browser:view-state`（viewId + {url, title, loading, canGoBack, canGoForward}）：`did-navigate`/`did-navigate-in-page`/`page-title-updated`/`did-start-loading`/`did-stop-loading` 聚合；**`did-fail-load`（主帧且非 ERR_ABORTED，2026-09-15 增）回填 `url = validatedURL`**——失败时 `did-navigate` 不发，agg.url 恒 ""，不回填则 renderer 侧 Tab 卡 untitled、地址栏空白且持久层丢 url（重启恢复场景实测，见 design-tab-session-restore §7 review 三轮）；失败页由 Chromium 自渲染，状态层只补目标地址
 - **导航安全**（view 的 webContents）：
   - `will-navigate`：当前页面是 http(s) 且目标是 `file://` → preventDefault（远端页面禁读本地文件；file→file 本地页面互链放行，http(s) 链接放行）
   - `setWindowOpenHandler`：http(s) 外链 → `shell.openExternal` + deny（同主窗口既有策略）；其余 deny
@@ -32,7 +32,7 @@
 - `TabKind` 扩 `"browser"`；key = `browser:<初始 URL>`（稳定标识；导航后 URL 变化不改 key，Tab 条标题取当前页 title）
 - `store.openBrowserTab(url)`：建 Tab（directory = 当前作用域）+ `browser:view-create` + `navigate`；**浏览器 shim（无 IPC）不可用**：入口隐藏（platform === "browser" 时引导页网页按钮 disabled、file 树 .html 点击回退文件 Tab）
 - `BrowserTabView` 组件（激活时挂载）：工具条（后退/前进/刷新或停止、地址输入框（Enter 导航）、打开本地文件按钮 → `openPathPicker` 选 .html → `navigate(file://…)`、**「在系统浏览器打开」按钮（2026-09-08 增，`shell:openExternal` 当前页 URL——store 权威非 key 初始 URL；仅 http/https/file 可用（白名单同 main 侧 handler，about: 等禁用）；纯浏览器 shim 不显示）**）+ 内容宿主 div；ResizeObserver → `view-bounds`；**卸载 = 隐藏 view**（Tab 切走/作用域切换，view 与内容保留）
-- view 状态：store `browserStates: Map<viewId, BrowserState>`（SSE 无关，纯 IPC 事件驱动）
+- view 状态：store `browserStates: Map<viewId, BrowserState>`（SSE 无关，纯 IPC 事件驱动）；**空 url 推送不回退已知 url/title（2026-09-15 修订）**——agg.url 只由 did-navigate/did-fail-load 落值，首次导航在途/失败后恒 ""，整包覆写会清掉恢复/打开时种入的 url（地址栏闪空、标题闪落 untitled、会话派生抹掉磁盘 url 字段），`applyBrowserState` 对空 url 推送保留上一份非空值
 - 关闭 Tab：`view-dispose` + 关闭栈（恢复 = 按 key 中 URL 重开——URL 取**当前页 URL**（关 Tab 时的 browserState.url），不是初始 key）
 
 ### 1.4 HTML 预览迁移

@@ -127,6 +127,15 @@ export function registerBrowserViewIpc() {
     wc.on("did-navigate-in-page", (_e, url) =>
       update({ url, canGoBack: wc.navigationHistory.canGoBack(), canGoForward: wc.navigationHistory.canGoForward() }),
     )
+    // 主帧加载失败（文件已删/网络不可达等）：did-navigate 不发，agg.url 若保持 ""
+    // renderer 侧 Tab 标题回落空值（untitled）且地址栏空白——失败页本身由 Chromium
+    // 渲染，此处只回填目标 URL 让状态层可展示/可持久化（2026-09-15 重启恢复卡死修复）。
+    // ERR_ABORTED（stop()/被取代）不算失败，不得把 url 推进未提交的目标地址；
+    // title 清空——保留上一页标题会与回填的 url 分裂（review），回落 state.title||url
+    wc.on("did-fail-load", (_e, errorCode, _desc, validatedURL, isMainFrame) => {
+      if (!isMainFrame || errorCode === -3 || typeof validatedURL !== "string" || !validatedURL) return
+      update({ url: validatedURL, title: "", canGoBack: wc.navigationHistory.canGoBack(), canGoForward: wc.navigationHistory.canGoForward() })
+    })
     wc.on("page-title-updated", (_e, title) => update({ title }))
     wc.on("did-start-loading", () => update({ loading: true }))
     wc.on("did-stop-loading", () =>

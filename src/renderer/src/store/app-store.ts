@@ -4335,6 +4335,12 @@ export class AppStore {
    *  PDF 文件 Tab 标题恒文件名，不被 PDFium 的 title 覆写，评审 N3） */
   applyBrowserState(state: BrowserViewState) {
     const prev = this.browserStates.get(state.viewId)
+    // 空 url 推送不回退已知 url/title（2026-09-15 重启恢复卡死修复）：agg.url 只在
+    // did-navigate/did-fail-load 落值，首次导航在途（did-start-loading）与失败后它恒 ""，
+    // 整包覆写会把恢复种入的 url/title 清成空——Tab 闪落 untitled、地址栏变空白，
+    // 且恢复段收尾的会话派生把磁盘 url 字段抹掉（下次重启无地址可恢复）。保留
+    // 上一份非空值，did-navigate/失败回填到达即接管
+    if (!state.url && prev?.url) state = { ...state, url: prev.url, title: state.title || prev.title }
     this.browserStates.set(state.viewId, state)
     let sessionDirty = false
     for (const [key, viewId] of this.browserViewIds) {

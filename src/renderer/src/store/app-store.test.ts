@@ -4522,6 +4522,85 @@ describe("Tab 会话持久层（design-tab-session-restore）", () => {
     expect(store.activeTabKey).toBe("browser:https://a.dev/")
   })
 
+  it("恢复首导航在途窗口：空 url 推送不抹种入 url/title，收尾固化保留 url 字段（review 三轮）", async () => {
+    seedRootMemory([session("s1", ROOT, { created: 1, updated: 1 })])
+    priv().tabSession = {
+      default: {
+        tabs: [
+          {
+            kind: "browser",
+            key: "browser:https://a.dev/",
+            projectId: "proj1",
+            directory: ROOT,
+            title: "A",
+            url: "https://a.dev/x/y",
+          },
+        ],
+        scopeActive: { [ROOT]: "browser:https://a.dev/" },
+      },
+    }
+    const { writes } = captureSessionWrites()
+
+    // 恢复段手工分步：restoreTabSession 种入 state 后、收尾固化前，恰逢首导航
+    // 在途（did-start-loading，agg.url 恒 ""）——原实现整包覆写清空 url/title
+    const p = priv()
+    p.restoringTabs = true
+    try {
+      await p.restoreTabSession()
+      store.applyBrowserState({ viewId: 1, url: "", title: "", loading: true, canGoBack: false, canGoForward: false })
+    } finally {
+      p.restoringTabs = false
+    }
+    p.persistTabSession()
+
+    // Tab 不闪落 untitled（标题保留种入值）
+    expect(store.tabs.find((t) => t.kind === "browser")?.title).toBe("A")
+    // 收尾固化不抹磁盘 url 字段（下次重启仍恢复到当前页）
+    expect(writes().at(-1)!.default.tabs.find((t) => t.kind === "browser")?.url).toBe("https://a.dev/x/y")
+  })
+
+  it("恢复导航失败（did-fail-load 回填）：标题回落目标 URL、url 字段保留、后续有效导航照常（review 三轮）", async () => {
+    seedRootMemory([session("s1", ROOT, { created: 1, updated: 1 })])
+    priv().tabSession = {
+      default: {
+        tabs: [
+          {
+            kind: "browser",
+            key: "browser:about:blank",
+            projectId: "proj1",
+            directory: ROOT,
+            title: "My Doc",
+            url: "file:///repo/gone.html",
+          },
+        ],
+        scopeActive: { [ROOT]: "browser:about:blank" },
+      },
+    }
+    const { writes } = captureSessionWrites()
+    const p = priv()
+    p.restoringTabs = true
+    try {
+      await p.restoreTabSession()
+      // 在途窗口：空 url 推送（did-start-loading）
+      store.applyBrowserState({ viewId: 1, url: "", title: "", loading: true, canGoBack: false, canGoForward: false })
+      // 失败回填：main did-fail-load 推送目标 URL（did-navigate 不发）
+      store.applyBrowserState({ viewId: 1, url: "file:///repo/gone.html", title: "", loading: false, canGoBack: false, canGoForward: false })
+    } finally {
+      p.restoringTabs = false
+    }
+    p.persistTabSession()
+
+    // 标题/地址回落目标 URL（非 untitled/空白）
+    const tab = store.tabs.find((t) => t.kind === "browser")!
+    expect(tab.title).toBe("file:///repo/gone.html")
+    // url 字段保留（下次重启重试同一地址）
+    expect(writes().at(-1)!.default.tabs.find((t) => t.kind === "browser")?.url).toBe("file:///repo/gone.html")
+
+    // 视图仍可用：后续有效导航（did-navigate）照常接管标题/地址
+    store.applyBrowserState({ viewId: 1, url: "https://a.dev/x", title: "X", loading: false, canGoBack: true, canGoForward: false })
+    expect(tab.title).toBe("X")
+  })
+
   it("落盘挂点：开/关 Tab 派生投影；无变更不写（序列化去重）", () => {
     const { writes } = captureSessionWrites()
 
