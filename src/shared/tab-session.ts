@@ -9,7 +9,8 @@ export type PersistedTabKind = "chat" | "file" | "diff" | "terminal" | "browser"
 
 export interface PersistedTab {
   kind: PersistedTabKind
-  /** 与 TabEntity.key 同构：chat:sid / file:path / diff\0dir / terminal:ptyId / browser:url */
+  /** 与 TabEntity.key 同构：chat:sid / file:path / diff\0dir / terminal:ptyId /
+   *  browser:url（新开空白 Tab 为 browser:new:N，url 恒落盘——见 design-browser-tab §1.3） */
   key: string
   projectId: string
   directory: string

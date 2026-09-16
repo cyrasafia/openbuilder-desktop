@@ -2341,7 +2341,13 @@ export class AppStore {
     const key = this.profileKey()
     this.tabSession[key] = deriveTabSession(this.tabs, this.scopeActiveKeys, (tabKey) => {
       const viewId = this.browserViewIds.get(tabKey)
-      return viewId != null ? this.browserStates.get(viewId)?.url : undefined
+      const url = viewId != null ? this.browserStates.get(viewId)?.url : undefined
+      // new:N 键兜底（review 2026-09-15）：双行目录（git worktree + global 同路径）
+      // 关一行时 disposeBrowserViewsInDirectory 全量 dispose 而关 Tab 按 projectId
+      // 过滤——另一行存活的 browser Tab 成僵尸（view 无、映射失）。键内标识非 URL，
+      // 无兜底则 url 字段省略、重启恢复回退导航字面量 "new:N"；此时当前页已不可
+      // 知，回落 about:blank（重启开空白 Tab，不导航垃圾地址）
+      return url || (tabKey.startsWith("browser:new:") ? "about:blank" : undefined)
     })
     const snapshot = JSON.stringify(this.tabSession)
     if (snapshot === this.lastSessionSnapshot) return
@@ -2440,9 +2446,23 @@ export class AppStore {
    *  显隐由激活后的 syncBrowserViewVisibility 协调，bounds 由挂载 ResizeObserver 推送）。
    *  IPC 失败（catch null）跳过该条——单条降级不断开连接恢复链 */
   private async restoreBrowserTab(e: PersistedTab): Promise<boolean> {
+    // new:N 键在 await 前同步占用序号（TOCTOU，review 三轮）：恢复的 create 在途
+    // 时 Tab 未入 live，openNewBrowserTab 铸键看不到——先抬序号使后续铸键必大于 N，
+    // 同键碰撞不可能发生（实测交错：open 续体先于本方法 push 运行，靠事后去重会
+    // 泄漏被覆写映射的 view）
+    const m = /^browser:new:(\d+)$/.exec(e.key)
+    if (m) this.browserNewTabSeq = Math.max(this.browserNewTabSeq, Number(m[1]))
     const viewId = await window.desktop.browserViewCreate().catch(() => null)
     if (viewId == null || viewId < 0) return false
-    const url = e.url || e.key.slice("browser:".length)
+    // await 后撞键复查：URL 键竞态（openBrowserTab 与恢复同 URL 键对撞，先到者
+    // 已入 live）——弃恢复的 view 复用既有 Tab，不双推同键
+    if (this.tabs.some((t) => t.key === e.key)) {
+      window.desktop.browserViewDispose(viewId)
+      return true
+    }
+    // new:N 键的键内标识非 URL（url 缺失时回落空白，不导航字面量——review 2026-09-15）
+    const ident = e.key.slice("browser:".length)
+    const url = e.url || (ident.startsWith("new:") ? "about:blank" : ident)
     this.browserViewIds.set(e.key, viewId)
     this.browserStates.set(viewId, {
       viewId,
@@ -4335,6 +4355,12 @@ export class AppStore {
    *  PDF 文件 Tab 标题恒文件名，不被 PDFium 的 title 覆写，评审 N3） */
   applyBrowserState(state: BrowserViewState) {
     const prev = this.browserStates.get(state.viewId)
+    // 空 url 推送不回退已知 url/title（2026-09-15 重启恢复卡死修复）：agg.url 只在
+    // did-navigate/did-fail-load 落值，首次导航在途（did-start-loading）与失败后它恒 ""，
+    // 整包覆写会把恢复种入的 url/title 清成空——Tab 闪落 untitled、地址栏变空白，
+    // 且恢复段收尾的会话派生把磁盘 url 字段抹掉（下次重启无地址可恢复）。保留
+    // 上一份非空值，did-navigate/失败回填到达即接管
+    if (!state.url && prev?.url) state = { ...state, url: prev.url, title: state.title || prev.title }
     this.browserStates.set(state.viewId, state)
     let sessionDirty = false
     for (const [key, viewId] of this.browserViewIds) {
@@ -4377,6 +4403,25 @@ export class AppStore {
     return p
   }
 
+  /** 新开空白浏览器 Tab 的序号（键唯一性：跨重启与恢复的 browser:new:N 条目共存） */
+  private browserNewTabSeq = 0
+
+  /**
+   * 新开空白浏览器 Tab（引导页磁贴 / Ctrl+3 入口）：每次调用新开一个，**不经
+   * URL 键去重**——openBrowserTab 的复用语义只适用于"打开指定地址"（文件树
+   * .html / 关闭栈按 URL 重开）；新开入口键 = `browser:new:N`（唯一），URL 态
+   * = about:blank，持久化时 url 恒 ≠ 键内标识 → url 字段必落盘，重启恢复按它
+   * 导航（2026-09-15 修订：原入口复用 browser:about:blank 键，开过一次后再按
+   * 磁贴/快捷键只会切回旧 Tab，无法开第二个网页 Tab）
+   */
+  async openNewBrowserTab(): Promise<boolean> {
+    let key = ""
+    do {
+      key = `browser:new:${++this.browserNewTabSeq}`
+    } while (this.tabs.some((t) => t.key === key))
+    return this.doOpenBrowserTab(key, "about:blank")
+  }
+
   private async doOpenBrowserTab(key: string, url: string): Promise<boolean> {
     const existing = this.tabs.find((t) => t.key === key)
     if (existing) {
@@ -4391,6 +4436,17 @@ export class AppStore {
     }
     const viewId = await window.desktop.browserViewCreate()
     if (viewId == null || viewId < 0) return false
+    // await 后撞键复查（TOCTOU，review 三轮 2026-09-15）：恢复段逐条 await create 后
+    // 才 push Tab，窗口内 openNewBrowserTab/openBrowserTab 可铸出同键（重复 React
+    // key + browserViewIds 覆盖致 view 泄漏）——撞键弃新 view 激活既有 Tab（不重指
+    // directory：竞态对面是恢复中的 Tab，归属自己的目录）
+    if (this.tabs.some((t) => t.key === key)) {
+      window.desktop.browserViewDispose(viewId)
+      this.activeTabKey = key
+      this.recordScopeActive(this.scopeDirectory(), key)
+      this.emit()
+      return true
+    }
     this.browserViewIds.set(key, viewId)
     this.browserStates.set(viewId, {
       viewId,
@@ -4869,8 +4925,18 @@ export class AppStore {
         return
       }
       if (entry.kind === "browser") {
-        // 浏览器恢复 = 按关闭时当前页 URL 重开（title 字段承载，closeBrowserTab 写入）
-        void this.openBrowserTab(entry.title || entry.key.slice("browser:".length))
+        // 浏览器恢复 = 按关闭时当前页 URL 重开（title 字段承载，closeBrowserTab 写入）。
+        // 僵尸 Tab（view 已失）关闭时 title 残留页面标题非 URL——白名单校验不过回落
+        // 键内标识（URL 键 = 初始地址，new:N 键 = 空白），不导航页面标题文本。
+        // 白名单 = navigate() 的产物集（http(s)/file/about），通用 scheme 正则会放行
+        // 「EPFL: Home」类带冒号标题（review 四轮 2026-09-15）
+        const ident = entry.key.slice("browser:".length)
+        const reopen = /^(https?|file|about):/.test(entry.title)
+          ? entry.title
+          : ident.startsWith("new:")
+            ? "about:blank"
+            : ident
+        void this.openBrowserTab(reopen)
         return
       }
     }

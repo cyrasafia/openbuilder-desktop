@@ -126,6 +126,10 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
         <input
           className="browser-address mono"
           value={address}
+          // 切入浏览器 Tab 即聚焦地址栏（2026-09-15）：组件仅在 Tab 激活时挂载
+          // （workspace 条件渲染 + key 隔离，切走即卸载），挂载聚焦 = 切入聚焦；
+          // 既有 onFocus 全选随触发（Ctrl+L 惯例，输入即整替 URL）
+          autoFocus
           spellCheck={false}
           placeholder={t.browserAddressPlaceholder}
           aria-label={t.browserAddressPlaceholder}

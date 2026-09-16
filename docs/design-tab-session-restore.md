@@ -116,6 +116,7 @@ refreshAllOpenedProjects()（快照落地）
 | 11 | 模板中会话在他端已归档/删除 | chat 跳过（记忆层校验），顺序自动收紧；file/diff 不受影响 |
 | 12 | 持久化 JSON 损坏/字段非法 | 逐条 sanitize，坏条目/坏切片丢弃，等效无记录走既有路径 |
 | 13 | 切到其他作用域再切回 | 规则 1.5 命中播种记录（跨重启的"最后选中态"），与运行期语义一致 |
+| 14 | 持久化 URL 重启时加载失败（文件已删/网络不可达） | view 渲染 Chromium 失败页；`did-fail-load` 回填目标 URL → Tab 标题/地址栏显示目标地址非 untitled/空白，**持久层 url 字段保留**（下次重启重试）；输入有效 URL 可继续导航（review 三轮修） |
 
 ## 8. 不做的事
 
@@ -166,3 +167,8 @@ review 二轮修订（2026-09-03）：
 
 - **首导航前空 URL 推送不算落盘变更（low）**：新建/恢复视图的首个 `did-start-loading` 推送 `agg.url` 恒 `""`（main 侧聚合在 `did-navigate` 才有值），原判定 `prev?.url !== state.url` 必真——瞬态即触发派生，而此刻 `browserStates.url` 已被覆写为 `""`、派生省略 falsy url，**刚持久化的当前页 url 字段被丢掉**（窗口内崩溃/退出则恢复回退初始 URL；`did-navigate` 落地后自愈，亚秒级）。修复：`sessionDirty = !!state.url && (…)`——mid-session 导航不受影响（loading 推送携带旧 URL 无 delta），首导航后的 did-navigate/did-stop-loading 携带真实 URL 照常落盘。补「空 URL 推送不触发 + 后续导航恢复」用例
 - **teardown 修剪同步清除 scopeActive 悬挂指针（nit）**：原只滤 tabs，指向被剔除 terminal/browser key 的 `scopeActive[dir]` 残留——规则 1.5 校验失效虽使其无害，但会在每次重连/重启被重新播种、再被下次派生写回持久层，直到该作用域发生真实激活才消解（与 closeProject 显式删除 scopeActive 的处理不一致）。修复：修剪时同帧删除命中被剔除 key 的 scopeActive 条目（null 哨兵/指向存活 Tab 的不动）。补「终端激活态断连 → scopeActive 随剔除清除」用例
+
+review 三轮修订（2026-09-15，重启后浏览器 Tab 卡死 untitled 实证修复）：
+
+- **失败/在途导航窗口的 url 抹除（high，实测复现）**：二轮的 `sessionDirty` 空值守卫只保护了「不触发派生」，但两处仍会丢 url——① **恢复段收尾固化**（§3 管线尾部 `persistTabSession()`）恰落在首导航在途窗口（agg.url 恒 ""）时，`deriveTabSession` 的 `resolveBrowserUrl` 读到 "" → falsy 省略 → **磁盘 url 字段被抹**（用户条目实证：`{key:"browser:about:blank", title:""}` 无 url，重启永久回退初始地址）；② **导航失败**（文件已删/网络不可达）：`loadURL` reject、`did-navigate` 永不触发且 `did-fail-load` 无监听——agg 停在 `{url:"",title:""}`，Tab 卡 untitled、地址栏空白，用户感知「无法加载任何页面」（实际输入有效 URL 可导航，失效的本地路径反复失败）。修复双侧：main `did-fail-load`（主帧、非 ERR_ABORTED）回填 `url = validatedURL`（失败页 Chromium 自渲染，状态层只补目标地址）；renderer `applyBrowserState` 对空 url 推送**保留上一份非空 url/title**（恢复/打开种入值不被在途窗口清掉，地址栏/标题也不闪空）。场景 14 增补；用例见 app-store.test.ts「空 url 推送保留已知 url/title」
+- **测试方法备注**：失败路径以 `applyBrowserState({url: <目标>})`（模拟 did-fail-load 回填推送）驱动；真实 IPC 时序经打包态插桩复现（CDP + main/renderer 双侧日志，ERR_FILE_NOT_FOUND 实证 did-navigate 不发、reject 后视图仍可继续 loadURL）
