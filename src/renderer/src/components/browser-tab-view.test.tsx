@@ -126,6 +126,15 @@ describe("BrowserTabView", () => {
     expect(input.value).toBe("https://example.com/") // store url 还原
   })
 
+  it("切入浏览器 Tab（挂载）即聚焦地址栏并全选（2026-09-15）", () => {
+    render(<BrowserTabView tabKey="browser:https://example.com/" viewId={1} />)
+    const input = screen.getByRole("textbox") as HTMLInputElement
+    expect(document.activeElement).toBe(input)
+    // onFocus 全选随聚焦触发（输入即整替）
+    expect(input.selectionStart).toBe(0)
+    expect(input.selectionEnd).toBe("https://example.com/".length)
+  })
+
   it("打开本地文件：选择器 → file:// 导航；取消无动作", async () => {
     render(<BrowserTabView tabKey="browser:about:blank" viewId={1} />)
     screen.getByTitle("打开本地文件…").click()
