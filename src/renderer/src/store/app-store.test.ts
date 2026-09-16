@@ -2841,6 +2841,85 @@ describe("布局状态（design-layout-collapse）", () => {
     store.persistLayout()
     expect(saved.at(-1)?.value).toMatchObject({ leftWidth: 200, rightWidth: 480 })
   })
+
+  // ---- 窗口变窄自动收放（design-layout-collapse §2.6）----
+  // 默认宽下收起阈值 = 260 + 300 + 648 = 1208；放回阈值 = 1208 + 64 = 1272
+
+  it("变窄跌破阈值同时收起两栏并置 auto 标记，不落盘", () => {
+    store.applyAutoCollapse(1207)
+    expect(store.layoutLeftCollapsed).toBe(true)
+    expect(store.layoutRightCollapsed).toBe(true)
+    expect(store.layoutLeftAutoCollapsed).toBe(true)
+    expect(store.layoutRightAutoCollapsed).toBe(true)
+    // 自动收放不持久化（瞬态，重启按意图还原）
+    expect(saved).toHaveLength(0)
+  })
+
+  it("回宽过回差阈值放回两栏；死区内不动作", () => {
+    store.applyAutoCollapse(1200)
+    // 死区 [1208, 1272)：未过放回阈值，保持收起
+    store.applyAutoCollapse(1250)
+    expect(store.layoutLeftCollapsed).toBe(true)
+    expect(store.layoutRightCollapsed).toBe(true)
+    // 过放回阈值（≥1272）放回
+    store.applyAutoCollapse(1272)
+    expect(store.layoutLeftCollapsed).toBe(false)
+    expect(store.layoutRightCollapsed).toBe(false)
+    expect(store.layoutLeftAutoCollapsed).toBe(false)
+    expect(store.layoutRightAutoCollapsed).toBe(false)
+  })
+
+  it("手动 toggle 接管本栏：回宽不再放回被接管的栏", () => {
+    store.applyAutoCollapse(1000)
+    // 手动展开左栏 = 用户接管
+    store.toggleLeftPanel()
+    expect(store.layoutLeftCollapsed).toBe(false)
+    expect(store.layoutLeftAutoCollapsed).toBe(false)
+    expect(store.layoutRightAutoCollapsed).toBe(true)
+    store.applyAutoCollapse(1400)
+    expect(store.layoutRightCollapsed).toBe(false)
+    // 左栏保持展开（手动接管），且不因窗口变宽再被收起
+    expect(store.layoutLeftCollapsed).toBe(false)
+  })
+
+  it("手动收起的栏回宽不放回；窄窗下手动展开不被自动再收", () => {
+    store.toggleRightPanel() // 手动收起右栏（落盘）
+    // 右栏已让出空间，阈值降为 260+648=908：1000 仍宽，左栏不收
+    store.applyAutoCollapse(1000)
+    expect(store.layoutLeftCollapsed).toBe(false)
+    // 继续缩窄跌破 908：仅左栏展开 → 左栏 auto 收起（右栏手动收起不再动）
+    store.applyAutoCollapse(900)
+    expect(store.layoutLeftAutoCollapsed).toBe(true)
+    expect(store.layoutRightAutoCollapsed).toBe(false)
+    // 窄窗下手动展开左栏（接管），继续窄窗不再被抢收
+    store.toggleLeftPanel()
+    expect(store.layoutLeftCollapsed).toBe(false)
+    store.applyAutoCollapse(850)
+    expect(store.layoutLeftCollapsed).toBe(false)
+    // 回宽：左栏被接管无 auto 标记、右栏手动收起不回——两栏全无 auto，不动作
+    store.applyAutoCollapse(1400)
+    expect(store.layoutLeftCollapsed).toBe(false)
+    expect(store.layoutRightCollapsed).toBe(true)
+  })
+
+  it("persistLayout 过滤 auto 态（意图口径）", () => {
+    store.applyAutoCollapse(1000)
+    store.persistLayout()
+    // auto 收起不落盘
+    expect(saved.at(-1)?.value).toMatchObject({ leftCollapsed: false, rightCollapsed: false })
+    store.toggleLeftPanel() // 接管左栏并展开 → 意图展开
+    expect(saved.at(-1)?.value).toMatchObject({ leftCollapsed: false, rightCollapsed: false })
+    store.toggleRightPanel() // 接管右栏（此时右栏 auto 收起 → 翻转为展开，清 auto）
+    store.toggleRightPanel() // 再翻 = 手动收起（意图）
+    store.persistLayout()
+    expect(saved.at(-1)?.value).toMatchObject({ rightCollapsed: true })
+  })
+
+  it("非正宽度（隐藏窗口）跳过初评", () => {
+    store.applyAutoCollapse(0)
+    expect(store.layoutLeftCollapsed).toBe(false)
+    expect(store.layoutRightCollapsed).toBe(false)
+  })
 })
 
 describe("快捷键支撑（design-keyboard-shortcuts）", () => {

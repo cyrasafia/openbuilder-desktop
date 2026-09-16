@@ -125,6 +125,13 @@ function clampPanelWidth(side: "left" | "right", px: number): number {
   return Math.round(Math.min(l.max, Math.max(l.min, px)))
 }
 
+/** 窗口变窄自动收放阈值（design-layout-collapse §2.6）：中栏下限 = 聊天区
+ *  阅读下限 600 + 消息区 padding 48（与 app.css --chat-min 同源）——中栏将被
+ *  压到阅读下限以下是收起判据，左右栏宽可调故阈值随之动态 */
+const AUTO_COLLAPSE_CENTER_RESERVE = 648
+/** 回宽放回回差（schmitt 上界 = 阈值 + 64）：窗口边缘在阈值附近拖动时不反复翻转 */
+const AUTO_COLLAPSE_HYSTERESIS = 64
+
 /** drafts.state 读入校验（同 sanitizeTabSessionMap 防御口径）：坏切片/坏条目
  *  丢弃，等效无记录——store.json 可能来自旧版本/手改 */
 function sanitizeDraftsState(
@@ -292,6 +299,14 @@ export class AppStore {
   layoutRightWidth = 300
   layoutLeftCollapsed = false
   layoutRightCollapsed = false
+  /** 窄窗自动收起标记（design-layout-collapse §2.6）：本栏当前折叠是否由
+   *  自动收起置位（瞬态，不持久化）——回宽只放回 auto 收起的栏；手动
+   *  toggle 翻转即接管本栏（清标记），窄窗下手动展开的栏不再被抢收 */
+  layoutLeftAutoCollapsed = false
+  layoutRightAutoCollapsed = false
+  /** 上次自动收放评估的窗口宽（design-layout-collapse §2.6）：宽→窄边沿
+   *  判据；null = 未评估过（首次评估按"宽"处理——重启即窄窗也收起） */
+  private lastAutoEvalWidth: number | null = null
 
   // ---- 连接运行时 ----
   connectionState: ConnectionState = "disconnected"
@@ -5484,12 +5499,15 @@ export class AppStore {
 
   toggleLeftPanel() {
     this.layoutLeftCollapsed = !this.layoutLeftCollapsed
+    // 手动翻转清除 auto 标记：用户接管本栏，回宽不再自动放回
+    this.layoutLeftAutoCollapsed = false
     this.emit()
     this.persistLayout()
   }
 
   toggleRightPanel() {
     this.layoutRightCollapsed = !this.layoutRightCollapsed
+    this.layoutRightAutoCollapsed = false
     this.emit()
     this.persistLayout()
   }
@@ -5507,16 +5525,89 @@ export class AppStore {
     this.emit()
   }
 
-  /** 布局整体落盘（toggle 即时 / 拖拽 pointerup 时）；失败静默（重启回退旧值，同 tabs.memory 取舍） */
+  /** 布局整体落盘（toggle 即时 / 拖拽 pointerup 时）；失败静默（重启回退旧值，同 tabs.memory 取舍）。
+   *  落盘口径 = 用户意图：折叠态过滤 auto 标记（collapsed && !autoCollapsed）——
+   *  auto 收起是瞬态挤压缓解，不固化（否则窄窗下一次 toggle/拖宽顺带落盘会把
+   *  临时收起写成持久偏好）；重启后按意图还原，窄窗再由 Shell 初评收起 */
   persistLayout() {
     void window.desktop
       .storeSet("layout.state", {
         leftWidth: this.layoutLeftWidth,
         rightWidth: this.layoutRightWidth,
-        leftCollapsed: this.layoutLeftCollapsed,
-        rightCollapsed: this.layoutRightCollapsed,
+        leftCollapsed: this.layoutLeftCollapsed && !this.layoutLeftAutoCollapsed,
+        rightCollapsed: this.layoutRightCollapsed && !this.layoutRightAutoCollapsed,
       })
       .catch(() => {})
+  }
+
+  /** 窗口宽度变化驱动的自动收放（design-layout-collapse §2.6，边沿触发 +
+   *  回差）：中栏下限 648 = 聊天区阅读下限 600 + padding 48（与 app.css
+   *  --chat-min 同源）。
+   *
+   *  收起只在**宽→窄边沿**（上次评估时未挤、本次挤）发生：收起是一次性
+   *  缓解，此后窗口在窄区间内继续 resize（含用户手动展开后拖动）不再重
+   *  评——若每次 resize 都按"当前状态是否挤"重评，用户窄窗下手动展开的
+   *  栏会被下一个小幅 resize 立即抢收回去，展开形同虚设。收起**两栏同时**
+   *  （两栏合计才挤压中栏，单收其一不解决挤压且顺序无从选择；手动收起
+   *  的栏不动、不置 auto）。放回按"放回后将展开的栏"合计计算阈值并加
+   *  回差 64（若按当前已收起态算，收起后阈值缩小，窗口未真正回宽即放回、
+   *  再收起，振荡）；只放回 auto 收起的栏（手动收起的尊重用户）。
+   *
+   *  auto 标记瞬态区分来源，手动 toggle 即接管。自动收放只写内存（emit
+   *  不 persistLayout）：持久化口径是用户意图（见 persistLayout），重启窄窗
+   *  由 Shell 初评再收 */
+  applyAutoCollapse(windowWidth: number) {
+    // 隐藏/未布局窗口（innerWidth 0）非真实几何信号，跳过（resize 事件再评）
+    if (windowWidth <= 0) return
+    const prev = this.lastAutoEvalWidth
+    this.lastAutoEvalWidth = windowWidth
+    const leftOpen = !this.layoutLeftCollapsed
+    const rightOpen = !this.layoutRightCollapsed
+    // 收起边沿：上次评估未挤 + 本次挤（首次评估 prev=null 视作未挤）
+    const wasWide = prev == null || prev >= this.autoCollapseThreshold()
+    if (!wasWide && windowWidth < this.autoCollapseThreshold()) return
+    if (windowWidth < this.autoCollapseThreshold()) {
+      if (!leftOpen && !rightOpen) return
+      if (leftOpen) {
+        this.layoutLeftCollapsed = true
+        this.layoutLeftAutoCollapsed = true
+      }
+      if (rightOpen) {
+        this.layoutRightCollapsed = true
+        this.layoutRightAutoCollapsed = true
+      }
+      this.emit()
+      return
+    }
+    // 放回：按"放回后将展开的栏"算阈值 + 回差；只放回 auto 收起的栏
+    const leftRestore = this.layoutLeftAutoCollapsed
+    const rightRestore = this.layoutRightAutoCollapsed
+    if (!leftRestore && !rightRestore) return
+    const restoreThreshold =
+      (leftRestore || leftOpen ? this.layoutLeftWidth : 0) +
+      (rightRestore || rightOpen ? this.layoutRightWidth : 0) +
+      AUTO_COLLAPSE_CENTER_RESERVE +
+      AUTO_COLLAPSE_HYSTERESIS
+    if (windowWidth >= restoreThreshold) {
+      if (leftRestore) {
+        this.layoutLeftCollapsed = false
+        this.layoutLeftAutoCollapsed = false
+      }
+      if (rightRestore) {
+        this.layoutRightCollapsed = false
+        this.layoutRightAutoCollapsed = false
+      }
+      this.emit()
+    }
+  }
+
+  /** 当前布局下中栏开始被挤的窗口宽（展开栏合计 + 中栏下限） */
+  private autoCollapseThreshold() {
+    return (
+      (this.layoutLeftCollapsed ? 0 : this.layoutLeftWidth) +
+      (this.layoutRightCollapsed ? 0 : this.layoutRightWidth) +
+      AUTO_COLLAPSE_CENTER_RESERVE
+    )
   }
 
   // ============ 对账挂载 ============

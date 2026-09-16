@@ -149,6 +149,18 @@ function Shell() {
   const store = useStore()
   // 全局快捷键（design-keyboard-shortcuts）：注册于 provider 内，store/t 就绪
   useShortcuts()
+  // 窗口宽度自动收放（design-layout-collapse §2.6）：监听挂 Shell（三栏存
+  // 在处；欢迎屏分支无三栏不挂）。init 后一次初评覆盖"重启即窄窗"；此后
+  // resize 边沿触发。面板拖拽调宽不产生 window resize（元素尺寸变化不冒泡
+  // 为窗口事件），天然不触发——面板宽是直接操纵的显式意图，拖宽压窄中栏
+  // 由用户自行权衡；拖宽抬高阈值后需先经历一次宽于新阈值的评估、再缩窄
+  // 才构成宽→窄边沿（prev 记录的是拖宽前的窗口宽，不随面板宽重算）
+  useEffect(() => {
+    store.applyAutoCollapse(window.innerWidth)
+    const onResize = () => store.applyAutoCollapse(window.innerWidth)
+    window.addEventListener("resize", onResize)
+    return () => window.removeEventListener("resize", onResize)
+  }, [store])
   // 三栏栅格（design-layout-collapse §2.3）：折叠列宽 0；展开列用 store 记忆宽度。
   // 内联覆盖 app.css 的默认 grid-template-columns（CSS 变量无第二写入点，单一来源）
   const left = store.layoutLeftCollapsed ? "0px" : `${store.layoutLeftWidth}px`
