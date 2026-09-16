@@ -61,7 +61,7 @@
 ### 1.1 引导页磁贴快捷键（2026-09-06 增）
 
 - **作用域 = 引导页存活期**：监听（window keydown/keyup/blur）挂 `GuidePage` 组件内，随页面挂载/卸载——**不经全局 `useShortcuts` 分发**（Ctrl+数字对全局仍是未映射组合，§5"跳 Tab 不做"决策不变；此为引导页局部开入口动作，非按序号切 Tab）
-- **动作与磁贴一致**：Ctrl+1 → `openDiffTab()`、Ctrl+2 → `openTerminalTab()`、Ctrl+3 → `openBrowserTab("about:blank")`，与磁贴点击同路径、**同禁用态**（无 activeProfile 时 2/3 不动作；browser shim 平台 3 不动作）
+- **动作与磁贴一致**：Ctrl+1 → `openDiffTab()`、Ctrl+2 → `openTerminalTab()`、Ctrl+3 → `openNewBrowserTab()`（每次新开空白网页 Tab，不去重——2026-09-15 修订，原 `openBrowserTab("about:blank")` 复用首 Tab 见 design-browser-tab §1.3），与磁贴点击同路径、**同禁用态**（无 activeProfile 时 2/3 不动作；browser shim 平台 3 不动作）
 - **角标提示**：Ctrl（或 macOS Cmd，metaKey 等价惯例）按住期间三个磁贴右上角显示数字角标（`.btn-tile-badge`）；禁用磁贴不显示（快捷键同样不动作）。keyup Control/Meta 或窗口失焦清（失焦后 keyup 不再派发，不清会残留）。**按住态跟踪在模块级单例**（`ctrl-held.ts` 的 `useCtrlHeld`，2026-09-06 修复）：Ctrl+T 开引导页时页面在 keydown **之后**才挂载，按住的修饰键不再派发 keydown（无自动重复），组件内监听拿不到"已按住"初始态、角标不显示——跟踪器监听随模块加载常驻（keydown 用 capture，先于内层消费方，保持物理按住语义），`useCtrlHeld` 挂载时 lazy 读初始值 + 订阅后续变化
 - **守卫**：`isComposing` 不触发（fcitx5）；已 preventDefault 的事件不处理（同全局 useShortcuts 约定，防未来内层组件消费后双触发）；Shift/Alt 组合不触发；`repeat` 不触发（终端每次调用新建 pty，按住不放不得连开）；按 code `Digit1/2/3` 匹配（布局无关）；消费即 preventDefault
 - **键冲突核查**：Chromium 对 renderer 未消费的 Ctrl+数字无默认行为（Linux 桌面快捷键是合成器层，应用收不到不构成劫持）；输入区聚焦时 Ctrl+数字无文本语义，劫持无损

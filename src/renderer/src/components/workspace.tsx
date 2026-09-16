@@ -628,7 +628,7 @@ function GuidePage() {
         window.desktop.platform !== "browser"
       ) {
         e.preventDefault()
-        void store.openBrowserTab("about:blank")
+        void store.openNewBrowserTab()
       }
     }
     window.addEventListener("keydown", onKeyDown)
@@ -928,7 +928,7 @@ function GuidePage() {
             className="btn-tile"
             disabled={!store.activeProfile || window.desktop.platform === "browser"}
             title={window.desktop.platform === "browser" ? t.comingSoon : undefined}
-            onClick={() => void store.openBrowserTab("about:blank")}
+            onClick={() => void store.openNewBrowserTab()}
           >
             {ctrlHeld &&
               store.activeProfile &&

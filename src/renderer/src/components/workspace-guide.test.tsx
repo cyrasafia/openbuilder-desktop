@@ -97,7 +97,7 @@ function makeStore(overrides: Record<string, unknown> = {}): Record<string, unkn
     openChatTab: vi.fn(),
     openDiffTab: vi.fn(),
     openTerminalTab: vi.fn(async () => true),
-    openBrowserTab: vi.fn(async () => true),
+    openNewBrowserTab: vi.fn(async () => true),
     activeProfile: { name: "local" },
     commandsFor: vi.fn(() => guideCommands),
     refreshCommands: vi.fn(async () => {}),
@@ -172,7 +172,7 @@ describe("引导页快捷键（design-keyboard-shortcuts §1，2026-09-06 增）
     expect(storeStub.openTerminalTab).toHaveBeenCalledTimes(1)
     const ev3 = press({ key: "3", code: "Digit3", ctrlKey: true })
     expect(ev3.defaultPrevented).toBe(true)
-    expect(storeStub.openBrowserTab).toHaveBeenCalledWith("about:blank")
+    expect(storeStub.openNewBrowserTab).toHaveBeenCalledTimes(1)
   })
 
   it("Shift/Alt 组合与按住重复不触发", () => {
@@ -185,7 +185,7 @@ describe("引导页快捷键（design-keyboard-shortcuts §1，2026-09-06 增）
     expect(evs.every((ev) => !ev.defaultPrevented)).toBe(true)
     expect(storeStub.openDiffTab).not.toHaveBeenCalled()
     expect(storeStub.openTerminalTab).not.toHaveBeenCalled()
-    expect(storeStub.openBrowserTab).not.toHaveBeenCalled()
+    expect(storeStub.openNewBrowserTab).not.toHaveBeenCalled()
   })
 
   it("无激活 profile：Ctrl+2/3 不动作（同磁贴禁用态），Ctrl+1 照常", () => {
@@ -196,14 +196,14 @@ describe("引导页快捷键（design-keyboard-shortcuts §1，2026-09-06 增）
     press({ key: "3", code: "Digit3", ctrlKey: true })
     expect(storeStub.openDiffTab).toHaveBeenCalledTimes(1)
     expect(storeStub.openTerminalTab).not.toHaveBeenCalled()
-    expect(storeStub.openBrowserTab).not.toHaveBeenCalled()
+    expect(storeStub.openNewBrowserTab).not.toHaveBeenCalled()
   })
 
   it("browser 平台（无 Electron）：Ctrl+3 不动作", () => {
     platform = "browser"
     render(<Workspace />)
     press({ key: "3", code: "Digit3", ctrlKey: true })
-    expect(storeStub.openBrowserTab).not.toHaveBeenCalled()
+    expect(storeStub.openNewBrowserTab).not.toHaveBeenCalled()
   })
 
   it("Ctrl 按住显示数字角标，松开消失", () => {

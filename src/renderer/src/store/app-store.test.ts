@@ -3940,6 +3940,44 @@ describe("浏览器 Tab（design-browser-tab）", () => {
     expect(store.tabs[0]!.key).toBe("browser:https://example.com/")
   })
 
+  it("restoreClosedTab browser 分支：new:N 键空 title（僵尸关闭）回落空白，不导航键字面量（review 二轮）", async () => {
+    browserCalls.length = 0
+    store.closedTabs = [{ kind: "browser", key: "browser:new:1", projectId: "proj1", directory: ROOT, title: "" }]
+    store.restoreClosedTab()
+    await vi.waitFor(() => expect(browserCalls).toContain("browserNavigate:1"))
+    expect(store.tabs[0]!.key).toBe("browser:about:blank")
+  })
+
+  it("restoreClosedTab browser 分支：僵尸 title 残留页面标题（非 URL）——scheme 校验回落键内标识（review 三轮）", async () => {
+    browserCalls.length = 0
+    // new:N 键：页面标题不是 URL → 回落空白
+    store.closedTabs = [{ kind: "browser", key: "browser:new:1", projectId: "proj1", directory: ROOT, title: "Example Domain" }]
+    store.restoreClosedTab()
+    await vi.waitFor(() => expect(browserCalls).toContain("browserNavigate:1"))
+    expect(store.tabs[0]!.key).toBe("browser:about:blank")
+    // 带冒号的页面标题（「EPFL: Home」）不得被通用 scheme 正则放行（review 四轮）
+    browserCalls.length = 0
+    store.tabs = []
+    store.closedTabs = [{ kind: "browser", key: "browser:new:1", projectId: "proj1", directory: ROOT, title: "EPFL: Home" }]
+    store.restoreClosedTab()
+    await vi.waitFor(() => expect(browserCalls).toContain("browserNavigate:1"))
+    expect(store.tabs[0]!.key).toBe("browser:about:blank")
+    // URL 键：回落初始地址（原实现导航标题文本，恒死链）
+    browserCalls.length = 0
+    store.tabs = []
+    store.closedTabs = [{ kind: "browser", key: "browser:file:///repo/a.html", projectId: "proj1", directory: ROOT, title: "My Doc" }]
+    store.restoreClosedTab()
+    await vi.waitFor(() => expect(browserCalls).toContain("browserNavigate:1"))
+    expect(store.tabs[0]!.key).toBe("browser:file:///repo/a.html")
+    // 活 Tab 关闭路径不受影响：title 承载当前页 URL（scheme 过）照常重开
+    browserCalls.length = 0
+    store.tabs = []
+    store.closedTabs = [{ kind: "browser", key: "browser:x", projectId: "proj1", directory: ROOT, title: "https://current.dev/page" }]
+    store.restoreClosedTab()
+    await vi.waitFor(() => expect(browserCalls).toContain("browserNavigate:1"))
+    expect(store.tabs[0]!.key).toBe("browser:https://current.dev/page")
+  })
+
   it("PDF 文件 Tab 视图：注册即显隐协调 + 关 Tab 注册表兜底 dispose（design-pdf-preview，评审 L5）", async () => {
     browserCalls.length = 0
     store.tabs = [{ kind: "file", key: "file:/repo/a.pdf", projectId: "proj1", title: "a.pdf", directory: ROOT }]
@@ -4599,6 +4637,117 @@ describe("Tab 会话持久层（design-tab-session-restore）", () => {
     // 视图仍可用：后续有效导航（did-navigate）照常接管标题/地址
     store.applyBrowserState({ viewId: 1, url: "https://a.dev/x", title: "X", loading: false, canGoBack: true, canGoForward: false })
     expect(tab.title).toBe("X")
+  })
+
+  it("openNewBrowserTab：每次新开（键唯一不去重）+ 独立 view + url 字段落盘（2026-09-15 修订）", async () => {
+    const d = (window as unknown as { desktop: { browserViewCreate: ReturnType<typeof vi.fn>; browserNavigate: import("vitest").Mock } }).desktop
+    d.browserViewCreate.mockImplementationOnce(async () => 11).mockImplementationOnce(async () => 12)
+    const { writes } = captureSessionWrites()
+
+    expect(await store.openNewBrowserTab()).toBe(true)
+    expect(await store.openNewBrowserTab()).toBe(true)
+
+    // 两个独立 Tab + 独立 view，各自导航 about:blank（原实现复用 browser:about:blank
+    // 键，第二次调用只切换激活——无法开第二个网页 Tab）
+    expect(store.tabs.map((t) => t.key)).toEqual(["browser:new:1", "browser:new:2"])
+    expect(store.browserViewIdFor("browser:new:1")).toBe(11)
+    expect(store.browserViewIdFor("browser:new:2")).toBe(12)
+    expect(d.browserNavigate).toHaveBeenCalledWith(11, "about:blank")
+    expect(d.browserNavigate).toHaveBeenCalledWith(12, "about:blank")
+    // url 态 = about:blank（地址栏种子非键内标识）
+    expect(store.browserStates.get(11)?.url).toBe("about:blank")
+    // 持久化：url 恒 ≠ 键内标识 → url 字段必落盘（重启恢复按它导航）
+    const persisted = writes().at(-1)!.default.tabs.filter((t) => t.kind === "browser")
+    expect(persisted.map((t) => t.url)).toEqual(["about:blank", "about:blank"])
+
+    // 打开指定地址入口的复用语义不变：同 URL 仍去重
+    d.browserViewCreate.mockClear()
+    await store.openBrowserTab("https://a.dev/")
+    await store.openBrowserTab("https://a.dev/")
+    expect(store.tabs.filter((t) => t.key === "browser:https://a.dev/").length).toBe(1)
+    expect(d.browserViewCreate).toHaveBeenCalledTimes(1)
+  })
+
+  it("openNewBrowserTab 键与重启恢复条目共存：碰撞跳号（browser:new:N 序号唯一）", async () => {
+    priv().tabSession = {
+      default: {
+        tabs: [
+          // 旧会话恢复的 new:1/new:2（重启后序号归零重新计数，须跳号不撞）
+          { kind: "browser", key: "browser:new:1", projectId: "proj1", directory: ROOT, title: "about:blank", url: "https://a.dev/x" },
+          { kind: "browser", key: "browser:new:2", projectId: "proj1", directory: ROOT, title: "B", url: "file:///repo/b.html" },
+        ],
+        scopeActive: {},
+      },
+    }
+    const d = (window as unknown as { desktop: { browserViewCreate: ReturnType<typeof vi.fn> } }).desktop
+    d.browserViewCreate.mockImplementation(async () => 21)
+
+    await coldStart()
+    expect(store.tabs.filter((t) => t.kind === "browser").map((t) => t.key)).toEqual(["browser:new:1", "browser:new:2"])
+
+    expect(await store.openNewBrowserTab()).toBe(true)
+    // 撞恢复条目 → 跳到 new:3
+    expect(store.tabs.filter((t) => t.kind === "browser").map((t) => t.key)).toEqual([
+      "browser:new:1",
+      "browser:new:2",
+      "browser:new:3",
+    ])
+  })
+
+  it("恢复段与 openNewBrowserTab 竞态（TOCTOU）：恢复同步占用序号，铸键不相撞无泄漏（review 三轮）", async () => {
+    priv().tabSession = {
+      default: {
+        tabs: [{ kind: "browser", key: "browser:new:1", projectId: "proj1", directory: ROOT, title: "", url: "https://a.dev/x" }],
+        scopeActive: {},
+      },
+    }
+    const d = (window as unknown as { desktop: { browserViewCreate: ReturnType<typeof vi.fn>; browserViewDispose: import("vitest").Mock; browserNavigate: import("vitest").Mock } }).desktop
+    let resolveCreate!: (v: number) => void
+    d.browserViewCreate.mockImplementationOnce(() => new Promise<number>((r) => (resolveCreate = r)))
+
+    // 恢复在途（new:1 的 create 未决，Tab 未入 live），用户 Ctrl+3——恢复已同步
+    // 抬过序号，铸键落到 new:2 而非撞 new:1
+    const restoreP = priv().restoreTabSession()
+    const openP = store.openNewBrowserTab()
+    resolveCreate(41) // 恢复条目的 view
+    await restoreP
+    await openP
+
+    // 两 Tab 各归其键、各有 view；无同键双推、无 dispose 泄漏清理
+    expect(store.tabs.filter((t) => t.kind === "browser").map((t) => t.key).sort()).toEqual(["browser:new:1", "browser:new:2"])
+    expect(store.browserViewIdFor("browser:new:1")).toBe(41)
+    expect(store.browserViewIdFor("browser:new:2")).toBe(1)
+    expect(d.browserViewDispose).not.toHaveBeenCalled()
+    expect(d.browserNavigate).toHaveBeenCalledWith(41, "https://a.dev/x")
+    expect(d.browserNavigate).toHaveBeenCalledWith(1, "about:blank")
+  })
+
+  it("new:N 键僵尸 Tab（view 已 dispose 映射失，双行目录关一行残留）：落盘/恢复双兜底回落 about:blank（review 2026-09-15）", async () => {
+    const d = (window as unknown as { desktop: { browserViewCreate: ReturnType<typeof vi.fn>; browserNavigate: import("vitest").Mock } }).desktop
+    d.browserViewCreate.mockResolvedValue(31)
+
+    // 僵尸态：Tab 存活、view 映射已失（disposeBrowserViewsInDirectory 全量 dispose
+    // 而关 Tab 按 projectId 过滤的残留路径）
+    await store.openNewBrowserTab()
+    ;(store as unknown as { browserViewIds: Map<string, number> }).browserViewIds.delete("browser:new:1")
+    const { writes } = captureSessionWrites()
+    // 任一投影变更驱动落盘（僵尸 Tab 随整切片投影重写）
+    store.openFileTab(ROOT + "/f.md")
+
+    // 落盘兜底：url 回落 about:blank（不省略——键内标识非 URL，省略则重启导航字面量）
+    expect(writes().at(-1)!.default.tabs.find((t) => t.kind === "browser")?.url).toBe("about:blank")
+
+    // 恢复兜底：url 缺失的 new:N 条目导航 about:blank（不导航 "new:N"）
+    d.browserNavigate.mockClear()
+    priv().tabSession = {
+      default: {
+        tabs: [{ kind: "browser", key: "browser:new:2", projectId: "proj1", directory: ROOT, title: "" }],
+        scopeActive: {},
+      },
+    }
+    await coldStart()
+    expect(d.browserNavigate).toHaveBeenCalledWith(expect.any(Number), "about:blank")
+    expect(store.tabs.find((t) => t.key === "browser:new:2")?.title).toBe("about:blank")
   })
 
   it("落盘挂点：开/关 Tab 派生投影；无变更不写（序列化去重）", () => {
