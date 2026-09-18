@@ -341,7 +341,13 @@ export function Workspace() {
               />
             ) : (
               <span className="tab-label">
-                {tab.kind === "diff" ? t.diffTitle : tab.title || t.untitled}
+                {tab.kind === "diff"
+                  ? t.diffTitle
+                  : // 浏览器欢迎页态（2026-09-18）：标题本地化（store title 仍为
+                    // about:blank——持久化/关闭栈机器依赖它，仅在展示层映射）
+                    tab.kind === "browser" && store.isBrowserWelcome(tab.key)
+                    ? t.browserWelcomeTitle
+                    : tab.title || t.untitled}
               </span>
             )}
             <button

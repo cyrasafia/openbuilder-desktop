@@ -4023,8 +4023,9 @@ describe("浏览器 Tab（design-browser-tab）", () => {
     browserCalls.length = 0
     store.closedTabs = [{ kind: "browser", key: "browser:new:1", projectId: "proj1", directory: ROOT, title: "" }]
     store.restoreClosedTab()
-    await vi.waitFor(() => expect(browserCalls).toContain("browserNavigate:1"))
-    expect(store.tabs[0]!.key).toBe("browser:about:blank")
+    // 欢迎页（2026-09-18）：about:blank 不再导航——以 Tab 落位为准
+    await vi.waitFor(() => expect(store.tabs[0]?.key).toBe("browser:about:blank"))
+    expect(store.isBrowserWelcome("browser:about:blank")).toBe(true)
   })
 
   it("restoreClosedTab browser 分支：僵尸 title 残留页面标题（非 URL）——scheme 校验回落键内标识（review 三轮）", async () => {
@@ -4032,15 +4033,13 @@ describe("浏览器 Tab（design-browser-tab）", () => {
     // new:N 键：页面标题不是 URL → 回落空白
     store.closedTabs = [{ kind: "browser", key: "browser:new:1", projectId: "proj1", directory: ROOT, title: "Example Domain" }]
     store.restoreClosedTab()
-    await vi.waitFor(() => expect(browserCalls).toContain("browserNavigate:1"))
-    expect(store.tabs[0]!.key).toBe("browser:about:blank")
+    await vi.waitFor(() => expect(store.tabs[0]?.key).toBe("browser:about:blank"))
     // 带冒号的页面标题（「EPFL: Home」）不得被通用 scheme 正则放行（review 四轮）
     browserCalls.length = 0
     store.tabs = []
     store.closedTabs = [{ kind: "browser", key: "browser:new:1", projectId: "proj1", directory: ROOT, title: "EPFL: Home" }]
     store.restoreClosedTab()
-    await vi.waitFor(() => expect(browserCalls).toContain("browserNavigate:1"))
-    expect(store.tabs[0]!.key).toBe("browser:about:blank")
+    await vi.waitFor(() => expect(store.tabs[0]?.key).toBe("browser:about:blank"))
     // URL 键：回落初始地址（原实现导航标题文本，恒死链）
     browserCalls.length = 0
     store.tabs = []
@@ -4091,6 +4090,30 @@ describe("浏览器 Tab（design-browser-tab）", () => {
     expect(browserCalls).not.toContain("browserViewShow:1")
     store.popOverlay()
     expect(store.overlayCount).toBe(0)
+  })
+
+  it("浏览器欢迎页（2026-09-18）：新开不导航 about:blank；欢迎态原生视图隐藏，url 变化离开即显示", async () => {
+    browserCalls.length = 0
+    await store.openNewBrowserTab()
+    // 不加载 about:blank（webContents 本就空白，DOM 欢迎页呈现）
+    expect(browserCalls).not.toContain("browserNavigate:1")
+    expect(store.isBrowserWelcome("browser:new:1")).toBe(true)
+    // 欢迎态：激活 Tab 的原生视图隐藏（内容区是 DOM 欢迎页）
+    browserCalls.length = 0
+    store.syncBrowserViewVisibility()
+    expect(browserCalls).toContain("browserViewHide:1")
+    expect(browserCalls).not.toContain("browserViewShow:1")
+    // 导航离开欢迎态（did-navigate 推送）→ applyBrowserState 的 url 变化重跑
+    // 显隐协调 → 视图显示
+    store.applyBrowserState({ viewId: 1, url: "https://example.com/", title: "Example", loading: false, canGoBack: true, canGoForward: false })
+    expect(store.isBrowserWelcome("browser:new:1")).toBe(false)
+    expect(browserCalls).toContain("browserViewShow:1")
+    // 导航回 about:blank（后退到空白）→ 重新进入欢迎态 → 隐藏
+    browserCalls.length = 0
+    store.applyBrowserState({ viewId: 1, url: "about:blank", title: "", loading: false, canGoBack: true, canGoForward: true })
+    expect(store.isBrowserWelcome("browser:new:1")).toBe(true)
+    expect(browserCalls).toContain("browserViewHide:1")
+    expect(browserCalls).not.toContain("browserViewShow:1")
   })
 })
 
@@ -4737,8 +4760,9 @@ describe("Tab 会话持久层（design-tab-session-restore）", () => {
     expect(store.tabs.map((t) => t.key)).toEqual(["browser:new:1", "browser:new:2"])
     expect(store.browserViewIdFor("browser:new:1")).toBe(11)
     expect(store.browserViewIdFor("browser:new:2")).toBe(12)
-    expect(d.browserNavigate).toHaveBeenCalledWith(11, "about:blank")
-    expect(d.browserNavigate).toHaveBeenCalledWith(12, "about:blank")
+    // 欢迎页（2026-09-18）：about:blank 不导航（webContents 本就空白，DOM 欢迎页呈现）
+    expect(d.browserNavigate).not.toHaveBeenCalled()
+    expect(store.isBrowserWelcome("browser:new:1")).toBe(true)
     // url 态 = about:blank（地址栏种子非键内标识）
     expect(store.browserStates.get(11)?.url).toBe("about:blank")
     // 持久化：url 恒 ≠ 键内标识 → url 字段必落盘（重启恢复按它导航）
@@ -4826,7 +4850,9 @@ describe("Tab 会话持久层（design-tab-session-restore）", () => {
     expect(store.browserViewIdFor("browser:new:2")).toBe(1)
     expect(d.browserViewDispose).not.toHaveBeenCalled()
     expect(d.browserNavigate).toHaveBeenCalledWith(41, "https://a.dev/x")
-    expect(d.browserNavigate).toHaveBeenCalledWith(1, "about:blank")
+    // 欢迎页（2026-09-18）：新开空白不导航 about:blank
+    expect(d.browserNavigate).not.toHaveBeenCalledWith(1, "about:blank")
+    expect(store.isBrowserWelcome("browser:new:2")).toBe(true)
   })
 
   it("new:N 键僵尸 Tab（view 已 dispose 映射失，双行目录关一行残留）：落盘/恢复双兜底回落 about:blank（review 2026-09-15）", async () => {
@@ -4844,7 +4870,8 @@ describe("Tab 会话持久层（design-tab-session-restore）", () => {
     // 落盘兜底：url 回落 about:blank（不省略——键内标识非 URL，省略则重启导航字面量）
     expect(writes().at(-1)!.default.tabs.find((t) => t.kind === "browser")?.url).toBe("about:blank")
 
-    // 恢复兜底：url 缺失的 new:N 条目导航 about:blank（不导航 "new:N"）
+    // 恢复兜底（2026-09-18 修订）：url 缺失的 new:N 条目回落空白**欢迎态**——
+    // 不导航 "new:N"，也不加载 about:blank（DOM 欢迎页呈现）
     d.browserNavigate.mockClear()
     priv().tabSession = {
       default: {
@@ -4853,8 +4880,9 @@ describe("Tab 会话持久层（design-tab-session-restore）", () => {
       },
     }
     await coldStart()
-    expect(d.browserNavigate).toHaveBeenCalledWith(expect.any(Number), "about:blank")
+    expect(d.browserNavigate).not.toHaveBeenCalled()
     expect(store.tabs.find((t) => t.key === "browser:new:2")?.title).toBe("about:blank")
+    expect(store.isBrowserWelcome("browser:new:2")).toBe(true)
   })
 
   it("落盘挂点：开/关 Tab 派生投影；无变更不写（序列化去重）", () => {

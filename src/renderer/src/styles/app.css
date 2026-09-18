@@ -4430,6 +4430,37 @@
   flex: 1;
   min-height: 0;
   background: var(--surface);
+  position: relative;
+}
+
+/* 欢迎页（design-browser-tab §1.3，2026-09-18）：新开未导航（url 停留
+ * about:blank）时代替空白页——原生视图被显隐协调隐藏，DOM 居中呈现；
+ * 语言对齐 .workspace-empty（图标 + 提示 + 动作） */
+.browser-welcome {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--outline);
+  background: var(--surface);
+}
+
+.browser-welcome-title {
+  font-size: var(--text-title-md);
+  color: var(--on-surface);
+}
+
+.browser-welcome-hint {
+  font-size: var(--text-sm);
+}
+
+.browser-welcome .btn-tonal {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 /* ---------- PDF 预览（design-pdf-preview §1 终态：专用 WebContentsView + PDFium） ---------- */

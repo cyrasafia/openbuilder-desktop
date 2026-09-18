@@ -238,6 +238,9 @@ const zh = {
   browserOpenFile: "打开本地文件…",
   browserOpenExternal: "在系统浏览器打开",
   browserAddressPlaceholder: "输入地址",
+  // 欢迎页（design-browser-tab §1.3，2026-09-18）：新开未导航（url 停留 about:blank）
+  browserWelcomeTitle: "新标签页",
+  browserWelcomeHint: "在上方地址栏输入网址，或打开本地 HTML 文件",
   fileViewSource: "查看源码",
   openWithLoading: "正在枚举应用…",
   openWithEmpty: "无匹配的应用",
@@ -520,6 +523,8 @@ const en: typeof zh = {
   browserOpenFile: "Open local file…",
   browserOpenExternal: "Open in system browser",
   browserAddressPlaceholder: "Enter address",
+  browserWelcomeTitle: "New tab",
+  browserWelcomeHint: "Type an address above, or open a local HTML file",
   fileViewSource: "View source",
   openWithLoading: "Listing apps…",
   openWithEmpty: "No apps found",

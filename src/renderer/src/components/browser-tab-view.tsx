@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { ArrowLeft, ArrowRight, ExternalLink, FolderOpen, RotateCw, X } from "lucide-react"
+import { ArrowLeft, ArrowRight, ExternalLink, FolderOpen, Globe, RotateCw, X } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import { fileUrlOf } from "@shared/file-url"
 import { FindBar, useWebContentsFind } from "./find-bar"
@@ -15,8 +15,13 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
   const { t } = useI18n()
   const hostRef = useRef<HTMLDivElement>(null)
   const state = store.browserStates.get(viewId)
+  // 欢迎页态（design-browser-tab §1.3，2026-09-18）：url 停留 about:blank（新开
+  // 未导航/恢复空白）——原生视图被显隐协调隐藏，内容区渲染 DOM 欢迎页
+  const welcome = state?.url === "about:blank"
+  // 地址栏展示归一（同上）：欢迎态显示空（placeholder 引导）而非字面 about:blank
+  const addressOf = (url: string | undefined) => (url && url !== "about:blank" ? url : "")
   // 地址栏本地态：聚焦编辑时不被 store url 回写打断；失焦/导航后同步
-  const [address, setAddress] = useState(state?.url ?? tabKey.slice("browser:".length))
+  const [address, setAddress] = useState(state?.url ? addressOf(state.url) : tabKey.slice("browser:".length))
   const addressFocused = useRef(false)
   const addressRef = useRef<HTMLInputElement>(null)
   // 页面内搜索（design-find-in-page §2.2/§2.4）：Ctrl+F 唤起（经 store 注册）
@@ -63,9 +68,9 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
     }
   }, [viewId])
 
-  // store url → 地址栏同步（未聚焦时）
+  // store url → 地址栏同步（未聚焦时；欢迎态归一为空）
   useEffect(() => {
-    if (!addressFocused.current && state?.url) setAddress(state.url)
+    if (!addressFocused.current && state?.url) setAddress(addressOf(state.url))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state?.url])
 
@@ -83,11 +88,22 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
   const navigate = (raw: string) => {
     const value = raw.trim()
     if (!value) return
+    // 乐观展示（2026-09-18 review）：在途期间地址栏保持所输 URL——Enter 先 blur，
+    // blur 还原的是 store 当前页（欢迎态为空、常规态为旧页），均非用户所输，
+    // 慢网络下读作"输入被丢弃"；did-navigate/失败回填到达后回写接管为规范 URL
+    setAddress(value)
     // 字面 file 路径补 scheme（逐段编码）；其余原样（http/https/file/about）
     const url = value.startsWith("file://") || /^[a-z]+:\/\//i.test(value) || value.startsWith("about:")
       ? value
       : fileUrlOf(value)
     window.desktop.browserNavigate(viewId, url)
+  }
+
+  // 打开本地 HTML（工具条与欢迎页共用入口）：选择器 → file:// 导航
+  const openLocalFile = () => {
+    void window.desktop.openHtmlFilePicker().then((path) => {
+      if (path) window.desktop.browserNavigate(viewId, fileUrlOf(path))
+    })
   }
 
   // 系统浏览器打开的目标：当前页 URL（store 权威，导航事件持续覆写）；
@@ -149,7 +165,7 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
           }}
           onBlur={() => {
             addressFocused.current = false
-            if (state?.url) setAddress(state.url)
+            if (state?.url) setAddress(addressOf(state.url))
           }}
           onKeyDown={(e) => {
             if (e.nativeEvent.isComposing) return
@@ -159,7 +175,7 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
               navigate(address)
             } else if (e.key === "Escape") {
               e.preventDefault()
-              if (state?.url) setAddress(state.url)
+              if (state?.url) setAddress(addressOf(state.url))
               e.currentTarget.blur()
             }
           }}
@@ -168,11 +184,7 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
           className="icon-btn"
           title={t.browserOpenFile}
           aria-label={t.browserOpenFile}
-          onClick={() => {
-            void window.desktop.openHtmlFilePicker().then((path) => {
-              if (path) window.desktop.browserNavigate(viewId, fileUrlOf(path))
-            })
-          }}
+          onClick={openLocalFile}
         >
           <FolderOpen size={14} />
         </button>
@@ -193,7 +205,21 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
         )}
       </div>
       {/* 内容宿主：占位 + bounds 源（渲染在 main 侧原生视图） */}
-      <div ref={hostRef} className="browser-host" />
+      <div ref={hostRef} className="browser-host">
+        {/* 欢迎页（2026-09-18）：新开未导航（url 停留 about:blank）时代替空白页
+            ——原生视图被显隐协调隐藏，DOM 呈现；导航离开（url 变化）即卸载 */}
+        {welcome && (
+          <div className="browser-welcome">
+            <Globe size={40} aria-hidden />
+            <div className="browser-welcome-title">{t.browserWelcomeTitle}</div>
+            <div className="browser-welcome-hint">{t.browserWelcomeHint}</div>
+            <button className="btn-tonal" onClick={openLocalFile}>
+              <FolderOpen size={14} aria-hidden />
+              {t.browserOpenFile}
+            </button>
+          </div>
+        )}
+      </div>
       {/* 页面内搜索条（design-find-in-page §2.4）：统一居底——与代码视图 CM
           搜索面板同位（2026-09-09）；原生视图 bounds 随宿主自动跟随 */}
       {find.open && (

@@ -2494,7 +2494,9 @@ export class AppStore {
       title: e.title || url,
       directory: e.directory,
     })
-    window.desktop.browserNavigate(viewId, url)
+    // 欢迎页态（2026-09-18）：恢复空白（url 回落 about:blank）不导航——同新开，
+    // 内容区显示 DOM 欢迎页；真实当前页照常恢复导航
+    if (url !== "about:blank") window.desktop.browserNavigate(viewId, url)
     return true
   }
 
@@ -4395,6 +4397,9 @@ export class AppStore {
       }
     }
     this.emit()
+    // url 变化重跑显隐协调（2026-09-18）：欢迎页边界（about:blank ↔ 真实 URL）
+    // 翻转时原生视图须随之显/隐——loading 等瞬态不触发
+    if (prev?.url !== state.url) this.syncBrowserViewVisibility()
     if (sessionDirty) this.persistTabSession()
   }
 
@@ -4506,7 +4511,9 @@ export class AppStore {
     this.activeTabKey = key
     this.recordScopeActive(this.scopeDirectory(), key)
     this.emit()
-    window.desktop.browserNavigate(viewId, url)
+    // 欢迎页态（2026-09-18）：about:blank 不导航——webContents 本就空白，新开
+    // Tab 内容区显示 DOM 欢迎页（原生视图由显隐协调隐藏）；真实 URL 照常导航
+    if (url !== "about:blank") window.desktop.browserNavigate(viewId, url)
     return true
   }
 
@@ -4550,14 +4557,26 @@ export class AppStore {
     return this.findRequesters.get(tabKey) ?? null
   }
 
-  /** 激活视图显隐（Tab 切换协调：激活显示，其余隐藏；PDF 文件 Tab 视图同规则） */
+  /** 激活视图显隐（Tab 切换协调：激活显示，其余隐藏；PDF 文件 Tab 视图同规则）。
+   *  欢迎页态（2026-09-18）：激活浏览器 Tab 停留 about:blank（新开未导航/恢复
+   *  空白）时原生视图隐藏——内容区是 DOM 欢迎页而非 web 内容；url 变化（离开
+   *  欢迎页/导航回 about:blank）经 applyBrowserState 重跑本协调 */
   syncBrowserViewVisibility() {
     const active = this.activeTab
+    const welcome = !!active && active.kind === "browser" && this.isBrowserWelcome(active.key)
     for (const [key, viewId] of this.browserViewIds) {
-      const show = this.overlayCount === 0 && active?.key === key && active.directory === this.scopeDirectory()
+      const show = !welcome && this.overlayCount === 0 && active?.key === key && active.directory === this.scopeDirectory()
       if (show) window.desktop.browserViewShow(viewId)
       else window.desktop.browserViewHide(viewId)
     }
+  }
+
+  /** 浏览器 Tab 欢迎页态（design-browser-tab §1.3，2026-09-18）：url 停留
+   *  about:blank——新开未导航、恢复空白、关闭栈重开空白；导航（did-navigate/
+   *  失败回填）即离开欢迎态 */
+  isBrowserWelcome(tabKey: string): boolean {
+    const viewId = this.browserViewIds.get(tabKey)
+    return viewId != null && this.browserStates.get(viewId)?.url === "about:blank"
   }
 
   /** 目录卸载（关项目/删工作区/teardown）时随关 Tab dispose（closeTab 分支兜底） */
