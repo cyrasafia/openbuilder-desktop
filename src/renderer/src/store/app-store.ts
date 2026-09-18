@@ -2494,7 +2494,9 @@ export class AppStore {
       title: e.title || url,
       directory: e.directory,
     })
-    window.desktop.browserNavigate(viewId, url)
+    // 欢迎页态（2026-09-18）：恢复空白（url 回落 about:blank）不导航——同新开，
+    // 内容区显示 DOM 欢迎页；真实当前页照常恢复导航
+    if (url !== "about:blank") window.desktop.browserNavigate(viewId, url)
     return true
   }
 
@@ -4395,6 +4397,9 @@ export class AppStore {
       }
     }
     this.emit()
+    // url 变化重跑显隐协调（2026-09-18）：欢迎页边界（about:blank ↔ 真实 URL）
+    // 翻转时原生视图须随之显/隐——loading 等瞬态不触发
+    if (prev?.url !== state.url) this.syncBrowserViewVisibility()
     if (sessionDirty) this.persistTabSession()
   }
 
@@ -4420,6 +4425,28 @@ export class AppStore {
 
   /** 新开空白浏览器 Tab 的序号（键唯一性：跨重启与恢复的 browser:new:N 条目共存） */
   private browserNewTabSeq = 0
+
+  /** 新开浏览器 Tab 待聚焦地址栏的键（2026-09-18）：仅 doOpenBrowserTab 新建路径
+   *  登记（复用既有 Tab = 切换语义、恢复路径不登记）——**单槽**（连开后开覆写先
+   *  开，Ctrl+3 连按只留最后一个）；BrowserTabView 挂载一次性消费；激活移出待
+   *  聚焦 Tab 即作废（invalidateBrowserOpenFocusUnless），防"新开后未及挂载即被
+   *  顶替、首次切入误抢焦点"（review 2026-09-18） */
+  private browserOpenFocusKey: string | null = null
+
+  /** 消费"新开 Tab 聚焦地址栏"标记：仅新建 Tab 首次挂载返回 true（之后/切换 false） */
+  consumeBrowserOpenFocus(tabKey: string): boolean {
+    if (this.browserOpenFocusKey !== tabKey) return false
+    this.browserOpenFocusKey = null
+    return true
+  }
+
+  /** 待聚焦标记闸门（Workspace 激活变化时调用）：激活非待聚焦 Tab 即作废——
+   *  正常新开流中子组件挂载先于父 effect 消费标记，闸门空转不误伤 */
+  invalidateBrowserOpenFocusUnless(activeKey: string | null): void {
+    if (this.browserOpenFocusKey !== null && this.browserOpenFocusKey !== activeKey) {
+      this.browserOpenFocusKey = null
+    }
+  }
 
   /**
    * 新开空白浏览器 Tab（引导页磁贴 / Ctrl+3 入口）：每次调用新开一个，**不经
@@ -4463,6 +4490,9 @@ export class AppStore {
       return true
     }
     this.browserViewIds.set(key, viewId)
+    // 新开 Tab 聚焦地址栏（2026-09-18）：仅新建路径登记待聚焦标记（单槽覆写）——
+    // 上方既有 Tab 分支与恢复路径（restoreBrowserTab）是切换/恢复语义，不登记
+    this.browserOpenFocusKey = key
     this.browserStates.set(viewId, {
       viewId,
       url,
@@ -4481,7 +4511,9 @@ export class AppStore {
     this.activeTabKey = key
     this.recordScopeActive(this.scopeDirectory(), key)
     this.emit()
-    window.desktop.browserNavigate(viewId, url)
+    // 欢迎页态（2026-09-18）：about:blank 不导航——webContents 本就空白，新开
+    // Tab 内容区显示 DOM 欢迎页（原生视图由显隐协调隐藏）；真实 URL 照常导航
+    if (url !== "about:blank") window.desktop.browserNavigate(viewId, url)
     return true
   }
 
@@ -4525,14 +4557,26 @@ export class AppStore {
     return this.findRequesters.get(tabKey) ?? null
   }
 
-  /** 激活视图显隐（Tab 切换协调：激活显示，其余隐藏；PDF 文件 Tab 视图同规则） */
+  /** 激活视图显隐（Tab 切换协调：激活显示，其余隐藏；PDF 文件 Tab 视图同规则）。
+   *  欢迎页态（2026-09-18）：激活浏览器 Tab 停留 about:blank（新开未导航/恢复
+   *  空白）时原生视图隐藏——内容区是 DOM 欢迎页而非 web 内容；url 变化（离开
+   *  欢迎页/导航回 about:blank）经 applyBrowserState 重跑本协调 */
   syncBrowserViewVisibility() {
     const active = this.activeTab
+    const welcome = !!active && active.kind === "browser" && this.isBrowserWelcome(active.key)
     for (const [key, viewId] of this.browserViewIds) {
-      const show = this.overlayCount === 0 && active?.key === key && active.directory === this.scopeDirectory()
+      const show = !welcome && this.overlayCount === 0 && active?.key === key && active.directory === this.scopeDirectory()
       if (show) window.desktop.browserViewShow(viewId)
       else window.desktop.browserViewHide(viewId)
     }
+  }
+
+  /** 浏览器 Tab 欢迎页态（design-browser-tab §1.3，2026-09-18）：url 停留
+   *  about:blank——新开未导航、恢复空白、关闭栈重开空白；导航（did-navigate/
+   *  失败回填）即离开欢迎态 */
+  isBrowserWelcome(tabKey: string): boolean {
+    const viewId = this.browserViewIds.get(tabKey)
+    return viewId != null && this.browserStates.get(viewId)?.url === "about:blank"
   }
 
   /** 目录卸载（关项目/删工作区/teardown）时随关 Tab dispose（closeTab 分支兜底） */

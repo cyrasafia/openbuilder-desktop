@@ -96,6 +96,15 @@ export function Workspace() {
   useEffect(() => {
     store.syncBrowserViewVisibility()
   }, [store.activeTabKey, store.overlayCount, scopeDir, store])
+
+  // 新开浏览器 Tab 待聚焦标记的作废闸门（design-browser-tab §1.3，2026-09-18）：
+  // 任何激活路径（点 Tab/作用域切换/关闭回退等）最终都经 emit → 本 effect——激活
+  // 移出待聚焦 Tab 即作废，防"新开后未及挂载即被顶替、首次切入误抢焦点"（review
+  // 2026-09-18）；正常新开流：子组件 BrowserTabView 挂载 effect 先于本父 effect
+  // 消费标记（React 子先于父），闸门空转不误伤
+  useEffect(() => {
+    store.invalidateBrowserOpenFocusUnless(store.activeTabKey)
+  }, [store.activeTabKey, store])
   // 拖拽重排序（design-tab-drag-rename §1，2026-08-29 修订为实时预览式，参考
   // design-project-drag-reorder）：dragKey = 拖拽中 Tab；dragSlot = 目标插入位
   // （以"移除拖拽项后的作用域数组"为坐标系，0..base.length）。拖动中 Tab 条
@@ -332,7 +341,13 @@ export function Workspace() {
               />
             ) : (
               <span className="tab-label">
-                {tab.kind === "diff" ? t.diffTitle : tab.title || t.untitled}
+                {tab.kind === "diff"
+                  ? t.diffTitle
+                  : // 浏览器欢迎页态（2026-09-18）：标题本地化（store title 仍为
+                    // about:blank——持久化/关闭栈机器依赖它，仅在展示层映射）
+                    tab.kind === "browser" && store.isBrowserWelcome(tab.key)
+                    ? t.browserWelcomeTitle
+                    : tab.title || t.untitled}
               </span>
             )}
             <button

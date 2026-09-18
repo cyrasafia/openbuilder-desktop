@@ -29,6 +29,8 @@ const browser = {
 
 /** findRequester 注册表桩（useWebContentsFind 挂载注册） */
 const registerFindRequesterMock = vi.fn()
+/** 新开 Tab 待聚焦标记桩（默认 false = 切入既有 Tab） */
+const consumeBrowserOpenFocusMock = vi.fn()
 
 let stateStub: { viewId: number; url: string; title: string; loading: boolean; canGoBack: boolean; canGoForward: boolean } | null
 let findRequestCbs: Array<(payload: unknown) => void> = []
@@ -44,6 +46,8 @@ vi.mock("../app", () => ({
       browserOpenFile: "打开本地文件…",
       browserOpenExternal: "在系统浏览器打开",
       browserAddressPlaceholder: "输入地址",
+      browserWelcomeTitle: "新标签页",
+      browserWelcomeHint: "在上方地址栏输入网址，或打开本地 HTML 文件",
       findPlaceholder: "查找…",
       findMatchCount: "{active}/{matches}",
       findIdle: "",
@@ -58,6 +62,8 @@ vi.mock("../app", () => ({
     // 页面内搜索（design-find-in-page）：注册表桩
     registerFindRequester: registerFindRequesterMock,
     unregisterFindRequester: vi.fn(),
+    // 新开 Tab 待聚焦标记（2026-09-18）：默认切换语义
+    consumeBrowserOpenFocus: consumeBrowserOpenFocusMock,
   }),
 }))
 
@@ -66,6 +72,8 @@ beforeEach(() => {
   ;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = ResizeObserverStub
   for (const fn of Object.values(browser)) if (vi.isMockFunction(fn)) fn.mockClear()
   registerFindRequesterMock.mockClear()
+  consumeBrowserOpenFocusMock.mockReset()
+  consumeBrowserOpenFocusMock.mockReturnValue(false)
   findRequestCbs = []
   findStateCbs = []
   ;(window as unknown as { desktop: unknown }).desktop = {
@@ -121,18 +129,58 @@ describe("BrowserTabView", () => {
     fireEvent.change(input, { target: { value: "/home/u/page.html" } })
     fireEvent.keyDown(input, { key: "Enter" })
     expect(browser.browserNavigate).toHaveBeenCalledWith(1, "file:///home/u/page.html")
+    // 乐观展示（2026-09-18 review）：在途期间保持所输值（旧页 URL/空由
+    // did-navigate 回写接管覆写）
+    expect(input.value).toBe("/home/u/page.html")
     fireEvent.change(input, { target: { value: "https://a.io/" } })
     fireEvent.keyDown(input, { key: "Escape" })
     expect(input.value).toBe("https://example.com/") // store url 还原
   })
 
-  it("切入浏览器 Tab（挂载）即聚焦地址栏并全选（2026-09-15）", () => {
-    render(<BrowserTabView tabKey="browser:https://example.com/" viewId={1} />)
+  it("地址栏聚焦时机（2026-09-18 修订）：新开 Tab（待聚焦标记）聚焦并全选；切入既有 Tab 不聚焦", () => {
+    // 新开：store 待聚焦标记为 true
+    consumeBrowserOpenFocusMock.mockReturnValue(true)
+    const first = render(<BrowserTabView tabKey="browser:https://example.com/" viewId={1} />)
     const input = screen.getByRole("textbox") as HTMLInputElement
     expect(document.activeElement).toBe(input)
     // onFocus 全选随聚焦触发（输入即整替）
     expect(input.selectionStart).toBe(0)
     expect(input.selectionEnd).toBe("https://example.com/".length)
+    first.unmount()
+
+    // 切入既有 Tab（无标记，重挂载）：不聚焦
+    consumeBrowserOpenFocusMock.mockReturnValue(false)
+    render(<BrowserTabView tabKey="browser:https://example.com/" viewId={1} />)
+    const input2 = screen.getByRole("textbox") as HTMLInputElement
+    expect(document.activeElement).not.toBe(input2)
+  })
+
+  it("欢迎页（2026-09-18）：url 停留 about:blank 时渲染（地址栏空）+ 本地文件入口同路径；导航离开即消失", async () => {
+    stateStub = { ...stateStub!, url: "about:blank" }
+    render(<BrowserTabView tabKey="browser:new:1" viewId={1} />)
+    expect(screen.getByText("新标签页")).toBeTruthy()
+    expect(screen.getByText("在上方地址栏输入网址，或打开本地 HTML 文件")).toBeTruthy()
+    // 地址栏空（placeholder 引导，非字面 about:blank）
+    const input = screen.getByRole("textbox", { name: "输入地址" }) as HTMLInputElement
+    expect(input.value).toBe("")
+    // Enter 导航（2026-09-18 review）：欢迎态在途期间地址栏乐观保持所输 URL，
+    // 不闪空回 placeholder（did-navigate 到达后回写规范 URL）
+    fireEvent.change(input, { target: { value: "https://example.com/" } })
+    fireEvent.keyDown(input, { key: "Enter" })
+    expect(browser.browserNavigate).toHaveBeenCalledWith(1, "https://example.com/")
+    expect(input.value).toBe("https://example.com/")
+    // 欢迎页按钮与工具条同路径（openLocalFile）：选择器 → file:// 导航
+    const welcomeBtn = document.querySelector(".browser-welcome .btn-tonal") as HTMLButtonElement
+    expect(welcomeBtn).not.toBeNull()
+    welcomeBtn.click()
+    await waitFor(() => expect(browser.browserNavigate).toHaveBeenCalledWith(1, "file:///repo/x.html"))
+    // 导航离开（did-navigate 推送 url）→ 欢迎页卸载、地址栏接管规范 URL。
+    // 受控 input 值不变不重渲染（React bail out）——改异值触发 onChange 重渲染
+    // 读新 stateStub，url 变化经回写 effect 归一到新页 URL
+    stateStub = { ...stateStub!, url: "https://example.com/" }
+    fireEvent.change(input, { target: { value: "editing" } })
+    await waitFor(() => expect(screen.queryByText("新标签页")).toBeNull())
+    expect(input.value).toBe("https://example.com/")
   })
 
   it("打开本地文件：选择器 → file:// 导航；取消无动作", async () => {
