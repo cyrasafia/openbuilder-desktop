@@ -32,6 +32,7 @@ function makeStore(overrides: Record<string, unknown> = {}): Record<string, unkn
     overlayCount: 0,
     scopeQuery: { directory: "" },
     syncBrowserViewVisibility: vi.fn(),
+    invalidateBrowserOpenFocusUnless: vi.fn(),
     getActiveClient: vi.fn(() => ({})),
     openProjectPicker: vi.fn(),
     openSettings: vi.fn(),

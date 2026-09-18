@@ -29,6 +29,8 @@ const browser = {
 
 /** findRequester 注册表桩（useWebContentsFind 挂载注册） */
 const registerFindRequesterMock = vi.fn()
+/** 新开 Tab 待聚焦标记桩（默认 false = 切入既有 Tab） */
+const consumeBrowserOpenFocusMock = vi.fn()
 
 let stateStub: { viewId: number; url: string; title: string; loading: boolean; canGoBack: boolean; canGoForward: boolean } | null
 let findRequestCbs: Array<(payload: unknown) => void> = []
@@ -58,6 +60,8 @@ vi.mock("../app", () => ({
     // 页面内搜索（design-find-in-page）：注册表桩
     registerFindRequester: registerFindRequesterMock,
     unregisterFindRequester: vi.fn(),
+    // 新开 Tab 待聚焦标记（2026-09-18）：默认切换语义
+    consumeBrowserOpenFocus: consumeBrowserOpenFocusMock,
   }),
 }))
 
@@ -66,6 +70,8 @@ beforeEach(() => {
   ;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = ResizeObserverStub
   for (const fn of Object.values(browser)) if (vi.isMockFunction(fn)) fn.mockClear()
   registerFindRequesterMock.mockClear()
+  consumeBrowserOpenFocusMock.mockReset()
+  consumeBrowserOpenFocusMock.mockReturnValue(false)
   findRequestCbs = []
   findStateCbs = []
   ;(window as unknown as { desktop: unknown }).desktop = {
@@ -126,13 +132,22 @@ describe("BrowserTabView", () => {
     expect(input.value).toBe("https://example.com/") // store url 还原
   })
 
-  it("切入浏览器 Tab（挂载）即聚焦地址栏并全选（2026-09-15）", () => {
-    render(<BrowserTabView tabKey="browser:https://example.com/" viewId={1} />)
+  it("地址栏聚焦时机（2026-09-18 修订）：新开 Tab（待聚焦标记）聚焦并全选；切入既有 Tab 不聚焦", () => {
+    // 新开：store 待聚焦标记为 true
+    consumeBrowserOpenFocusMock.mockReturnValue(true)
+    const first = render(<BrowserTabView tabKey="browser:https://example.com/" viewId={1} />)
     const input = screen.getByRole("textbox") as HTMLInputElement
     expect(document.activeElement).toBe(input)
     // onFocus 全选随聚焦触发（输入即整替）
     expect(input.selectionStart).toBe(0)
     expect(input.selectionEnd).toBe("https://example.com/".length)
+    first.unmount()
+
+    // 切入既有 Tab（无标记，重挂载）：不聚焦
+    consumeBrowserOpenFocusMock.mockReturnValue(false)
+    render(<BrowserTabView tabKey="browser:https://example.com/" viewId={1} />)
+    const input2 = screen.getByRole("textbox") as HTMLInputElement
+    expect(document.activeElement).not.toBe(input2)
   })
 
   it("打开本地文件：选择器 → file:// 导航；取消无动作", async () => {

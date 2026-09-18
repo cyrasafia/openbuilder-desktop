@@ -18,6 +18,7 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
   // 地址栏本地态：聚焦编辑时不被 store url 回写打断；失焦/导航后同步
   const [address, setAddress] = useState(state?.url ?? tabKey.slice("browser:".length))
   const addressFocused = useRef(false)
+  const addressRef = useRef<HTMLInputElement>(null)
   // 页面内搜索（design-find-in-page §2.2/§2.4）：Ctrl+F 唤起（经 store 注册）
   const find = useWebContentsFind(viewId, tabKey)
 
@@ -67,6 +68,17 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
     if (!addressFocused.current && state?.url) setAddress(state.url)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state?.url])
+
+  // 地址栏聚焦时机（2026-09-18 修订，原 autoFocus 挂载即聚焦）：仅新开 Tab 聚焦
+  // 并全选（store 待聚焦标记一次性消费，doOpenBrowserTab 新建路径登记）——切入
+  // 既有 Tab（重挂载）不抢焦点
+  useEffect(() => {
+    if (store.consumeBrowserOpenFocus(tabKey)) {
+      addressRef.current?.focus()
+      addressRef.current?.select()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const navigate = (raw: string) => {
     const value = raw.trim()
@@ -124,12 +136,9 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
           </button>
         )}
         <input
+          ref={addressRef}
           className="browser-address mono"
           value={address}
-          // 切入浏览器 Tab 即聚焦地址栏（2026-09-15）：组件仅在 Tab 激活时挂载
-          // （workspace 条件渲染 + key 隔离，切走即卸载），挂载聚焦 = 切入聚焦；
-          // 既有 onFocus 全选随触发（Ctrl+L 惯例，输入即整替 URL）
-          autoFocus
           spellCheck={false}
           placeholder={t.browserAddressPlaceholder}
           aria-label={t.browserAddressPlaceholder}

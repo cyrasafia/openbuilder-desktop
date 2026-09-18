@@ -4421,6 +4421,28 @@ export class AppStore {
   /** 新开空白浏览器 Tab 的序号（键唯一性：跨重启与恢复的 browser:new:N 条目共存） */
   private browserNewTabSeq = 0
 
+  /** 新开浏览器 Tab 待聚焦地址栏的键（2026-09-18）：仅 doOpenBrowserTab 新建路径
+   *  登记（复用既有 Tab = 切换语义、恢复路径不登记）——**单槽**（连开后开覆写先
+   *  开，Ctrl+3 连按只留最后一个）；BrowserTabView 挂载一次性消费；激活移出待
+   *  聚焦 Tab 即作废（invalidateBrowserOpenFocusUnless），防"新开后未及挂载即被
+   *  顶替、首次切入误抢焦点"（review 2026-09-18） */
+  private browserOpenFocusKey: string | null = null
+
+  /** 消费"新开 Tab 聚焦地址栏"标记：仅新建 Tab 首次挂载返回 true（之后/切换 false） */
+  consumeBrowserOpenFocus(tabKey: string): boolean {
+    if (this.browserOpenFocusKey !== tabKey) return false
+    this.browserOpenFocusKey = null
+    return true
+  }
+
+  /** 待聚焦标记闸门（Workspace 激活变化时调用）：激活非待聚焦 Tab 即作废——
+   *  正常新开流中子组件挂载先于父 effect 消费标记，闸门空转不误伤 */
+  invalidateBrowserOpenFocusUnless(activeKey: string | null): void {
+    if (this.browserOpenFocusKey !== null && this.browserOpenFocusKey !== activeKey) {
+      this.browserOpenFocusKey = null
+    }
+  }
+
   /**
    * 新开空白浏览器 Tab（引导页磁贴 / Ctrl+3 入口）：每次调用新开一个，**不经
    * URL 键去重**——openBrowserTab 的复用语义只适用于"打开指定地址"（文件树
@@ -4463,6 +4485,9 @@ export class AppStore {
       return true
     }
     this.browserViewIds.set(key, viewId)
+    // 新开 Tab 聚焦地址栏（2026-09-18）：仅新建路径登记待聚焦标记（单槽覆写）——
+    // 上方既有 Tab 分支与恢复路径（restoreBrowserTab）是切换/恢复语义，不登记
+    this.browserOpenFocusKey = key
     this.browserStates.set(viewId, {
       viewId,
       url,

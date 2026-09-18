@@ -4724,7 +4724,13 @@ describe("Tab 会话持久层（design-tab-session-restore）", () => {
     const { writes } = captureSessionWrites()
 
     expect(await store.openNewBrowserTab()).toBe(true)
+    // 新开聚焦标记（2026-09-18）：新建登记、一次性消费
+    expect(store.consumeBrowserOpenFocus("browser:new:1")).toBe(true)
+    expect(store.consumeBrowserOpenFocus("browser:new:1")).toBe(false)
     expect(await store.openNewBrowserTab()).toBe(true)
+    // 单槽：后开覆写先开（Ctrl+3 连按只留最后一个待聚焦——review 2026-09-18）
+    expect(store.consumeBrowserOpenFocus("browser:new:1")).toBe(false)
+    expect(store.consumeBrowserOpenFocus("browser:new:2")).toBe(true)
 
     // 两个独立 Tab + 独立 view，各自导航 about:blank（原实现复用 browser:about:blank
     // 键，第二次调用只切换激活——无法开第二个网页 Tab）
@@ -4742,9 +4748,29 @@ describe("Tab 会话持久层（design-tab-session-restore）", () => {
     // 打开指定地址入口的复用语义不变：同 URL 仍去重
     d.browserViewCreate.mockClear()
     await store.openBrowserTab("https://a.dev/")
+    // 首次 = 新建 Tab（登记聚焦标记，组件挂载前由测试代消费）
+    expect(store.consumeBrowserOpenFocus("browser:https://a.dev/")).toBe(true)
     await store.openBrowserTab("https://a.dev/")
+    // 复用既有 Tab = 切换语义，不再登记
+    expect(store.consumeBrowserOpenFocus("browser:https://a.dev/")).toBe(false)
     expect(store.tabs.filter((t) => t.key === "browser:https://a.dev/").length).toBe(1)
     expect(d.browserViewCreate).toHaveBeenCalledTimes(1)
+  })
+
+  it("新开 Tab 待聚焦标记作废闸门（2026-09-18 review）：激活移出待聚焦 Tab 即作废", async () => {
+    const d = (window as unknown as { desktop: { browserViewCreate: ReturnType<typeof vi.fn> } }).desktop
+    d.browserViewCreate.mockResolvedValue(51)
+
+    // 新开 new:1 登记 → 激活移到别的 Tab（点 Tab/作用域切换等任何路径经
+    // Workspace 闸门）→ 标记作废，首次切入不误抢焦点
+    await store.openNewBrowserTab()
+    store.invalidateBrowserOpenFocusUnless("file:/repo/x.md")
+    expect(store.consumeBrowserOpenFocus("browser:new:1")).toBe(false)
+
+    // 激活仍是待聚焦 Tab：闸门空转（正常新开流中组件挂载先消费，闸门兜竞态）
+    await store.openNewBrowserTab()
+    store.invalidateBrowserOpenFocusUnless("browser:new:2")
+    expect(store.consumeBrowserOpenFocus("browser:new:2")).toBe(true)
   })
 
   it("openNewBrowserTab 键与重启恢复条目共存：碰撞跳号（browser:new:N 序号唯一）", async () => {
@@ -4763,6 +4789,8 @@ describe("Tab 会话持久层（design-tab-session-restore）", () => {
 
     await coldStart()
     expect(store.tabs.filter((t) => t.kind === "browser").map((t) => t.key)).toEqual(["browser:new:1", "browser:new:2"])
+    // 恢复路径不登记聚焦标记（重启恢复 ≠ 新开，不抢焦点）
+    expect(store.consumeBrowserOpenFocus("browser:new:1")).toBe(false)
 
     expect(await store.openNewBrowserTab()).toBe(true)
     // 撞恢复条目 → 跳到 new:3
