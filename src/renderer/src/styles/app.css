@@ -2150,12 +2150,9 @@
   color: var(--error);
 }
 
-/* 选区：不装 drawSelection（装饰层自绘），走原生 ::selection 令牌化——
- * 此前误写的 .cm-selectionBackground 规则对应的 DOM 只由 drawSelection 创建 */
-.code-view-host .cm-content ::selection,
-.code-view-host .cm-content::selection {
-  background: color-mix(in srgb, var(--primary) 26%, transparent);
-}
+/* 选区：不装 drawSelection（装饰层自绘），走原生 ::selection——此前误写的
+ * .cm-selectionBackground 规则对应的 DOM 只由 drawSelection 创建；取值已
+ * 收编为全局 ::selection 令牌（tokens.css，2026-09-18），此处不再局部覆写 */
 
 /* 搜索面板（Ctrl+F，面板居底——CM 默认，原 top: true，2026-09-08 修订）：
  * chrome 底与 .file-toolbar 同档统一（surface-container-low，原 container-high
@@ -4380,9 +4377,10 @@
 }
 
 /* markdown 预览 DOM 扫描高亮（CSS Custom Highlighting；浏览器/PDF 走原生
- * findInPage 选区高亮不经此） */
+ * findInPage 选区高亮不经此）；取值消费 --selection-tint（tokens.css，
+ * 2026-09-18 起与 ::selection 同源） */
 ::highlight(md-find) {
-  background-color: color-mix(in srgb, var(--primary) 26%, transparent);
+  background-color: var(--selection-tint);
 }
 
 ::highlight(md-find-active) {

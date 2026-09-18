@@ -29,14 +29,16 @@ import { useI18n, useStore } from "../app"
  * 恒深色主题（不接 data-theme，spec #5）。
  * 背景 = 深色 surface（#161b16），与工作区一致；前景/ANSI 16 色对齐项目
  * 语法高亮色板（tokens.css §syntax-*，GitHub dark），cursor 取 primary 绿，
- * selection 取 outline-variant 半透明——整体与项目配色协调而非独立 Catppuccin
+ * selection 对齐全局 ::selection idiom（primary 26% 淡染，#98d4a342 =
+ * #98d4a3 @26%，tokens.css；原 outline-variant #41494188，2026-09-18 修订
+ * 统一——整体与项目配色协调而非独立 Catppuccin
  */
 const DARK_THEME = {
   background: "#161b16",
   foreground: "#c8d0c4",
   cursor: "#98d4a3",
   cursorAccent: "#161b16",
-  selectionBackground: "#41494188",
+  selectionBackground: "#98d4a342",
   black: "#111511",
   red: "#ff7b72",
   green: "#7ee787",

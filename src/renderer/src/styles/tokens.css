@@ -299,6 +299,23 @@ input[type="checkbox"]:focus-visible {
   outline-offset: 2px;
 }
 
+/* 文字选区（全局，2026-09-18）：primary 26% 透明淡染，替换 UA 默认系统蓝
+   （与绿调设计冲突）。定义派生 token 供两处消费——::selection（下方）与
+   ::highlight(md-find)（app.css），单一取值来源防漂移；原同值先例
+   code-view 选区已收编。primary 随主题翻转（dark #98d4a3 亮绿 / light
+   #35693e 深绿），var() 在计算值时按根元素主题解析，两主题共用此一处定义；
+   半透明混合自适应两主题底色——正文原色不动，深色 base 上选中底对正文
+   ~5.9:1、浅色 ~7.8:1（对比量级同 GitHub dark/light 原生选区）。终端
+   selectionBackground 为 JS 常量无法消费 CSS token，对齐硬编码同值
+   #98d4a342（terminal-view.tsx） */
+:root {
+  --selection-tint: color-mix(in srgb, var(--primary) 26%, transparent);
+}
+
+::selection {
+  background: var(--selection-tint);
+}
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
