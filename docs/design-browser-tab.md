@@ -43,9 +43,23 @@
 - 文件树右键菜单加「查看源码」项（仅 .html/.htm 文件行）→ `openFileTab(absolute)`；FileView 的 html 分支删 iframe 预览（`isHtmlPath` 预览态不再命中——**html 文件在 FileView 恒源码态**），`html-preview.ts` CSP 扫描器与用例删除；`will-frame-navigate` 拦截保留（防御，browser view 是独立 webContents 不经此 handler）
 - design-html-preview.md 标注废弃指向本文档
 
+### 1.5 最近访问（2026-09-19）
+
+- **语义**：每作用域（profileKey → directory，跟项目/目录走）维护 MRU URL 列表，**上限 5**，重复 URL 去重置顶；持久化 `"browser.recents"`（逐切片校验：坏切片丢弃、URL 过滤非串、截断 5）
+- **每 Tab 只记打开后首个地址**——防单次浏览（页内链接连续跳转）刷屏。三源汇聚 `recordBrowserVisit(tabKey, url)`：
+  1. `doOpenBrowserTab` 初始导航（文件树 .html 点击、关闭栈按 URL 重开）——即该 Tab 首地址
+  2. 地址栏 Enter（`BrowserTabView.navigate`）——欢迎页 Tab（新开空白）的首个导航在此记录
+  3. 打开本地文件（`openLocalFile`）——同上
+  页内链接/后退/后续地址栏输入不经过 renderer 导航分发或标记已消费，天然不入列；Tab 内首个地址消费标记（`browserVisitRecorded`）**随任何关闭路径清除**（closeTab 兜底卸载路径——关项目/删工作树/死会话收敛等；review 2026-09-19：URL 键复用，残留标记会吞掉重开 Tab 的首地址记录；teardown 全清——tabs 已清而键跨 profile 复用）。欢迎页 Tab（新开/恢复空白）标记留空——首个导航记录
+- **恢复不重排**：`restoreBrowserTab` 恢复真实 URL 时直接置已记录标记（上个会话已记过首地址），不调 record——重启恢复全部 Tab 不打乱既有 MRU 顺序；恢复空白（new:N 回落）留待首个导航记录
+- **复用语义**：`openBrowserTab` 复用既有 Tab（URL 键去重）= 切换语义不记录；关闭后重开 = 新 Tab 首地址（置顶去重）
+- **切片修剪**（review 2026-09-19）：目录卸载（关项目/关 global 目录/删工作树）时删除该目录切片——**重开 = 首开语义，同 tabs.memory 取舍**，防已死目录在 store.json 无限累积；双行目录对侧 entry 仍打开则保留（recents 无 projectId 字段，以"已打开 entry 认领查询"替代 memory 的归属守卫）
+- **展示**：欢迎页（§1.3）下方「最近访问」列表（空列表不渲染）；file 条目显示解码 basename、web 显示 host（根路径省略 pathname），title 悬浮完整 URL；点击在**当前 Tab** 导航（经 `navigate`——欢迎页 Tab 的首地址记录同路）
+- **不做**：完整历史（时间戳/访问次数/标题）、手动清除、跨目录聚合、菜单栏入口（Keep Lean——欢迎页即入口）
+
 ## 2. 不做的事
 
-- 书签/历史/下载、缩放、devtools 入口、多窗口
+- 书签/完整历史/下载、缩放、devtools 入口、多窗口（轻量「最近访问」除外，见 §1.5——MRU ≤5、每 Tab 只记首地址，非完整历史）
 - browser Tab 参与作用域 Tab 记忆（非 chat，同 file/diff 取舍；重启不恢复）
 - file:// 页面的 CSP/沙箱强化（WebContentsView 默认安全配置；本地页面视为可信内容——与"打开本地文件"功能定位一致）
 - 地址栏搜索联动/引擎猜测（2026-09-19 收窄：裸域名/localhost/IP 的 scheme 补全**已做**，规则见 §1.3；搜索引擎兜底不做，非法输入按字面 file 路径处理）

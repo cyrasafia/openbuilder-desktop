@@ -129,6 +129,9 @@ function clampPanelWidth(side: "left" | "right", px: number): number {
  *  阅读下限 600 + 消息区 padding 48（与 app.css --chat-min 同源）——中栏将被
  *  压到阅读下限以下是收起判据，左右栏宽可调故阈值随之动态 */
 const AUTO_COLLAPSE_CENTER_RESERVE = 648
+
+/** 最近访问容量上限（design-browser-tab §1.5）：MRU 截断长度 */
+const BROWSER_RECENTS_LIMIT = 5
 /** 回宽放回回差（schmitt 上界 = 阈值 + 64）：窗口边缘在阈值附近拖动时不反复翻转 */
 const AUTO_COLLAPSE_HYSTERESIS = 64
 
@@ -150,6 +153,26 @@ function sanitizeDraftsState(
       return rec
     }
     out[key] = { chat: pick((slice as { chat?: unknown }).chat), guide: pick((slice as { guide?: unknown }).guide) }
+  }
+  return out
+}
+
+/** 最近访问持久层校验（design-browser-tab §1.5）：profileKey → directory →
+ *  URL 列表；坏切片丢弃、URL 过滤非串、截断 5 */
+function sanitizeBrowserRecents(
+  raw: unknown,
+): Record<string, Record<string, string[]>> {
+  const out: Record<string, Record<string, string[]>> = {}
+  if (!raw || typeof raw !== "object") return out
+  for (const [pk, dirs] of Object.entries(raw as Record<string, unknown>)) {
+    if (!dirs || typeof dirs !== "object") continue
+    const dirMap: Record<string, string[]> = {}
+    for (const [dir, urls] of Object.entries(dirs as Record<string, unknown>)) {
+      if (!Array.isArray(urls)) continue
+      const list = urls.filter((u): u is string => typeof u === "string" && !!u).slice(0, BROWSER_RECENTS_LIMIT)
+      if (list.length > 0) dirMap[dir] = list
+    }
+    if (Object.keys(dirMap).length > 0) out[pk] = dirMap
   }
   return out
 }
@@ -501,6 +524,16 @@ export class AppStore {
    */
   private browserViewIds = new Map<string, number>()
   browserStates = new Map<number, BrowserViewState>()
+  /**
+   * 最近访问（design-browser-tab §1.5，2026-09-19）：profileKey → directory →
+   * MRU URL 列表（≤5，去重置顶）。**每 Tab 只记打开后首个地址**——后续导航
+   * （地址栏再输/页内链接/后退）不再入列，防单次浏览刷屏；恢复路径不重排
+   * （上个会话已记过）。落盘 "browser.recents"
+   */
+  browserRecents: Record<string, Record<string, string[]>> = {}
+  /** 每 Tab 首地址已记录标记（§1.5）：新开（真实 URL）/恢复（真实 URL）置位；
+   *  欢迎页 Tab（新开/恢复空白）留空——首个导航（地址栏/本地文件）记录时消费 */
+  private browserVisitRecorded = new Set<string>()
   /** 全局浮层计数（design-browser-tab §1.2 z-order 对策）：>0 时隐藏全部浏览器
    * 视图（原生视图恒在 DOM 之上，设置弹窗/右键菜单等会被挡）。设置弹窗与
    * 文件树右键菜单挂/卸时 +1/-1 */
@@ -611,6 +644,9 @@ export class AppStore {
     // 会话层逐切片校验（design-tab-session-restore §2）：坏切片/坏条目丢弃，等效无记录
     this.tabSession = sanitizeTabSessionMap(await window.desktop.storeGet("tabs.session"))
     this.lastSessionSnapshot = JSON.stringify(this.tabSession)
+    // 最近访问（design-browser-tab §1.5）：逐切片校验（同 tabs.session 口径）——
+    // 坏切片/坏条目丢弃，URL 过滤非串、截断 5，等效无记录
+    this.browserRecents = sanitizeBrowserRecents(await window.desktop.storeGet("browser.recents"))
     this.themeMode = (await window.desktop.storeGet("theme.mode")) ?? "auto"
     this.localeMode = (await window.desktop.storeGet("locale.mode")) ?? "auto"
     this.defaults = (await window.desktop.storeGet("model.defaults")) ?? {}
@@ -926,6 +962,9 @@ export class AppStore {
     for (const viewId of this.browserViewIds.values()) window.desktop.browserViewDispose(viewId)
     this.browserViewIds.clear()
     this.browserStates.clear()
+    // 首地址标记全清（§1.5 review）：tabs 已清而 URL 键跨 profile 复用，残留标记
+    // 会吞掉重连后同 URL Tab 的首地址记录（recents 本身是磁盘态，不受 teardown 影响）
+    this.browserVisitRecorded.clear()
     this.overlayCount = 0
     // 搜索唤起注册随连接拆除清空（design-find-in-page：组件随后全部卸载自注销，
     // 此处防御 teardown 时序下的陈旧回调引用）
@@ -2082,6 +2121,8 @@ export class AppStore {
       delete this.tabMemory[memKey][directory]
       void window.desktop.storeSet("tabs.memory", this.tabMemory).catch(() => {})
     }
+    // 最近访问切片修剪（§1.5 review）：同 tabs.memory——双行目录 git 侧仍打开则保留
+    this.forgetBrowserRecents([directory])
     // 会话层整体派生（design-tab-session-restore §5，同 closeProject：循环/删除之后修剪）
     this.persistTabSession()
     await this.persistProjectState()
@@ -2205,6 +2246,9 @@ export class AppStore {
     // 此处最终清除；按 projectId 匹配而非 sandboxes 枚举，外部删除的 worktree
     // 目录不在 sandboxes 里，按目录枚举会留孤儿条目永久残留 store.json）
     this.forgetProjectMemory(projectId)
+    // 最近访问切片修剪（design-browser-tab §1.5 review）：重开 = 首开语义（同
+    // tabs.memory 取舍）；双行目录对侧仍打开则保留（见 forgetBrowserRecents）
+    if (project) this.forgetBrowserRecents([project.worktree, ...(project.sandboxes ?? [])])
     // 会话层整体派生（design-tab-session-restore §5）：关 Tab 循环 + scopeActive 删除
     // 之后——项目条目/激活记录随派生自然修剪（重开 = 首开语义，陈旧实体不复活）
     this.persistTabSession()
@@ -2280,6 +2324,43 @@ export class AppStore {
     void window.desktop.storeSet("tabs.memory", this.tabMemory).catch(() => {})
   }
 
+  /** 目录是否仍有**已打开** entry 认领（§1.5 修剪判定）：已打开普通项目的
+   *  worktree/sandboxes 覆盖，或已打开 global 目录 entry 同路径——双行目录
+   *  对侧仍开着时最近访问切片须保留（findProjectOwningDirectory 按服务端
+   *  存在性解析，关项目后仍命中，不适用关闭/卸载路径） */
+  private directoryClaimedByOpenedEntry(directory: string): boolean {
+    const ps = this.projectStateFor()
+    for (const id of ps.opened) {
+      if (id === GLOBAL_PROJECT_ID) continue
+      const p = this.projects.find((x) => x.id === id)
+      if (p && (p.worktree === directory || (p.sandboxes ?? []).includes(directory))) return true
+    }
+    return this.openedGlobalDirectories.includes(directory)
+  }
+
+  /**
+   * 最近访问切片修剪（design-browser-tab §1.5，review 2026-09-19）：目录卸载
+   * （关项目/关 global 目录/删工作树）时删除其 MRU 切片——同 tabs.memory 的
+   * "重开 = 首开语义"，防已死目录在 store.json 无限累积；双行目录对侧仍打开
+   * 则保留（§1.5 无 projectId 字段，以 opened 认领查询替代 memory 的归属守卫）。
+   * 调用点须在关 Tab 之后（closeTab 不触 recents，纯删除安全）
+   */
+  private forgetBrowserRecents(dirs: string[]) {
+    const pk = this.profileKey()
+    const slice = this.browserRecents[pk]
+    if (!slice) return
+    let changed = false
+    for (const d of dirs) {
+      if (slice[d] && !this.directoryClaimedByOpenedEntry(d)) {
+        delete slice[d]
+        changed = true
+      }
+    }
+    if (!changed) return
+    if (Object.keys(slice).length === 0) delete this.browserRecents[pk]
+    void window.desktop.storeSet("browser.recents", this.browserRecents).catch(() => {})
+  }
+
   /**
    * 目录 → 所属项目（Tab 记忆归属 / restoreScopeTabs 会话集解析）。
    * 普通（git）项目精确匹配优先，global 只兜底无人认领的目录——双行目录
@@ -2288,8 +2369,7 @@ export class AppStore {
    * global 在 projects 数组首位，若不区分顺序直接 find，双行目录永远命中
    * global——P 的作用域会恢复 global 会话的 Tab、记忆错标 projectId。
    */
-  private findProjectOwningDirectory(directory: string): Project | null {
-    const normal = this.projects.find(
+  private findProjectOwningDirectory(directory: string): Project | null {    const normal = this.projects.find(
       (p) =>
         p.id !== GLOBAL_PROJECT_ID &&
         (p.worktree === directory || (p.sandboxes ?? []).includes(directory)),
@@ -2496,7 +2576,12 @@ export class AppStore {
     })
     // 欢迎页态（2026-09-18）：恢复空白（url 回落 about:blank）不导航——同新开，
     // 内容区显示 DOM 欢迎页；真实当前页照常恢复导航
-    if (url !== "about:blank") window.desktop.browserNavigate(viewId, url)
+    if (url !== "about:blank") {
+      // 最近访问（§1.5）：恢复≠重访——上个会话已记过首地址，直接置已记录标记
+      // （不重排持久化 MRU；恢复空白留待首个导航记录）
+      this.browserVisitRecorded.add(e.key)
+      window.desktop.browserNavigate(viewId, url)
+    }
     return true
   }
 
@@ -2917,6 +3002,8 @@ export class AppStore {
       delete this.tabMemory[key][directory]
       void window.desktop.storeSet("tabs.memory", this.tabMemory).catch(() => {})
     }
+    // 最近访问切片修剪（§1.5 review）：目录已死；双行目录 global 侧仍打开则保留
+    this.forgetBrowserRecents([directory])
     // 会话层整体派生（design-tab-session-restore §5，同 closeProject：循环/删除之后修剪）
     this.persistTabSession()
     this.dropPendingForDirectories([directory])
@@ -4513,7 +4600,11 @@ export class AppStore {
     this.emit()
     // 欢迎页态（2026-09-18）：about:blank 不导航——webContents 本就空白，新开
     // Tab 内容区显示 DOM 欢迎页（原生视图由显隐协调隐藏）；真实 URL 照常导航
-    if (url !== "about:blank") window.desktop.browserNavigate(viewId, url)
+    if (url !== "about:blank") {
+      // 最近访问（§1.5）：初始导航即该 Tab 首地址（欢迎页 Tab 留待首个导航）
+      this.recordBrowserVisit(key, url)
+      window.desktop.browserNavigate(viewId, url)
+    }
     return true
   }
 
@@ -4531,6 +4622,34 @@ export class AppStore {
     const tab = this.tabs.find((t) => t.key === tabKey)
     if (tab && state?.url) tab.title = state.url
     this.closeTab(tabKey, { pushClosed: true })
+  }
+
+  /**
+   * 最近访问记录（design-browser-tab §1.5，2026-09-19）：**每 Tab 只记打开后
+   * 首个地址**——三源汇聚于此（doOpenBrowserTab 初始导航 / 地址栏 Enter /
+   * 打开本地文件）；同 Tab 后续调用 no-op（页内链接不经过 renderer，天然不
+   * 入列）。MRU 语义：重复 URL 去重置顶、超 5 截断；无变化不落盘。作用域 =
+   * Tab 归属 directory（跨作用域混排的 Tab 记入自己目录），持久化
+   * profileKey → directory 双层
+   */
+  recordBrowserVisit(tabKey: string, url: string): void {
+    if (!url || url === "about:blank" || this.browserVisitRecorded.has(tabKey)) return
+    const tab = this.tabs.find((t) => t.key === tabKey)
+    if (!tab?.directory) return
+    this.browserVisitRecorded.add(tabKey)
+    const dirs = (this.browserRecents[this.profileKey()] ??= {})
+    const list = dirs[tab.directory] ?? []
+    const next = [url, ...list.filter((u) => u !== url)].slice(0, BROWSER_RECENTS_LIMIT)
+    if (next.length === list.length && next.every((u, i) => u === list[i])) return
+    dirs[tab.directory] = next
+    void window.desktop.storeSet("browser.recents", this.browserRecents).catch(() => {})
+  }
+
+  /** Tab 归属目录的最近访问（欢迎页展示，§1.5）：副本防外部突变 */
+  browserRecentsOf(tabKey: string): string[] {
+    const tab = this.tabs.find((t) => t.key === tabKey)
+    if (!tab?.directory) return []
+    return [...(this.browserRecents[this.profileKey()]?.[tab.directory] ?? [])]
   }
 
   /** 浮层计数（z-order 对策，§1.2） */
@@ -4807,6 +4926,10 @@ export class AppStore {
     if (closed.kind === "chat") this.chatScrollTops.delete(closed.key.slice(5))
     // pty 运行时随 Tab 关闭终结（用户路径经 closeTerminalTab 已清，此处兜底卸载路径）
     if (closed.kind === "terminal") this.ptyRuntimes.delete(closed.key.slice("terminal:".length))
+    // 最近访问首地址标记随 Tab 关闭终结（design-browser-tab §1.5 review：用户路径
+    // 经 closeBrowserTab 已清，此处兜底卸载路径——关项目/删工作区/teardown 只走
+    // closeTab 或直接清 tabs；URL 键会复用，残留标记会吞掉重开 Tab 的首地址记录）
+    if (closed.kind === "browser") this.browserVisitRecorded.delete(closed.key)
     // 视图随 Tab 关闭 dispose（浏览器 Tab 用户路径经 closeBrowserTab 已清；
     // PDF 文件 Tab（design-pdf-preview）与卸载路径在此兜底——按注册表命中）
     {

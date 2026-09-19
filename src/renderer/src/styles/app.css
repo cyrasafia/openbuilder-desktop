@@ -4461,6 +4461,53 @@
   gap: 6px;
 }
 
+/* 最近访问（design-browser-tab §1.5，2026-09-19）：欢迎页下方 MRU 列表（≤5）。
+ * 列表行左对齐定宽（覆盖父级居中），hover 同 .tree-row 一档容器色 */
+.browser-recents {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 20px;
+  min-width: 280px;
+  max-width: 400px;
+}
+
+.browser-recents-title {
+  font-size: var(--text-xs);
+  color: var(--outline);
+  padding: 0 8px;
+  margin-bottom: 4px;
+}
+
+.browser-recent-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: none;
+  border-radius: var(--radius-chip);
+  background: transparent;
+  color: var(--on-surface);
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.browser-recent-item:hover {
+  background: var(--surface-container-high);
+}
+
+.browser-recent-item svg {
+  flex: none;
+  color: var(--outline);
+}
+
+.browser-recent-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ---------- PDF 预览（design-pdf-preview §1 终态：专用 WebContentsView + PDFium） ---------- */
 .file-view.pdf-view {
   position: relative;

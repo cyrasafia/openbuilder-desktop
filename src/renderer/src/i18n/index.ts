@@ -241,6 +241,8 @@ const zh = {
   // 欢迎页（design-browser-tab §1.3，2026-09-18）：新开未导航（url 停留 about:blank）
   browserWelcomeTitle: "新标签页",
   browserWelcomeHint: "在上方地址栏输入网址，或打开本地 HTML 文件",
+  // 最近访问（design-browser-tab §1.5，2026-09-19）：欢迎页 MRU 列表标题
+  browserRecents: "最近访问",
   fileViewSource: "查看源码",
   openWithLoading: "正在枚举应用…",
   openWithEmpty: "无匹配的应用",
@@ -525,6 +527,7 @@ const en: typeof zh = {
   browserAddressPlaceholder: "Enter address",
   browserWelcomeTitle: "New tab",
   browserWelcomeHint: "Type an address above, or open a local HTML file",
+  browserRecents: "Recent",
   fileViewSource: "View source",
   openWithLoading: "Listing apps…",
   openWithEmpty: "No apps found",

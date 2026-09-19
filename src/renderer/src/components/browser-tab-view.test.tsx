@@ -31,6 +31,9 @@ const browser = {
 const registerFindRequesterMock = vi.fn()
 /** 新开 Tab 待聚焦标记桩（默认 false = 切入既有 Tab） */
 const consumeBrowserOpenFocusMock = vi.fn()
+/** 最近访问桩（design-browser-tab §1.5）：默认空列表 */
+const browserRecentsOfMock = vi.fn((): string[] => [])
+const recordBrowserVisitMock = vi.fn()
 
 let stateStub: { viewId: number; url: string; title: string; loading: boolean; canGoBack: boolean; canGoForward: boolean } | null
 let findRequestCbs: Array<(payload: unknown) => void> = []
@@ -48,6 +51,7 @@ vi.mock("../app", () => ({
       browserAddressPlaceholder: "输入地址",
       browserWelcomeTitle: "新标签页",
       browserWelcomeHint: "在上方地址栏输入网址，或打开本地 HTML 文件",
+      browserRecents: "最近访问",
       findPlaceholder: "查找…",
       findMatchCount: "{active}/{matches}",
       findIdle: "",
@@ -64,6 +68,9 @@ vi.mock("../app", () => ({
     unregisterFindRequester: vi.fn(),
     // 新开 Tab 待聚焦标记（2026-09-18）：默认切换语义
     consumeBrowserOpenFocus: consumeBrowserOpenFocusMock,
+    // 最近访问（design-browser-tab §1.5）
+    browserRecentsOf: browserRecentsOfMock,
+    recordBrowserVisit: recordBrowserVisitMock,
   }),
 }))
 
@@ -74,6 +81,9 @@ beforeEach(() => {
   registerFindRequesterMock.mockClear()
   consumeBrowserOpenFocusMock.mockReset()
   consumeBrowserOpenFocusMock.mockReturnValue(false)
+  browserRecentsOfMock.mockReset()
+  browserRecentsOfMock.mockReturnValue([])
+  recordBrowserVisitMock.mockClear()
   findRequestCbs = []
   findStateCbs = []
   ;(window as unknown as { desktop: unknown }).desktop = {
@@ -129,6 +139,8 @@ describe("BrowserTabView", () => {
     fireEvent.change(input, { target: { value: "/home/u/page.html" } })
     fireEvent.keyDown(input, { key: "Enter" })
     expect(browser.browserNavigate).toHaveBeenCalledWith(1, "file:///home/u/page.html")
+    // 最近访问（§1.5）：地址栏 Enter 记录首地址（store 内标记消费语义在 store 测试）
+    expect(recordBrowserVisitMock).toHaveBeenCalledWith("browser:https://example.com/", "file:///home/u/page.html")
     // 乐观展示（2026-09-18 review）：在途期间保持所输值（旧页 URL/空由
     // did-navigate 回写接管覆写）
     expect(input.value).toBe("/home/u/page.html")
@@ -204,6 +216,8 @@ describe("BrowserTabView", () => {
     expect(welcomeBtn).not.toBeNull()
     welcomeBtn.click()
     await waitFor(() => expect(browser.browserNavigate).toHaveBeenCalledWith(1, "file:///repo/x.html"))
+    // 打开本地文件同为首地址来源（§1.5）
+    expect(recordBrowserVisitMock).toHaveBeenCalledWith("browser:new:1", "file:///repo/x.html")
     // 导航离开（did-navigate 推送 url）→ 欢迎页卸载、地址栏接管规范 URL。
     // 受控 input 值不变不重渲染（React bail out）——改异值触发 onChange 重渲染
     // 读新 stateStub，url 变化经回写 effect 归一到新页 URL
@@ -211,6 +225,21 @@ describe("BrowserTabView", () => {
     fireEvent.change(input, { target: { value: "editing" } })
     await waitFor(() => expect(screen.queryByText("新标签页")).toBeNull())
     expect(input.value).toBe("https://example.com/")
+  })
+
+  it("欢迎页最近访问（design-browser-tab §1.5）：渲染归属目录 MRU（file→basename / web→host+path）；点击导航并记录首地址；空列表不渲染", () => {
+    stateStub = { ...stateStub!, url: "about:blank" }
+    browserRecentsOfMock.mockReturnValue(["https://example.com/", "file:///repo/x%20y.html", "https://a.dev/page2"])
+    render(<BrowserTabView tabKey="browser:new:1" viewId={1} />)
+    expect(screen.getByText("最近访问")).toBeTruthy()
+    // 展示标签：web → host（根路径省略 pathname）；file → 解码 basename
+    expect(screen.getByText("example.com")).toBeTruthy()
+    expect(screen.getByText("x y.html")).toBeTruthy()
+    expect(screen.getByText("a.dev/page2")).toBeTruthy()
+    // 点击：当前 Tab 导航 + 首地址记录（标记消费语义在 store 测试）
+    screen.getByText("x y.html").click()
+    expect(recordBrowserVisitMock).toHaveBeenCalledWith("browser:new:1", "file:///repo/x%20y.html")
+    expect(browser.browserNavigate).toHaveBeenCalledWith(1, "file:///repo/x%20y.html")
   })
 
   it("打开本地文件：选择器 → file:// 导航；取消无动作", async () => {

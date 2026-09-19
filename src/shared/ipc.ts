@@ -44,6 +44,9 @@ export interface StoreShape {
    *  会话草稿（sessionID → 文本）+ 引导页草稿（作用域目录 → 文本）。空对象切片 =
    *  无草稿；条目值恒非空串（空 = 删条目，同内存层语义） */
   "drafts.state": Record<string, { chat: Record<string, string>; guide: Record<string, string> }>
+  /** 浏览器 Tab 最近访问（design-browser-tab §1.5，2026-09-19）：profileKey →
+   *  directory → MRU URL 列表（≤5；每 Tab 只记打开后首个地址） */
+  "browser.recents": Record<string, Record<string, string[]>>
 }
 
 export interface ConnectionProfile {

@@ -4011,6 +4011,137 @@ describe("浏览器 Tab（design-browser-tab）", () => {
     expect(store.browserViewIdFor("browser:file:///repo/dup.html")).toBe(7)
     expect(browserCalls.filter((c) => c === "browserNavigate:7").length).toBe(1)
   })
+
+  // 最近访问（design-browser-tab §1.5，2026-09-19）
+  it("最近访问：openBrowserTab 初始 URL 入列 MRU；复用既有 Tab 不记；重开置顶去重；≤5 截断", async () => {
+    await store.openBrowserTab("file:///repo/a.html")
+    await store.openBrowserTab("file:///repo/b.html")
+    expect(store.browserRecentsOf("browser:file:///repo/b.html")).toEqual([
+      "file:///repo/b.html",
+      "file:///repo/a.html",
+    ])
+    // 复用既有 Tab（URL 键去重）= 切换语义，不记录不重排
+    await store.openBrowserTab("file:///repo/a.html")
+    expect(store.browserRecentsOf("browser:file:///repo/a.html")).toEqual([
+      "file:///repo/b.html",
+      "file:///repo/a.html",
+    ])
+    // 关闭后重开 = 新 Tab 首地址 → 置顶去重
+    store.closeBrowserTab("browser:file:///repo/a.html")
+    await store.openBrowserTab("file:///repo/a.html")
+    expect(store.browserRecentsOf("browser:file:///repo/a.html")).toEqual([
+      "file:///repo/a.html",
+      "file:///repo/b.html",
+    ])
+    // 截断 5：最旧（b）挤出
+    for (const n of ["c", "d", "e", "f"]) await store.openBrowserTab(`file:///repo/${n}.html`)
+    expect(store.browserRecentsOf("browser:file:///repo/f.html")).toEqual([
+      "file:///repo/f.html",
+      "file:///repo/e.html",
+      "file:///repo/d.html",
+      "file:///repo/c.html",
+      "file:///repo/a.html",
+    ])
+  })
+
+  it("最近访问：每 Tab 只记首个地址——recordBrowserVisit 标记消费，后续调用 no-op", async () => {
+    await store.openNewBrowserTab() // 欢迎页：留待首个导航
+    const key = store.tabs[0]!.key
+    store.recordBrowserVisit(key, "https://a.dev/")
+    store.recordBrowserVisit(key, "https://b.dev/")
+    expect(store.browserRecentsOf(key)).toEqual(["https://a.dev/"])
+    // 恢复空白（new:N 回落）同款语义：首个导航记录（restore 测试见下）
+  })
+
+  it("最近访问：恢复真实 URL 不重排（置标记，后续导航不追加）；恢复空白留待首导航", async () => {
+    await store.openBrowserTab("file:///repo/a.html")
+    const restore = (
+      store as unknown as {
+        restoreBrowserTab: (e: {
+          kind: "browser"
+          key: string
+          projectId: string
+          directory: string
+          title: string
+          url?: string
+        }) => Promise<boolean>
+      }
+    ).restoreBrowserTab.bind(store)
+    // 恢复真实 URL：不记录、不重排
+    await restore({ kind: "browser", key: "browser:https://r.dev/", projectId: "proj1", directory: ROOT, title: "https://r.dev/", url: "https://r.dev/" })
+    expect(store.browserRecentsOf("browser:https://r.dev/")).toEqual(["file:///repo/a.html"])
+    // 恢复 Tab 的后续导航（renderer recordBrowserVisit）no-op——首地址已消费
+    store.recordBrowserVisit("browser:https://r.dev/", "https://next.dev/")
+    expect(store.browserRecentsOf("browser:https://r.dev/")).toEqual(["file:///repo/a.html"])
+    // 恢复空白（new:N 键 url 缺失回落）：留待首个导航记录
+    await restore({ kind: "browser", key: "browser:new:7", projectId: "proj1", directory: ROOT, title: "", url: undefined })
+    store.recordBrowserVisit("browser:new:7", "https://blank.dev/")
+    expect(store.browserRecentsOf("browser:new:7")).toEqual(["https://blank.dev/", "file:///repo/a.html"])
+  })
+
+  it("最近访问：落盘 browser.recents（无变化不重写）；目录隔离；未知 Tab no-op", async () => {
+    const d = (window as unknown as { desktop: { storeSet: (k: string, v: unknown) => Promise<void> } }).desktop
+    const sets: Array<[string, unknown]> = []
+    d.storeSet = async (k, v) => {
+      sets.push([k, v])
+    }
+    await store.openBrowserTab("file:///repo/a.html")
+    const recentsWrites = () => sets.filter(([k]) => k === "browser.recents").length
+    expect(recentsWrites()).toBe(1)
+    // 关闭后重开：URL 仍在顶端，列表无变化不重写
+    store.closeBrowserTab("browser:file:///repo/a.html")
+    await store.openBrowserTab("file:///repo/a.html")
+    expect(recentsWrites()).toBe(1)
+    // 目录隔离：Tab 记入自己归属目录（跨作用域混排）
+    store.tabs.push({ kind: "browser", key: "browser:file:///wt1/b.html", projectId: "proj1", title: "", directory: WT1 })
+    store.recordBrowserVisit("browser:file:///wt1/b.html", "file:///wt1/b.html")
+    expect(store.browserRecentsOf("browser:file:///wt1/b.html")).toEqual(["file:///wt1/b.html"])
+    expect(store.browserRecentsOf("browser:file:///repo/a.html")).toEqual(["file:///repo/a.html"])
+    // 未知 Tab no-op
+    store.recordBrowserVisit("browser:missing", "https://x.dev/")
+    expect(store.browserRecentsOf("browser:missing")).toEqual([])
+  })
+
+  it("最近访问（review）：卸载路径关 Tab（closeTab 直走）清首地址标记——同 URL 重开恢复记录", async () => {
+    await store.openBrowserTab("file:///repo/a.html")
+    await store.openBrowserTab("file:///repo/b.html")
+    // 卸载路径（关项目/删工作树等）不经 closeBrowserTab——closeTab 兜底清标记
+    store.closeTab("browser:file:///repo/a.html")
+    await store.openBrowserTab("file:///repo/a.html")
+    // 标记已清 → 重开 Tab 的首地址重新记录（置顶去重；残留标记则保持 [b,a]）
+    expect(store.browserRecentsOf("browser:file:///repo/a.html")).toEqual([
+      "file:///repo/a.html",
+      "file:///repo/b.html",
+    ])
+  })
+
+  it("最近访问（review）：teardown 清标记——重连后同 URL Tab 恢复记录", async () => {
+    await store.openBrowserTab("file:///repo/a.html")
+    ;(store as unknown as { teardownConnection: () => void }).teardownConnection()
+    // 模拟重连：teardown 清空 projects/状态，重连后快照重建（作用域可解析）
+    store.projects = [project()]
+    store.projectStates = {
+      default: { opened: ["proj1"], currentProjectId: "proj1", currentWorkspaceId: null },
+    }
+    // 重连后重开（tabs 已清、URL 键复用）：标记残留会吞掉首地址记录
+    await store.openBrowserTab("file:///repo/a.html")
+    expect(store.browserRecentsOf("browser:file:///repo/a.html")).toEqual(["file:///repo/a.html"])
+  })
+
+  it("最近访问（review）：目录卸载修剪切片——关项目清除（重开 = 首开）；双行对侧仍打开则保留", async () => {
+    await store.openBrowserTab("file:///repo/a.html")
+    expect(store.browserRecents.default?.[ROOT]).toEqual(["file:///repo/a.html"])
+    await store.closeProject("proj1")
+    // proj1 关闭后 ROOT 无已打开 entry 认领 → 切片清除
+    expect(store.browserRecents.default?.[ROOT]).toBeUndefined()
+    // 双行目录：同路径 global entry 仍打开 → 关 git 项目不得误删对侧切片
+    await store.openProject("proj1")
+    await store.openBrowserTab("file:///repo/a.html")
+    store.projectStates.default!.opened.push(globalEntryKey(ROOT))
+    await store.closeProject("proj1")
+    expect(store.browserRecents.default?.[ROOT]).toEqual(["file:///repo/a.html"])
+  })
+
   it("restoreClosedTab browser 分支：按关闭时 URL 重开", async () => {
     browserCalls.length = 0
     store.closedTabs = [{ kind: "browser", key: "browser:x", projectId: "proj1", directory: ROOT, title: "https://example.com/" }]
