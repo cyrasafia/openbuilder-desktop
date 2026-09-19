@@ -4046,7 +4046,8 @@
 .diff-view .history-row {
   padding: 8px 0;
 }
-.diff-view .btn-tonal {
+/* 仅错误态重试钮（.diff-view 直接子级）；后代选择器会盖掉 .diff-view-file 的 margin */
+.diff-view > .btn-tonal {
   margin: 12px 0 0;
 }
 
@@ -4129,7 +4130,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 6px 12px 0 auto;
+  margin: 6px 12px 6px auto;
   padding: 4px 10px;
 }
 .diff-view-file svg {
