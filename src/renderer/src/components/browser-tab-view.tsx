@@ -1,8 +1,36 @@
 import { useEffect, useRef, useState } from "react"
-import { ArrowLeft, ArrowRight, ExternalLink, FolderOpen, Globe, RotateCw, X } from "lucide-react"
+import { ArrowLeft, ArrowRight, ExternalLink, FileText, FolderOpen, Globe, RotateCw, X } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import { fileUrlOf } from "@shared/file-url"
 import { FindBar, useWebContentsFind } from "./find-bar"
+
+/**
+ * 地址栏无 scheme 输入的 web/file 分流（design-browser-tab §1.3，2026-09-19）：
+ * 裸点分域名（末段字母 TLD，label 允许 Unicode 字母/数字即 IDN 如 中文.com，
+ * 可带端口与 /?# 尾部，如 www.google.com、example.com:8080/x?q=1）补 https://
+ * （punycode 转换由 Chromium GURL 承担）；localhost 与 IP 字面量（IPv4 / [IPv6]，
+ * 可带端口）补 http://——本地服务无 TLS，https 必败；两者对齐 Chromium omnibox
+ * 默认。其余维持字面 file 路径（相对路径 repo/x.html 首段无点，不命中域名形态）。
+ */
+const HTTPS_ADDRESS = /^[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*\.\p{L}{2,}(?::\d+)?(?:[/?#].*)?$/iu
+const HTTP_ADDRESS = /^(?:localhost|\[[0-9a-f:]+\]|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?(?:[/?#].*)?$/i
+
+/**
+ * 最近访问条目展示标签（design-browser-tab §1.5）：file:// 取解码后 basename；
+ * web 取 host（根路径省略 pathname）。解码/解析失败回落原串（持久层可能手改）
+ */
+const recentLabelOf = (url: string): string => {
+  try {
+    if (url.startsWith("file://")) {
+      const path = decodeURIComponent(url.slice("file://".length))
+      return path.split("/").filter(Boolean).at(-1) ?? path
+    }
+    const u = new URL(url)
+    return u.pathname === "/" ? u.host : u.host + u.pathname
+  } catch {
+    return url
+  }
+}
 
 /**
  * 浏览器 Tab 内容（design-browser-tab §1.3）：工具条 + 内容宿主。
@@ -92,17 +120,30 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
     // blur 还原的是 store 当前页（欢迎态为空、常规态为旧页），均非用户所输，
     // 慢网络下读作"输入被丢弃"；did-navigate/失败回填到达后回写接管为规范 URL
     setAddress(value)
-    // 字面 file 路径补 scheme（逐段编码）；其余原样（http/https/file/about）
+    // 显式 scheme 原样（http/https/file/about 等）；裸域名/localhost/IP 按
+    // HTTPS_ADDRESS/HTTP_ADDRESS 补 scheme（见模块头注释）；其余按字面 file
+    // 路径补 scheme（逐段编码）
     const url = value.startsWith("file://") || /^[a-z]+:\/\//i.test(value) || value.startsWith("about:")
       ? value
-      : fileUrlOf(value)
+      : HTTPS_ADDRESS.test(value)
+        ? `https://${value}`
+        : HTTP_ADDRESS.test(value)
+          ? `http://${value}`
+          : fileUrlOf(value)
+    // 最近访问（design-browser-tab §1.5）：地址栏 Enter 是首地址来源之一
+    // （欢迎页 Tab 的首个导航在此记录；已记录的 Tab no-op）
+    store.recordBrowserVisit(tabKey, url)
     window.desktop.browserNavigate(viewId, url)
   }
 
-  // 打开本地 HTML（工具条与欢迎页共用入口）：选择器 → file:// 导航
+  // 打开本地 HTML（工具条与欢迎页共用入口）：选择器 → file:// 导航。
+  // 最近访问（§1.5）：同为首地址来源（欢迎页 Tab 的首个导航在此记录）
   const openLocalFile = () => {
     void window.desktop.openHtmlFilePicker().then((path) => {
-      if (path) window.desktop.browserNavigate(viewId, fileUrlOf(path))
+      if (!path) return
+      const url = fileUrlOf(path)
+      store.recordBrowserVisit(tabKey, url)
+      window.desktop.browserNavigate(viewId, url)
     })
   }
 
@@ -217,6 +258,25 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
               <FolderOpen size={14} aria-hidden />
               {t.browserOpenFile}
             </button>
+            {/* 最近访问（design-browser-tab §1.5，2026-09-19）：Tab 归属目录的
+                MRU ≤5；点击在当前 Tab 导航（navigate 记录首地址——本 Tab 首个
+                导航，去重置顶近似 no-op）；file 条目显示 basename、web 显示
+                host(+path)，title 悬浮完整 URL */}
+            {(() => {
+              const recents = store.browserRecentsOf(tabKey)
+              if (recents.length === 0) return null
+              return (
+                <div className="browser-recents">
+                  <div className="browser-recents-title">{t.browserRecents}</div>
+                  {recents.map((url) => (
+                    <button key={url} className="browser-recent-item mono" title={url} onClick={() => navigate(url)}>
+                      {url.startsWith("file://") ? <FileText size={14} aria-hidden /> : <Globe size={14} aria-hidden />}
+                      <span>{recentLabelOf(url)}</span>
+                    </button>
+                  ))}
+                </div>
+              )
+            })()}
           </div>
         )}
       </div>

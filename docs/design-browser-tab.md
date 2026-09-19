@@ -32,7 +32,7 @@
 
 - `TabKind` 扩 `"browser"`；key = `browser:<初始 URL>`（稳定标识；导航后 URL 变化不改 key，Tab 条标题取当前页 title）；**新开空白 Tab 例外（2026-09-15 修订）**：引导页磁贴 / Ctrl+3 走 `openNewBrowserTab()`，键 = `browser:new:<N>`（序号唯一、每次调用新开，**不按 URL 去重**——原入口恒 `browser:about:blank`，开过一次后再按磁贴/快捷键只会切回旧 Tab，无法开第二个网页 Tab）；url 态 = about:blank，持久化时 url 恒 ≠ 键内标识 → `url` 字段必落盘（含僵尸兜底：双行目录关一行残留的 view 已 dispose Tab，派生回落 url:about:blank；恢复遇 url 缺失的 new:N 条目同样回落，不导航键内字面量），重启按它恢复；重启后序号归零重计，撞恢复条目即跳号（循环校验唯一）。"打开指定地址"入口（文件树 .html、关闭栈按 URL 重开）仍用 `openBrowserTab(url)` 的 URL 键去重语义
 - `store.openBrowserTab(url)`：建 Tab（directory = 当前作用域）+ `browser:view-create` + `navigate`；**浏览器 shim（无 IPC）不可用**：入口隐藏（platform === "browser" 时引导页网页按钮 disabled、file 树 .html 点击回退文件 Tab）
-- `BrowserTabView` 组件（激活时挂载）：工具条（后退/前进/刷新或停止、地址输入框（Enter 导航、**仅新开 Tab 时聚焦并全选**——2026-09-18 修订，原 2026-09-15「切入 Tab 挂载即聚焦」使切回既有 Tab 也抢焦点：组件按 key 隔离重挂载，挂载与切入无法区分，改由 store 传递意图——`doOpenBrowserTab` **新建路径**登记待聚焦标记（`browserOpenFocusKey` 单槽，连开后开覆写先开——Ctrl+3 连按只留最后一个），组件挂载一次性消费（`consumeBrowserOpenFocus`），复用既有 Tab（openBrowserTab 既有键分支）与重启恢复路径不登记 = 不聚焦；**作废闸门**（review 2026-09-18）：新开后激活被顶替（连开/作用域切换/点 Tab 等）而组件未及挂载时，残留标记会让首次切入误抢焦点——Workspace 激活变化 effect 调 `invalidateBrowserOpenFocusUnless(activeTabKey)`，激活移出待聚焦 Tab 即作废（任何激活路径最终都经 emit → 该 effect；正常新开流中子组件挂载先消费，闸门空转）；聚焦后全选，输入即整替 URL（Ctrl+L 惯例））、打开本地文件按钮 → `openPathPicker` 选 .html → `navigate(file://…)`、**「在系统浏览器打开」按钮（2026-09-08 增，`shell:openExternal` 当前页 URL——store 权威非 key 初始 URL；仅 http/https/file 可用（白名单同 main 侧 handler，about: 等禁用）；纯浏览器 shim 不显示）**）+ 内容宿主 div；ResizeObserver → `view-bounds`；**卸载 = 隐藏 view**（Tab 切走/作用域切换，view 与内容保留）
+- `BrowserTabView` 组件（激活时挂载）：工具条（后退/前进/刷新或停止、地址输入框（Enter 导航、**无 scheme 输入分流补全（2026-09-19 增）**——裸点分域名（末段字母 TLD，label 允许 Unicode 字母/数字即 IDN 如 `中文.com`（punycode 转换由 Chromium GURL 承担），可带端口与 `/?#` 尾部，如 `www.google.com`、`example.com:8080/x?q=1`）补 `https://`；`localhost` 与 IP 字面量（IPv4 / `[IPv6]`，可带端口）补 `http://`（本地服务无 TLS，https 必败）——两者对齐 Chromium omnibox 默认；显式 scheme（http/https/file/about 等）原样；其余维持字面 file 路径补 scheme（相对路径 `repo/x.html` 首段无点不命中域名形态）。原 §2「不做地址栏自动补全」据此收窄为不做搜索联动、**仅新开 Tab 时聚焦并全选**——2026-09-18 修订，原 2026-09-15「切入 Tab 挂载即聚焦」使切回既有 Tab 也抢焦点：组件按 key 隔离重挂载，挂载与切入无法区分，改由 store 传递意图——`doOpenBrowserTab` **新建路径**登记待聚焦标记（`browserOpenFocusKey` 单槽，连开后开覆写先开——Ctrl+3 连按只留最后一个），组件挂载一次性消费（`consumeBrowserOpenFocus`），复用既有 Tab（openBrowserTab 既有键分支）与重启恢复路径不登记 = 不聚焦；**作废闸门**（review 2026-09-18）：新开后激活被顶替（连开/作用域切换/点 Tab 等）而组件未及挂载时，残留标记会让首次切入误抢焦点——Workspace 激活变化 effect 调 `invalidateBrowserOpenFocusUnless(activeTabKey)`，激活移出待聚焦 Tab 即作废（任何激活路径最终都经 emit → 该 effect；正常新开流中子组件挂载先消费，闸门空转）；聚焦后全选，输入即整替 URL（Ctrl+L 惯例））、打开本地文件按钮 → `openPathPicker` 选 .html → `navigate(file://…)`、**「在系统浏览器打开」按钮（2026-09-08 增，`shell:openExternal` 当前页 URL——store 权威非 key 初始 URL；仅 http/https/file 可用（白名单同 main 侧 handler，about: 等禁用）；纯浏览器 shim 不显示）**）+ 内容宿主 div；ResizeObserver → `view-bounds`；**卸载 = 隐藏 view**（Tab 切走/作用域切换，view 与内容保留）
 - view 状态：store `browserStates: Map<viewId, BrowserState>`（SSE 无关，纯 IPC 事件驱动）；**空 url 推送不回退已知 url/title（2026-09-15 修订）**——agg.url 只由 did-navigate/did-fail-load 落值，首次导航在途/失败后恒 ""，整包覆写会清掉恢复/打开时种入的 url（地址栏闪空、标题闪落 untitled、会话派生抹掉磁盘 url 字段），`applyBrowserState` 对空 url 推送保留上一份非空值
 - **欢迎页（2026-09-18 增）**：新开空白 Tab（磁贴/Ctrl+3）、恢复 url 回落空白的条目、关闭栈重开空白，**不再加载 about:blank**（`doOpenBrowserTab`/`restoreBrowserTab` 对 about:blank 跳过 navigate——webContents 本就空白）；`isBrowserWelcome(key)`（url === about:blank）时原生视图隐藏（§1.2），内容宿主内渲染 DOM 欢迎页（Globe 图标 + 本地化标题「新标签页」+ 提示 + 「打开本地文件…」按钮，与工具条同 `openLocalFile` 路径；样式对齐 .workspace-empty 语言）。地址栏展示归一：欢迎态显示空（placeholder 引导）而非字面 about:blank（种子/回写/失焦还原/Esc 还原统一走 `addressOf`）；Enter 导航**乐观展示**所输 URL（2026-09-18 review 增——blur 还原的是 store 当前页，欢迎态为空、常规态为旧页，在途期间闪空/回旧页读作"输入被丢弃"；did-navigate/失败回填到达后回写接管为规范 URL）；导航（did-navigate/失败回填）即离开欢迎态，后退回 about:blank 重新进入。标签条标题展示层映射为本地化「新标签页」——store title 仍为 about:blank（持久化/关闭栈机器依赖它，仅展示层映射）。Ctrl+F 等页面内搜索维持现状（空页面 0 匹配，无欢迎态特判）
 - 关闭 Tab：`view-dispose` + 关闭栈（恢复 = 按 key 中 URL 重开——URL 取**当前页 URL**（关 Tab 时的 browserState.url），不是初始 key）
@@ -43,12 +43,26 @@
 - 文件树右键菜单加「查看源码」项（仅 .html/.htm 文件行）→ `openFileTab(absolute)`；FileView 的 html 分支删 iframe 预览（`isHtmlPath` 预览态不再命中——**html 文件在 FileView 恒源码态**），`html-preview.ts` CSP 扫描器与用例删除；`will-frame-navigate` 拦截保留（防御，browser view 是独立 webContents 不经此 handler）
 - design-html-preview.md 标注废弃指向本文档
 
+### 1.5 最近访问（2026-09-19）
+
+- **语义**：每作用域（profileKey → directory，跟项目/目录走）维护 MRU URL 列表，**上限 5**，重复 URL 去重置顶；持久化 `"browser.recents"`（逐切片校验：坏切片丢弃、URL 过滤非串、截断 5）
+- **每 Tab 只记打开后首个地址**——防单次浏览（页内链接连续跳转）刷屏。三源汇聚 `recordBrowserVisit(tabKey, url)`：
+  1. `doOpenBrowserTab` 初始导航（文件树 .html 点击、关闭栈按 URL 重开）——即该 Tab 首地址
+  2. 地址栏 Enter（`BrowserTabView.navigate`）——欢迎页 Tab（新开空白）的首个导航在此记录
+  3. 打开本地文件（`openLocalFile`）——同上
+  页内链接/后退/后续地址栏输入不经过 renderer 导航分发或标记已消费，天然不入列；Tab 内首个地址消费标记（`browserVisitRecorded`）**随任何关闭路径清除**（closeTab 兜底卸载路径——关项目/删工作树/死会话收敛等；review 2026-09-19：URL 键复用，残留标记会吞掉重开 Tab 的首地址记录；teardown 全清——tabs 已清而键跨 profile 复用）。欢迎页 Tab（新开/恢复空白）标记留空——首个导航记录
+- **恢复不重排**：`restoreBrowserTab` 恢复真实 URL 时直接置已记录标记（上个会话已记过首地址），不调 record——重启恢复全部 Tab 不打乱既有 MRU 顺序；恢复空白（new:N 回落）留待首个导航记录
+- **复用语义**：`openBrowserTab` 复用既有 Tab（URL 键去重）= 切换语义不记录；关闭后重开 = 新 Tab 首地址（置顶去重）
+- **切片修剪**（review 2026-09-19）：目录卸载（关项目/关 global 目录/删工作树）时删除该目录切片——**重开 = 首开语义，同 tabs.memory 取舍**，防已死目录在 store.json 无限累积；双行目录对侧 entry 仍打开则保留（recents 无 projectId 字段，以"已打开 entry 认领查询"替代 memory 的归属守卫）
+- **展示**：欢迎页（§1.3）下方「最近访问」列表（空列表不渲染）；file 条目显示解码 basename、web 显示 host（根路径省略 pathname），title 悬浮完整 URL；点击在**当前 Tab** 导航（经 `navigate`——欢迎页 Tab 的首地址记录同路）
+- **不做**：完整历史（时间戳/访问次数/标题）、手动清除、跨目录聚合、菜单栏入口（Keep Lean——欢迎页即入口）
+
 ## 2. 不做的事
 
-- 书签/历史/下载、缩放、devtools 入口、多窗口
+- 书签/完整历史/下载、缩放、devtools 入口、多窗口（轻量「最近访问」除外，见 §1.5——MRU ≤5、每 Tab 只记首地址，非完整历史）
 - browser Tab 参与作用域 Tab 记忆（非 chat，同 file/diff 取舍；重启不恢复）
 - file:// 页面的 CSP/沙箱强化（WebContentsView 默认安全配置；本地页面视为可信内容——与"打开本地文件"功能定位一致）
-- 地址栏自动补全/搜索联动（输入 URL/字面路径直接导航，非法输入 no-op）
+- 地址栏搜索联动/引擎猜测（2026-09-19 收窄：裸域名/localhost/IP 的 scheme 补全**已做**，规则见 §1.3；搜索引擎兜底不做，非法输入按字面 file 路径处理）
 
 ## 3. 涉及文件
 
