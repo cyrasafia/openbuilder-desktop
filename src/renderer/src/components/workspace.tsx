@@ -1159,6 +1159,37 @@ function ChatView({ sessionID }: { sessionID: string }) {
     if (el && el.scrollHeight - el.clientHeight > 0) pinnedToBottom.current = false
   }
 
+  // Ctrl+A 选区限界：非可编辑聚焦（点击消息区空白 → 容器聚焦）时浏览器默认
+  // "select all" 选中整页文本（左栏/标题栏/composer 全在内）。焦点在消息区
+  //（容器自身或其不可编辑后代——chip 按钮等，按键冒泡至此）时改选
+  // message-list-inner 全内容；composer 在本层之外，textarea 内 Ctrl+A 全选
+  // 草稿的默认行为不受影响。按 code 匹配（非拉丁布局 Ctrl+A 的 key 非拉丁
+  // 字符，shortcuts.ts KeyB 先例）；AltGr（ctrl+alt 同按，欧陆布局打字）与
+  // Shift 组合（非选择加速键，别处可绑定）不劫持。例外：聚焦的可滚动后代
+  //（代码块 md-pre/表格 md-table-wrap/subagent-body，均 tabIndex=-1 + overflow）
+  // Chromium 原生就把 Ctrl+A 限在其内容内（select-all 作用域）——放行原生
+  // 行为，保留"全选单个代码块再复制"的键盘路径（复制按钮 tabIndex=-1 不可
+  // 键盘达，这是唯一路径）
+  const onKeySelectAll = (e: KeyboardEvent) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return
+    if (e.code !== "KeyA") return
+    const t = e.target as HTMLElement
+    if (t.isContentEditable || t.closest("textarea,input")) return
+    if (t !== e.currentTarget && t.hasAttribute("tabindex")) {
+      const st = getComputedStyle(t)
+      if (st.overflowX !== "visible" || st.overflowY !== "visible") return
+    }
+    const inner = scrollRef.current?.querySelector(":scope > .message-list-inner")
+    if (!inner) return
+    e.preventDefault()
+    const sel = window.getSelection()
+    if (!sel) return
+    const range = document.createRange()
+    range.selectNodeContents(inner)
+    sel.removeAllRanges()
+    sel.addRange(range)
+  }
+
   // useLayoutEffect：DOM 变更后、绘制前同步置底，首帧即到底、无滚动动画
   // 依赖 visibleEntries（非 entries）：回滚暂存隐藏尾部消息也要触发贴底重定位
   useLayoutEffect(() => {
@@ -1315,7 +1346,10 @@ function ChatView({ sessionID }: { sessionID: string }) {
         tabIndex={-1}
         onScroll={onScroll}
         onWheel={onWheel}
-        onKeyDown={onKeyScroll}
+        onKeyDown={(e) => {
+          onKeySelectAll(e)
+          onKeyScroll(e)
+        }}
       >
         <div className="message-list-inner">
           <HistoryRow sessionID={sessionID} onRetry={maybeLoadEarlier} />
