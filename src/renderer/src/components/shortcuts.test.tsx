@@ -25,6 +25,7 @@ const actions = {
   toggleLeftPanel: vi.fn(),
   toggleRightPanel: vi.fn(),
   closeTab: vi.fn(),
+  closeBrowserTab: vi.fn(),
   closeChatTab: vi.fn(async () => true),
   closeTerminalTab: vi.fn(async () => undefined),
   requestTabCloseConfirm: vi.fn(),
@@ -196,6 +197,18 @@ describe("useShortcuts 分发", () => {
     const ev = press({ key: "w", ctrlKey: true })
     expect(ev.defaultPrevented).toBe(true)
     expect(actions.closeTab).toHaveBeenCalledWith("file:/repo/a.md", { pushClosed: true })
+  })
+
+  it("Ctrl+W 按 code KeyW 匹配（2026-09-19 review 修订）：非拉丁布局（俄语 key ц）也消费——放行会回流默认菜单 close 加速键关窗", () => {
+    render(<Harness />)
+    const ev0 = press({ key: "ц", code: "KeyW", ctrlKey: true })
+    expect(ev0.defaultPrevented).toBe(true)
+    expect(actions.closeTab).not.toHaveBeenCalled()
+
+    actions.activeTab = { kind: "browser", key: "browser:file:///x.html" }
+    const ev = press({ key: "ц", code: "KeyW", ctrlKey: true })
+    expect(ev.defaultPrevented).toBe(true)
+    expect(actions.closeBrowserTab).toHaveBeenCalledWith("browser:file:///x.html")
   })
 
   it("Ctrl+F：激活 Tab 有注册回调 → 消费并唤起（design-find-in-page）；无回调/无激活 Tab → 放行", () => {

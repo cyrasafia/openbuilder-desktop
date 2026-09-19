@@ -132,7 +132,11 @@ function dispatch(
     requester()
     return true
   }
-  if (key.toLowerCase() === "w") {
+  // 按 code KeyW 匹配 + key 字面双保险（KeyB 先例，2026-09-19 review 修订）：
+  // 非拉丁布局（俄语等）物理 KeyW 上报本地字符 key，仅按 key 匹配会不消费——
+  // 放行后未消费键回流命中 Electron 默认菜单 Window>Close 的 Ctrl+W 加速键
+  // 把整窗关掉（视图持焦侧同日修复见 browser-views.ts / tab-close-shortcut.ts）
+  if (code === "KeyW" || key.toLowerCase() === "w") {
     const active = store.activeTab
     // 无激活 Tab 也吞（禁用而非放行）：Electron 默认菜单的 close 加速键会关窗口
     if (!active) return true

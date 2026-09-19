@@ -1,4 +1,5 @@
 import { ipcMain, shell, WebContentsView, type BrowserWindow } from "electron"
+import { isTabCloseShortcut } from "./tab-close-shortcut"
 
 /**
  * 浏览器 Tab 的 WebContentsView 注册表与 IPC（design-browser-tab §1.1）。
@@ -77,7 +78,11 @@ export function registerBrowserViewIpc() {
     // 驱动 commit，载荷 up 标记区分；及裸 Alt 域四键 O/C/N/⌫——项目/worktree
     // 管理，§0.2——转发+消费会覆盖 Linux 页面 accesskey（Alt+字母），罕见使用，
     // 接受并记录）
-    wc.on("before-input-event", (_e, input) => {
+    // Ctrl/⌘+W 例外吞键（2026-09-19，tab-close-shortcut.ts）：转发不消费按键，
+    // 未消费键回流命中 Electron 默认菜单 Window>Close 的 CommandOrControl+W
+    // 加速键会把整个窗口关掉——preventDefault 切断加速键路径，转发照旧驱动关 Tab
+    wc.on("before-input-event", (e, input) => {
+      if (isTabCloseShortcut(input)) e.preventDefault()
       const altKey = input.key === "Alt" || input.code === "AltLeft" || input.code === "AltRight"
       const altArrow = input.alt && (input.key === "ArrowUp" || input.key === "ArrowDown")
       const altFamily =
