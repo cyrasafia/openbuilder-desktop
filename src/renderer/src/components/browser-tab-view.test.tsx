@@ -137,6 +137,36 @@ describe("BrowserTabView", () => {
     expect(input.value).toBe("https://example.com/") // store url 还原
   })
 
+  it("地址栏无 scheme 输入分流（2026-09-19）：裸域名补 https://；localhost/IPv4 补 http://；相对路径仍 file://", () => {
+    render(<BrowserTabView tabKey="browser:https://example.com/" viewId={1} />)
+    const input = screen.getByRole("textbox") as HTMLInputElement
+    const nav = (value: string) => {
+      fireEvent.change(input, { target: { value } })
+      fireEvent.keyDown(input, { key: "Enter" })
+    }
+    // 裸域名（含端口/路径/查询形态）→ https://
+    nav("www.google.com")
+    expect(browser.browserNavigate).toHaveBeenLastCalledWith(1, "https://www.google.com")
+    nav("example.com:8080/x?q=1")
+    expect(browser.browserNavigate).toHaveBeenLastCalledWith(1, "https://example.com:8080/x?q=1")
+    // localhost / IP 字面量（IPv4 / [IPv6]，本地服务无 TLS）→ http://
+    nav("localhost:5173")
+    expect(browser.browserNavigate).toHaveBeenLastCalledWith(1, "http://localhost:5173")
+    nav("127.0.0.1:5173")
+    expect(browser.browserNavigate).toHaveBeenLastCalledWith(1, "http://127.0.0.1:5173")
+    nav("[::1]:5173")
+    expect(browser.browserNavigate).toHaveBeenLastCalledWith(1, "http://[::1]:5173")
+    // IDN（label 允许 Unicode 字母，punycode 由 Chromium 解析）→ https://
+    nav("中文.com")
+    expect(browser.browserNavigate).toHaveBeenLastCalledWith(1, "https://中文.com")
+    // 相对路径首段无点，不命中域名形态 → 维持字面 file 路径
+    nav("repo/x.html")
+    expect(browser.browserNavigate).toHaveBeenLastCalledWith(1, "file:///repo/x.html")
+    // 显式 scheme 永不补全
+    nav("http://plain.io")
+    expect(browser.browserNavigate).toHaveBeenLastCalledWith(1, "http://plain.io")
+  })
+
   it("地址栏聚焦时机（2026-09-18 修订）：新开 Tab（待聚焦标记）聚焦并全选；切入既有 Tab 不聚焦", () => {
     // 新开：store 待聚焦标记为 true
     consumeBrowserOpenFocusMock.mockReturnValue(true)

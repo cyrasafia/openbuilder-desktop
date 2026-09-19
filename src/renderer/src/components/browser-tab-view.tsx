@@ -5,6 +5,17 @@ import { fileUrlOf } from "@shared/file-url"
 import { FindBar, useWebContentsFind } from "./find-bar"
 
 /**
+ * 地址栏无 scheme 输入的 web/file 分流（design-browser-tab §1.3，2026-09-19）：
+ * 裸点分域名（末段字母 TLD，label 允许 Unicode 字母/数字即 IDN 如 中文.com，
+ * 可带端口与 /?# 尾部，如 www.google.com、example.com:8080/x?q=1）补 https://
+ * （punycode 转换由 Chromium GURL 承担）；localhost 与 IP 字面量（IPv4 / [IPv6]，
+ * 可带端口）补 http://——本地服务无 TLS，https 必败；两者对齐 Chromium omnibox
+ * 默认。其余维持字面 file 路径（相对路径 repo/x.html 首段无点，不命中域名形态）。
+ */
+const HTTPS_ADDRESS = /^[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*\.\p{L}{2,}(?::\d+)?(?:[/?#].*)?$/iu
+const HTTP_ADDRESS = /^(?:localhost|\[[0-9a-f:]+\]|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?(?:[/?#].*)?$/i
+
+/**
  * 浏览器 Tab 内容（design-browser-tab §1.3）：工具条 + 内容宿主。
  * 视图本体在 main 进程（WebContentsView）——宿主 div 只负责占位与 bounds 同步
  * （ResizeObserver → IPC），内容渲染不在 DOM 里。显隐协调在 Workspace 层
@@ -92,10 +103,16 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
     // blur 还原的是 store 当前页（欢迎态为空、常规态为旧页），均非用户所输，
     // 慢网络下读作"输入被丢弃"；did-navigate/失败回填到达后回写接管为规范 URL
     setAddress(value)
-    // 字面 file 路径补 scheme（逐段编码）；其余原样（http/https/file/about）
+    // 显式 scheme 原样（http/https/file/about 等）；裸域名/localhost/IP 按
+    // HTTPS_ADDRESS/HTTP_ADDRESS 补 scheme（见模块头注释）；其余按字面 file
+    // 路径补 scheme（逐段编码）
     const url = value.startsWith("file://") || /^[a-z]+:\/\//i.test(value) || value.startsWith("about:")
       ? value
-      : fileUrlOf(value)
+      : HTTPS_ADDRESS.test(value)
+        ? `https://${value}`
+        : HTTP_ADDRESS.test(value)
+          ? `http://${value}`
+          : fileUrlOf(value)
     window.desktop.browserNavigate(viewId, url)
   }
 
