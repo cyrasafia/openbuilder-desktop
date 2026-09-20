@@ -1,4 +1,5 @@
 import { ipcMain, shell, WebContentsView, type BrowserWindow } from "electron"
+import { isTabCloseShortcut } from "./tab-close-shortcut"
 
 /**
  * 浏览器 Tab 的 WebContentsView 注册表与 IPC（design-browser-tab §1.1）。
@@ -77,7 +78,11 @@ export function registerBrowserViewIpc() {
     // 驱动 commit，载荷 up 标记区分；及裸 Alt 域四键 O/C/N/⌫——项目/worktree
     // 管理，§0.2——转发+消费会覆盖 Linux 页面 accesskey（Alt+字母），罕见使用，
     // 接受并记录）
-    wc.on("before-input-event", (_e, input) => {
+    // Ctrl/⌘+W 例外吞键（2026-09-19，tab-close-shortcut.ts）：转发不消费按键，
+    // 未消费键回流命中 Electron 默认菜单 Window>Close 的 CommandOrControl+W
+    // 加速键会把整个窗口关掉——preventDefault 切断加速键路径，转发照旧驱动关 Tab
+    wc.on("before-input-event", (e, input) => {
+      if (isTabCloseShortcut(input)) e.preventDefault()
       const altKey = input.key === "Alt" || input.code === "AltLeft" || input.code === "AltRight"
       const altArrow = input.alt && (input.key === "ArrowUp" || input.key === "ArrowDown")
       const altFamily =
@@ -86,11 +91,23 @@ export function registerBrowserViewIpc() {
           input.code === "KeyC" ||
           input.code === "KeyN" ||
           input.code === "Backspace")
+      // 裸 F5（非 mac，2026-09-19）：无修饰键组合本不转发——F5 单键驱动应用侧
+      // 刷新（shortcuts dispatch F5 分支 → browserReload），经转发入同一分发；
+      // 转发不消费按键（页面仍收到 F5，但应用侧刷新不受页面 preventDefault
+      // 抑制——接受取舍），mac 不转发（⌘R 惯例）
+      const bareF5 =
+        process.platform !== "darwin" &&
+        input.type === "keyDown" &&
+        input.key === "F5" &&
+        !input.control &&
+        !input.meta &&
+        !input.alt &&
+        !input.shift
       let forward: boolean
       if (input.type === "keyUp") {
         forward = altKey || input.key === "Meta" || input.key === "Control"
       } else {
-        forward = input.type === "keyDown" && (input.control || input.meta || altArrow || altKey || altFamily)
+        forward = (input.type === "keyDown" && (input.control || input.meta || altArrow || altKey || altFamily)) || bareF5
       }
       if (!forward) return
       mainWindow?.webContents.send("browser:shortcut", {

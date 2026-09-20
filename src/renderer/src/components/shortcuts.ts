@@ -8,7 +8,9 @@ import { closeTabInteractive } from "./tab-actions"
  * 浏览器视图聚焦时原生 webContents 抢走键盘，经 main 的 before-input-event
  * 转发（onBrowserShortcut，design-browser-tab 评审 M5）走同一分发。
  * IME 组合中（fcitx5 上屏）不触发；已 preventDefault 的事件不重复处理。
- * Ctrl+T/W、Ctrl+Shift+T、Ctrl(+Shift)+Tab（非 mac）、Ctrl+PgUp/PgDn（非 mac）；
+ * Ctrl+T/W、Ctrl+Shift+T、Ctrl(+Shift)+Tab（非 mac）、Ctrl+PgUp/PgDn（非 mac）、
+ * F5 刷新激活浏览器 Tab（非 mac，2026-09-19——mac ⌘R 惯例不绑，经默认菜单
+ * reload 加速键已可用）；
  * **Alt 域 = 项目/worktree 管理（2026-09-06 重构，§0/§1.2）**：Alt+O 打开项目
  * 选择器（自 Ctrl+O 迁移，Ctrl+O 放行）、Alt+C 关闭激活 entry、Alt+N 新建
  * worktree、Alt+⌫ 删除当前 worktree（二次确认）；作用域遍历非 mac 绑裸
@@ -132,7 +134,11 @@ function dispatch(
     requester()
     return true
   }
-  if (key.toLowerCase() === "w") {
+  // 按 code KeyW 匹配 + key 字面双保险（KeyB 先例，2026-09-19 review 修订）：
+  // 非拉丁布局（俄语等）物理 KeyW 上报本地字符 key，仅按 key 匹配会不消费——
+  // 放行后未消费键回流命中 Electron 默认菜单 Window>Close 的 Ctrl+W 加速键
+  // 把整窗关掉（视图持焦侧同日修复见 browser-views.ts / tab-close-shortcut.ts）
+  if (code === "KeyW" || key.toLowerCase() === "w") {
     const active = store.activeTab
     // 无激活 Tab 也吞（禁用而非放行）：Electron 默认菜单的 close 加速键会关窗口
     if (!active) return true
@@ -141,6 +147,24 @@ function dispatch(
     // 否则确认弹窗/设置等浮层下 Ctrl+W 会直关遮罩下的 Tab
     if (store.overlayCount > 0) return true
     closeTabInteractive(store, active)
+    return true
+  }
+  // F5（非 mac，2026-09-19 增）：刷新激活浏览器 Tab——与工具条刷新钮同路径
+  // （browserViewIdFor → browserReload）；仅 browser kind 动作，其余视图/无
+  // viewId 放行（未映射组合语义）。按键不吞、页面仍收到 F5，但应用侧刷新
+  // 无条件触发——页面 preventDefault 无法抑制（与 Chrome 页面可拦 F5 相反，
+  // 接受的取舍）。浏览器视图侧经转发走同分支。mac 不绑：⌘R 惯例且已可用——未消费的 ⌘R
+  // 回流 Electron 默认菜单 reload 加速键，作用于聚焦 webContents（视图持焦
+  // 刷视图、主窗持焦刷主窗 renderer）。无修饰键限定：Ctrl+F5 硬刷新/
+  // Shift+F5 不做（Keep Lean）。overlay 闸门同上——视图持焦不可达（浮层
+  // 隐藏视图），主窗持焦路径拦刷新
+  if (!mac && !ctrl && !shift && !alt && key === "F5") {
+    const active = store.activeTab
+    if (active?.kind !== "browser") return false
+    if (store.overlayCount > 0) return true
+    const viewId = store.browserViewIdFor(active.key)
+    if (viewId == null) return false
+    window.desktop.browserReload(viewId)
     return true
   }
   return false
@@ -179,7 +203,11 @@ export function useShortcuts() {
         e.altKey &&
         !ctrl &&
         (e.key === "ArrowUp" || e.key === "ArrowDown" || isAltFamilyCode(e.code))
-      if (!ctrl && !altCombo) return
+      // 裸 F5（非 mac 浏览器刷新习惯，2026-09-19）单键入分发——平台判定在
+      // dispatch 分支内（mac 不绑），入口不设平台分支；带 Shift/Alt 的 F5
+      // 组合不入（页面/输入框自用）
+      const bareF5 = !ctrl && !e.altKey && !e.shiftKey && e.key === "F5"
+      if (!ctrl && !altCombo && !bareF5) return
       // 消费才吞（未映射组合放行——Ctrl+S 浏览器保存；Ctrl+W 无激活 Tab 也吞，见 dispatch）
       if (dispatch(store, e.key, ctrl, e.shiftKey, e.altKey, e.code, e.repeat))
         e.preventDefault()
@@ -267,6 +295,7 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { keys: "Alt+⌫", macKeys: "⌘⌥⌫", action: "deleteWorkspace" },
       { keys: "Ctrl+W", macKeys: "⌘W", action: "scCloseTab" },
       { keys: "Ctrl+Shift+T", macKeys: "⌘⇧T", action: "scRestoreTab" },
+      { keys: "F5", action: "browserReload", only: "non-mac" },
       { keys: "Ctrl+Tab / Ctrl+PageDown", action: "scNextTab", only: "non-mac" },
       { keys: "Ctrl+Shift+Tab / Ctrl+PageUp", action: "scPrevTab", only: "non-mac" },
       { keys: "⌘⌥→ / ⌘⇧]", action: "scNextTab", only: "mac" },
