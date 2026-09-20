@@ -43,6 +43,7 @@
 | **Alt+⌫（mac ⌘⌥⌫）** | 删除**当前作用域 worktree**，二次确认（§1.2 + §4.1；键位选型见 §0.2——⌘⌥D 系统占用弃用） |
 | Ctrl+W | 关闭激活 Tab；**无激活 Tab 时仅消费不动作**（放行会命中默认菜单关窗，见下注）；chat Tab 流式中 / 终端运行中先二次确认——应用内 ConfirmDialog（`store.pendingTabClose`，**2026-09-11 替换原生 confirm**），chat 确认后 abort+归档；**overlay 遮挡时仅消费不动作**（§1.2 闸门，非阻塞弹窗化后必拦）——与 Tab 栏关闭按钮**同一代码路径**（§4 tab-actions） |
 | Ctrl+Shift+T | 恢复刚关闭的 Tab（§2 关闭栈） |
+| **F5（仅非 mac，2026-09-19 增）** | 刷新激活浏览器 Tab（与浏览器 Tab 工具条刷新钮同路径：`browserViewIdFor` → `browserReload`）；仅 browser kind 动作，其余视图/无 viewId 放行（未映射组合语义）；**页面 F5 语义（review 2026-09-19 澄清）**：按键不吞、页面仍收到 F5，但应用侧刷新无条件触发——页面 `preventDefault` 无法抑制（before-input-event 转发/分发先于页面意愿可知，与 Chrome 页面可拦 F5 相反，接受的取舍）；**overlay 遮挡时仅消费不动作**（§1.2 闸门）；无修饰键限定——Ctrl+F5 硬刷新 / Shift+F5 不做（Keep Lean）；**mac 不绑**：⌘R 惯例且已可用——未消费的 ⌘R 回流 Electron 默认菜单 reload 加速键作用于聚焦 webContents（视图持焦刷视图、主窗持焦刷主窗 renderer）。浏览器视图持焦时经转发入同一分发（转发过滤扩裸 F5，非 mac；转发不消费按键，见 design-browser-tab §1.2）；主窗 renderer 持焦时 window keydown 入口 gate 对裸 F5 单键放行进分发 |
 | Ctrl+1 / Ctrl+2 / Ctrl+3（**仅引导页**，2026-09-06 增，§1.1） | 分别开 diff / 终端 / 网页 Tab（与引导页磁贴点击同路径、同禁用态）；Ctrl 按住期间磁贴右上角显示对应数字角标 |
 | Ctrl+Tab / Ctrl+PageDown | 下一个可见 Tab（作用域内循环；Shift 反转方向；**仅非 macOS**）。终端聚焦时 Ctrl+Tab 亦生效（2026-09-10 修订，见 §5 终端注）；Ctrl+PgUp/PgDn 在终端内仍归 pty |
 | Ctrl+Shift+Tab / Ctrl+PageUp | 上一个可见 Tab（循环；Shift+PgUp/PgDn 同样反转；**仅非 macOS**）。终端聚焦时 Ctrl+Shift+Tab 亦生效（同上） |

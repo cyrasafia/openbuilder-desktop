@@ -26,6 +26,8 @@ const actions = {
   toggleRightPanel: vi.fn(),
   closeTab: vi.fn(),
   closeBrowserTab: vi.fn(),
+  // F5 刷新（2026-09-19）：browser kind 分支消费
+  browserViewIdFor: vi.fn((): number | null => null),
   closeChatTab: vi.fn(async () => true),
   closeTerminalTab: vi.fn(async () => undefined),
   requestTabCloseConfirm: vi.fn(),
@@ -75,14 +77,19 @@ let windowBlurCb: (() => void) | null = null
 /** platform 可变（macOS 专属切 Tab 键用例切 darwin 验证） */
 let platform: "linux" | "darwin" = "linux"
 
+/** F5 分支经 window.desktop 直调（2026-09-19）——dispatch 内与工具条刷新钮同路径 */
+const browserReload = vi.fn()
+
 beforeEach(() => {
   for (const fn of Object.values(actions)) {
     if (vi.isMockFunction(fn)) fn.mockClear()
   }
+  browserReload.mockClear()
   actions.activeTab = null
   actions.overlayCount = 0
   actions.currentWorkspace = null
   actions.isSessionActive.mockReturnValue(false)
+  ;(actions.browserViewIdFor as ReturnType<typeof vi.fn>).mockReturnValue(null)
   platform = "linux"
   const cur = (window as unknown as { desktop?: Record<string, unknown> }).desktop
   ;(window as unknown as { desktop: unknown }).desktop = {
@@ -90,6 +97,7 @@ beforeEach(() => {
     get platform() {
       return platform
     },
+    browserReload,
     onBrowserShortcut: (cb: typeof shortcutCb) => {
       shortcutCb = cb
       return () => {
@@ -209,6 +217,57 @@ describe("useShortcuts 分发", () => {
     const ev = press({ key: "ц", code: "KeyW", ctrlKey: true })
     expect(ev.defaultPrevented).toBe(true)
     expect(actions.closeBrowserTab).toHaveBeenCalledWith("browser:file:///x.html")
+  })
+
+  it("F5（非 mac，2026-09-19）：browser Tab 激活 → browserReload 同 viewId；非 browser Tab / 无 viewId / mac / 带 Shift 组合 → 放行", () => {
+    render(<Harness />)
+    // 非 browser Tab：放行
+    actions.activeTab = { kind: "file", key: "file:/repo/a.md" }
+    const ev0 = press({ key: "F5", code: "F5" })
+    expect(ev0.defaultPrevented).toBe(false)
+    expect(browserReload).not.toHaveBeenCalled()
+
+    // browser Tab 但 viewId 未落地：放行
+    actions.activeTab = { kind: "browser", key: "browser:https://a.com" }
+    const ev1 = press({ key: "F5", code: "F5" })
+    expect(ev1.defaultPrevented).toBe(false)
+    expect(browserReload).not.toHaveBeenCalled()
+
+    // browser Tab + viewId：消费并刷新
+    ;(actions.browserViewIdFor as ReturnType<typeof vi.fn>).mockReturnValue(7)
+    const ev2 = press({ key: "F5", code: "F5" })
+    expect(ev2.defaultPrevented).toBe(true)
+    expect(browserReload).toHaveBeenCalledWith(7)
+
+    // Shift+F5：放行（无修饰键限定）
+    const ev3 = press({ key: "F5", code: "F5", shiftKey: true })
+    expect(ev3.defaultPrevented).toBe(false)
+
+    // mac：不绑（⌘R 惯例）
+    platform = "darwin"
+    const ev4 = press({ key: "F5", code: "F5" })
+    expect(ev4.defaultPrevented).toBe(false)
+    expect(browserReload).toHaveBeenCalledTimes(1)
+  })
+
+  it("F5 overlay 闸门：弹窗遮挡时仅消费不动作（同 Alt 域/Ctrl+F/Ctrl+W）", () => {
+    render(<Harness />)
+    actions.activeTab = { kind: "browser", key: "browser:https://a.com" }
+    ;(actions.browserViewIdFor as ReturnType<typeof vi.fn>).mockReturnValue(7)
+    actions.overlayCount = 1
+    const ev = press({ key: "F5", code: "F5" })
+    expect(ev.defaultPrevented).toBe(true)
+    expect(browserReload).not.toHaveBeenCalled()
+  })
+
+  it("F5 经浏览器视图转发（onBrowserShortcut）走同一分发——视图持焦刷新", () => {
+    render(<Harness />)
+    actions.activeTab = { kind: "browser", key: "browser:https://a.com" }
+    ;(actions.browserViewIdFor as ReturnType<typeof vi.fn>).mockReturnValue(9)
+    shortcutCb?.({
+      key: "F5", code: "F5", control: false, meta: false, shift: false, alt: false,
+    })
+    expect(browserReload).toHaveBeenCalledWith(9)
   })
 
   it("Ctrl+F：激活 Tab 有注册回调 → 消费并唤起（design-find-in-page）；无回调/无激活 Tab → 放行", () => {
