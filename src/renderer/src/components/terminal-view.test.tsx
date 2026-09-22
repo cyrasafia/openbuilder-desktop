@@ -1,8 +1,9 @@
 /**
  * 终端组件生命周期（design-terminal-tab §1.2/§1.2a）：mock xterm/FitAddon 与
  * 全局 WebSocket 假类，验证 connect-token→WS 组装、出帧 write / 控制帧 cursor
- * 锚点、onData 直发、close code 终态区分（1000/4404 已退出）、异常断开的
- * 退避自动重连（cursor 续传 / 无锚点 reset 全量 / focus kick / 终态不重试）。
+ * 锚点、onData 直发、close code 终态区分（1000 主动中断自动关 Tab / 4404 被动
+ * 已退出叠加）、断开/错误态 Ctrl+D 关 Tab（closeTabInteractive 真实路径）、
+ * 异常断开的退避自动重连（cursor 续传 / 无锚点 reset 全量 / focus kick / 终态不重试）。
  */
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -124,10 +125,15 @@ const actions = {
     runtimeObj.buffer = _buf
   }),
   ptyRuntimeFor: vi.fn(() => runtimeObj),
+  closeTerminalTab: vi.fn(async (_id: string) => {}),
+  requestTabCloseConfirm: vi.fn((_key: string) => {}),
   pushOverlay: vi.fn(),
   popOverlay: vi.fn(),
 }
-let storeStub = actions
+/** 断开/错误态 Ctrl+D 走真实 closeTabInteractive：storeStub 须供 tabs 实体
+ *  （terminal 关闭路径按 key 查找；与 actions 分开持有——mockClear 循环只清函数） */
+const terminalTab = { kind: "terminal" as const, key: "terminal:pty_1", projectId: "p1", title: "bash", directory: "/w" }
+let storeStub: unknown = { ...actions, tabs: [terminalTab] }
 
 vi.mock("../app", () => ({
   useI18n: () => ({
@@ -218,7 +224,7 @@ describe("TerminalView", () => {
     expect(writes).toContain("out")
   })
 
-  it("onData 直发 WS（open 态）；close code 1000 → markPtyExited + 已退出叠加", async () => {
+  it("onData 直发 WS（open 态）；close code 1000（pty 自然退出 = 主动中断）→ markPtyExited + 自动关 Tab（closeTabInteractive 同款 closeTerminalTab，不呈已退出态）", async () => {
     vi.useFakeTimers()
     const { ws } = await bootLive()
     expect(dataHandler).toBeTruthy()
@@ -228,21 +234,68 @@ describe("TerminalView", () => {
       ws.onclose?.({ code: 1000 })
     })
     expect(actions.markPtyExited).toHaveBeenCalledWith("pty_1")
-    expect(screen.getByText("终端已退出")).toBeTruthy()
+    expect(actions.closeTerminalTab).toHaveBeenCalledWith("pty_1")
   })
 
-  it("close 4404（session 不在 server：legacy not-found/exited 同码）→ markPtyExited 终态、不重连", async () => {
+  it("close 4404（session 不在 server：legacy not-found/exited 同码 = 被动关闭）→ markPtyExited 终态叠加、不自动关 Tab、不重连", async () => {
     vi.useFakeTimers()
     const { ws } = await bootLive()
     act(() => {
       ws.onclose?.({ code: 4404 })
     })
     expect(actions.markPtyExited).toHaveBeenCalledWith("pty_1")
+    expect(actions.closeTerminalTab).not.toHaveBeenCalled()
     expect(screen.getByText("终端已退出")).toBeTruthy()
     await act(async () => {
       await vi.advanceTimersByTimeAsync(60_000)
     })
     expect(FakeWS.instances.length).toBe(1)
+  })
+
+  it("live 态 Ctrl+D 归 pty（EOF 不拦截）；断开/错误态（已退出）Ctrl+D → closeTabInteractive 直关（exited 免确认）", async () => {
+    vi.useFakeTimers()
+    const { ws } = await bootLive()
+    const evD = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, code: "KeyD" })
+    expect(keyHandler!(evD)).toBe(true)
+    expect(actions.closeTerminalTab).not.toHaveBeenCalled()
+    act(() => {
+      ws.onclose?.({ code: 4404 })
+    })
+    const evD2 = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, code: "KeyD" })
+    expect(keyHandler!(evD2)).toBe(false)
+    expect(evD2.defaultPrevented).toBe(true)
+    expect(actions.requestTabCloseConfirm).not.toHaveBeenCalled()
+    expect(actions.closeTerminalTab).toHaveBeenCalledWith("pty_1")
+  })
+
+  it("重连中（disconnected 断连态）Ctrl+D → 直关不确认；Ctrl+Shift+D（带 Shift 非 EOF 语义）不受影响走 deadRelease", async () => {
+    vi.useFakeTimers()
+    const { ws } = await bootLive()
+    act(() => {
+      ws.onclose?.({ code: 1006 })
+    })
+    const evD = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, code: "KeyD" })
+    expect(keyHandler!(evD)).toBe(false)
+    expect(actions.requestTabCloseConfirm).not.toHaveBeenCalled()
+    expect(actions.closeTerminalTab).toHaveBeenCalledWith("pty_1")
+    const evShiftD = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, shiftKey: true, code: "KeyD" })
+    expect(keyHandler!(evShiftD)).toBe(false)
+    expect(actions.closeTerminalTab).toHaveBeenCalledTimes(1)
+  })
+
+  it("连接中（首连 WS 未 OPEN）Ctrl+D → running 态走确认弹窗（requestTabCloseConfirm），不直关", async () => {
+    vi.useFakeTimers()
+    render(<TerminalView ptyID="pty_1" />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    // WS 已建但未 open（readyState 0 = 连接中）
+    expect(FakeWS.instances.length).toBe(1)
+    const evD = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, code: "KeyD" })
+    expect(keyHandler!(evD)).toBe(false)
+    expect(evD.defaultPrevented).toBe(true)
+    expect(actions.requestTabCloseConfirm).toHaveBeenCalledWith("terminal:pty_1")
+    expect(actions.closeTerminalTab).not.toHaveBeenCalled()
   })
 
   it("异常断开（非 1000/4404）→ 重连中叠加、不 markPtyExited；退避后自动重连带 cursor 续传，成功后叠加消失", async () => {
@@ -517,11 +570,11 @@ describe("TerminalView", () => {
     expect(keyHandler!(evCmdW)).toBe(true)
   })
 
-  it("断开态不拦截应用快捷键：已退出后 Ctrl+W/Ctrl+Tab/Ctrl+Shift+Tab 返回 false（不 preventDefault，事件冒泡到全局分发）；无修饰键仍归 xterm", async () => {
+  it("断开态不拦截应用快捷键：已退出（4404 被动终态）后 Ctrl+W/Ctrl+Tab/Ctrl+Shift+Tab 返回 false（不 preventDefault，事件冒泡到全局分发）；无修饰键仍归 xterm", async () => {
     vi.useFakeTimers()
     const { ws } = await bootLive()
     act(() => {
-      ws.onclose?.({ code: 1000 })
+      ws.onclose?.({ code: 4404 })
     })
     expect(screen.getByText("终端已退出")).toBeTruthy()
     const evW = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, code: "KeyW" })
@@ -582,11 +635,11 @@ describe("TerminalView", () => {
     expect(keyHandler!(evW2)).toBe(true)
   })
 
-  it("断开态复制快捷键不受释放影响：Ctrl+Shift+C 有选区仍拦截复制", async () => {
+  it("断开态复制快捷键不受释放影响：已退出（4404 被动终态）Ctrl+Shift+C 有选区仍拦截复制", async () => {
     vi.useFakeTimers()
     const { ws } = await bootLive()
     act(() => {
-      ws.onclose?.({ code: 1000 })
+      ws.onclose?.({ code: 4404 })
     })
     lastTerm!.getSelection = () => "SELECTED"
     const evC = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, shiftKey: true, code: "KeyC" })

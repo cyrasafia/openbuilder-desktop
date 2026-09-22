@@ -118,7 +118,7 @@ private closedTabs: ClosedTabEntry[] = []   // push 尾 / pop 尾，上限 20（
 
 ## 4. 用户关闭路径的收敛（tab-actions）
 
-`closeTabInteractive(store, tab)`（模块 `src/renderer/src/components/tab-actions.ts`）：chat 流式中 / 终端运行中置位 `store.pendingTabClose` 挂**应用内 ConfirmDialog**（**2026-09-11 替换原生 confirm**——原生阻塞式改非阻塞后，Ctrl+W 由 §1.2 overlay 闸门协调、Tab 栏 X 钮被遮罩盖住，二者均无重入风险；确认回调 `confirmTabClose` **届时重估**流式/运行态再关——弹窗期间流式可能已结束、pty 可能已退出，Tab 已被关则 no-op；取消 `cancelTabClose`）；其余直接关闭（chat 非流式 `closeChatTab`、终端非运行 `closeTerminalTab`、browser/file/diff `closeTab(key, { pushClosed: true })`）。Tab 栏关闭按钮与 Ctrl+W 共用，语义单一来源（原 Tab 栏内联逻辑迁出）。
+`closeTabInteractive(store, tab)`（模块 `src/renderer/src/components/tab-actions.ts`）：chat 流式中 / 终端运行中置位 `store.pendingTabClose` 挂**应用内 ConfirmDialog**（**2026-09-11 替换原生 confirm**——原生阻塞式改非阻塞后，Ctrl+W 由 §1.2 overlay 闸门协调、Tab 栏 X 钮被遮罩盖住，二者均无重入风险；确认回调 `confirmTabClose` **届时重估**流式/运行态再关——弹窗期间流式可能已结束、pty 可能已退出，Tab 已被关则 no-op；取消 `cancelTabClose`）；其余直接关闭（chat 非流式 `closeChatTab`、终端非运行 `closeTerminalTab`、browser/file/diff `closeTab(key, { pushClosed: true })`）。Tab 栏关闭按钮与 Ctrl+W 共用，语义单一来源（原 Tab 栏内联逻辑迁出）；**终端断开/错误态的 Ctrl+D 亦经此单一路径**（2026-09-22 增，design-terminal-tab §1.4——live 态 Ctrl+D 是 EOF 归 pty，不经此）。
 
 ### 4.1 确认弹窗键：Enter 确认 / Esc 取消（2026-09-06 增）
 
