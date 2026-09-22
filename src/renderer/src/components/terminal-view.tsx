@@ -5,6 +5,7 @@ import { FitAddon } from "@xterm/addon-fit"
 import { SerializeAddon } from "@xterm/addon-serialize"
 import "@xterm/xterm/css/xterm.css"
 import { useI18n, useStore } from "../app"
+import { closeTabInteractive } from "./tab-actions"
 
 /**
  * 终端 Tab 内容（design-terminal-tab §1.2）：xterm.js 恒深色 + server pty WS。
@@ -19,9 +20,15 @@ import { useI18n, useStore } from "../app"
  * token 瞬态失败）按 SSE 同款退避 1→2→4→8→16→30s 封顶重试，成功清零；窗口
  * focus kick（openbuilder design-sse-reconnect-recovery 的 resume 语义）。
  * 重连带 cursor 增量续传（同一 term 只补写缺失输出）；无锚点断开则 reset
- * 清屏走全量回放（防重复）。终态两条：close **1000** = pty 自然退出、
- * **4404** = session 不在 server（legacy 路由 not-found/exited 同码）、token
- * 404 = pty 已被回收 → 标 exited（此后关 Tab 不再 DELETE——404 容忍），评审 M2。
+ * 清屏走全量回放（防重复）。终态（2026-09-22 修订，同一般终端模拟器）：
+ * close **1000** = pty 自然退出（live 终端内 Ctrl+D/exit 的主动中断）→ 标
+ * exited + **自动关 Tab**（先标 exited 令 closeTerminalTab 跳过 DELETE——
+ * pty 已亡；关栈 Ctrl+Shift+T 原目录新建）；**4404** = session 不在 server
+ * （legacy 路由 not-found/exited 同码）、token 404 = pty 已被回收 = **被动
+ * 关闭** → 仅标 exited 呈只读终止态（Tab 保持可回滚，此后关 Tab 不再
+ * DELETE——404 容忍，评审 M2）。切走/退避期间退出的自然退出客户端无法与
+ * server 回收区分——落 404/4404 被动路径呈终止态。断开/错误态 Ctrl+D =
+ * 关 Tab（§1.4，closeTabInteractive 与 Ctrl+W/Tab 栏 X 单一路径）。
  * 已退出的 Tab 重挂载：不建 WS（server 侧 exited 即 404），直接呈只读态。
  */
 
@@ -127,6 +134,29 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
     }
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true
+      // 断开/错误态 Ctrl+D 关 Tab（2026-09-22）：无 OPEN WS 时 EOF 无处可发，
+      // 拦截为关闭入口走 closeTabInteractive（与 Ctrl+W/Tab 栏 X 单一语义；
+      // exited/disconnected 免确认直关，连接中则按 running 走确认）。live 态
+      // 不拦——Ctrl+D 是 EOF 归 pty，shell 退出 → WS close 1000 → onclose
+      // 自动关 Tab（终端模拟器惯例）。排除 Shift/Alt/meta：Ctrl+Shift+D 等
+      // 修饰组合不属 EOF 语义（live 态发 0x04 之外的转义序列归 pty）
+      if (
+        ev.ctrlKey &&
+        !ev.shiftKey &&
+        !ev.altKey &&
+        !ev.metaKey &&
+        (ev.code === "KeyD" || ev.key === "d" || ev.key === "D")
+      ) {
+        const ws = wsRef.current
+        if (!(ws && ws.readyState === WebSocket.OPEN)) {
+          const tab = store.tabs.find((t) => t.key === `terminal:${ptyID}`)
+          if (tab) {
+            ev.preventDefault()
+            closeTabInteractive(store, tab)
+            return false
+          }
+        }
+      }
       if (deadRelease(ev)) return false
       // live 态切 Tab 释放（2026-09-10 修订，design-terminal-tab §1.4）：xterm
       // 对 Tab 类按键忽略 ctrl 修饰——Ctrl+Tab 发 \t、Ctrl+Shift+Tab 发 CSI Z，
@@ -298,11 +328,19 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
         setState(ev.code === 1000 || ev.code === 4404 ? "closed" : "reconnecting")
         bufferReady = true
         wsRef.current = null
-        // 1000 = pty 自然退出（server onEnd 主动关）；4404 = session 不在
-        // （legacy 路由 not-found/exited 同码）——终态标 exited（关闭 Tab 不再
-        // DELETE，404 容忍）；其余 = 异常断开 → 退避重连，不标 exited（关闭
-        // Tab 仍尝试 DELETE 防孤儿，评审 M2）
-        if (ev.code === 1000 || ev.code === 4404) {
+        // 1000 = pty 自然退出（server onEnd 主动关）——live 终端内 Ctrl+D/exit
+        // 的**主动中断**：同一般终端模拟器自动关 Tab。先标 exited 再关（exited
+        // 令 closeTerminalTab 跳过 DELETE——pty 已亡；closeTab 清 pendingTabClose
+        // 兜底弹窗在途场景；关栈可 Ctrl+Shift+T 原目录新建）。4404 = session 不在
+        // server = **被动关闭**（server 重启/回收/切走期间退出）→ 仅标 exited 呈
+        // 只读终止态（此后关 Tab 不再 DELETE——404 容忍，评审 M2）；其余 = 异常
+        // 断开 → 退避重连，不标 exited（关闭 Tab 仍尝试 DELETE 防孤儿，评审 M2）
+        if (ev.code === 1000) {
+          store.markPtyExited(ptyID)
+          void store.closeTerminalTab(ptyID)
+          return
+        }
+        if (ev.code === 4404) {
           store.markPtyExited(ptyID)
           return
         }

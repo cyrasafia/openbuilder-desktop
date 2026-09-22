@@ -1,6 +1,6 @@
 # 终端 Tab（xterm.js + server pty）— 设计文档
 
-> 对应 spec-v0.3 #5。内嵌终端：`@xterm/xterm` + opencode server pty API。**恒深色渲染**（不随主题）；新建终端 cwd = 当前作用域目录，Tab 归作用域；**关 Tab = 杀掉 pty**（运行中二次确认）。
+> 对应 spec-v0.3 #5。内嵌终端：`@xterm/xterm` + opencode server pty API。**恒深色渲染**（不随主题）；新建终端 cwd = 当前作用域目录，Tab 归作用域；**关 Tab = 杀掉 pty**（运行中二次确认）；**pty 自然退出自动关 Tab**（2026-09-22：live 终端内 Ctrl+D/exit 主动中断 → 自动关闭，同一般终端模拟器）；**断开/错误态 Ctrl+D 关 Tab**（与 Ctrl+W 同路径）。
 >
 > 契约来源（AGENTS.md 约定先行检索）：移动端无终端；pty 协议从 opencode 源码 + openapi 核实——REST `POST /pty`（cwd/command/args/env）、`GET /pty/shells`、`PUT /pty/{id}`（size）、`DELETE /pty/{id}`、`POST /pty/{id}/connect-token`（**须带 `x-opencode-ticket: 1` 头**，源码 pty-ticket.ts）；WS `GET /pty/{id}/connect?ticket=&cursor=`（auth 中间件对带 ticket 的 connect 路径跳过 Basic Auth，源码 isPtyConnectPath）；**PtyProtocol**（源码 protocol.ts）：出帧 = 原始终端 UTF-8 文本，**控制帧 = `0x00` 字节 + JSON `{cursor}`**（replay 后携带绝对输出游标）；入帧 = 文本/二进制直写 pty；server 以 cursor 做 replay（attach 重连回放历史输出）。legacy `/pty` 路由只暴露 running 会话（exited 即 404，源码 handlers/pty.ts 注释）。
 
@@ -23,7 +23,7 @@
 - 出帧处理：文本帧直写 `term.write` 并累计 cursor（server `session.cursor += chunk.length` 同口径）；二进制帧 = 0x00 控制帧（{cursor}）解析为续传锚点不写屏
 - **Origin 剥离（打包形态实测）**：server 对 connect 路径校验 Origin allowlist，浏览器 WS 必发 Origin——打包（file://）→ 403；main 进程 `session.webRequest.onBeforeSendHeaders` 对 ws/wss **删 Origin 头**（server 视同无 Origin 放行，实测 101；dev 的 localhost 本就在 allowlist，删除无副作用）。renderer fetch 无此问题（file:// fetch 不发 Origin，实测 200）
 - 入帧：`term.onData` → `ws.send`（文本）
-- 断开/卸载：close WS；重挂载凭全量回放恢复。WS close 终态判定：**code 1000** = pty 自然退出（server onEnd 主动关）、**code 4404** = session 不在 server（legacy 路由 not-found/exited 同码）→ 都 store 标 exited（关闭 Tab 不再 DELETE，legacy 路由已 404；评审 M2）；**其余 code** = 异常断开 → 进入 §1.2a 自动重连（不标 exited，关闭 Tab 仍 DELETE 防孤儿）。已退出 pty 重挂载不建 WS
+- 断开/卸载：close WS；重挂载凭全量回放恢复。WS close 终态判定（**2026-09-22 修订：主动/被动分流**）：**code 1000** = pty 自然退出（server onEnd 主动关）——live 终端内 Ctrl+D/`exit` 的**主动中断** → 标 exited + **自动关 Tab**（同一般终端模拟器；先标 exited 令 closeTerminalTab 跳过 DELETE——pty 已亡，评审 M2 的 404 容忍收敛为不发；closeTab 顺带清 pendingTabClose，兜底确认弹窗在途时 Tab 已关的场景；关栈 Ctrl+Shift+T 原目录新建）；**code 4404** = session 不在 server（legacy 路由 not-found/exited 同码）= **被动关闭** → 仅标 exited 呈只读终止态（关闭 Tab 不再 DELETE，legacy 路由已 404；评审 M2）；**其余 code** = 异常断开 → 进入 §1.2a 自动重连（不标 exited，关闭 Tab 仍 DELETE 防孤儿）。已退出 pty 重挂载不建 WS。**边界**：切走/退避重连期间自然退出（无 WS 在连）客户端无法与 server 回收区分——重挂载/重试落 token 404 / 4404 被动路径呈终止态（不自动关）
 
 ### 1.2a 断线自动重连（2026-09-02 新增，修订原 §3"不做 WS 断线自动重试"）
 
@@ -37,7 +37,7 @@
 - **断连标记**：进入退避（异常断开/token 瞬态失败）`markPtyDisconnected(id, true)`、重连成功 onopen 置 false——唯一消费方 closeTabInteractive：断连态关 Tab 免二次确认（§1.1）；无 UI 派生不 emit
 - 卸载：清重连定时器（teardown 关项目等路径先杀 pty 再关 Tab，无僵尸重连循环）
 - SSE（app 级）重连不连带重建 pty WS——两者独立退避，各自恢复
-- exited 呈现：WS close（code 1000 = pty 自然退出）→ 终端区叠加「已退出」态（终态提示行，通栏 banner 警示色——已退出琥珀、已断开红），只读；Tab 保持（可读回滚）直至用户关闭
+- exited 呈现（**2026-09-22 修订：仅被动关闭**——4404 / token 404；code 1000 主动中断已改为自动关 Tab，见 §1.2）→ 终端区叠加「已退出」态（终态提示行，通栏 banner 警示色——已退出琥珀、已断开红），只读；Tab 保持（可读回滚）直至用户关闭——Ctrl+D / Ctrl+W / Tab 栏 X 均可关（exited 免确认，Ctrl+D 见 §1.4）
 - **已退出 Tab 回滚保留（buffer 缓存）**：组件卸载即销毁 xterm buffer，但已退出 pty 的 server attach 抛 ExitedError 无法回放——卸载前用 `@xterm/addon-serialize` 导出 ANSI 序列缓存到 `ptyRuntimes[id].buffer`；重挂载时若有缓存则 `term.write(buffer)` 还原（不建 WS），兑现「Tab 保持可读回滚」。运行中 pty 不缓存（重挂载靠 server 全量回放）。**bufferReady 守卫**：xterm `write` 是异步队列，重挂载后立即切走时回调未触发、serialize 返回空——故 `cachePtyBuffer` 空串不覆盖（保留首次好缓存），且 cleanup 在 `bufferReady=true`（write 回调触发 / WS close）后才 serialize
 - **resize**：ResizeObserver → `fitAddon.proposeDimensions()` → `term.resize` + `PUT /pty/{id}` `{size:{rows,cols}}`（节流 200ms）；连接未建立时只 resize 本地；**已退出 pty 跳过上报**（server 404，防 ResizeObserver 在 exited 后仍触发报错）
 - **自动聚焦**：`term.open(host)` 后立即 `term.focus()`——Tab 切换走 key 隔离重挂载，打开/切回 terminal 即获焦，无需点击；`.terminal-view` `onMouseDown` 兜底（点击终端任意区域重新聚焦）
@@ -56,6 +56,7 @@
   - 复制项按选区有无启用/禁用（`term.hasSelection()`，菜单打开瞬间快照）
   - 粘贴读 `navigator.clipboard.readText()` → `term.paste(text)`（xterm paste 走其 bracketed-paste 模式，安全）
 - 已退出态终端仍可复制（只读 buffer 仍可选区）；粘贴到已退出 pty 无害（WS 已断，`ws.send` 不执行——onData 仍挂但 readyState 非 OPEN）
+- **断开/错误态 Ctrl+D 关 Tab（2026-09-22 增）**：无 OPEN WS（连接中/重连中/已退出/已断开）时 EOF 无处可发——customKeyEventHandler 拦截裸 Ctrl+D（ctrl 修饰、排除 shift/alt/meta——修饰组合非 EOF 语义；按 `code === "KeyD"` 匹配并辅以 `key === "d"/"D"` 字面双保险，本文件复制/粘贴同款、KeyW 布局无关先例）走 `closeTabInteractive`（与 Ctrl+W / Tab 栏 X **单一关闭语义**，design-keyboard-shortcuts §4）：exited/disconnected 免确认直关、纯连接中（首连 token 在途）按 running 走确认。**live 态不拦**——Ctrl+D 是 EOF（0x04）归 pty，shell 收 EOF 退出 → WS close 1000 → §1.2 自动关 Tab，故 live 态按 Ctrl+D 即「退出 shell 并关 Tab」的完整闭环。**Ctrl+W 各态行为维持不变**（live 归 pty 是 2026-09-10 用户决策；断开态释放给应用关 Tab——两条关闭入口并存）
 
 ## 2. store 侧
 
@@ -83,18 +84,19 @@ ptyRuntimes = new Map<string, { exited: boolean; disconnected: boolean; title: s
 | `src/shared/api-types.ts` | `Pty` / `PtyShell` / `PtyTicket` 类型 |
 | `src/shared/rest-client.ts` | `listShells/createPty/updatePtySize/deletePty/ptyConnectToken`（后两者错误静默约定；connect-token 带 `x-opencode-ticket: 1` 头） |
 | `src/renderer/src/store/app-store.ts` | TabKind 扩 terminal；openTerminalTab/ptyRuntimes/closeTerminalTab/restoreClosedTab terminal 分支/ptyConnectUrl（cursor 参数 + 三态返回）/cycleTab 无需改（directory 过滤通用）/卸载路径 DELETE |
-| `src/renderer/src/components/terminal-view.tsx` | xterm 终端组件（WS 生命周期/fit/深色/自动聚焦/已退出 buffer 缓存 serialize 还原/复制粘贴快捷键+右键菜单/断开态释放 Ctrl/⌘ 组合给应用快捷键（§1.4）/§1.2a 断线自动重连：cursor 锚点追踪 + 退避 + focus kick） |
+| `src/renderer/src/components/terminal-view.tsx` | xterm 终端组件（WS 生命周期/fit/深色/自动聚焦/已退出 buffer 缓存 serialize 还原/复制粘贴快捷键+右键菜单/断开态释放 Ctrl/⌘ 组合给应用快捷键（§1.4）/§1.2a 断线自动重连：cursor 锚点追踪 + 退避 + focus kick/**1000 主动中断自动关 Tab（§1.2，2026-09-22）+ 断开/错误态 Ctrl+D 关 Tab（§1.4）**） |
 | `src/renderer/src/components/workspace.tsx` | Tab 内容分发 terminal 分支；引导页终端入口解禁；关闭走 closeTabInteractive（terminal 确认文案） |
 | `src/renderer/src/components/tab-actions.ts` | terminal 关闭确认 + closeTerminalTab |
 | `src/renderer/src/styles/app.css` | `.terminal-view`（深色固定 + 已退出/已断开/重连中叠加态） |
 | `src/renderer/src/i18n/index.ts` | confirmCloseTerminal / terminalExited / terminalDisconnected / terminalReconnecting / terminalCopy / terminalPaste 等 |
-| 测试 | store（创建/关闭/恢复/卸载 DELETE/teardown 杀序/ptyConnectUrl 三态）；rest-client pty 端点 URL/头/方法断言；TerminalView 用注入 WS 假类测生命周期（open/write/控制帧锚点/close code 三分：1000·4404 终态、其余重连/退避重连带 cursor/无锚点 reset/gone 终态/focus kick/卸载清定时器/断开态 Ctrl 系释放与复制不受影响） |
+| 测试 | store（创建/关闭/恢复/卸载 DELETE/teardown 杀序/ptyConnectUrl 三态）；rest-client pty 端点 URL/头/方法断言；TerminalView 用注入 WS 假类测生命周期（open/write/控制帧锚点/close code 三分：**1000 主动中断自动关 Tab**·4404 被动终态叠加·其余重连/退避重连带 cursor/无锚点 reset/gone 终态/focus kick/卸载清定时器/断开态 Ctrl 系释放与复制不受影响/**live·dead 态 Ctrl+D 分流与 dead 态关闭**） |
 
 ## 5. 验收（对齐 spec #5）
 
 - 新建终端落在当前作用域目录；输入/输出/中文正常；resize 同步 pty
 - 切走再切回：经全量回放恢复内容；重启应用 terminal Tab 不恢复（不做记忆）
-- **断线自动重连（§1.2a）**：断开 server 网络（pty 进程仍活）→ 重连中 banner，网络恢复后（或窗口 focus kick）自动续传恢复输出，无重复内容；杀掉 server（token 404）→ 已退出终态不再重试；pty 内 `exit` → 已退出终态
+- **断线自动重连（§1.2a）**：断开 server 网络（pty 进程仍活）→ 重连中 banner，网络恢复后（或窗口 focus kick）自动续传恢复输出，无重复内容；杀掉 server（token 404）→ 已退出终态不再重试
+- **主动/被动退出分流（2026-09-22）**：pty 内 Ctrl+D/`exit`（WS 在连）→ Tab **自动关闭**（终端模拟器惯例；关闭栈 Ctrl+Shift+T 原目录新建）；切走期间退出/server 重启（token 404 / close 4404 被动关闭）→ 呈「已退出」只读叠加，此时 **Ctrl+D / Ctrl+W / Tab 栏 X 直接关闭**（免确认）；live 态 Ctrl+W 仍归 pty（readline/vim 键位不受影响）
 - 关 Tab 后 `GET /pty` 无该会话；运行中关闭有确认
 - 浅色主题下终端恒深色；`npm run test` / `typecheck` / `build` 全绿
 - **打包形态（file://）实测记录（2026-08-27，server 1.18.20）**：CDP 驱动 out/ 构建真窗口——创建 pty / connect-token(POST) / WS（Origin 剥离后 101）/ xterm 渲染 / 无断开叠加，全链路通过
