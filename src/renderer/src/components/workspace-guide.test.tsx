@@ -11,6 +11,7 @@
 import { act, cleanup, fireEvent, render } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { Workspace } from "./workspace"
+import { ResizeObserverStub } from "./resize-observer-stub"
 
 vi.mock("../app", () => ({
   useI18n: () => ({
@@ -142,6 +143,10 @@ beforeEach(() => {
   platform = "linux"
   // CommandHints 选中行跟随 scrollIntoView（jsdom 未实现，file-view.test 同例）
   Element.prototype.scrollIntoView = vi.fn()
+  // Tab 条溢出布局的容器测宽（jsdom 缺失 ResizeObserver，同 file-panel 惯例；
+  // 不 fire = 宽度 0 = 视为无限容量，引导页用例无溢出切片）
+  vi.stubGlobal("ResizeObserver", ResizeObserverStub)
+  ResizeObserverStub.reset()
   const cur = (window as unknown as { desktop?: Record<string, unknown> }).desktop
   ;(window as unknown as { desktop: unknown }).desktop = {
     ...(cur ?? {}),
@@ -155,6 +160,7 @@ beforeEach(() => {
 // 假失败——afterEach 归零（native 派发需包 act）
 afterEach(() => {
   cleanup()
+  vi.unstubAllGlobals()
   act(() => {
     window.dispatchEvent(new KeyboardEvent("keyup", { key: "Control" }))
     window.dispatchEvent(new KeyboardEvent("keyup", { key: "Meta" }))

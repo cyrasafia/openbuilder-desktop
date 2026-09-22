@@ -18,6 +18,7 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronUp,
+  ChevronsRight,
   Circle,
   CircleCheck,
   CircleDot,
@@ -82,6 +83,40 @@ import { FileRefChips, useFileRefInput, userFileChipItems } from "./file-ref"
 import { AttachmentChips, AttachmentThumb, useAttachmentInput, userImageParts } from "./attachments"
 import { useCtrlHeld } from "./ctrl-held"
 
+/** .tab 最小宽（px）——与 app.css `.tab` 的 min-width 同值，改一处须同步另一处 */
+const TAB_MIN_W = 96
+/** 溢出态常驻钮总宽（px）——「+」新建（lucide Plus，32 + 4 间距）+ overflow 钮
+ *  （lucide ChevronsRight，32 + 4），与 app.css `.icon-btn.tabbar-new` /
+ *  `.icon-btn.tabbar-overflow` 尺寸同源 */
+const TABBAR_CHROME_W = 72
+
+type StoreLike = ReturnType<typeof useStore>
+
+/** Tab 展示标题（Tab 条与溢出菜单共用单一来源）：diff 固定文案、浏览器欢迎页
+ *  态本地化（store title 保持机器值，仅展示层映射）、其余 title 回退「未命名」 */
+function displayTabTitle(tab: TabEntity, store: StoreLike, t: Catalog): string {
+  return tab.kind === "diff"
+    ? t.diffTitle
+    : tab.kind === "browser" && store.isBrowserWelcome(tab.key)
+      ? t.browserWelcomeTitle
+      : tab.title || t.untitled
+}
+
+/** 会话状态点变体类（Tab 条与溢出菜单共用）：全状态映射 session-*（统一 12px
+ *  盒几何，状态切换零布局位移）；非 chat Tab 返回 null（无会话语义不显示） */
+function tabDotClass(tab: TabEntity, store: StoreLike): string | null {
+  const dot = tab.kind === "chat" ? store.dotStateFor(tab.key.slice(5)) : null
+  return dot === "running"
+    ? "session-running"
+    : dot === "error"
+      ? "session-error"
+      : dot === "waiting"
+        ? "session-waiting"
+        : dot === "failed"
+          ? "session-failed"
+          : "session-idle"
+}
+
 export function Workspace() {
   const store = useStore()
   const { t } = useI18n()
@@ -123,6 +158,29 @@ export function Workspace() {
   // 菜单目标 = 被右键的 Tab（快照入 state——菜单存活期内 Tab 列表/标题变化不重定目标）
   const [menu, setMenu] = useState<{ x: number; y: number; tab: TabEntity } | null>(null)
 
+  // ---- Tab 条溢出布局（design-tab-overflow，2026-09-22 三修终案）----
+  // 溢出菜单开合锚点（快照坐标入 state，同右键菜单惯例）；菜单内容随渲染
+  // 保持实时（关 Tab 即时收缩列表），溢出集为空时菜单不渲染（自然关闭）。
+  // overflow 钮（ChevronsRight）元素 ref 传给菜单做锚点豁免（review 2026-09-22：菜单的 capture 级
+  // 外部 mousedown 会先于钮的 click 关闭菜单、click 的 toggle 又重开——锚点
+  // 豁免让 mousedown 放行、click 走 toggle，同 model-switcher Popover 先例）
+  const [overflowMenu, setOverflowMenu] = useState<{ x: number; y: number } | null>(null)
+  const overflowBtnRef = useRef<HTMLButtonElement | null>(null)
+
+  // 壳层分支（openedProjects 空）会卸载/重挂 tabbar DOM，监听类 effect 依赖
+  // hasProjects 翻转重挂，防闭包持已卸载旧节点
+  const hasProjects = store.openedProjects.length > 0
+  // 容器宽度经 ResizeObserver 维护（窗口缩放/侧栏收展响应）；0 = 未测得，
+  // 视为无溢出（Infinity 容量）防挂载首帧闪空条
+  const [barWidth, setBarWidth] = useState(0)
+  useEffect(() => {
+    const el = tabbarRef.current
+    if (!el || !hasProjects) return
+    const ro = new ResizeObserver(() => setBarWidth(el.clientWidth))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [hasProjects])
+
   const endDrag = () => {
     setDragKey(null)
     setDragSlot(null)
@@ -158,12 +216,6 @@ export function Workspace() {
     }
   }
 
-  // 浏览器视图显隐协调（design-browser-tab §1.2）：激活 Tab + 无浮层才显示；
-  // Tab 切换/作用域切换/设置弹窗与右键菜单（overlayCount）变化时重算
-  useEffect(() => {
-    store.syncBrowserViewVisibility()
-  }, [store.activeTabKey, store.overlayCount, scopeDir, store])
-
   // 预览序：base = 移除拖拽项的作用域数组；slot 缺省 = 原位（dragIdx 在 base
   // 中即原位）。dragIdx 守卫：拖拽中 Tab 被关（快照/会话删除）不崩溃回原序
   const dragIdx = dragKey ? tabs.findIndex((tb) => tb.key === dragKey) : -1
@@ -173,6 +225,48 @@ export function Workspace() {
     dragKey && dragIdx >= 0 && slot !== dragIdx
       ? [...base.slice(0, slot), tabs[dragIdx]!, ...base.slice(slot)]
       : tabs
+
+  // ---- 溢出切片（design-tab-overflow §2）：作用域预览序上的可见前缀 + 保位集 ----
+  // 容量 = 纯公式：溢出态每个 Tab 恰为 TAB_MIN_W（border-box），capacity =
+  // floor((barWidth - 常驻钮宽)/TAB_MIN_W)；barWidth 未测得（0）= 视为无限容量。
+  // 保位集 = 激活（激活 Tab 恒可见，保 DOM 相对序不重排 store）+ 拖拽中项（预览
+  // 重排把它推出当前前缀时占位保源节点不卸载，否则 dragend 失派发残留 dragKey
+  // ——「拖拽中 Tab 被移除」守卫只覆盖 store 侧移除）。保位判定按**定点迭代
+  // 收敛**（review 2026-09-22：原按 `idx >= capacity` 一刀切，激活先保位后前缀
+  // 缩一位，恰落 capacity-1 的拖拽项漏保被卸载卡死拖拽；后加入的保位项会再把
+  // 前缀缩一位、可能把刚落在旧前缀边缘的先序保位项挤出——两轮即收敛，保位项
+  // 至多 2 个且每轮只增不删）；可见总数恒 = capacity（保位几个、前缀就少几个）
+  const capacity = barWidth > 0 ? Math.floor((barWidth - TABBAR_CHROME_W) / TAB_MIN_W) : Infinity
+  const keepIdx = new Set<number>()
+  const activeIdx = previewTabs.findIndex((tb) => tb.key === store.activeTabKey)
+  const dragPreviewIdx = dragKey ? previewTabs.findIndex((tb) => tb.key === dragKey) : -1
+  const mustKeep = [activeIdx, dragPreviewIdx].filter((i) => i >= 0)
+  let keepGrew = true
+  while (keepGrew) {
+    keepGrew = false
+    for (const idx of mustKeep) {
+      // 不入保位集时该项仅当 i < 当前前缀（capacity - 已保位数）才可见
+      if (!keepIdx.has(idx) && idx >= capacity - keepIdx.size) {
+        keepIdx.add(idx)
+        keepGrew = true
+      }
+    }
+  }
+  const prefix = capacity - keepIdx.size
+  const visibleTabs =
+    previewTabs.length > capacity
+      ? previewTabs.filter((_, i) => i < prefix || keepIdx.has(i))
+      : previewTabs
+  const overflowTabs = visibleTabs === previewTabs ? [] : previewTabs.filter((tb) => !visibleTabs.includes(tb))
+
+  // 溢出清空时复位菜单开合态（review 2026-09-22 二轮）：菜单经渲染守卫卸载
+  // （行内 × 关掉最后一个溢出 Tab / 他端 SSE 关闭 / 窗口放宽容量增大）时任何
+  // 关闭回调都不经走——残留态会在溢出复现时**自发重挂**菜单（过期锚点 + 抢
+  // 焦点 + 压浮层），且 overflow 钮 toggle 方向反转（首点变关）；复位保证开合恒为
+  // 用户显式动作
+  useEffect(() => {
+    if (overflowMenu && overflowTabs.length === 0) setOverflowMenu(null)
+  }, [overflowMenu, overflowTabs.length])
 
   // 无项目空状态（design-layout §4 末）：未打开任何项目时中栏只有「打开项目」
   // 引导（左栏树为空、右栏无文件树）；无激活 profile（无服务器）时 Shell 不渲染
@@ -216,6 +310,11 @@ export function Workspace() {
           ev.dataTransfer.dropEffect = "move"
           const EDGE_BAND = 0.25
           const els = ev.currentTarget.querySelectorAll<HTMLElement>(".tab")
+          // 命中元素经 key 反查其在 base 的真实下标（review 2026-09-22：原
+          // 「i < slot ? i : i-1」位置算术只对连续前缀成立——溢出切片后可见集
+          // 非连续（保位项穿插/中段项移除），DOM 序 ≠ base 序，位置算术会落错槽
+          // 甚至静默 no-op；保位/溢出未激活的常规路径下两法等价）
+          const baseIndexOf = new Map(base.map((tb, i) => [tb.key, i] as const))
           // next = null 且命中过 Tab（hit）= 中带/悬停占位：维持当前插入位不动；
           // 未命中任何 Tab = 条尾区域：末位（两态共用 null 会把中带误判成末位）
           let next: number | null = null
@@ -227,15 +326,17 @@ export function Workspace() {
               if (ev.clientX >= rect.left && ev.clientX <= rect.right) hit = true
               continue
             }
+            // 可见非拖拽项必属 base（占位项已 continue），查无属不可达防御
+            const baseIdx = baseIndexOf.get(els[i]!.dataset.tabKey ?? "")
+            if (baseIdx == null) continue
             if (ev.clientX < rect.left) {
               // Tab 间空隙/首 Tab 左侧：最近边界 = 插到该 Tab 前
-              next = i < slot ? i : i - 1
+              next = baseIdx
               hit = true
               break
             }
             if (ev.clientX <= rect.right) {
               hit = true
-              const baseIdx = i < slot ? i : i - 1
               if (ev.clientX < rect.left + rect.width * EDGE_BAND) next = baseIdx
               else if (ev.clientX > rect.right - rect.width * EDGE_BAND) next = baseIdx + 1
               break
@@ -250,24 +351,13 @@ export function Workspace() {
           ev.preventDefault()
         }}
       >
-        {previewTabs.map((tab) => {
+        {visibleTabs.map((tab) => {
           // 会话状态点常显（含 idle，design-error-message §3.3 修订）：
           // running/error 呼吸光晕、waiting/failed/idle 静态，统一 12px 盒几何
           // （session-* 变体类）与其他指示纵向对齐；非 chat Tab 无会话语义不显示
-          const dot =
-            tab.kind === "chat" ? store.dotStateFor(tab.key.slice(5)) : null
-          // 全状态（含 idle）映射 session-* 变体——统一 12px 盒几何，状态切换
-          // 零布局位移（裸 "idle" 只吃基础 6px 类，会与 12px 盒间跳变抖动）
-          const dotClass =
-            dot === "running"
-              ? "session-running"
-              : dot === "error"
-                ? "session-error"
-                : dot === "waiting"
-                  ? "session-waiting"
-                  : dot === "failed"
-                    ? "session-failed"
-                    : "session-idle"
+          // （映射与溢出菜单共用 tabDotClass，单一来源防漂移）
+          const dotClass = tabDotClass(tab, store)
+          const dot = dotClass != null
           const isRenamingThis = renaming?.key === tab.key
           return (
           <div
@@ -339,17 +429,11 @@ export function Workspace() {
                 }}
                 onBlur={() => commitRename(tab)}
               />
-            ) : (
-              <span className="tab-label">
-                {tab.kind === "diff"
-                  ? t.diffTitle
-                  : // 浏览器欢迎页态（2026-09-18）：标题本地化（store title 仍为
-                    // about:blank——持久化/关闭栈机器依赖它，仅在展示层映射）
-                    tab.kind === "browser" && store.isBrowserWelcome(tab.key)
-                    ? t.browserWelcomeTitle
-                    : tab.title || t.untitled}
-              </span>
-            )}
+             ) : (
+               // 展示标题映射收编 displayTabTitle（与溢出菜单共用；浏览器欢迎页态
+               // 仅展示层本地化，store title 保持 about:blank 机器值，2026-09-18）
+               <span className="tab-label">{displayTabTitle(tab, store, t)}</span>
+             )}
             <button
               className="icon-btn tab-close"
               title={t.closeTab}
@@ -365,6 +449,26 @@ export function Workspace() {
           </div>
           )
         })}
+        {/* 溢出菜单入口（design-tab-overflow §3）：常驻于「+」前、永不挤出视野；
+            仅存在溢出 Tab 时显示。锚点取钮位快照（菜单存活期内列表变化不重定锚，
+            同右键菜单惯例）；再点同钮 = 关闭 */}
+        {overflowTabs.length > 0 && (
+          <button
+            ref={overflowBtnRef}
+            className="icon-btn tabbar-overflow"
+            title={t.overflowTabs}
+            aria-haspopup="menu"
+            aria-expanded={overflowMenu != null}
+            onClick={(e) => {
+              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+              setOverflowMenu((prev) =>
+                prev ? null : { x: rect.left, y: rect.bottom + 4 },
+              )
+            }}
+          >
+            <ChevronsRight size={14} aria-hidden />
+          </button>
+        )}
         <button
           className="icon-btn tabbar-new"
           title={t.newTab}
@@ -419,6 +523,23 @@ export function Workspace() {
             })
           }
           onClose={() => setMenu(null)}
+        />
+      )}
+
+      {/* 溢出菜单（design-tab-overflow §3）：列表随渲染保持实时（关 Tab 即收缩，
+          溢出清空则整体卸载）；选中即激活并收起，项内 × 走统一关闭路径且菜单保持
+          开放（可连续关闭） */}
+      {overflowMenu && overflowTabs.length > 0 && (
+        <TabOverflowMenu
+          x={overflowMenu.x}
+          y={overflowMenu.y}
+          anchorRef={overflowBtnRef}
+          tabs={overflowTabs}
+          onPick={(tab) => {
+            store.setActiveTab(tab.key)
+            setOverflowMenu(null)
+          }}
+          onClose={() => setOverflowMenu(null)}
         />
       )}
 
@@ -550,6 +671,140 @@ function TabContextMenu({
       <button className="context-menu-item" onClick={() => run(onFork)}>
         {t.forkSession}
       </button>
+    </div>,
+    document.body,
+  )
+}
+
+/** Tab 溢出菜单（design-tab-overflow §3）：溢出 Tab 列表——选中即激活并收起；
+ *  行内 × 走 closeTabInteractive 统一关闭路径（chat 流式确认/入关闭栈）且菜单
+ *  保持开放（可连续关闭），列表随渲染实时（父级溢出集变化即重投影，溢出清空
+ *  时父级卸载本菜单）。复用 TabContextMenu 模式（首帧隐藏测量钳制 + capture
+ *  四触发关闭 + 浮层计数）；键盘 ↑/↓ 仅遍历激活钮（× 钮鼠标域） */
+function TabOverflowMenu({
+  x,
+  y,
+  anchorRef,
+  tabs,
+  onPick,
+  onClose,
+}: {
+  x: number
+  y: number
+  /** overflow 入口钮（ChevronsRight）：外部 mousedown 关闭时豁免锚点（capture 先于 click 关掉再被
+   *  click 的 toggle 重开，见 model-switcher Popover 同款处理） */
+  anchorRef: RefObject<HTMLButtonElement | null>
+  tabs: TabEntity[]
+  onPick: (tab: TabEntity) => void
+  onClose: () => void
+}) {
+  const store = useStore()
+  const { t } = useI18n()
+  const ref = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+
+  // 首帧隐藏渲染供测量，再钳制到视口内定位（同 Popover 无闪烁模式）；列表
+  // 增长可能超高——钳制后仍超高时由 CSS max-height + 纵向滚动兜底
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    setPos({
+      left: Math.max(4, Math.min(x, window.innerWidth - el.offsetWidth - 4)),
+      top: Math.max(4, Math.min(y, window.innerHeight - el.offsetHeight - 4)),
+    })
+    requestAnimationFrame(() =>
+      ref.current?.querySelector<HTMLButtonElement>(".tab-overflow-item")?.focus(),
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 浮层计数（design-browser-tab §1.2 z-order）：菜单存在期间隐藏浏览器视图
+  useEffect(() => {
+    store.pushOverlay()
+    return () => store.popOverlay()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 外部 mousedown / Esc / 滚动 / 失焦关闭（capture 阶段；回调走 ref 免重订阅）。
+  // overflow 锚点钮豁免：mousedown 放行（若关闭，紧随的 click 会 toggle 重开——
+  // 「再点同钮 = 关闭」由钮的 click toggle 承担）
+  useEffect(() => {
+    const outside = (target: EventTarget | null) => !ref.current?.contains(target as Node)
+    const onDown = (e: globalThis.MouseEvent) => {
+      if (anchorRef.current?.contains(e.target as Node)) return
+      if (outside(e.target)) onCloseRef.current()
+    }
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation()
+        onCloseRef.current()
+      }
+    }
+    const onWheel = (e: globalThis.WheelEvent) => {
+      if (outside(e.target)) onCloseRef.current()
+    }
+    const onBlur = () => onCloseRef.current()
+    window.addEventListener("mousedown", onDown, true)
+    window.addEventListener("keydown", onKey, true)
+    window.addEventListener("wheel", onWheel, true)
+    window.addEventListener("blur", onBlur)
+    return () => {
+      window.removeEventListener("mousedown", onDown, true)
+      window.removeEventListener("keydown", onKey, true)
+      window.removeEventListener("wheel", onWheel, true)
+      window.removeEventListener("blur", onBlur)
+    }
+  }, [])
+
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return
+    e.preventDefault()
+    const items = Array.from(ref.current?.querySelectorAll<HTMLButtonElement>(".tab-overflow-item") ?? [])
+    if (items.length === 0) return
+    const idx = items.indexOf(document.activeElement as HTMLButtonElement)
+    const next =
+      e.key === "ArrowDown" ? (idx + 1) % items.length : idx <= 0 ? items.length - 1 : idx - 1
+    items[next].focus()
+  }
+
+  return createPortal(
+    <div
+      ref={ref}
+      className="popover context-menu tab-overflow-menu"
+      style={pos ? { left: pos.left, top: pos.top } : { left: 0, top: 0, visibility: "hidden" }}
+      onContextMenu={(e) => e.preventDefault()}
+      onKeyDown={onKeyDown}
+    >
+      {tabs.map((tab) => {
+        const dotClass = tabDotClass(tab, store)
+        const active = tab.key === store.activeTabKey
+        return (
+          <div key={tab.key} className={"tab-overflow-row" + (active ? " active" : "")}>
+            <button
+              className="context-menu-item tab-overflow-item"
+              onClick={() => onPick(tab)}
+              title={displayTabTitle(tab, store, t)}
+            >
+              {dotClass && <span className={"status-dot " + dotClass} />}
+              <span className="tab-overflow-label">{displayTabTitle(tab, store, t)}</span>
+            </button>
+            <button
+              className="icon-btn tab-overflow-close"
+              title={t.closeTab}
+              onClick={(e) => {
+                // 菜单保持开放（连续关闭）；统一关闭路径（chat 流式确认弹窗
+                // 由父级 pendingTabClose 渲染，非 chat 直关）
+                e.stopPropagation()
+                closeTabInteractive(store, tab)
+              }}
+            >
+              <X size={14} aria-hidden />
+            </button>
+          </div>
+        )
+      })}
     </div>,
     document.body,
   )
