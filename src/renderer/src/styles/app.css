@@ -810,6 +810,13 @@
   overflow-y: auto;
   /* 滚动但不显示滚动条 */
   scrollbar-width: none;
+  /* 关闭浏览器 scroll anchoring（design-tab-state-memory §2.3 2026-09-22 修订）：
+   * 消息流与 markdown 预览共用渲染管道（含 mermaid 骨架→成品的迟长高），
+   * 上滚阅读历史时同样的锚定补偿会改写 scrollTop 并被捕获 ref 记账、卸载落
+   * store——headId 闸门拦不住（补偿保视口内容不变，头部消息不变），往返逐次
+   * 膨胀。贴底态无条目天然免疫。吸附/贴底/分页 prepend 补差均为显式代码，
+   * 不依赖浏览器锚定 */
+  overflow-anchor: none;
 }
 .message-list::-webkit-scrollbar {
   display: none;
@@ -2043,9 +2050,20 @@
   position: relative;
 }
 
+/* 关闭浏览器 scroll anchoring（design-tab-state-memory §2.2 2026-09-22 修订）：
+ * markdown 预览滚动位置按绝对 scrollTop 记忆/恢复，mermaid 等迟渲染内容
+ * （骨架占位→成品）落地长高时会触发锚定补偿改写 scrollTop，并经 onScroll
+ * 把膨胀值写回 store——切 Tab 往返每循环漂移一个占位→成品高度差。关闭后：
+ * 恢复的坐标误差（偏深 Δ）被迟内容长高（内容下推 Δ）精确抵消，终态回位；
+ * 生长不再派发 scroll 事件，条目零污染。代价 = 迟内容落地瞬间视口一次性
+ * 滑动（非累积）。作用域：预览分支滚动；源码态外层不滚（CM 内滚自带锚定
+ * 不受外层影响）；图片缩放平移容器即 .file-view.image-view（ImagePreview
+ * 自算缩放锚定，浏览器锚定在改动与测量间改 scrollTop 反而相扰——同受益）；
+ * PDF 分支为 DOM 宿主不滚 */
 .file-view {
   flex: 1;
   overflow: auto;
+  overflow-anchor: none;
   padding: 12px 16px;
 }
 

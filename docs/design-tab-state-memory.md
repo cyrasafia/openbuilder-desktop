@@ -60,7 +60,9 @@ private fileViewStates = new Map<string, { mode: "preview" | "source"; top: numb
 - 捕获：预览态 `.file-view` 容器 `onScroll`；源码态 CodeMirror `scrollDOM` 滚动回调（CodeView 增加 `onScrollTop` 传出）；写入 `{当前模式, top}`
 - 恢复：内容落地后一次性应用——预览态设 `.file-view.scrollTop`；源码态经 CodeView 新增 `initialScrollTop` 在 EditorView 创建后设 `scrollDOM.scrollTop`（应用后清待恢复标记；content 后续重拉的 doc 同步本就保滚动，不受影响）
 - **已知限制**：html 预览是 `sandbox=""` iframe（opaque origin，滚动不可达）——条目记容器值（恒 0），恢复 no-op；DiffView、TOC 悬浮窗滚动不做（无诉求）
-- **一次性应用时序**：预览偏移在 `cached` 落地 commit 应用一次，无重试——markdown 首挂载是同步出块（评审实证：`useState(fe)` 初始化即渲染，transition 只作用于后续更新），落地帧 `scrollHeight` 即终值。异步加载图片使内容后续增高 → 恢复点轻微漂移，clamp 兜底、可接受误差（移动端 design-file-browser-collapse 同款取舍）
+- **一次性应用时序**：预览偏移在 `cached` 落地 commit 应用一次，无重试——markdown 首挂载是同步出块（评审实证：`useState(fe)` 初始化即渲染，transition 只作用于后续更新），落地帧 `scrollHeight` 即终值。~~异步加载图片使内容后续增高 → 恢复点轻微漂移，clamp 兜底、可接受误差（移动端 design-file-browser-collapse 同款取舍）~~（**2026-09-22 修订**：该"一次性、可接受"评估在 scroll anchoring 默认开启下不成立——漂移经捕获回写**逐往返累积**，见下条）
+- **关闭浏览器 scroll anchoring（2026-09-22 修订，`overflow-anchor: none` 落 `.file-view`）**：预览滚动层恢复的偏移取自"迟渲染内容已长高"的坐标系，而恢复发生在"迟内容还是占位高度"的坐标系——mermaid 块每次挂载必经骨架（`md-mermaid-pending` ≈100px）→ 成品（SVG，文件预览无上限）的迟长高；首拉图片占位 chip → 图同类。迟内容长高时 Chromium 锚定补偿把 scrollTop +Δ 并派发真实 scroll 事件，`onScroll` 捕获把膨胀值回写条目；下次往返从膨胀值起步、再补偿再膨胀——**每循环净漂一个"占位→成品"高度差**（方向随高度差符号，多数图长高则向下）。捕获时机（本条目逐事件写入 vs chat/diff 卸载落 store）无关病因——卸载捕获到的同样是补偿后的膨胀值。修复 = 预览滚动层关闭锚定：恢复的坐标误差（偏深 Δ）与迟内容长高（内容下推 Δ）精确相消，终态视口内容精确回位；生长不再派发 scroll 事件，条目零污染。实证：独立 Chromium 复现件复刻 DOM 结构与挂载/恢复/捕获时序——修复前每循环 +168px 累积（2668→2836→3004→…），修复后 6 循环恒定；纯文本与缓存图片（高度首布局即落地）本就精确。代价：①切回后 ~200ms（mermaid 防抖）位置偏深、图渲染完成时滑回原位——骨架呼吸动画期间，观感为"内容就位"；②会话中途迟生长（主题切换重渲 mermaid）视口一次性小跳，不再被浏览器补偿；③深位边角：保存位置距底 < Δ 时恢复被短布局 clamp、恢复自身 scroll 事件把钳制值回写（一次收缩后稳定，恒停 Δ-above-bottom），记录不修。与 §7.14 消息流自管吸附同一哲学：滚动层位置语义由视图自管，不依赖浏览器锚定
+- **语义锚（块+偏移）已评估并放弃（2026-09-22）**：身份须取 markdown 源而非 DOM（mermaid/图片块 DOM 文本随迟渲染变化，且分块规则属 streamdown 内部、需复用其导出的 `parseMarkdownIntoBlocks`）；几何选锚在 jsdom 全 0 不可测，须纯函数抽取；内容编辑降级链（hash→index→放弃）复杂；且开"四视图统一锚"先例——chat 的底部增长模型 + 卸载捕获已覆盖其真实变更语义（这是 chat 不需要**语义锚**的理由，不等于对 §2.2 锚定污染免疫——chat 同受该漂移环影响，已同关锚定，见 §2.3 修订）；diff 数据挂载后静态；源码态 CM 行号即天然锚。语义锚的净增量收益（agent 编辑文档时位置跟随内容）留作增量需求
 - **模式切换弃待恢复偏移**：内容未落地的加载窗口内切模式，残留 `pendingScroll` 会在落地后错灌入新模式——切换处理器显式置空（与"归零"写入同步）
 - **revealLine 一次性消费（2026-09-11 修订）**：从 diff 跳转携带的 `TabEntity.revealLine` 是**瞬时意图**——FileView 初始化模式时优先于条目（强制 source，行锚定仅对 CodeView 有意义），消费（`store.consumeFileReveal` 清 TabEntity）**须等内容落地**（CodeView 挂载门控于 `cached && !error`；未缓存文件是跳转主路径，挂载即清会让晚挂载的 CodeView 拿不到锚定行——落地 commit 先挂 CodeView、效果随后清，滚动送达）。锚定常驻则会让切 Tab 往返被过时行号反复强制源码模式 + 重滚锚定行，压掉本条目保存的浏览模式（`openFileTab` 无锚点复用清残留是另一条防线，消费兜住"不再 openFileTab 直接切 Tab"的主路径）；加载窗口内用户改选预览 → 锚定随落地作废（CodeView 不挂载，滚动意图不达，合理）；错误落地不清（重试成功仍可锚定）
 - 修订 design-markdown-preview §2.1/§3 原决策"模式不持久化、重开成本为零"→ 运行期内按文件路径记忆（重开成本仍为零，但切换体验要求状态连续）
@@ -76,6 +78,7 @@ private chatScrollTops = new Map<string, { top: number; headId: string | null }>
 - **恢复**：挂载时读条目初始化 `pinnedToBottom = 无条目`；条目存在 → 布局 effect 在 entries 落地且 `headId` 匹配时 `scrollTop = min(top, 可滚范围)` 并消费待恢复标记；`headId` 不符（远端窗口变化）→ 放弃恢复回落贴底（原行为），不呈现错位
 - 恢复后 `pinnedToBottom=false`，后续分页 prepend 走既有视口锚定补差（design-message-history-pagination §4.3）；恢复位置接近顶部触发的链式加载是预期行为（用户当时就在那阅读）
 - 用户切回后手动滚到底（重新吸附）→ 下次切走按吸附删条目——状态恒收敛到"最后离开时的位置"
+- **关闭浏览器 scroll anchoring（2026-09-22 修订，`overflow-anchor: none` 落 `.message-list`）**：消息流与 markdown 预览共用渲染管道（`Markdown` 组件，含 mermaid 骨架→成品迟长高、首拉图片占位→图），**上滚阅读历史时与 §2.2 同款漂移环**——恢复后迟内容长高触发锚定补偿改写 scrollTop，`onScroll` 捕获 ref 记账膨胀值、卸载落 store，下次往返再膨胀。**headId 闸门拦不住**：补偿保视口内容不变，头部消息 id 随之不变，恢复闸放行膨胀值（闸门设计针对的是远端窗口漂移，不是本地位移）。贴底态无条目，天然免疫。视图自身滚动语义全部显式（§7.14 吸附滞回、贴底 scrollToBottom、分页 prepend 视口补差），不依赖浏览器锚定——关闭无行为损失；分页 prepend 的补差此前与浏览器锚定并存（双路径都补偿），关闭后单一化
 
 ### 2.4 TOC 状态（app-store：`tocStates`）
 
@@ -141,6 +144,8 @@ private diffViewStates = new Map<string, { foldOpen: boolean; fileOpens: Readonl
 | 18 | diff 手动折叠甲文件 → 切走再回 | 甲仍折叠、其余展开（覆盖表恢复） |
 | 19 | diff 全部折叠 → 手动展开甲 → 切走再回 | 甲仍展开、其余仍折叠（foldOpen=false + 甲覆盖 open） |
 | 20 | diff 手动折叠甲 → 全部折叠 → 全部展开 → 切走再回 | 全部展开（折叠/展开清覆盖表，陈旧手动折叠不复活） |
+| 21 | 含 mermaid 块的 md 预览滚到图下方 → 切走再切回 N 次 | 每次回到同一位置（图渲染完成即回位；不随往返次数累积下漂，§2.2 2026-09-22 修订） |
+| 22 | chat 上滚阅读含 mermaid 消息下方的历史 → 切走再切回 N 次 | 每次回到同一位置（headId 不拦膨胀值，同关锚定修复；贴底态无条目天然免疫，§2.3 2026-09-22 修订） |
 
 ## 5. 不做的事
 
@@ -159,6 +164,7 @@ private diffViewStates = new Map<string, { foldOpen: boolean; fileOpens: Readonl
 | `src/renderer/src/components/workspace.tsx` | ChatView 滚动捕获/恢复（pinned 初始化、卸载落 store、布局效果恢复）；FileView 模式/滚动恢复（含非预览文件分支）+ TOC 显隐/折叠恢复（标题引用记账防 StrictMode 覆盖） |
 | `src/renderer/src/components/diff-view.tsx` | diff 视图状态恢复（foldOpen/fileOpens useState 初始化 + scrollTop useLayoutEffect）+ 卸载落 store（ref 读最新值 + 复活闸门）；文件块开合完全派生自父级（覆盖表 ?? foldOpen，无本地 state） |
 | `src/renderer/src/components/code-view.tsx` | `initialScrollTop` / `onScrollTop` 接线（创建后设 scrollDOM + 滚动监听） |
+| `src/renderer/src/styles/app.css` | `.file-view` / `.message-list` 关闭 scroll anchoring（§2.2/§2.3 2026-09-22 修订：防迟渲染内容长高的锚定补偿污染滚动记忆；图片平移容器同 `.file-view` 受覆，自管锚定相扰一并消除） |
 | `src/renderer/src/store/app-store.test.ts` | store 级用例 |
 | `docs/design-tab-memory.md` / `docs/design-markdown-preview.md` / `docs/spec-v0.1.md` | 决策修订与范围同步 |
 
@@ -178,5 +184,11 @@ review 一轮修订（2026-08-26）：
 review 二轮修订（2026-08-26）：
 
 - **加载窗口竞态修复（low）**：内容未落地时切模式，残留待恢复偏移会在落地后错灌入新模式——模式切换处理器显式清 `pendingScroll`（§2.2 补记），补「加载窗口切模式」回归用例（vitest 322/322）
-- 预览偏移一次性应用无重试的依据补记（§2.2）：markdown 首挂载同步出块（评审实证），异步图片漂移为可接受误差（移动端同款取舍）
+- 预览偏移一次性应用无重试的依据补记（§2.2）：markdown 首挂载同步出块（评审实证），~~异步图片漂移为可接受误差（移动端同款取舍）~~（2026-09-22 修订：该结论不成立，见 §2.2 修订条目）
 - 清理：`scopeActiveKeyFor` 接入规则 1.5（原无调用方）；FileView 头注释同步模式记忆语义
+
+滚动漂移修复（2026-09-22，§2.2 修订）：
+
+- **症状**：markdown 预览（含 mermaid 块的文档，如 agent 工作区 design 文档）切 Tab 往返，每次切回阅读位置向下漂一点、逐次累积
+- **定位**：独立 Chromium 复现件复刻 `.file-view` 滚动层 DOM + FileView 挂载/恢复/捕获时序（挂载即设 scrollTop、onScroll 逐事件写 store、迟内容 200ms 后长高），实证漂移 = scroll anchoring 补偿值被捕获回写所致（每循环 +168px 精确累积；纯文本/缓存图片恒精确，排除亚像素与图片缓存因素）
+- **修复**：`.file-view` 与 `.message-list` 各加 `overflow-anchor: none`（CSS 两行——chat 复审发现消息流共用渲染管道、同样暴露：headId 闸门不拦锚定膨胀值，已并入；图片平移容器即 `.file-view.image-view` 同受覆且受益于自管锚定）；语义锚方案评估后放弃（§2.2 记录理由）；CSS 行为无法在 jsdom 断言，验证靠复现件（修复后 6 循环恒定）+ 既有 vitest 全量回归（预览滚动上报/恢复用例不受影响）
