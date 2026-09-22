@@ -534,11 +534,14 @@
   background: var(--surface-container-low);
   border-bottom: 1px solid var(--outline-variant);
   flex-shrink: 0;
-  /* 全量开 Tab 后可能数十个：横向滚动（design-tab-memory §11）。
-     gutter 预留滚动条空间，溢出时 thin 滚动条不压缩 Tab 高度 */
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-gutter: stable;
+  /* 全量开 Tab 后可能数十个：两段式溢出（design-tab-overflow，2026-09-22 三修
+     终案）——先 .tab flex 收缩等比例挤压（min-width 96 兜底），全体到最小宽仍
+     放不下时尾部 Tab 藏入 overflow 菜单（切片计算与容量公式在 workspace.tsx，
+     「+」（lucide Plus）/ overflow 钮（lucide ChevronsRight）flex-shrink:0 永不挤出）。迭代史：横向滚动三连败（经典滚动条
+     占位 8px 挤压 Tab 高度且 gutter/padding 车道实测均挡不住；隐藏滚动条又引入
+     可发现性问题）后改本方案。overflow: hidden 仅作退化兜底（容量公式保证内容
+     恒不溢出），正常态无裁切 */
+  overflow: hidden;
 }
 
 .tab {
@@ -550,8 +553,10 @@
   cursor: pointer;
   font-size: var(--text-md);
   max-width: 220px;
+  /* 96 与 workspace.tsx TAB_MIN_W 同值（容量公式输入），改一处须同步另一处；
+     挤压段：flexbox 收缩按 basis 等比例缩减（宽 Tab 缩得多），至 min-width 止 */
   min-width: 96px;
-  flex-shrink: 0;
+  flex-shrink: 1;
   position: relative;
 }
 
@@ -630,11 +635,66 @@
 .icon-btn.tabbar-new {
   width: 32px;
   flex-shrink: 0;
-  /* 与最后一个 Tab 的分隔线留 4px 空隙，不贴边 */
+  /* 与前邻（末位 Tab 分隔线或 overflow 钮）留 4px 空隙，不贴边 */
   margin-left: 4px;
   /* tabbar 是 align-items:stretch（Tab 撑满整高）；固定高的按钮 stretch 退化为
      顶对齐，需显式居中 */
   align-self: center;
+}
+
+/* 溢出菜单入口钮（design-tab-overflow §3）：与 tabbar-new 同构（32 + 4 间距，
+   两者合计 72 = workspace.tsx TABBAR_CHROME_W 容量公式输入，改一处须同步）；
+   仅存在溢出 Tab 时渲染，flex-shrink:0 永不挤出视野 */
+.icon-btn.tabbar-overflow {
+  width: 32px;
+  flex-shrink: 0;
+  margin-left: 4px;
+  align-self: center;
+}
+
+/* ---------- Tab 溢出菜单（design-tab-overflow §3，复用 .popover.context-menu 壳） ---------- */
+.tab-overflow-menu {
+  min-width: 220px;
+  max-width: 320px;
+  /* 长列表（数十 Tab 全溢出）限高纵向滚动；滚动条样式沿用全局 */
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+}
+
+.tab-overflow-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: var(--radius-chip);
+}
+
+/* 激活项：菜单存活期内激活态变化实时反映（列表随父级渲染重投影） */
+.tab-overflow-row.active .tab-overflow-item {
+  background: var(--surface-container-highest);
+}
+
+.tab-overflow-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.tab-overflow-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.tab-overflow-close {
+  /* 鼠标域专属（键盘导航只遍历激活钮）；沿 .icon-btn 基础 22×22，右收 4px 与
+     行内留白平衡 */
+  flex-shrink: 0;
+  margin-right: 4px;
 }
 
 .workspace-body {

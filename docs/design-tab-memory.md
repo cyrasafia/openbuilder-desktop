@@ -163,7 +163,7 @@ restoreScopeTabs(dir):
 | 风险 | 对策 |
 |---|---|
 | **对账消息扇出**：`reconcileOnce` 对所有 chat Tab `Promise.all` 并行拉消息；全量开 Tab 后 N 可达几十，挤占 ~1 个 REST 空闲槽 → 整批超时 → 对账整体失败（Promise.all 一损俱损） | 消息快照拉取改并发受限（`runLimited` 3，与快照拉取同模式）；只改调度不改语义。附带：单个失败不再拖垮整批 |
-| **Tab 条溢出**：全量开 Tab 可能数十个，`.tabbar` 现状无横向滚动处理（flex 挤压） | `tabbar` 加 `overflow-x: auto` + `.tab` 不收缩（min-width）+ `scrollbar-gutter: stable`（滚动条出现时 Tab 高度不跳变），纯 CSS |
+| **Tab 条溢出**：全量开 Tab 可能数十个，条宽不足 | **终案（2026-09-22 三修，见 design-tab-overflow）：两段式**——先等比例挤压（`.tab` flex-shrink 1，min-width 96 兜底），全体到最小宽仍放不下时尾部 Tab 入 overflow 菜单（容量纯公式 + 激活/拖拽保位，「+」（lucide Plus）/ overflow 钮（lucide ChevronsRight）常驻永不挤出）。滚动方案两轮实测推翻：① 可见滚动条——Chromium 经典条恒占位 8px，溢出出现瞬间 Tab 内容区 35→27 跳变（`scrollbar-gutter: stable` 只作用纵向条、padding 车道实测无效，横向占位不可免；全局 thumb 色画得出看不见）；② 隐藏滚动条 + wheel/渐隐/滚入三件套——零占位但溢出可发现性差、纵向 wheel 劫持反直觉（用户实测否定）。 |
 | 消息惰性累积上限（20 容器）对有 Tab 会话无条件 | 全量开 Tab 后订阅目录内会话全部累积——受订阅集合（≤5 目录）天然约束，可接受；v0.1 已知限制不变 |
 | **对账内存量级**：reconcile 对每个已开 chat Tab 拉 100 条消息窗口，N 个 Tab = N×100 条含 parts 的 `messagesBySession` 累积（SSE 路径按 Tab 数累积，不受 ≤5 目录约束） | 量级估算：几十 Tab × 100 条 ≈ 数千消息对象（~MB 级），桌面端可接受；`runLimited(3)` 已解决连接池饿死。若未来 Tab 数上百再考虑对非激活 Tab 降窗/跳过 |
 | 记忆写放大（每次 Tab 点击 IPC 写盘） | 记忆体量极小（KB 级），main 侧写队列串行；不引入 debounce（复杂度不值） |
@@ -186,7 +186,8 @@ restoreScopeTabs(dir):
 | `src/shared/ipc.ts` | `StoreShape` 扩展 `tabs.memory` key（封闭类型，不扩展则 storeGet/storeSet 编译不过） |
 | `src/renderer/src/store/app-store.ts` | 记忆加载与持久化；`restoreScopeTabs` 替换 `openScopeSessionTabs`；`syncScopeMemory` 挂点；`closeProject`/`removeWorkspace` 清记忆；启动恢复；对账 `getActiveSessions` 限并发 |
 | `src/shared/reconciler.ts` | 消息快照拉取 `runLimited` 并发受限 |
-| `src/renderer/src/styles/app.css` | tabbar 横向滚动 |
+| `src/renderer/src/styles/app.css` | tabbar 溢出两段式：`.tab` flex-shrink 1 挤压 + overflow 菜单样式（详见 design-tab-overflow §6） |
+| `src/renderer/src/components/workspace.tsx` | 溢出切片（容量公式 + 激活/拖拽保位）+ overflow 菜单（详见 design-tab-overflow） |
 | `docs/design-layout.md` | §4 自动开 Tab 规则改指向本文（同步修订） |
 
 ## 14. 文档同步说明

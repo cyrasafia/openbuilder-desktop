@@ -27,6 +27,8 @@ const zh = {
   closeTab: "关闭",
   newTab: "新建 Tab",
   renameTab: "重命名会话",
+  // Tab 溢出菜单（design-tab-overflow）
+  overflowTabs: "更多 Tab",
   // Tab 右键菜单（design-session-tab-context-menu）
   forkSession: "Fork 会话",
   untitled: "（未命名）",
@@ -341,6 +343,7 @@ const en: typeof zh = {
   closeTab: "Close",
   newTab: "New tab",
   renameTab: "Rename session",
+  overflowTabs: "More tabs",
   forkSession: "Fork session",
   untitled: "(untitled)",
   inputPlaceholder: "Message… (Enter to send, Shift+Enter for newline)",
