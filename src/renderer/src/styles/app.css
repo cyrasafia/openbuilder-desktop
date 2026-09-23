@@ -3824,6 +3824,95 @@
   background: var(--outline-variant);
 }
 
+/* ---------- 模型页签（design-model-list） ---------- */
+
+.settings-models {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 60+ 模型长列表内部滚动（分组/行样式复用 picker 的 .ms-group/.ms-row 词汇） */
+.model-list {
+  overflow-y: auto;
+  margin-top: 4px;
+  max-height: 54vh;
+  padding-right: 2px;
+}
+
+/* 行：整行 label 可点（移动端 LR-M1 同交互），hover 与 .ms-row 同底色档 */
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 4px 10px;
+  border-radius: var(--radius-chip);
+  cursor: pointer;
+  user-select: none;
+}
+
+.model-row:hover {
+  background: var(--surface-container-high);
+}
+
+/* 行内开关（项目首例 track 形态）：30×16 轨道 + 10px 圆钮，input 透明覆盖
+   轨道承接点击/键盘焦点（jsdom 可达），焦点环画在轨道上 */
+.model-toggle {
+  position: relative;
+  flex-shrink: 0;
+  width: 30px;
+  height: 16px;
+}
+
+.model-toggle input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.model-toggle-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+  background: var(--surface-container-highest);
+  border: 1px solid var(--outline-variant);
+  transition: background 120ms ease, border-color 120ms ease;
+  pointer-events: none;
+}
+
+.model-toggle-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--outline);
+  transition: left 120ms ease, background 120ms ease;
+}
+
+.model-toggle input:checked + .model-toggle-track {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.model-toggle input:checked + .model-toggle-track::after {
+  left: 16px;
+  background: var(--on-primary);
+}
+
+.model-row:hover .model-toggle input:not(:checked) + .model-toggle-track {
+  border-color: var(--on-surface-variant);
+}
+
+.model-toggle input:focus-visible + .model-toggle-track {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
 /* ---------- 快捷键页签（design-keyboard-shortcuts §8） ---------- */
 
 .settings-shortcuts {

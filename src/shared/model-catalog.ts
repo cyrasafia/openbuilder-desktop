@@ -157,6 +157,87 @@ export function hasDefaults(d: ModelDefaults): boolean {
   return d.agent != null || (d.model != null && !!d.model.id && !!d.model.providerID)
 }
 
+// ---- 模型开关（design-model-list，spec-v0.4 #4 增补）----
+
+/** profile 级「模型关闭集」（D-ML-1 例外集：不在集内 = 开）。形状 providerID → 关闭的 model id。 */
+export type DisabledModels = Record<string, string[]>
+
+/** 该模型是否被关闭（profile 作用域）。跨 provider 重名走 (providerID, id) 双字段。 */
+export function isModelDisabled(
+  record: DisabledModels | null | undefined,
+  providerID: string,
+  id: string,
+): boolean {
+  return record?.[providerID]?.includes(id) ?? false
+}
+
+/**
+ * 写入某 profile 的模型开关（纯函数，不 mutate 入参；持久化由 app-store 负责）。
+ * 关闭 = 加入例外集；开启 = 移除（列表空删 provider 键）；切片全空删 profile 条目。
+ * 值无变化返回原引用（避免无谓重渲染/落盘）。同 setDefaults 的条目回收语义。
+ */
+export function setDisabledModels(
+  record: Record<string, DisabledModels> | null | undefined,
+  profileKey: string,
+  providerID: string,
+  id: string,
+  disabled: boolean,
+): Record<string, DisabledModels> {
+  const base = record ?? {}
+  const slice = base[profileKey]
+  const has = isModelDisabled(slice, providerID, id)
+  if (disabled === has) return base
+  let nextSlice: DisabledModels
+  if (disabled) {
+    nextSlice = { ...(slice ?? {}), [providerID]: [...(slice?.[providerID] ?? []), id] }
+  } else {
+    const ids = (slice?.[providerID] ?? []).filter((x) => x !== id)
+    const rest = { ...(slice ?? {}) }
+    if (ids.length === 0) delete rest[providerID]
+    else rest[providerID] = ids
+    nextSlice = rest
+  }
+  // 切片空 → 删除条目
+  if (Object.keys(nextSlice).length === 0) {
+    if (!(profileKey in base)) return base
+    const { [profileKey]: _omit, ...rest } = base
+    void _omit
+    return rest
+  }
+  return { ...base, [profileKey]: nextSlice }
+}
+
+/** 过滤出开启的模型（picker / 生效默认解析共用，D-ML-4）。关闭集空返回原引用。 */
+export function enabledModels(
+  models: ModelInfo[],
+  disabled: DisabledModels | null | undefined,
+): ModelInfo[] {
+  if (!disabled || Object.keys(disabled).length === 0) return models
+  return models.filter((m) => !isModelDisabled(disabled, m.providerID, m.id))
+}
+
+/** 持久化读入校验：坏切片/坏键/坏条目丢弃，等效无记录（同 sanitizeBrowserRecents 口径）。 */
+export function sanitizeDisabledModels(
+  raw: unknown,
+): Record<string, DisabledModels> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {}
+  const out: Record<string, DisabledModels> = {}
+  for (const [profileKey, slice] of Object.entries(raw as Record<string, unknown>)) {
+    if (!slice || typeof slice !== "object" || Array.isArray(slice)) continue
+    const next: DisabledModels = {}
+    let any = false
+    for (const [providerID, ids] of Object.entries(slice)) {
+      if (!Array.isArray(ids)) continue
+      const clean = ids.filter((x): x is string => typeof x === "string")
+      if (clean.length === 0) continue
+      next[providerID] = clean
+      any = true
+    }
+    if (any) out[profileKey] = next
+  }
+  return out
+}
+
 /**
  * 解析生效默认模型（隐式默认，D-AM-4 修订）：显式默认值在目录内有效 → 用之
  * （variant 失效只丢 variant 保模型，AM-IMPL4-1）；未设置 / 失效 → 回退模型列表首项

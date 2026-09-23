@@ -7,8 +7,9 @@
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { ProviderKeyForm, ProviderSettings, SettingsDialog, type ProviderOps } from "./settings-dialog"
+import { ProviderKeyForm, ModelsSettings, ProviderSettings, SettingsDialog, type ProviderOps } from "./settings-dialog"
 import type { ProviderCatalog, ProviderInfo } from "@shared/api-types"
+import type { ModelCatalog } from "@shared/model-catalog"
 
 const scanBinaries = vi.fn(async () => [
   { path: "/usr/bin/opencode", version: "1.18.20" },
@@ -85,6 +86,15 @@ vi.mock("../app", () => ({
       providerNoProject: "打开项目后可在此配置 provider（列表按项目作用域查询）",
       noProjectMatch: "无匹配",
       shortcutsTitle: "快捷键",
+      providerReloading: "刷新中…",
+      loading: "加载中…",
+      modelLoadFailed: "加载失败，点击重试",
+      modelsTitle: "模型",
+      modelsSearch: "搜索模型（名称/id/provider）…",
+      modelsNoProject: "打开项目后可在此管理模型",
+      modelsHint: "关闭的模型不出现在模型选择列表。",
+      modelsOffCount: " 已关闭 {off} / 共 {total}",
+      modelsEmpty: "无可用模型",
       scGroupGlobal: "全局",
       scGroupInput: "输入与视图",
       newTab: "新建 Tab",
@@ -162,6 +172,14 @@ beforeEach(() => {
     managedLogLines: [],
     getActiveClient: () => null,
     scopeQuery: { directory: null },
+    // 模型页签数据面（design-model-list）：目录缓存 + 开关集（用例覆写）
+    modelCatalogs: new Map(),
+    modelCatalogFor: () => ({ agents: [], models: [] }),
+    modelCatalogFailedFor: () => false,
+    ensureModelCatalog: vi.fn(async () => {}),
+    refreshModelCatalog: vi.fn(async () => {}),
+    disabledModelsFor: () => ({}),
+    setModelDisabled: vi.fn(async () => {}),
     pushOverlay: () => {},
     popOverlay: () => {},
     settingsInitialTab: "connection",
@@ -775,6 +793,126 @@ describe("ProviderSettings 组件", () => {
     render(<ProviderSettings ops={ops} onEditKey={onEditKey} />)
     await waitFor(() => expect(screen.getByText(/打开项目后/)).toBeTruthy())
     expect(list).not.toHaveBeenCalled()
+  })
+})
+
+// ============ 模型页签（design-model-list） ============
+
+describe("ModelsSettings（模型页签）", () => {
+  const modelsCatalog: ModelCatalog = {
+    agents: [],
+    models: [
+      { id: "glm-5.3", providerID: "zai", name: "GLM 5.3", variants: [] },
+      { id: "glm-4", providerID: "zai", name: "GLM 4", variants: [] },
+      { id: "glm-air", providerID: "zai", name: "GLM Air", variants: [] },
+      { id: "deepseek-v4-flash", providerID: "deepseek", name: "DeepSeek V4 Flash", variants: [] },
+    ],
+  }
+
+  /** 已连接 + 目录缓存就绪（开关集/目录可覆写） */
+  function connectStore(disabled: Record<string, string[]> = {}) {
+    storeState.current = {
+      ...storeState.current,
+      activeProfileId: "p1",
+      activeProfile: { id: "p1", name: "a", baseUrl: "http://x", mode: "attach" },
+      getActiveClient: () => ({}),
+      scopeQuery: { directory: "/repo" },
+      modelCatalogs: new Map([["/repo", modelsCatalog]]),
+      modelCatalogFor: (dir: string) =>
+        (storeState.current.modelCatalogs as Map<string, ModelCatalog>).get(dir) ?? {
+          agents: [],
+          models: [],
+        },
+      disabledModelsFor: () => disabled,
+    }
+    return storeState.current.setModelDisabled as ReturnType<typeof vi.fn>
+  }
+
+  it("分组渲染全部模型（行开关默认开）；挂载触发目录拉取", async () => {
+    const setDisabled = connectStore()
+    const ensure = storeState.current.ensureModelCatalog as ReturnType<typeof vi.fn>
+    render(<ModelsSettings />)
+    await waitFor(() => expect(screen.getByText("GLM Air")).toBeTruthy())
+    expect(screen.getByText("zai")).toBeTruthy()
+    expect(screen.getByText("deepseek")).toBeTruthy()
+    expect(screen.getAllByRole("checkbox").every((c) => (c as HTMLInputElement).checked)).toBe(true)
+    expect(ensure).toHaveBeenCalledWith("/repo")
+    expect(setDisabled).not.toHaveBeenCalled()
+  })
+
+  it("点击行开关 → setModelDisabled(providerID, id, true)；关态行渲染未勾选并可再开", async () => {
+    const setDisabled = connectStore()
+    render(<ModelsSettings />)
+    await waitFor(() => expect(screen.getByText("GLM Air")).toBeTruthy())
+    fireEvent.click(screen.getByRole("checkbox", { name: /GLM Air/ }))
+    expect(setDisabled).toHaveBeenCalledWith("zai", "glm-air", true)
+    // 关态渲染：disabledModelsFor 返回关闭集 → 行未勾选、组头/提示统计收缩
+    cleanup()
+    setDisabled.mockClear()
+    connectStore({ zai: ["glm-air"] })
+    render(<ModelsSettings />)
+    await waitFor(() =>
+      expect((screen.getByRole("checkbox", { name: /GLM Air/ }) as HTMLInputElement).checked).toBe(
+        false,
+      ),
+    )
+    expect(screen.getByText("2/3")).toBeTruthy()
+    expect(screen.getByText(/已关闭 1 \/ 共 4/)).toBeTruthy()
+    fireEvent.click(screen.getByRole("checkbox", { name: /GLM Air/ }))
+    expect(setDisabled).toHaveBeenCalledWith("zai", "glm-air", false)
+  })
+
+  it("搜索过滤：name/id/providerID 命中，无匹配组隐藏", async () => {
+    connectStore()
+    render(<ModelsSettings />)
+    await waitFor(() => expect(screen.getByText("GLM 5.3")).toBeTruthy())
+    fireEvent.change(screen.getByPlaceholderText(/搜索模型/), { target: { value: "deepseek" } })
+    expect(screen.queryByText("GLM 5.3")).toBeNull()
+    expect(screen.getByText("DeepSeek V4 Flash")).toBeTruthy()
+    fireEvent.change(screen.getByPlaceholderText(/搜索模型/), { target: { value: "zzz" } })
+    expect(screen.queryByText("DeepSeek V4 Flash")).toBeNull()
+  })
+
+  it("失败态（无缓存）：失败提示在场、刷新钮可点（重试入口不被 loading 禁死）、无「加载中」", async () => {
+    storeState.current = {
+      ...storeState.current,
+      activeProfileId: "p1",
+      activeProfile: { id: "p1", name: "a", baseUrl: "http://x", mode: "attach" },
+      getActiveClient: () => ({}),
+      scopeQuery: { directory: "/repo" },
+      modelCatalogs: new Map(),
+      modelCatalogFor: () => ({ agents: [], models: [] }),
+      modelCatalogFailedFor: () => true,
+    }
+    const refresh = storeState.current.refreshModelCatalog as ReturnType<typeof vi.fn>
+    render(<ModelsSettings />)
+    await waitFor(() => expect(screen.getByText("加载失败，点击重试")).toBeTruthy())
+    expect(screen.queryByText("加载中…")).toBeNull()
+    // 刷新钮 = 唯一重试入口（D-ML-5）：启用且文案非「刷新中」
+    const btn = screen.getByText("刷新") as HTMLButtonElement
+    expect(btn.disabled).toBe(false)
+    fireEvent.click(btn)
+    expect(refresh).toHaveBeenCalledWith("/repo")
+  })
+
+  it("无连接 connectFirst；已连接无项目 modelsNoProject", async () => {
+    render(<ModelsSettings />)
+    await waitFor(() => expect(screen.getByText("请先连接服务器")).toBeTruthy())
+    cleanup()
+    storeState.current = {
+      ...storeState.current,
+      getActiveClient: () => ({}),
+      scopeQuery: { directory: "" },
+    }
+    render(<ModelsSettings />)
+    await waitFor(() => expect(screen.getByText(/打开项目后可在此管理模型/)).toBeTruthy())
+  })
+
+  it("页签可达：SettingsDialog 点「模型」进入（连接页签之外的新页签位）", () => {
+    render(<SettingsDialog />)
+    fireEvent.click(screen.getByText("模型"))
+    expect(screen.getByText("请先连接服务器")).toBeTruthy()
+    expect(screen.queryByText("设置")).toBeTruthy()
   })
 })
 
