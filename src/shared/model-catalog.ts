@@ -173,38 +173,46 @@ export function isModelDisabled(
 
 /**
  * 写入某 profile 的模型开关（纯函数，不 mutate 入参；持久化由 app-store 负责）。
- * 关闭 = 加入例外集；开启 = 移除（列表空删 provider 键）；切片全空删 profile 条目。
- * 值无变化返回原引用（避免无谓重渲染/落盘）。同 setDefaults 的条目回收语义。
+ * ids = 批量目标（单模型开关传 `[id]`，组级「全部开/关」传全组 id）：
+ * 关闭 = 并入例外集（去重）；开启 = 逐项移除——**只移除列出的 id**，不在 ids 内的
+ * 既有条目（其他目录/陈旧项）保留；列表空删 provider 键；切片全空删 profile 条目。
+ * 值无变化（ids 空/全部已在目标态）返回原引用（避免无谓重渲染/落盘）。
+ * 同 setDefaults 的条目回收语义。
  */
 export function setDisabledModels(
   record: Record<string, DisabledModels> | null | undefined,
   profileKey: string,
   providerID: string,
-  id: string,
+  ids: string[],
   disabled: boolean,
 ): Record<string, DisabledModels> {
   const base = record ?? {}
+  if (ids.length === 0) return base
   const slice = base[profileKey]
-  const has = isModelDisabled(slice, providerID, id)
-  if (disabled === has) return base
-  let nextSlice: DisabledModels
-  if (disabled) {
-    nextSlice = { ...(slice ?? {}), [providerID]: [...(slice?.[providerID] ?? []), id] }
-  } else {
-    const ids = (slice?.[providerID] ?? []).filter((x) => x !== id)
-    const rest = { ...(slice ?? {}) }
-    if (ids.length === 0) delete rest[providerID]
-    else rest[providerID] = ids
-    nextSlice = rest
+  const list = slice?.[providerID] ?? []
+  // 变更集：关闭 = 待加入项；开启 = 待移除项（空 = 无变化，返回原引用）
+  const delta = disabled
+    ? ids.filter((id) => !list.includes(id))
+    : ids.filter((id) => list.includes(id))
+  if (delta.length === 0) return base
+  let nextList: string[]
+  // Set 兼顾输入数组内部重复（review 备注：与注释「去重」语义对齐）
+  if (disabled) nextList = [...list, ...new Set(delta)]
+  else {
+    const remove = new Set(delta)
+    nextList = list.filter((x) => !remove.has(x))
   }
+  const rest = { ...(slice ?? {}) }
+  if (nextList.length === 0) delete rest[providerID]
+  else rest[providerID] = nextList
   // 切片空 → 删除条目
-  if (Object.keys(nextSlice).length === 0) {
+  if (Object.keys(rest).length === 0) {
     if (!(profileKey in base)) return base
-    const { [profileKey]: _omit, ...rest } = base
+    const { [profileKey]: _omit, ...withoutKey } = base
     void _omit
-    return rest
+    return withoutKey
   }
-  return { ...base, [profileKey]: nextSlice }
+  return { ...base, [profileKey]: rest }
 }
 
 /** 过滤出开启的模型（picker / 生效默认解析共用，D-ML-4）。关闭集空返回原引用。 */

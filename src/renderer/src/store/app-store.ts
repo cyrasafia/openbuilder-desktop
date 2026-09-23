@@ -4042,7 +4042,28 @@ export class AppStore {
   /** 设置模型开关并持久化（「模型」页签行开关）：关闭的模型从选择列表消失
    *  （picker / 生效默认解析过滤，D-ML-4；已是当前会话模型的不受影响，D-ML-3）。 */
   async setModelDisabled(providerID: string, id: string, disabled: boolean): Promise<void> {
-    const next = setDisabledModels(this.disabledModels, this.profileKey(), providerID, id, disabled)
+    const next = setDisabledModels(this.disabledModels, this.profileKey(), providerID, [id], disabled)
+    if (next === this.disabledModels) return
+    this.disabledModels = next
+    await window.desktop.storeSet("models.disabled", this.disabledModels).catch(() => {})
+    this.emit()
+  }
+
+  /** 批量设置某 provider 的模型开关（「模型」页签组级「全部开启/关闭」）：
+   *  与单模型开关同一纯函数写路径（单次落盘/emit）；开启只移除传入 id，
+   *  其他目录/陈旧条目保留（design-model-list §3）。 */
+  async setProviderModelsDisabled(
+    providerID: string,
+    ids: string[],
+    disabled: boolean,
+  ): Promise<void> {
+    const next = setDisabledModels(
+      this.disabledModels,
+      this.profileKey(),
+      providerID,
+      ids,
+      disabled,
+    )
     if (next === this.disabledModels) return
     this.disabledModels = next
     await window.desktop.storeSet("models.disabled", this.disabledModels).catch(() => {})

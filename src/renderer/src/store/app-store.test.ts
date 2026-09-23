@@ -1595,6 +1595,24 @@ describe("模型开关（design-model-list）", () => {
     expect(sets.at(-1)).toEqual(["models.disabled", {}])
   })
 
+  it("setProviderModelsDisabled（组级全部开/关）：单次写入全组；开启只清传入项", async () => {
+    const sets = captureSets()
+    // 全部关闭 zai 三模型 = 单次落盘
+    await store.setProviderModelsDisabled("zai", ["glm-5.3", "glm-4", "glm-air"], true)
+    expect(store.disabledModelsFor()).toEqual({ zai: ["glm-5.3", "glm-4", "glm-air"] })
+    expect(sets.filter(([k]) => k === "models.disabled")).toHaveLength(1)
+
+    // 全部开启：stale 条目（不在传入 ids）保留
+    store.disabledModels = { default: { zai: ["glm-5.3", "stale"] } }
+    await store.setProviderModelsDisabled("zai", ["glm-5.3"], false)
+    expect(store.disabledModelsFor()).toEqual({ zai: ["stale"] })
+
+    // 开启移空 → 切片回收（空对象落盘）
+    await store.setProviderModelsDisabled("zai", ["stale"], false)
+    expect(store.disabledModelsFor()).toEqual({})
+    expect(sets.at(-1)).toEqual(["models.disabled", {}])
+  })
+
   it("saveProfiles 删除服务器 → 清理其 models.disabled 切片（保留其他服务器）；无删除不触发清理写", async () => {
     const sets = captureSets()
     store.profiles = [

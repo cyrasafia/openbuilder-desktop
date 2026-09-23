@@ -92,6 +92,8 @@ vi.mock("../app", () => ({
       modelsTitle: "模型",
       modelsNoProject: "打开项目后可在此管理模型",
       modelsEmpty: "无可用模型",
+      modelsEnableAll: "全部开启",
+      modelsDisableAll: "全部关闭",
       scGroupGlobal: "全局",
       scGroupInput: "输入与视图",
       newTab: "新建 Tab",
@@ -177,6 +179,7 @@ beforeEach(() => {
     refreshModelCatalog: vi.fn(async () => {}),
     disabledModelsFor: () => ({}),
     setModelDisabled: vi.fn(async () => {}),
+    setProviderModelsDisabled: vi.fn(async () => {}),
     pushOverlay: () => {},
     popOverlay: () => {},
     settingsInitialTab: "connection",
@@ -877,6 +880,43 @@ describe("ModelsSettings（模型页签）", () => {
     expect(screen.queryByText("加载中…")).toBeNull()
     fireEvent.click(screen.getByText("加载失败，点击重试"))
     expect(refresh).toHaveBeenCalledWith("/repo")
+  })
+
+  it("组头收起/展开：点 zai 组头隐藏该组行（组头/计数常驻、他组不动），再点恢复", async () => {
+    connectStore()
+    render(<ModelsSettings />)
+    await waitFor(() => expect(screen.getByText("GLM Air")).toBeTruthy())
+    fireEvent.click(screen.getByRole("button", { name: "zai" }))
+    expect(screen.getByRole("button", { name: "zai" }).getAttribute("aria-expanded")).toBe("false")
+    expect(screen.queryByText("GLM Air")).toBeNull()
+    expect(screen.queryByRole("checkbox", { name: /GLM 5.3/ })).toBeNull()
+    // 组头计数与 deepseek 组不受影响
+    expect(screen.getByText("3/3")).toBeTruthy()
+    expect(screen.getByRole("checkbox", { name: /DeepSeek/ })).toBeTruthy()
+    fireEvent.click(screen.getByRole("button", { name: "zai" }))
+    expect(screen.getByText("GLM Air")).toBeTruthy()
+  })
+
+  it("组级全部开/关（语境单钮）：全开 → 「全部关闭」传全组 id；有关闭项 → 「全部开启」", async () => {
+    connectStore()
+    render(<ModelsSettings />)
+    await waitFor(() => expect(screen.getByText("GLM Air")).toBeTruthy())
+    const setAll = storeState.current.setProviderModelsDisabled as ReturnType<typeof vi.fn>
+    // zai/deepseek 两组全开 → 各有一个「全部关闭」，取首个（zai 组）
+    fireEvent.click(screen.getAllByText("全部关闭")[0]!)
+    expect(setAll).toHaveBeenCalledWith("zai", ["glm-5.3", "glm-4", "glm-air"], true)
+
+    // zai 关一项 → 该组钮变「全部开启」（deepseek 仍「全部关闭」）
+    cleanup()
+    connectStore({ zai: ["glm-air"] })
+    render(<ModelsSettings />)
+    await waitFor(() =>
+      expect((screen.getByRole("checkbox", { name: /GLM Air/ }) as HTMLInputElement).checked).toBe(
+        false,
+      ),
+    )
+    fireEvent.click(screen.getByText("全部开启"))
+    expect(setAll).toHaveBeenCalledWith("zai", ["glm-5.3", "glm-4", "glm-air"], false)
   })
 
   it("无连接 connectFirst；已连接无项目 modelsNoProject", async () => {

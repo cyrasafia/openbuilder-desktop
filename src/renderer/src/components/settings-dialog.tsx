@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
-import { ArrowLeft, LoaderCircle, Pencil, RefreshCw, X } from "lucide-react"
+import { ArrowLeft, ChevronDown, ChevronRight, LoaderCircle, Pencil, RefreshCw, X } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import type { BinaryCandidate, ConnectionProfile, ManagedNotice, ServerCandidate } from "@shared/ipc"
 import { MIN_SERVER_VERSION } from "@shared/semver"
@@ -995,10 +995,13 @@ export function ProviderKeyForm({
  *  （/config/providers）；开关为 profile 级本地持久化（models.disabled，
  *  D-ML-2 展示按目录、存储按服务器），行内即时写（无网络无 loading）。
  *  无搜索框/手动刷新/提示行（2026-09-23 修订，初版三件按用户反馈精简）：
- *  列表刷新依赖挂载拉取与 picker 打开时的 SWR；失败态提示可点击重试 */
+ *  列表刷新依赖挂载拉取与 picker 打开时的 SWR；失败态提示可点击重试。
+ *  组头支持收起/展开（瞬时态不持久化，切页签即复位）与组级全部开/关 */
 export function ModelsSettings() {
   const store = useStore()
   const { t } = useI18n()
+  // 组收起态（providerID → true）：纯视图瞬时态，不持久化
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const directory = store.scopeQuery.directory
   const connected = !!store.getActiveClient()
 
@@ -1063,34 +1066,67 @@ export function ModelsSettings() {
             (n, m) => n + (isModelDisabled(disabled, pid, m.id) ? 0 : 1),
             0,
           )
+          const isCollapsed = !!collapsed[pid]
+          // 组级全部开/关（语境单钮）：全开 → 提供「全部关闭」，否则「全部开启」
+          const allOn = on === arr.length
           return (
             <div key={pid} className="ms-group">
               <div className="ms-group-head">
-                <span className="mono">{pid}</span>
-                <span className="ms-group-count">
-                  {on}/{arr.length}
+                <button
+                  type="button"
+                  className="ms-group-fold"
+                  aria-expanded={!isCollapsed}
+                  onClick={() => setCollapsed((c) => ({ ...c, [pid]: !c[pid] }))}
+                >
+                  {isCollapsed ? (
+                    <ChevronRight className="chevron" size={12} aria-hidden />
+                  ) : (
+                    <ChevronDown className="chevron" size={12} aria-hidden />
+                  )}
+                  <span className="mono">{pid}</span>
+                </button>
+                <span className="ms-group-side">
+                  <span className="ms-group-count">
+                    {on}/{arr.length}
+                  </span>
+                  {arr.length > 0 && (
+                    <button
+                      type="button"
+                      className="ms-group-action"
+                      onClick={() =>
+                        void store.setProviderModelsDisabled(
+                          pid,
+                          arr.map((m) => m.id),
+                          allOn,
+                        )
+                      }
+                    >
+                      {allOn ? t.modelsDisableAll : t.modelsEnableAll}
+                    </button>
+                  )}
                 </span>
               </div>
-              {arr.map((m) => {
-                const off = isModelDisabled(disabled, pid, m.id)
-                return (
-                  <label key={`${pid}/${m.id}`} className="model-row">
-                    <span className="ms-row-main">
-                      <span className="ms-row-name">{m.name}</span>
-                      <span className="ms-row-id mono">{m.id}</span>
-                    </span>
-                    {/* label 整行可点（移动端 LR-M1 同交互）；input 透明覆盖轨道 */}
-                    <span className="model-toggle">
-                      <input
-                        type="checkbox"
-                        checked={!off}
-                        onChange={() => void store.setModelDisabled(pid, m.id, !off)}
-                      />
-                      <span className="model-toggle-track" aria-hidden />
-                    </span>
-                  </label>
-                )
-              })}
+              {!isCollapsed &&
+                arr.map((m) => {
+                  const off = isModelDisabled(disabled, pid, m.id)
+                  return (
+                    <label key={`${pid}/${m.id}`} className="model-row">
+                      <span className="ms-row-main">
+                        <span className="ms-row-name">{m.name}</span>
+                        <span className="ms-row-id mono">{m.id}</span>
+                      </span>
+                      {/* label 整行可点（移动端 LR-M1 同交互）；input 透明覆盖轨道 */}
+                      <span className="model-toggle">
+                        <input
+                          type="checkbox"
+                          checked={!off}
+                          onChange={() => void store.setModelDisabled(pid, m.id, !off)}
+                        />
+                        <span className="model-toggle-track" aria-hidden />
+                      </span>
+                    </label>
+                  )
+                })}
             </div>
           )
         })}

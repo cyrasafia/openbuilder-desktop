@@ -313,15 +313,15 @@ describe("模型开关读写（isModelDisabled / setDisabledModels）", () => {
     expect(isModelDisabled(undefined, "zai", "glm-air")).toBe(false)
   })
 
-  it("关闭：新 provider 键 / 既有键追加", () => {
-    expect(setDisabledModels(undefined, "p1", "zai", "glm-air", true)).toEqual({
+  it("关闭：新 provider 键 / 既有键追加（单模型 = 单元素 ids）", () => {
+    expect(setDisabledModels(undefined, "p1", "zai", ["glm-air"], true)).toEqual({
       p1: { zai: ["glm-air"] },
     })
     expect(
-      setDisabledModels({ p1: { zai: ["glm-air"] } }, "p1", "zai", "glm-5.3", true),
+      setDisabledModels({ p1: { zai: ["glm-air"] } }, "p1", "zai", ["glm-5.3"], true),
     ).toEqual({ p1: { zai: ["glm-air", "glm-5.3"] } })
     // 不同 profile 互不影响
-    expect(setDisabledModels({ p1: { zai: ["glm-air"] } }, "p2", "zai", "glm-air", true)).toEqual({
+    expect(setDisabledModels({ p1: { zai: ["glm-air"] } }, "p2", "zai", ["glm-air"], true)).toEqual({
       p1: { zai: ["glm-air"] },
       p2: { zai: ["glm-air"] },
     })
@@ -329,19 +329,47 @@ describe("模型开关读写（isModelDisabled / setDisabledModels）", () => {
 
   it("开启：移除；列表空删 provider 键；切片空删 profile 条目", () => {
     expect(
-      setDisabledModels({ p1: { zai: ["glm-air", "glm-5.3"] } }, "p1", "zai", "glm-air", false),
+      setDisabledModels({ p1: { zai: ["glm-air", "glm-5.3"] } }, "p1", "zai", ["glm-air"], false),
     ).toEqual({ p1: { zai: ["glm-5.3"] } })
-    expect(setDisabledModels({ p1: { zai: ["glm-air"] } }, "p1", "zai", "glm-air", false)).toEqual({})
+    expect(setDisabledModels({ p1: { zai: ["glm-air"] } }, "p1", "zai", ["glm-air"], false)).toEqual({})
     expect(
-      setDisabledModels({ p1: { zai: ["glm-air"] }, p2: { zai: ["x"] } }, "p1", "zai", "glm-air", false),
+      setDisabledModels({ p1: { zai: ["glm-air"] }, p2: { zai: ["x"] } }, "p1", "zai", ["glm-air"], false),
     ).toEqual({ p2: { zai: ["x"] } })
   })
 
-  it("值无变化返回原引用（免无谓重渲染/落盘）", () => {
+  it("值无变化返回原引用（免无谓重渲染/落盘）；ids 空 no-op", () => {
     const rec = { p1: { zai: ["glm-air"] } }
-    expect(setDisabledModels(rec, "p1", "zai", "glm-air", true)).toBe(rec)
-    expect(setDisabledModels(rec, "p1", "zai", "glm-5.3", false)).toBe(rec)
-    expect(setDisabledModels(rec, "p2", "zai", "x", false)).toBe(rec)
+    expect(setDisabledModels(rec, "p1", "zai", ["glm-air"], true)).toBe(rec)
+    expect(setDisabledModels(rec, "p1", "zai", ["glm-5.3"], false)).toBe(rec)
+    expect(setDisabledModels(rec, "p2", "zai", ["x"], false)).toBe(rec)
+    expect(setDisabledModels(rec, "p1", "zai", [], true)).toBe(rec)
+  })
+
+  it("批量关闭（组级全部关闭）：并集去重追加", () => {
+    expect(
+      setDisabledModels({ p1: { zai: ["glm-air"], deepseek: ["x"] } }, "p1", "zai", [
+        "glm-air",
+        "glm-5.3",
+        "glm-4",
+      ], true),
+    ).toEqual({ p1: { zai: ["glm-air", "glm-5.3", "glm-4"], deepseek: ["x"] } })
+  })
+
+  it("批量开启（组级全部开启）：只移除传入 id——其他目录/陈旧条目保留；移空删键", () => {
+    // stale 不在传入 ids 内 → 保留（惰性无效，不属本次操作范围）
+    expect(
+      setDisabledModels({ p1: { zai: ["glm-air", "stale"] } }, "p1", "zai", ["glm-air"], false),
+    ).toEqual({ p1: { zai: ["stale"] } })
+    expect(
+      setDisabledModels({ p1: { zai: ["glm-air", "glm-5.3"], deepseek: ["x"] } }, "p1", "zai", [
+        "glm-air",
+        "glm-5.3",
+      ], false),
+    ).toEqual({ p1: { deepseek: ["x"] } })
+    // 全在目标态 → 原引用
+    const rec = { p1: { zai: ["glm-air"] } }
+    expect(setDisabledModels(rec, "p1", "zai", ["glm-5.3"], false)).toBe(rec)
+    expect(setDisabledModels(rec, "p1", "zai", ["glm-air"], true)).toBe(rec)
   })
 })
 

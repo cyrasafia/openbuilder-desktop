@@ -3826,7 +3826,10 @@
 
 /* ---------- 模型页签（design-model-list） ---------- */
 
+/* 定高弹窗（dialog-lg）内填满 dialog-body：列表成为唯一滚动层（body 不滚，
+   吸顶才有意义）；守卫态（仅提示文案）同样无害 */
 .settings-models {
+  height: 100%;
   display: flex;
   flex-direction: column;
 }
@@ -3849,12 +3852,31 @@
   color: var(--on-surface);
 }
 
-/* 60+ 模型长列表内部滚动（分组/行样式复用 picker 的 .ms-group/.ms-row 词汇） */
+/* 60+ 模型长列表为唯一滚动层（flex 填满 dialog-body 余高；分组/行样式复用
+   picker 的 .ms-group/.ms-row 词汇） */
 .model-list {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   margin-top: 4px;
-  max-height: 54vh;
   padding-right: 2px;
+}
+
+/* 组头吸顶：滚动时贴 .model-list 顶（bg 不透明遮挡滚过的行，下一组头到达时
+   无缝顶替——组间距清零，否则吸顶切换瞬间会漏出裸条带）。head 的
+   margin-top: 2 清零——吸顶偏移按 border box 计，留缝会漏 2px 行；
+   组间视觉分隔由组头自身条带承担（每组以 head 开头）。picker 的
+   .ms-group-head 不受影响（本组选择器限定） */
+.model-list .ms-group {
+  margin-bottom: 0;
+}
+
+.model-list .ms-group-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin-top: 0;
+  border-bottom: 1px solid var(--outline-variant);
 }
 
 /* 行：整行 label 可点（移动端 LR-M1 同交互），hover 与 .ms-row 同底色档 */
@@ -3929,6 +3951,52 @@
 .model-toggle input:focus-visible + .model-toggle-track {
   outline: 2px solid var(--primary);
   outline-offset: 1px;
+}
+
+/* 组头：折叠钮（chevron + provider 名，.chevron 档位与文件树同族）居左；
+   计数与组级「全部开启/关闭」文字钮居右。原 ms-group-head 是 space-between
+   两端布局，左端由 span 换 button 需自接管排版 */
+.ms-group-fold {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: inherit;
+  cursor: pointer;
+}
+
+.ms-group-fold:hover .mono,
+.ms-group-fold:focus-visible .mono {
+  color: var(--on-surface);
+}
+
+.ms-group-side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* 组级全部开/关：语境单钮（全开 → 全部关闭，否则全部开启），文字钮 hover 提亮 */
+.ms-group-action {
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 4px;
+  border: none;
+  background: none;
+  font-size: var(--text-xs);
+  color: var(--on-surface-variant);
+  cursor: pointer;
+}
+
+.ms-group-action:hover,
+.ms-group-action:focus-visible {
+  color: var(--on-surface);
+  background: var(--surface-container);
 }
 
 /* ---------- 快捷键页签（design-keyboard-shortcuts §8） ---------- */
