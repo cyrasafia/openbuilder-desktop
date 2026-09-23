@@ -7,7 +7,7 @@
  */
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { TerminalView } from "./terminal-view"
+import { TerminalView, isTerminalQueryResponse } from "./terminal-view"
 import { ResizeObserverStub } from "./resize-observer-stub"
 
 // xterm mock：记录 write/onData/dispose/reset；keyHandler/lastTerm 挂载时捕获
@@ -447,6 +447,61 @@ describe("TerminalView", () => {
     expect(actions.cachePtyBuffer).not.toHaveBeenCalled()
   })
 
+  // —— 回放幽灵应答闸门（design-terminal-tab §1.2b，2026-09-23）——
+  it("回放闸门：meta 前回放帧未排空期间丢弃 xterm 幽灵应答；用户键入照发；排空后 live 应答放行", async () => {
+    vi.useFakeTimers()
+    const { ws } = await bootLive()
+    // 回放帧（meta 前的输出帧 = server 回放，夹着 shell 历史 prompt 的查询）
+    ws.onmessage?.({ data: "\x1b]11;?\x1b\\" })
+    // xterm 解析回放流中历史查询后的自动应答（onData 视角）→ 闸门拦截
+    dataHandler!("\x1b[?1;2c")
+    dataHandler!("\x1b]11;rgb:1616/1b1b/1616\x1b\\")
+    dataHandler!("\x1b[29;1R")
+    expect(ws.sent).toEqual([])
+    // 用户键入不受影响（完整应答转义模式无法逐键敲出，误杀面≈0）
+    dataHandler!("q\r")
+    expect(ws.sent).toEqual(["q\r"])
+    // meta 帧已到但写队列未排空（xterm write 异步解析）——闸门仍拦截
+    ws.onmessage?.({ data: metaFrame(7) })
+    dataHandler!("\x1b[?1;2c")
+    expect(ws.sent).toEqual(["q\r"])
+    // 写回调触发（回放排空）→ 闸门关闭；live 期应答必须放行（fish prompt 握手依赖）
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    dataHandler!("\x1b[?1;2c")
+    expect(ws.sent).toEqual(["q\r", "\x1b[?1;2c"])
+  })
+
+  it("重连续传回放同样受闸门：回放帧未排空前应答丢弃，排空后放行", async () => {
+    vi.useFakeTimers()
+    const { ws } = await bootLive()
+    ws.onmessage?.({ data: metaFrame(100) })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    act(() => {
+      ws.onclose?.({ code: 1006 })
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    const ws2 = FakeWS.instances[1]!
+    ws2.readyState = 1
+    act(() => {
+      ws2.onopen?.()
+    })
+    // 续传连接的 meta 前帧 = server 补发回放 → 闸门开
+    ws2.onmessage?.({ data: "resumed-out" })
+    dataHandler!("\x1b[?1;2c")
+    expect(ws2.sent).toEqual([])
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    dataHandler!("\x1b[?1;2c")
+    expect(ws2.sent).toEqual(["\x1b[?1;2c"])
+  })
+
   it("右键：弹复制/粘贴菜单；无选区时复制项禁用，粘贴项可用", async () => {
     render(<TerminalView ptyID="pty_1" />)
     await waitFor(() => expect(FakeWS.instances.length).toBe(1))
@@ -656,5 +711,33 @@ describe("TerminalView", () => {
     expect(FakeWS.instances.length).toBe(0)
     const evW = new KeyboardEvent("keydown", { cancelable: true, ctrlKey: true, code: "KeyW" })
     expect(keyHandler!(evW)).toBe(false)
+  })
+})
+
+describe("isTerminalQueryResponse（回放幽灵应答模式，design-terminal-tab §1.2b）", () => {
+  it("匹配 xterm 6.0.0 实测应答集：DA1/DA2/CPR/DECXCPR/DECRPM/DSR/DCS/OSC 颜色报告", () => {
+    expect(isTerminalQueryResponse("\x1b[?1;2c")).toBe(true) // DA1（ESC[0c / ESC[c 的应答）
+    expect(isTerminalQueryResponse("\x1b[>0;276;0c")).toBe(true) // DA2
+    expect(isTerminalQueryResponse("\x1b[29;1R")).toBe(true) // CPR（ESC[6n 的应答）
+    expect(isTerminalQueryResponse("\x1b[?1;1R")).toBe(true) // DECXCPR（ESC[?6n 的应答）
+    expect(isTerminalQueryResponse("\x1b[?1;2$y")).toBe(true) // DECRPM（DECRQM 的应答）
+    expect(isTerminalQueryResponse("\x1b[0n")).toBe(true) // DSR（CSI 5n 的应答）
+    expect(isTerminalQueryResponse("\x1bP1$r0m\x1b\\")).toBe(true) // DECRQSS 状态应答（DCS）
+    expect(isTerminalQueryResponse("\x1b]11;rgb:1616/1b1b/1616\x1b\\")).toBe(true) // OSC 11 背景报告
+    expect(isTerminalQueryResponse("\x1b]10;rgb:c8d0/c8d0/c8d4\x07")).toBe(true) // OSC 10 前景报告（BEL 终止）
+    expect(isTerminalQueryResponse("\x1b]4;1;rgb:111/222/333\x1b\\")).toBe(true) // OSC 4 调色板报告
+  })
+
+  it("用户键入不误杀：普通键、方向/功能键、粘贴包裹、Alt 组合、裸 ESC", () => {
+    expect(isTerminalQueryResponse("q")).toBe(false)
+    expect(isTerminalQueryResponse("ls -l\r")).toBe(false)
+    expect(isTerminalQueryResponse("\x1b[A")).toBe(false) // 上方向键
+    expect(isTerminalQueryResponse("\x1bOA")).toBe(false) // 应用光标键
+    expect(isTerminalQueryResponse("\x1bOP")).toBe(false) // F1
+    expect(isTerminalQueryResponse("\x1bn")).toBe(false) // Alt+n（readline M-n；n 虽入 CSI 终止类，无 [ 前缀不匹配）
+    expect(isTerminalQueryResponse("\x1b[200~pasted\x1b[201~")).toBe(false) // bracketed-paste 包裹
+    expect(isTerminalQueryResponse("\x1bx")).toBe(false) // Alt+x（readline M-x）
+    expect(isTerminalQueryResponse("\r")).toBe(false)
+    expect(isTerminalQueryResponse("\x1b")).toBe(false) // 裸 ESC 键
   })
 })
