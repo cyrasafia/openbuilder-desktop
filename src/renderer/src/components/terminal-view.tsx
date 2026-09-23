@@ -30,6 +30,12 @@ import { closeTabInteractive } from "./tab-actions"
  * server 回收区分——落 404/4404 被动路径呈终止态。断开/错误态 Ctrl+D =
  * 关 Tab（§1.4，closeTabInteractive 与 Ctrl+W/Tab 栏 X 单一路径）。
  * 已退出的 Tab 重挂载：不建 WS（server 侧 exited 即 404），直接呈只读态。
+ *
+ * 回放幽灵应答闸门（design-terminal-tab §1.2b，2026-09-23）：重挂载/重连的
+ * 全量回放把 shell 历史 prompt 的终端查询重放进新 xterm，xterm 自动应答经
+ * onData 注入 pty 会被读屏态的 less/more 逐键回显成乱码并逐次累积——回放
+ * 写队列未排空期间丢弃匹配应答模式的 onData（isTerminalQueryResponse），
+ * live 期应答照常放行（fish prompt 握手依赖）。
  */
 
 /**
@@ -70,12 +76,42 @@ const DARK_THEME = {
  */
 const BACKOFF_SEQUENCE = [1, 2, 4, 8, 16, 30]
 
+/**
+ * xterm.js 对终端查询的自动应答模式（design-terminal-tab §1.2b，2026-09-23）。
+ * 回放期间 onData 出现的这类**完整转义序列**只可能是 xterm 解析回放流中历史
+ * 查询（shell 每条 prompt 发的 OSC 11;? / CSI 6n / CSI 0c，实测 fish 三件套）
+ * 后的自动应答，不是用户键入——ESC 打头的完整应答无法逐键敲出，粘贴经
+ * bracketed-paste 包裹（CSI 200~…201~）也不匹配 ^…$：
+ * - CSI [?>=]?…c —— DA1/DA2/DA3（ESC[?1;2c、ESC[>0;276;0c）
+ * - CSI [?]…R —— CPR/DECXCPR（ESC[29;1R）；CSI [?]…$y —— DECRPM（DECRQM 应答）
+ * - CSI …n —— DSR 应答（ESC[0n，CSI 5n 的应答）
+ * - DCS …ST —— DECRQSS/XTGETTCAP 状态应答（ESC P1$r0m ESC\；XTWINOPS 18 应答
+ *   需 windowOptions 开启，本应用未开，实测不产生）
+ * - OSC 4/10/11/12 颜色报告（ESC]11;rgb:1616/1b1b/1616 = 主题背景色序列化，
+ *   xterm 6.0.0 该应答仅在 open 后经 _themeService 生效）
+ */
+const TERMINAL_RESPONSE_PATTERNS: readonly RegExp[] = [
+  /^\x1b\[[?>=]?[0-9;]*[cRn]$/,
+  /^\x1b\[\??[0-9;]*\$y$/,
+  /^\x1bP[^\x1b]*\x1b\\$/,
+  /^\x1b\]\d+(?:;\d+)?;rgb:[0-9a-fA-F/]+(?:\x07|\x1b\\)?$/,
+]
+
+/** onData 数据是否为 xterm 终端查询自动应答（供回放闸门识别幽灵应答） */
+export function isTerminalQueryResponse(data: string): boolean {
+  return TERMINAL_RESPONSE_PATTERNS.some((re) => re.test(data))
+}
+
 export function TerminalView({ ptyID }: { ptyID: string }) {
   const store = useStore()
   const { t } = useI18n()
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  // 回放闸门状态（design-terminal-tab §1.2b）：主 effect 写、输入 effect 读。
+  // 对象按 effect 运行重建——卸载后残留的迟到写回调递减的是旧对象，不污染
+  // 下一轮（React StrictMode 双挂载/重连同 ptyID 重跑 effect 同理）
+  const replayGateRef = useRef({ pending: 0 })
   const runtime = store.ptyRuntimeFor(ptyID)
   const [state, setState] = useState<"connecting" | "live" | "reconnecting" | "closed">("connecting")
   // 已退出 = store 标记（自然退出/session 不在，重挂载仍呈只读态）或本次连接已终结
@@ -273,6 +309,30 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
         }
         return
       }
+      // —— 回放幽灵应答闸门（design-terminal-tab §1.2b，2026-09-23）——
+      // 重挂载/重连不带（或带 cursor 的）回放把 shell 历史 prompt 的终端查询
+      // （fish 每条 prompt：OSC 11;? + CSI 6n + CSI 0c）重放进新 xterm，xterm
+      // 自动应答经 onData → ws.send 注入 pty——打在读屏态的 less/more 上被逐
+      // 键回显成乱码（应答按帧分离到达，前台程序无法重组转义序列），且回显
+      // 会进 server buffer 随下次回放复现、逐次累积。闸门：meta 帧前的输出帧
+      // 是回放，经带回调的 write 计数未排空期间，输入 effect 丢弃匹配应答模式
+      // 的 onData。live 期（回放排空后）应答必须放行——fish prompt 握手依赖
+      // 即时应答（实测无应答则阻塞等待）。写回调先于计数递减不会漏拦：解析
+      // 在回调前同步完成，最后一块的应答发出时计数仍 >0；live 帧在回放之后
+      // 排队，处理时计数已归零，其查询的应答不受影响
+      const gate = { pending: 0 }
+      replayGateRef.current = gate
+      let metaSeen = false
+      const writeOutput = (text: string) => {
+        if (metaSeen) {
+          term.write(text)
+          return
+        }
+        gate.pending++
+        term.write(text, () => {
+          gate.pending--
+        })
+      }
       const res = await store.ptyConnectUrl(ptyID, cursor ?? undefined)
       if (disposed) return
       if (res && "gone" in res) {
@@ -301,7 +361,7 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
       ws.onmessage = (ev) => {
         if (disposed || wsRef.current !== ws) return
         if (typeof ev.data === "string") {
-          term.write(ev.data)
+          writeOutput(ev.data)
           if (cursor != null) cursor += ev.data.length
           return
         }
@@ -317,10 +377,13 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
           } catch {
             // 残缺控制帧：保留旧锚点（无锚点则重连退化为 reset + 全量回放）
           }
+          // 控制帧 = server 回放终点（契约：replay → meta → live，见 §1.2）；
+          // 其后帧走无回调直写（live 期闸门常开）
+          metaSeen = true
           return
         }
         const text = decoder.decode(buf)
-        term.write(text)
+        writeOutput(text)
         if (cursor != null) cursor += text.length
       }
       ws.onclose = (ev) => {
@@ -409,6 +472,10 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
     const term = termRef.current
     if (!term) return
     const d = term.onData((data) => {
+      // 回放幽灵应答闸门（design-terminal-tab §1.2b）：回放写队列未排空期间
+      // 丢弃 xterm 对回放流中历史查询的自动应答（完整转义模式用户物理敲不
+      // 出、粘贴有 bracketed-paste 包裹，误杀面≈0）；live 期照常放行
+      if (replayGateRef.current.pending > 0 && isTerminalQueryResponse(data)) return
       const ws = wsRef.current
       if (ws && ws.readyState === WebSocket.OPEN) ws.send(data)
     })

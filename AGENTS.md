@@ -48,6 +48,7 @@ opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录�
 - Tab 注册制：kind + 稳定标识（chat=sessionID、file=路径、terminal=ptyID、browser=URL——新开空白 Tab 例外：唯一 `browser:new:N` 键不去重，2026-09-15），"打开指定地址"类入口（文件树 .html/关闭栈按 URL 重开）重复打开复用
 - **global 项目按 directory 拆分**（2026-08-24 起，见 design-v0.1-implementation §7.13）：`id==="global"` 项目不在左栏整体展示，而是每个会话目录一行顶级 entry（键 `global\0<directory>`，打开/关闭/作用域独立）；发现 = `GET /session?scope=project&directory=/` 全量快照（连接时 + 选择器打开时刷新）；**不用裸 `GET /session` 做 global 发现**（那是 server cwd 所在 instance 的会话，随启动目录漂移）；SSE 为单全局流（/global/event），未打开 entry 的目录事件被事件闸门丢弃（openedDirectories 的 global 分支 = 已打开目录）
 - **终端主动/被动退出分流**（2026-09-22 起，见 design-terminal-tab §1.2/§1.4）：WS close **1000**（pty 自然退出，如 live 终端内 Ctrl+D/exit）= **自动关 Tab**（同一般终端模拟器；先标 exited 再 closeTerminalTab 跳过 DELETE）；**4404 / token 404** = 被动关闭，呈已退出只读态不自动关。断开/错误态 Ctrl+D = 关 Tab（closeTabInteractive 与 Ctrl+W/Tab 栏 X 单一路径，exited/disconnected 免确认）；live 态 Ctrl+D = EOF 归 pty 不拦截；Ctrl+W 各态行为维持 2026-09-10 决策（live 归 pty）
+- **回放幽灵应答闸门**（2026-09-23 起，见 design-terminal-tab §1.2b）：重挂载/重连的回放窗口内（meta 帧前 + 写队列未排空）丢弃 xterm 对回放流中**历史查询**的自动应答（模式：DA/CPR/DSR/DECXCPR/DECRPM/DCS 状态报告/OSC 颜色报告，`isTerminalQueryResponse`）——回放不是用户键入，注入 pty 会被读屏态 pager 逐键回显成乱码并逐次累积；**live 期应答必须放行**（fish prompt 握手依赖即时应答），不可做成全局过滤
 
 ## 参考代码（只读，不引入依赖）
 

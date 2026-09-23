@@ -20,7 +20,7 @@
 
 - 挂载：`POST /pty/{id}/connect-token`（头 `x-opencode-ticket: 1`，**必须 POST**——GET 无此路由会落 server web UI 的 SPA fallback 返回 HTML，实测）→ `new WebSocket(wsBase + /pty/{id}/connect?ticket=…&directory=<作用域目录>)`；wsBase = baseUrl http(s) → ws(s) 换 scheme。**connect 必须带 directory**（pty 路由按 directory 实例路由，缺参落到 server cwd 实例 → 404，实测）
 - **cursor 语义分两用**（§1.2a，2026-09-02 修订）：首连/重挂载**不带 cursor**——组件卸载即销毁 xterm buffer，重挂载是全新 Terminal，server 语义 cursor=N 只回放 N 之后增量（传记忆 cursor 重挂载恒空白，评审 H1），cursor 省略 = 全量回放（server 保留 2MB buffer）；**同组件内断线重连携带 cursor**——增量续传只补缺失输出
-- 出帧处理：文本帧直写 `term.write` 并累计 cursor（server `session.cursor += chunk.length` 同口径）；二进制帧 = 0x00 控制帧（{cursor}）解析为续传锚点不写屏
+- 出帧处理：文本帧直写 `term.write` 并累计 cursor（server `session.cursor += chunk.length` 同口径）；二进制帧 = 0x00 控制帧（{cursor}）解析为续传锚点不写屏。meta 帧前的回放帧经带回调的 write 计数——**回放幽灵应答闸门**（§1.2b）
 - **Origin 剥离（打包形态实测）**：server 对 connect 路径校验 Origin allowlist，浏览器 WS 必发 Origin——打包（file://）→ 403；main 进程 `session.webRequest.onBeforeSendHeaders` 对 ws/wss **删 Origin 头**（server 视同无 Origin 放行，实测 101；dev 的 localhost 本就在 allowlist，删除无副作用）。renderer fetch 无此问题（file:// fetch 不发 Origin，实测 200）
 - 入帧：`term.onData` → `ws.send`（文本）
 - 断开/卸载：close WS；重挂载凭全量回放恢复。WS close 终态判定（**2026-09-22 修订：主动/被动分流**）：**code 1000** = pty 自然退出（server onEnd 主动关）——live 终端内 Ctrl+D/`exit` 的**主动中断** → 标 exited + **自动关 Tab**（同一般终端模拟器；先标 exited 令 closeTerminalTab 跳过 DELETE——pty 已亡，评审 M2 的 404 容忍收敛为不发；closeTab 顺带清 pendingTabClose，兜底确认弹窗在途时 Tab 已关的场景；关栈 Ctrl+Shift+T 原目录新建）；**code 4404** = session 不在 server（legacy 路由 not-found/exited 同码）= **被动关闭** → 仅标 exited 呈只读终止态（关闭 Tab 不再 DELETE，legacy 路由已 404；评审 M2）；**其余 code** = 异常断开 → 进入 §1.2a 自动重连（不标 exited，关闭 Tab 仍 DELETE 防孤儿）。已退出 pty 重挂载不建 WS。**边界**：切走/退避重连期间自然退出（无 WS 在连）客户端无法与 server 回收区分——重挂载/重试落 token 404 / 4404 被动路径呈终止态（不自动关）
@@ -42,6 +42,17 @@
 - **resize**：ResizeObserver → `fitAddon.proposeDimensions()` → `term.resize` + `PUT /pty/{id}` `{size:{rows,cols}}`（节流 200ms）；连接未建立时只 resize 本地；**已退出 pty 跳过上报**（server 404，防 ResizeObserver 在 exited 后仍触发报错）
 - **自动聚焦**：`term.open(host)` 后立即 `term.focus()`——Tab 切换走 key 隔离重挂载，打开/切回 terminal 即获焦，无需点击；`.terminal-view` `onMouseDown` 兜底（点击终端任意区域重新聚焦）
 - 复用浏览器 shim：终端纯 renderer + server WS，无 IPC 依赖——shim 下同样可用（jsdom 测试不建真 WS）
+
+### 1.2b 回放幽灵应答闸门（2026-09-23 新增）
+
+> 现象：阅读态（`git log` 的 less / `more` 等 pager 在前台）切走再切回终端 Tab，屏上多出一串可见乱码（`ESC]11;rgb:…`、`ESC[?1;2c`、`ESC[行;列R`），且随每次往返累积增多。
+
+- **因果链（实测定位，2026-09-23）**：fish 每条 prompt 发终端查询三件套（`OSC 11;?` 背景色 / `CSI 6n` CPR / `CSI 0c` DA1——输出流一部分），累积在 server 2MB 回放缓冲；重挂载不带 cursor 的**全量回放**把这些历史查询重放进新 xterm，xterm 解析时自动应答（DA1 → `ESC[?1;2c`；OSC 11 → `ESC]11;rgb:1616/1b1b/1616` = 主题背景色序列化，xterm 6.0.0 该应答仅在 `open()` 后经 `_themeService` 生效；CPR → `ESC[行;列R`，行号 = 回放解析进行到该查询时光标实时位置）。应答经 `onData → ws.send` 注入 pty **形同用户键入**；前台 pager 收到的是按帧分离的应答字节（每个 onData 一帧、server 逐帧 `process.write`），无法重组为转义序列 → 逐键当命令键回显（less 把 ESC 键拼写成 "ESC" 文本、逐键 `ESC[K` 擦写、`r`/`R` 字节触发重绘）；回显又进 server buffer → 下次回放复现、逐次累积
+- **闸门**：meta 帧前的输出帧 = 回放（server 契约 replay → meta → live），经**带回调的 `term.write` 计数**（`gate.pending`）；`onData` 时 `pending > 0` 且匹配应答模式（`isTerminalQueryResponse`）即丢弃不转发。不漏拦依据：xterm 解析在写回调前同步完成——最后一块回放的应答发出时计数仍 >0；live 帧在回放之后排队，处理时计数已归零，其查询的应答不受影响。重连续传（带 cursor）的补发回放同样过闸门（server 契约同序）
+- **live 期必须放行**：fish prompt 握手依赖即时应答（实测无应答 fish 启动阻塞等待）——闸门只覆盖回放窗口，不作全局过滤
+- **误杀面≈0**：完整应答转义序列（ESC 打头 + 转义收尾的 `^…$` 匹配）无法逐键物理敲出；粘贴经 bracketed-paste 包裹（`CSI 200~…201~`）不匹配。模式集：CSI `[?>=]?…c`（DA1/DA2/DA3）、CSI `[?]…R`（CPR/DECXCPR）、CSI `[?]…$y`（DECRPM）、CSI `…n`（DSR，`CSI 5n` 应答 `ESC[0n`）、DCS `…ST`（DECRQSS/XTGETTCAP 状态应答，如 `ESC P1$r0m ESC\`；XTWINOPS 18 应答需 windowOptions、本应用未开实测不产生）、OSC `4/10/11/12;rgb:…`（颜色报告，含 BEL/ST 终止）——评审 2026-09-23 补 DSR/DCS 两类
+- **生命周期**：gate 对象按 `connect()` 运行重建（`replayGateRef` 持当前对象）——卸载/重连后残留的迟到写回调递减的是旧对象，不污染新一轮（StrictMode 双挂载同构防污染）
+- 若未来 xterm 应答形态扩展（如 kitty 键盘协议 `CSI ?…u`），模式集在 `TERMINAL_RESPONSE_PATTERNS` 追加即可
 
 ### 1.3 恒深色
 
@@ -84,12 +95,12 @@ ptyRuntimes = new Map<string, { exited: boolean; disconnected: boolean; title: s
 | `src/shared/api-types.ts` | `Pty` / `PtyShell` / `PtyTicket` 类型 |
 | `src/shared/rest-client.ts` | `listShells/createPty/updatePtySize/deletePty/ptyConnectToken`（后两者错误静默约定；connect-token 带 `x-opencode-ticket: 1` 头） |
 | `src/renderer/src/store/app-store.ts` | TabKind 扩 terminal；openTerminalTab/ptyRuntimes/closeTerminalTab/restoreClosedTab terminal 分支/ptyConnectUrl（cursor 参数 + 三态返回）/cycleTab 无需改（directory 过滤通用）/卸载路径 DELETE |
-| `src/renderer/src/components/terminal-view.tsx` | xterm 终端组件（WS 生命周期/fit/深色/自动聚焦/已退出 buffer 缓存 serialize 还原/复制粘贴快捷键+右键菜单/断开态释放 Ctrl/⌘ 组合给应用快捷键（§1.4）/§1.2a 断线自动重连：cursor 锚点追踪 + 退避 + focus kick/**1000 主动中断自动关 Tab（§1.2，2026-09-22）+ 断开/错误态 Ctrl+D 关 Tab（§1.4）**） |
+| `src/renderer/src/components/terminal-view.tsx` | xterm 终端组件（WS 生命周期/fit/深色/自动聚焦/已退出 buffer 缓存 serialize 还原/复制粘贴快捷键+右键菜单/断开态释放 Ctrl/⌘ 组合给应用快捷键（§1.4）/§1.2a 断线自动重连：cursor 锚点追踪 + 退避 + focus kick/1000 主动中断自动关 Tab（§1.2，2026-09-22）+ 断开/错误态 Ctrl+D 关 Tab（§1.4）/**回放幽灵应答闸门：isTerminalQueryResponse 模式 + 写队列计数（§1.2b，2026-09-23）**） |
 | `src/renderer/src/components/workspace.tsx` | Tab 内容分发 terminal 分支；引导页终端入口解禁；关闭走 closeTabInteractive（terminal 确认文案） |
 | `src/renderer/src/components/tab-actions.ts` | terminal 关闭确认 + closeTerminalTab |
 | `src/renderer/src/styles/app.css` | `.terminal-view`（深色固定 + 已退出/已断开/重连中叠加态） |
 | `src/renderer/src/i18n/index.ts` | confirmCloseTerminal / terminalExited / terminalDisconnected / terminalReconnecting / terminalCopy / terminalPaste 等 |
-| 测试 | store（创建/关闭/恢复/卸载 DELETE/teardown 杀序/ptyConnectUrl 三态）；rest-client pty 端点 URL/头/方法断言；TerminalView 用注入 WS 假类测生命周期（open/write/控制帧锚点/close code 三分：**1000 主动中断自动关 Tab**·4404 被动终态叠加·其余重连/退避重连带 cursor/无锚点 reset/gone 终态/focus kick/卸载清定时器/断开态 Ctrl 系释放与复制不受影响/**live·dead 态 Ctrl+D 分流与 dead 态关闭**） |
+| 测试 | store（创建/关闭/恢复/卸载 DELETE/teardown 杀序/ptyConnectUrl 三态）；rest-client pty 端点 URL/头/方法断言；TerminalView 用注入 WS 假类测生命周期（open/write/控制帧锚点/close code 三分：**1000 主动中断自动关 Tab**·4404 被动终态叠加·其余重连/退避重连带 cursor/无锚点 reset/gone 终态/focus kick/卸载清定时器/断开态 Ctrl 系释放与复制不受影响/**live·dead 态 Ctrl+D 分流与 dead 态关闭**·**回放闸门：未排空丢弃幽灵应答/用户键入照发/排空后 live 应答放行/重连续传同受闸门 + isTerminalQueryResponse 模式表（§1.2b）**） |
 
 ## 5. 验收（对齐 spec #5）
 
@@ -98,5 +109,6 @@ ptyRuntimes = new Map<string, { exited: boolean; disconnected: boolean; title: s
 - **断线自动重连（§1.2a）**：断开 server 网络（pty 进程仍活）→ 重连中 banner，网络恢复后（或窗口 focus kick）自动续传恢复输出，无重复内容；杀掉 server（token 404）→ 已退出终态不再重试
 - **主动/被动退出分流（2026-09-22）**：pty 内 Ctrl+D/`exit`（WS 在连）→ Tab **自动关闭**（终端模拟器惯例；关闭栈 Ctrl+Shift+T 原目录新建）；切走期间退出/server 重启（token 404 / close 4404 被动关闭）→ 呈「已退出」只读叠加，此时 **Ctrl+D / Ctrl+W / Tab 栏 X 直接关闭**（免确认）；live 态 Ctrl+W 仍归 pty（readline/vim 键位不受影响）
 - 关 Tab 后 `GET /pty` 无该会话；运行中关闭有确认
+- **回放幽灵应答闸门（§1.2b，2026-09-23）**：阅读态（pager 在前台）反复切走切回终端 Tab 无乱码注入、不随往返累积；live 期 shell prompt 查询应答正常放行（终端即开即用，fish 启动不阻塞）
 - 浅色主题下终端恒深色；`npm run test` / `typecheck` / `build` 全绿
 - **打包形态（file://）实测记录（2026-08-27，server 1.18.20）**：CDP 驱动 out/ 构建真窗口——创建 pty / connect-token(POST) / WS（Origin 剥离后 101）/ xterm 渲染 / 无断开叠加，全链路通过
