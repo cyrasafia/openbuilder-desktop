@@ -35,6 +35,11 @@ export interface StoreShape {
     string,
     { agent?: string; model?: ModelRef }
   >
+  /** 模型开关（design-model-list，spec-v0.4 #4 增补）：profileKey → providerID →
+   *  关闭的 model id 列表（**例外集**语义：不在集内 = 开，缺省全开；切片空 =
+   *  该服务器全开）。跟服务器（profile）走——saveProfiles 删除 profile 时清理
+   *  对应切片；模型级陈旧条目惰性无效不修剪 */
+  "models.disabled": Record<string, Record<string, string[]>>
   /** 消息流思考（reasoning）显隐，默认隐藏（同移动端 showThinking） */
   "chat.showThinking": boolean
   /** Open With 上次使用记忆（design-linux-open-with §1.4，2026-08-31）：MIME →

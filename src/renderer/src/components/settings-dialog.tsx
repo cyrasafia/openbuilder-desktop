@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
-import { ArrowLeft, Pencil, RefreshCw, X } from "lucide-react"
+import { ArrowLeft, ChevronDown, ChevronRight, LoaderCircle, Pencil, RefreshCw, X } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import type { BinaryCandidate, ConnectionProfile, ManagedNotice, ServerCandidate } from "@shared/ipc"
 import { MIN_SERVER_VERSION } from "@shared/semver"
 import { ApiError, RestClient } from "@shared/rest-client"
-import type { ProviderCatalog, ProviderInfo } from "@shared/api-types"
+import type { ModelInfo, ProviderCatalog, ProviderInfo } from "@shared/api-types"
+import { isModelDisabled } from "@shared/model-catalog"
 import { ConfirmDialog } from "./confirm-dialog"
 import { ConnectingDialog } from "./connecting-dialog"
 import { managedNoticeText } from "./managed-notice"
@@ -41,9 +42,9 @@ export function SettingsDialog() {
   const store = useStore()
   const { t } = useI18n()
   // 设置页签本地类型为 store settingsInitialTab 的超集（store 无 shortcuts
-  // 直达调用方，不加宽 store）
+  // 直达调用方，不加宽 store；models 同理——无深链调用方，仅页签内切换）
   const [tab, setTab] = useState<
-    "connection" | "providers" | "appearance" | "defaults" | "shortcuts"
+    "connection" | "providers" | "models" | "appearance" | "defaults" | "shortcuts"
   >(
     // 引导直达页签（openSettings(tab) 一次性提示；现存调用方仅 connection）
     store.settingsInitialTab,
@@ -319,6 +320,13 @@ export function SettingsDialog() {
                   {t.providerTitle}
                 </button>
                 <button
+                  className={tab === "models" ? "active" : ""}
+                  disabled={!!pendingNew}
+                  onClick={() => setTab("models")}
+                >
+                  {t.modelsTitle}
+                </button>
+                <button
                   className={tab === "appearance" ? "active" : ""}
                   disabled={!!pendingNew}
                   onClick={() => setTab("appearance")}
@@ -349,6 +357,8 @@ export function SettingsDialog() {
                   />
                 ) : tab === "providers" ? (
                   <ProviderSettings onEditKey={setProviderEdit} />
+                ) : tab === "models" ? (
+                  <ModelsSettings />
                 ) : tab === "appearance" ? (
                   <AppearanceSettings />
                 ) : tab === "shortcuts" ? (
@@ -953,6 +963,151 @@ export function ProviderKeyForm({
         </button>
       </div>
     </>
+  )
+}
+
+/** 「模型」页签（design-model-list）：按 provider 分组列出已配置供应商的全部
+ *  模型，每行开关（开 = 出现在模型选择列表）。数据源 = picker 同一目录缓存
+ *  （/config/providers）；开关为 profile 级本地持久化（models.disabled，
+ *  D-ML-2 展示按目录、存储按服务器），行内即时写（无网络无 loading）。
+ *  无搜索框/手动刷新/提示行（2026-09-23 修订，初版三件按用户反馈精简）：
+ *  列表刷新依赖挂载拉取与 picker 打开时的 SWR；失败态提示可点击重试。
+ *  组头支持收起/展开（瞬时态不持久化，切页签即复位）与组级全部开/关 */
+export function ModelsSettings() {
+  const store = useStore()
+  const { t } = useI18n()
+  // 组收起态（providerID → true）：纯视图瞬时态，不持久化
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+  const directory = store.scopeQuery.directory
+  const connected = !!store.getActiveClient()
+
+  // 挂载/作用域变化拉取目录（缓存命中即渲染，命中不重拉；失败态由下方
+  // 可点击提示重试）；守卫态在 effect 之后（hooks 顺序恒定——同
+  // ProviderSettings 模式）
+  useEffect(() => {
+    if (connected && directory) void store.ensureModelCatalog(directory)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected, directory])
+
+  if (!connected) {
+    return (
+      <div className="settings-models">
+        <div className="form-note">{t.connectFirst}</div>
+      </div>
+    )
+  }
+  if (!directory) {
+    // 已连接但未打开项目：模型列表按作用域目录查询（与 Provider 页签同语义）
+    return (
+      <div className="settings-models">
+        <div className="form-note">{t.modelsNoProject}</div>
+      </div>
+    )
+  }
+
+  const models = store.modelCatalogFor(directory).models
+  const failed = store.modelCatalogFailedFor(directory)
+  // 加载中 = 无缓存且未失败。失败态（失败且无缓存）须排除——refreshModelCatalog
+  // 失败只记 modelCatalogFailed 不落缓存，loading 恒真会与失败提示「点击重试」矛盾
+  const loading = !failed && !store.modelCatalogs.has(directory)
+  const disabled = store.disabledModelsFor()
+
+  // 分组保首现序（与 picker 一致），行 = 名称 + id（mono）+ 开关
+  const groups = new Map<string, ModelInfo[]>()
+  for (const m of models) {
+    const arr = groups.get(m.providerID) ?? []
+    arr.push(m)
+    groups.set(m.providerID, arr)
+  }
+
+  return (
+    <div className="settings-models">
+      {failed && (
+        <button
+          type="button"
+          className="models-retry"
+          onClick={() => void store.refreshModelCatalog(directory)}
+        >
+          {t.modelLoadFailed}
+        </button>
+      )}
+      {loading && models.length === 0 && <div className="form-note">{t.loading}</div>}
+      {!failed && !loading && models.length === 0 && (
+        <div className="form-note">{t.modelsEmpty}</div>
+      )}
+      <div className="model-list">
+        {[...groups.entries()].map(([pid, arr]) => {
+          // 组头计数：开启数/总数（关闭行仍列出、呈关态，开关即恢复）
+          const on = arr.reduce(
+            (n, m) => n + (isModelDisabled(disabled, pid, m.id) ? 0 : 1),
+            0,
+          )
+          const isCollapsed = !!collapsed[pid]
+          // 组级全部开/关（语境单钮）：全开 → 提供「全部关闭」，否则「全部开启」
+          const allOn = on === arr.length
+          return (
+            <div key={pid} className="ms-group">
+              <div className="ms-group-head">
+                <button
+                  type="button"
+                  className="ms-group-fold"
+                  aria-expanded={!isCollapsed}
+                  onClick={() => setCollapsed((c) => ({ ...c, [pid]: !c[pid] }))}
+                >
+                  {isCollapsed ? (
+                    <ChevronRight className="chevron" size={12} aria-hidden />
+                  ) : (
+                    <ChevronDown className="chevron" size={12} aria-hidden />
+                  )}
+                  <span className="mono">{pid}</span>
+                </button>
+                <span className="ms-group-side">
+                  <span className="ms-group-count">
+                    {on}/{arr.length}
+                  </span>
+                  {arr.length > 0 && (
+                    <button
+                      type="button"
+                      className="ms-group-action"
+                      onClick={() =>
+                        void store.setProviderModelsDisabled(
+                          pid,
+                          arr.map((m) => m.id),
+                          allOn,
+                        )
+                      }
+                    >
+                      {allOn ? t.modelsDisableAll : t.modelsEnableAll}
+                    </button>
+                  )}
+                </span>
+              </div>
+              {!isCollapsed &&
+                arr.map((m) => {
+                  const off = isModelDisabled(disabled, pid, m.id)
+                  return (
+                    <label key={`${pid}/${m.id}`} className="model-row">
+                      <span className="ms-row-main">
+                        <span className="ms-row-name">{m.name}</span>
+                        <span className="ms-row-id mono">{m.id}</span>
+                      </span>
+                      {/* label 整行可点（移动端 LR-M1 同交互）；input 透明覆盖轨道 */}
+                      <span className="model-toggle">
+                        <input
+                          type="checkbox"
+                          checked={!off}
+                          onChange={() => void store.setModelDisabled(pid, m.id, !off)}
+                        />
+                        <span className="model-toggle-track" aria-hidden />
+                      </span>
+                    </label>
+                  )
+                })}
+            </div>
+          )
+        })}
+      </div>
+    </div>
   )
 }
 

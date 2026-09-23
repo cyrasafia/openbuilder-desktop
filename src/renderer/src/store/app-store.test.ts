@@ -1559,6 +1559,113 @@ describe("隐式默认模型（D-AM-4 修订）", () => {
   })
 })
 
+// ============ 模型开关（design-model-list，spec-v0.4 #4 增补） ============
+
+describe("模型开关（design-model-list）", () => {
+  const models = [
+    { id: "glm-5.3", providerID: "zai", name: "GLM 5.3", variants: [] },
+    { id: "glm-4", providerID: "zai", name: "GLM 4", variants: [] },
+    { id: "glm-air", providerID: "zai", name: "GLM Air", variants: [] },
+  ]
+
+  /** 本用例私有 storeSet 捕获（beforeEach 每用例重建 window.desktop，安全覆写） */
+  function captureSets(): Array<[string, unknown]> {
+    const sets: Array<[string, unknown]> = []
+    ;(window as unknown as { desktop: Record<string, unknown> }).desktop = {
+      ...((window as unknown as { desktop: Record<string, unknown> }).desktop ?? {}),
+      storeSet: async (key: string, value: unknown) => {
+        sets.push([key, value])
+      },
+    }
+    return sets
+  }
+
+  it("setModelDisabled 写入 + 持久化 models.disabled；开回来切片回收", async () => {
+    const sets = captureSets()
+    await store.setModelDisabled("zai", "glm-air", true)
+    expect(store.disabledModelsFor()).toEqual({ zai: ["glm-air"] })
+    expect(sets.at(-1)).toEqual(["models.disabled", { default: { zai: ["glm-air"] } }])
+
+    await store.setModelDisabled("zai", "glm-4", true)
+    expect(store.disabledModelsFor()).toEqual({ zai: ["glm-air", "glm-4"] })
+
+    await store.setModelDisabled("zai", "glm-air", false)
+    await store.setModelDisabled("zai", "glm-4", false)
+    expect(store.disabledModelsFor()).toEqual({})
+    expect(sets.at(-1)).toEqual(["models.disabled", {}])
+  })
+
+  it("setProviderModelsDisabled（组级全部开/关）：单次写入全组；开启只清传入项", async () => {
+    const sets = captureSets()
+    // 全部关闭 zai 三模型 = 单次落盘
+    await store.setProviderModelsDisabled("zai", ["glm-5.3", "glm-4", "glm-air"], true)
+    expect(store.disabledModelsFor()).toEqual({ zai: ["glm-5.3", "glm-4", "glm-air"] })
+    expect(sets.filter(([k]) => k === "models.disabled")).toHaveLength(1)
+
+    // 全部开启：stale 条目（不在传入 ids）保留
+    store.disabledModels = { default: { zai: ["glm-5.3", "stale"] } }
+    await store.setProviderModelsDisabled("zai", ["glm-5.3"], false)
+    expect(store.disabledModelsFor()).toEqual({ zai: ["stale"] })
+
+    // 开启移空 → 切片回收（空对象落盘）
+    await store.setProviderModelsDisabled("zai", ["stale"], false)
+    expect(store.disabledModelsFor()).toEqual({})
+    expect(sets.at(-1)).toEqual(["models.disabled", {}])
+  })
+
+  it("saveProfiles 删除服务器 → 清理其 models.disabled 切片（保留其他服务器）；无删除不触发清理写", async () => {
+    const sets = captureSets()
+    store.profiles = [
+      { id: "p1", name: "a", baseUrl: "http://a", mode: "attach" },
+      { id: "p2", name: "b", baseUrl: "http://b", mode: "attach" },
+    ]
+    store.activeProfileId = "p1"
+    store.disabledModels = { p1: { zai: ["glm-air"] }, p2: { deepseek: ["x"] } }
+
+    await store.saveProfiles([{ id: "p2", name: "b", baseUrl: "http://b", mode: "attach" }], "p2")
+    expect(store.disabledModels).toEqual({ p2: { deepseek: ["x"] } })
+    expect(sets.filter(([k]) => k === "models.disabled").at(-1)).toEqual([
+      "models.disabled",
+      { p2: { deepseek: ["x"] } },
+    ])
+
+    const callsBefore = sets.length
+    await store.saveProfiles([{ id: "p2", name: "b", baseUrl: "http://b", mode: "attach" }], "p2")
+    expect(store.disabledModels).toEqual({ p2: { deepseek: ["x"] } })
+    expect(sets.slice(callsBefore).some(([k]) => k === "models.disabled")).toBe(false)
+  })
+
+  it("createSession：显式默认被关闭 → 回退首个开启模型；首项被关 → 下一开启项；全部关闭 → 服务器默认", async () => {
+    store.modelCatalogs.set(ROOT, { agents: [], models })
+    const bodies: Array<{ agent?: string; model?: ModelRef }> = []
+    ;(store as unknown as { client: unknown }).client = {
+      createSession: async (
+        _d: string,
+        _w: unknown,
+        _t: unknown,
+        opts: { agent?: string; model?: ModelRef } = {},
+      ) => {
+        bodies.push(opts)
+        return session(`new${bodies.length}`, ROOT, { created: 9, updated: 9 })
+      },
+    }
+
+    store.defaults = { default: { model: { id: "glm-air", providerID: "zai" } } }
+    store.disabledModels = { default: { zai: ["glm-air"] } }
+    await store.createSession({ openTab: false })
+    expect(bodies[0]!.model).toEqual({ id: "glm-5.3", providerID: "zai" })
+
+    store.defaults = {}
+    store.disabledModels = { default: { zai: ["glm-5.3"] } }
+    await store.createSession({ openTab: false })
+    expect(bodies[1]!.model).toEqual({ id: "glm-4", providerID: "zai" })
+
+    store.disabledModels = { default: { zai: ["glm-5.3", "glm-4", "glm-air"] } }
+    await store.createSession({ openTab: false })
+    expect(bodies[2]!.model).toBeUndefined()
+  })
+})
+
 describe("diff Tab：每作用域单 Tab + segment 切换（design-diff-view §2/§3）", () => {
   /** 在既有 fake client 上挂 listVcsDiff spy */
   function vcsClient() {

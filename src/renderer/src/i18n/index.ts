@@ -188,6 +188,12 @@ const zh = {
   providerKeyFor: "{name} 的 API key",
   providerKeyDeleteConfirmTitle: "删除 {name} 的凭据",
   providerKeyDeleteConfirmBody: "删除后该 provider 的模型将不可用，直到重新配置。",
+  // 模型页签（design-model-list，spec-v0.4 #4 增补）
+  modelsTitle: "模型",
+  modelsNoProject: "打开项目后可在此管理模型（列表按项目作用域查询）",
+  modelsEmpty: "无可用模型——先在 Provider 页签配置 key",
+  modelsEnableAll: "全部开启",
+  modelsDisableAll: "全部关闭",
   // 欢迎屏（design-welcome-screen，2026-09-06 修订：发现视图与添加服务器引导式同构）
   welcomeTitle: "欢迎使用 OpenBuilder",
   welcomeSubtitle: "opencode server 的桌面驾驶舱——先连接一台 server 开始",
@@ -477,6 +483,12 @@ const en: typeof zh = {
   providerKeyFor: "API key for {name}",
   providerKeyDeleteConfirmTitle: "Remove credentials for {name}",
   providerKeyDeleteConfirmBody: "Models from this provider will stop working until reconfigured.",
+  // Models tab (design-model-list, spec-v0.4 #4)
+  modelsTitle: "Models",
+  modelsNoProject: "Open a project to manage models here (list is scope-aware)",
+  modelsEmpty: "No models yet — configure a key in the Providers tab",
+  modelsEnableAll: "Enable all",
+  modelsDisableAll: "Disable all",
   welcomeTitle: "Welcome to OpenBuilder",
   welcomeSubtitle: "Desktop cockpit for opencode server — connect one to get started",
   welcomeStartAndConnect: "Start & connect",

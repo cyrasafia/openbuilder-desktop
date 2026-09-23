@@ -27,12 +27,16 @@ import {
   carriedVariant,
   emptyCatalog,
   effectiveDefaultModel,
+  enabledModels,
   findModel,
   getDefaults,
   normalizeModelRef,
   parseAgents,
   parseModels,
+  sanitizeDisabledModels,
   setDefaults,
+  setDisabledModels,
+  type DisabledModels,
   type ModelCatalog,
   type ModelDefaults,
 } from "@shared/model-catalog"
@@ -407,6 +411,10 @@ export class AppStore {
   private modelCatalogFailed = new Set<string>()
   /** 全局默认 agent/模型（per-profile 持久化 model.defaults） */
   defaults: Record<string, ModelDefaults> = {}
+  /** 模型开关（design-model-list）：profileKey → 关闭集（per-profile 持久化
+   *  models.disabled，缺省全开）。跟服务器走——不随 teardown 清空，切 profile
+   *  读另一切片（与 defaults 同模式）；saveProfiles 删 profile 时清理 */
+  disabledModels: Record<string, DisabledModels> = {}
   /**
    * 待处理人机交互（store 级、跨 Tab 存活，与移动端 ServerStore 同构）：
    * 权限以 sessionID 为 key（一会话最多一张在队首）、问题以问题 id 为 key（可多张排队）。
@@ -650,6 +658,8 @@ export class AppStore {
     this.themeMode = (await window.desktop.storeGet("theme.mode")) ?? "auto"
     this.localeMode = (await window.desktop.storeGet("locale.mode")) ?? "auto"
     this.defaults = (await window.desktop.storeGet("model.defaults")) ?? {}
+    // 模型开关（design-model-list）：坏切片/坏键丢弃等效无记录（逐切片校验口径）
+    this.disabledModels = sanitizeDisabledModels(await window.desktop.storeGet("models.disabled"))
     this.showThinking = (await window.desktop.storeGet("chat.showThinking")) ?? false
     // 草稿磁盘层读入（design-compose-draft §5）：坏切片丢弃等效无记录；播种在
     // connect 的 teardown 之后（teardown 清内存 map，播种从本切片重建）
@@ -3157,10 +3167,15 @@ export class AppStore {
         : undefined
     // 模型（隐式默认）：目录已加载 → effectiveDefaultModel 校验显式默认
     // （模型失效回退首项、variant 失效只丢 variant 保模型，AM-IMPL4-1），
-    // 未手动选择时取列表首项；目录未加载 → 显式默认按原值应用（无则不传，服务器默认）
+    // 未手动选择时取列表首项；目录未加载 → 显式默认按原值应用（无则不传，服务器默认）。
+    // 模型开关（design-model-list D-ML-4）：解析在过滤后列表上进行——被关闭的
+    // 默认/首项等同失效（回退首个开启模型；全部关闭 → 不带 model，服务器默认）
     const explicitModel = normalizeModelRef(def.model)
     const model = catalog
-      ? effectiveDefaultModel(explicitModel, catalog.models)
+      ? effectiveDefaultModel(
+          explicitModel,
+          enabledModels(catalog.models, this.disabledModelsFor()),
+        )
       : explicitModel
     try {
       const session = await this.client.createSession(directory, undefined, undefined, {
@@ -4014,6 +4029,44 @@ export class AppStore {
     if (next === this.defaults) return
     this.defaults = next
     await window.desktop.storeSet("model.defaults", this.defaults).catch(() => {})
+    this.emit()
+  }
+
+  // ---- 模型开关（design-model-list，spec-v0.4 #4 增补）----
+
+  /** 当前 profile 的模型关闭集（只读快照，profile 级例外集）。 */
+  disabledModelsFor(): DisabledModels {
+    return this.disabledModels[this.profileKey()] ?? {}
+  }
+
+  /** 设置模型开关并持久化（「模型」页签行开关）：关闭的模型从选择列表消失
+   *  （picker / 生效默认解析过滤，D-ML-4；已是当前会话模型的不受影响，D-ML-3）。 */
+  async setModelDisabled(providerID: string, id: string, disabled: boolean): Promise<void> {
+    const next = setDisabledModels(this.disabledModels, this.profileKey(), providerID, [id], disabled)
+    if (next === this.disabledModels) return
+    this.disabledModels = next
+    await window.desktop.storeSet("models.disabled", this.disabledModels).catch(() => {})
+    this.emit()
+  }
+
+  /** 批量设置某 provider 的模型开关（「模型」页签组级「全部开启/关闭」）：
+   *  与单模型开关同一纯函数写路径（单次落盘/emit）；开启只移除传入 id，
+   *  其他目录/陈旧条目保留（design-model-list §3）。 */
+  async setProviderModelsDisabled(
+    providerID: string,
+    ids: string[],
+    disabled: boolean,
+  ): Promise<void> {
+    const next = setDisabledModels(
+      this.disabledModels,
+      this.profileKey(),
+      providerID,
+      ids,
+      disabled,
+    )
+    if (next === this.disabledModels) return
+    this.disabledModels = next
+    await window.desktop.storeSet("models.disabled", this.disabledModels).catch(() => {})
     this.emit()
   }
 
@@ -5635,12 +5688,29 @@ export class AppStore {
   }
 
   async saveProfiles(profiles: ConnectionProfile[], activeId: string | null) {
+    // 模型开关切片清理（design-model-list D-ML-6）：开关跟服务器走，删除服务器
+    // 即回收其 models.disabled 条目（profile 删除唯一入口 = 列表「删除」钮 → 本方法）。
+    // model.defaults / project.state 等既有键的同类清理仍留待统一 profile 清理（见
+    // design-agent-model-switch 第四轮「未处理」，本键先行是新键无历史包袱）
+    let disabledChanged = false
+    for (const prev of this.profiles) {
+      if (profiles.some((p) => p.id === prev.id)) continue
+      if (this.disabledModels[prev.id]) {
+        const { [prev.id]: _omit, ...rest } = this.disabledModels
+        void _omit
+        this.disabledModels = rest
+        disabledChanged = true
+      }
+    }
     this.profiles = profiles
     this.activeProfileId = activeId
     // 激活 profile 清空（删光/取消激活）= 无服务器 ⇒ 回欢迎页（同一 emit 内
     // 切换渲染分支，三栏空壳不闪现）
     if (!activeId) this.welcomeOpen = true
     await window.desktop.storeSet("connection.profiles", { profiles, activeId })
+    if (disabledChanged) {
+      await window.desktop.storeSet("models.disabled", this.disabledModels).catch(() => {})
+    }
     this.emit()
   }
 

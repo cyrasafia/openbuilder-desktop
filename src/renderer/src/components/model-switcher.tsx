@@ -10,6 +10,9 @@
  * 形态（D-AM-5）：agent 恰 2 个用分段开关、3+ 退化 pill+popover；model popover（分组+搜索）；
  * thinking popover 仅当前模型有 variants 时显示。「默认」= 省略 variant 字段（清掉已设值）。
  *
+ * 模型开关（design-model-list）：popover 只列开启的模型（profile 级例外集），
+ * 被关闭的当前会话模型不受影响（pill/thinking 照常，D-ML-3）。
+ *
  * Popover 是项目首个弹层原语（后续终端/diff 复用）：受控 open、锚元素 fixed 定位、
  * 点击外部/Esc/选中关闭、↑↓+Enter 导航、打开期间 resize/scroll 重定位、锚点出视口关闭。
  */
@@ -20,6 +23,7 @@ import { useI18n, useStore } from "../app"
 import {
   carriedVariant,
   effectiveDefaultModel,
+  enabledModels,
   findModel,
   normalizeModelRef,
   type ModelCatalog,
@@ -179,11 +183,15 @@ export function ModelSwitcherBar({ directory, mode, session, disabled, cleared }
   const catalog = store.modelCatalogFor(directory)
   const agents = catalog.agents
   const models = catalog.models
+  // 模型开关（design-model-list D-ML-3/D-ML-4）：picker 只列开启的模型（分组计数
+  // 随之收缩）；关闭集 profile 级（disabledModelsFor），非目录级
+  const enabled = enabledModels(models, store.disabledModelsFor())
 
   // 当前值（session 模式来自会话，defaults 模式来自 profile 默认值）；
   // 读边界归一化字面 "default" variant（AM-IMPL3-2）。
-  // defaults 模式展示生效默认（隐式默认）：显式默认未设/失效 → 列表首项；
-  // 目录未加载/为空（catalogLoading/失败态）不做首项解析——保留显式默认原值显示
+  // defaults 模式展示生效默认（隐式默认）：显式默认未设/失效/被关闭 → 首个开启
+  // 模型（D-ML-4：解析在过滤后列表上，被关默认等同失效）；目录未加载/为空
+  // （catalogLoading/失败态）不做首项解析——保留显式默认原值显示
   //（错误表"仍显示当前值"；effectiveDefaultModel 空列表返回 undefined 仅适用于 createSession）
   const def = mode === "defaults" ? store.defaultsFor() : null
   const currentAgent = mode === "session" ? session?.agent ?? "build" : def?.agent ?? "build"
@@ -191,7 +199,7 @@ export function ModelSwitcherBar({ directory, mode, session, disabled, cleared }
     mode === "session"
       ? normalizeModelRef(session?.model)
       : models.length
-        ? effectiveDefaultModel(normalizeModelRef(def?.model), models)
+        ? effectiveDefaultModel(normalizeModelRef(def?.model), enabled)
         : normalizeModelRef(def?.model)
 
   const busy = switching || !!disabled
@@ -243,7 +251,7 @@ export function ModelSwitcherBar({ directory, mode, session, disabled, cleared }
         }}
       />
       <ModelControl
-        models={models}
+        models={enabled}
         current={currentModel}
         cleared={cleared}
         loading={catalogLoading}
@@ -271,7 +279,9 @@ export function ModelSwitcherBar({ directory, mode, session, disabled, cleared }
         }}
       />
       {(() => {
-        // thinking 控件仅当前模型有 variants 时显示
+        // thinking 控件仅当前模型有 variants 时显示。当前模型查找用**全目录**
+        //（非过滤集）——已是当前会话模型被关闭时 pill/thinking 照常工作（D-ML-3），
+        // 仅 picker 列表不展示
         const cur = currentModel ? findModel(models, currentModel.providerID, currentModel.id) : undefined
         if (!cur || cur.variants.length === 0) return null
         return (
