@@ -767,23 +767,11 @@ function defaultProviderOps(store: ReturnType<typeof useStore>): ProviderOps {
   }
 }
 
-/** 全目录搜索过滤（纯函数供单测）：id/名称子串不区分大小写，上限 20 */
-export function filterProviders(all: ProviderInfo[], query: string): ProviderInfo[] {
-  const q = query.trim().toLowerCase()
-  if (!q) return []
-  const out: ProviderInfo[] = []
-  for (const p of all) {
-    if (p.id.toLowerCase().includes(q) || p.name.toLowerCase().includes(q)) {
-      out.push(p)
-      if (out.length >= 20) break
-    }
-  }
-  return out
-}
-
-/** Provider 页签（design-provider-config）：已连接组 + 全目录搜索 + key 删除；
- *  key 设置经 onEditKey 提升到 SettingsDialog 层的表单视图（review P2：Esc 分层
- *  与 ProfileFormView 一致、actions 钉底）。ops 注入供测试 */
+/** Provider 页签（design-provider-config，2026-09-23 修订：全目录搜索与手动
+ *  刷新移除）：已配置列表（key 非空、connected 集内，或自定义 source——
+ *  自定义 provider 可无 key 仍可用）+ key 删除；key 设置经 onEditKey 提升到
+ *  SettingsDialog 层的表单视图（review P2：Esc 分层与 ProfileFormView 一致、
+ *  actions 钉底）。ops 注入供测试 */
 export function ProviderSettings({
   ops,
   onEditKey,
@@ -798,7 +786,6 @@ export function ProviderSettings({
   const [catalog, setCatalog] = useState<ProviderCatalog | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [query, setQuery] = useState("")
   // 删除二次确认
   const [confirming, setConfirming] = useState<ProviderInfo | null>(null)
   const realOps = ops ?? defaultProviderOps(store)
@@ -849,33 +836,19 @@ export function ProviderSettings({
     )
   }
 
-  // 默认视图 = 已配置（key 非空 **或** 在 connected 集——多 env 候选的 provider
-  // key 合并为 undefined 但已连接，review P2：漏掉会误显示"尚无已配置"）
+  // 列表 = 已配置项（key 非空 **或** 在 connected 集——多 env 候选的 provider
+  // key 合并为 undefined 但已连接，review P2：漏掉会误显示"尚无已配置"）+
+  // 自定义 provider（source custom，自定义端点可无 key 仍可用）
   const connectedIds = new Set(catalog?.connected ?? [])
-  const searchResults = filterProviders(catalog?.all ?? [], query)
-  const rows = query.trim()
-    ? searchResults
-    : (catalog?.all ?? []).filter((p) => !!p.key || connectedIds.has(p.id))
+  const rows = (catalog?.all ?? []).filter(
+    (p) => !!p.key || connectedIds.has(p.id) || p.source === "custom",
+  )
 
   return (
     <div className="settings-providers">
-      <div className="scan-section-title">
-        <input
-          className="provider-search"
-          placeholder={t.providerSearch}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
-        <button type="button" disabled={loading} onClick={() => void reload()}>
-          {loading ? t.providerReloading : t.providerRefresh}
-        </button>
-      </div>
       {error && <div className="form-note">{error}</div>}
-      {!error && !loading && catalog && (
-        <div className="provider-key-hint form-note">{t.providerKeyHint}</div>
-      )}
       {!loading && catalog && rows.length === 0 && (
-        <div className="form-note">{query.trim() ? t.providerNoMatch : t.providerNoneConnected}</div>
+        <div className="form-note">{t.providerNoneConnected}</div>
       )}
       <div className="provider-list">
         {rows.map((p) => {

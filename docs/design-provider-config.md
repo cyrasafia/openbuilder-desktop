@@ -18,13 +18,15 @@
 
 - 页签序：连接 | **Provider** | 外观 | 默认（靠近连接，同属 server 侧配置）
 - 数据：进入页签时 `listProviders(directory)`（当前作用域目录，同 DefaultsSettings 的 `store.scopeQuery.directory`；无连接/无目录时显示引导文案不渲染列表）
-- 列表呈现（212 项不可平铺）：
-  - **默认视图 = 已连接组**（`connected` 或 `key` 非空者）：名称、source 徽标（api/env/config/custom）、模型数、key 状态、操作（更换/删除 key）
-  - **搜索框**：输入时在全目录 `all` 过滤（id/名称子串，不区分大小写，上限 20 条）；空搜索回到已连接组
+- 列表呈现（**2026-09-23 修订：仅显示已配置项，全目录搜索与手动刷新移除**）：
+  - 列表 = 已配置 provider：`key` 非空、`connected` 集内（多 env 候选 key 合并为 undefined 但已连接，review P2），或 `source === "custom"` 的自定义 provider（自定义端点可无 key 仍可用）——名称、source 徽标（api/env/config/custom）、模型数、key 状态、操作（设置/更换/删除 key）
+  - 未配置且非自定义的 provider 不在 UI 出现（原全目录平铺+搜索的发现入口弃用；新增 key 先经 opencode CLI/配置文件配置，UI 内自定义 provider 行仍可设 key）
+  - ~~搜索框：输入时在全目录 `all` 过滤~~（已移除，2026-09-23）
+  - ~~页内提示文案「API key 存于 server 侧；仅支持 API key 形态」~~（已移除，2026-09-23）
 - **key 设置**：行内「设置 key」→ 弹窗内视图跳转（同 profile 表单模式：标题行返回钮，不叠二级弹窗）→ 输入框（type=password）+ 保存 → `PUT /auth/{id}` `{type:"api", key}`；成功回列表并重拉（key 状态与模型数刷新——配 key 后 provider 可用）
 - **key 删除**：行内「删除」+ 二次确认（ConfirmDialog 复用）→ `DELETE /auth/{id}`；成功重拉
 - **明文 key 策略**：列表只显示"已配置"状态点，不显示 key 内容；错误信息不回显响应体
-- 刷新：页签内手动「刷新」按钮 + 每次操作成功后自动重拉
+- 刷新：进入页签/作用域（连接态、目录）变化/操作成功后自动重拉（~~手动「刷新」按钮~~已移除，2026-09-23）
 
 ## 3. Model 配置
 
@@ -38,7 +40,7 @@
 | `src/shared/api-types.ts` | `ProviderInfo`（id/name/source/models 数/key 布尔化后的形状——**key: string \| null 保留在传输层，UI 层不消费**）；`ProviderCatalog { all, default, connected }` |
 | `src/shared/rest-client.ts` | `listProviderCatalog(directory)`、`setProviderKey(providerID, key)`、`deleteProviderKey(providerID)` |
 | `src/renderer/src/components/settings-dialog.tsx` | ProviderSettings 组件（注入 loader/save/remove 供测试）；页签注册 |
-| i18n | providerTitle、搜索占位、已连接/全部、设置 key/删除/刷新、确认文案、错误文案（zh/en） |
+| i18n | providerTitle、空态、设置/更换/删除 key、确认文案、错误文案（zh/en；2026-09-23 修订：搜索占位/刷新/提示文案键移除） |
 
 - 组件数据操作经注入（默认实现走 `store.getActiveClient()`），jsdom 测试注入桩
 - store 不新增持久化（provider 状态是 server 侧事实，每次进入页签拉取）
@@ -46,7 +48,7 @@
 ## 5. 测试
 
 - rest-client：listProviderCatalog 的 query 拼装 / setProviderKey body 形态 / deleteProviderKey（现有 rest-client.test.ts 模式：mock fetch）
-- 组件：已连接组渲染（名称/source/模型数/key 态）、搜索过滤全目录、设置 key 视图跳转 + 保存调用、删除二次确认、无连接引导态
+- 组件：已配置列表渲染（名称/source/模型数/key 态、自定义 provider 无 key 仍展示、connected 集并入）、设置 key 视图跳转 + 保存调用、删除二次确认、无连接引导态
 
 ## 6. 范围外（spec 明确）
 
