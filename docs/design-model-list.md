@@ -29,7 +29,7 @@
 | **D-ML-2** | 开关**跟服务器（profileKey）走**，不做目录维度：`models.disabled` = `Record<profileKey, Record<providerID, modelID[]>>` | 用户意图「不想用这个模型」是服务器级（移动端同按 connectionStore.activeId 隔离）；目录级隔离会让同一模型在不同项目反复开关。管理列表本身仍按当前作用域目录展示（与 Provider 页签/picker 同数据源），展示范围 ≠ 存储范围 |
 | **D-ML-3** | 关闭的模型 **picker 不可选，但既有会话照常工作**（当前模型 pill 照显、thinking 控件照用、server 侧不动） | 移动端 LR-M1 既定语义（「隐藏的模型不会出现在对话页，仍可正常使用」）；server 是事实源，客户端不逆写 |
 | **D-ML-4** | 生效默认（`effectiveDefaultModel`）解析在**过滤后的列表**上进行：显式默认被关闭 → 回退首个开启模型（同「失效默认」路径）；全部关闭 → 不带 model（服务器默认） | 「关闭 = 不可选」对新建会话同样成立——用被关模型开新会话违背用户意图；回退路径复用 AM-IMPL3-4 的失效默认机制 |
-| **D-ML-5** | UI = 设置弹窗独立「模型」页签（Provider 与外观之间）：搜索框 + 刷新 + 按 provider 分组行开关 + 组头「开启数/总数」+ 提示行（说明 + 已关闭统计） | 管理是一等设置面（非一次性表单，不叠视图跳转）；分组/行样式复用 picker 的 `.ms-group`/`.ms-row` 词汇，Switch 用紧凑 track 自建（首例） |
+| **D-ML-5** | UI = 设置弹窗独立「模型」页签（Provider 与外观之间）：按 provider 分组行开关 + 组头「开启数/总数」；**无搜索框/手动刷新/提示行**（2026-09-23 修订，初版三件按用户反馈精简——60+ 行列表内部滚动直给、开关即时生效无需说明文案、列表刷新依赖挂载拉取与 picker 打开时 SWR） | 管理是一等设置面（非一次性表单，不叠视图跳转）；分组/行样式复用 picker 的 `.ms-group`/`.ms-row` 词汇，Switch 用紧凑 track 自建（首例）；失败态提示自身可点击重试（页签内唯一重试入口） |
 | **D-ML-6** | **删除服务器（profile）时清理其切片**：`saveProfiles` 收口（新旧 id 集差 = 被删 profile → 删 `models.disabled` 对应条目并落盘）；**模型级陈旧条目不做修剪**（server 侧模型下线后条目惰性无效——永不匹配任何列表行，无用户可见影响） | 用户需求「跟服务器走……服务器删除时清理」；profile 删除唯一入口是 ConnectionSettings「删除」→ `saveProfiles`（`model.defaults`/`project.state` 等既有键的同类清理仍留待统一 profile 清理，见 design-agent-model-switch 第四轮「未处理」，本键先行是因为它是新键无历史包袱）。目录级修剪需追踪全目录快照，成本不对称于零收益 |
 
 ## 3. 设计
@@ -38,15 +38,14 @@
 
 - 守卫态与 Provider 页签同构：未连接 → `connectFirst`；已连接无项目（无作用域目录）→
   `modelsNoProject`（模型列表按目录查询，同 Provider 页签语义）；
-- 数据：挂载 `ensureModelCatalog(directory)`（SWR，缓存命中即渲染）+「刷新」按钮
-  `refreshModelCatalog`；失败态（`modelCatalogFailedFor`）显示 `modelLoadFailed` 提示
-  （刷新钮即重试）；加载中无缓存显示 `loading`；
+- 数据：挂载 `ensureModelCatalog(directory)`（缓存命中即渲染，命中不重拉）；
+  **无手动刷新钮**（2026-09-23 修订）——列表新鲜度依赖挂载拉取与 picker 打开时的
+  SWR 重拉；失败态（`modelCatalogFailedFor`）提示自身可点击重试
+  （`refreshModelCatalog`，页签内唯一重试入口）；加载中无缓存显示 `loading`；
 - 列表：`parseModels` 结果按 provider 分组（首现序），行 = 名称 + id（mono）+ 开关；
-  组头 = providerID（mono 大写）+ `开启数/总数`（搜索过滤时按匹配集计）；
-- 搜索：与 ModelControl 同语义（name/id/providerID 子串、大小写不敏感），空搜索回全量；
+  组头 = providerID（mono 大写）+ `开启数/总数`；空目录（已加载）显示 `modelsEmpty`；
 - 开关写路径：行内即时 `store.setModelDisabled(providerID, id, !off)`（本地写 + 落盘 +
-  emit 重渲染，无网络请求、无 loading 态）；提示行显示说明文案 + `已关闭 {off} / 共 {total}`
-  （全量计，不受搜索影响）。
+  emit 重渲染，无网络请求、无 loading 态）。
 
 ### 过滤生效点（关闭 = 不可选）
 
@@ -88,8 +87,8 @@ saveProfiles(...)                                              // 删除 profile
 | `src/renderer/src/store/app-store.ts` | `disabledModels` 状态 + doInit 载入 + `disabledModelsFor` / `setModelDisabled` + `saveProfiles` 删除清理 + `createSession` 过滤后解析 |
 | `src/renderer/src/components/model-switcher.tsx` | ModelControl 列表换 `enabledModels`（thinking 的当前模型查找保留全目录） |
 | `src/renderer/src/components/settings-dialog.tsx` | 「模型」页签注册 + `ModelsSettings` 组件（导出供测试） |
-| `src/renderer/src/i18n/index.ts` | modelsTitle / modelsSearch / modelsNoProject / modelsHint / modelsOffCount / modelsEmpty（zh/en） |
-| `src/renderer/src/styles/app.css` | `.settings-models` / `.model-list` / `.model-row` / `.model-toggle`（track 开关，首例） |
+| `src/renderer/src/i18n/index.ts` | modelsTitle / modelsNoProject / modelsEmpty（zh/en） |
+| `src/renderer/src/styles/app.css` | `.settings-models` / `.model-list` / `.model-row` / `.model-toggle`（track 开关，首例）/ `.models-retry`（失败态可点击提示） |
 
 ## 5. 测试
 
@@ -99,8 +98,8 @@ saveProfiles(...)                                              // 删除 profile
   profile）、`createSession` 被关默认回退首个开启模型 / 首项被关取下一项；
 - model-switcher：picker 不列关闭模型（分组计数收缩）、被关模型为当前会话模型时 pill/thinking
   照常、defaults 模式生效默认跳过被关模型；
-- settings-dialog：分组渲染 + 开关调用 `setModelDisabled`、关态渲染与再开、搜索过滤、
-  未连接/无目录守卫、挂载触发 `ensureModelCatalog`、页签切换可达。
+- settings-dialog：分组渲染 + 开关调用 `setModelDisabled`、关态渲染与再开、组头计数、
+  失败态提示点击重试、未连接/无目录守卫、挂载触发 `ensureModelCatalog`、页签切换可达。
 
 ## 6. 范围外
 

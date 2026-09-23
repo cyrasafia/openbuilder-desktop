@@ -195,10 +195,7 @@ const zh = {
   providerReloading: "刷新中…",
   // 模型页签（design-model-list，spec-v0.4 #4 增补）
   modelsTitle: "模型",
-  modelsSearch: "搜索模型（名称/id/provider）…",
   modelsNoProject: "打开项目后可在此管理模型（列表按项目作用域查询）",
-  modelsHint: "关闭的模型不出现在模型选择列表；已是当前会话模型的仍可正常使用。",
-  modelsOffCount: " 已关闭 {off} / 共 {total}",
   modelsEmpty: "无可用模型——先在 Provider 页签配置 key",
   // 欢迎屏（design-welcome-screen，2026-09-06 修订：发现视图与添加服务器引导式同构）
   welcomeTitle: "欢迎使用 OpenBuilder",
@@ -497,10 +494,7 @@ const en: typeof zh = {
   providerReloading: "Refreshing…",
   // Models tab (design-model-list, spec-v0.4 #4)
   modelsTitle: "Models",
-  modelsSearch: "Search models (name/id/provider)…",
   modelsNoProject: "Open a project to manage models here (list is scope-aware)",
-  modelsHint: "Disabled models disappear from model pickers; sessions already on them keep working.",
-  modelsOffCount: " {off} off / {total} total",
   modelsEmpty: "No models yet — configure a key in the Providers tab",
   welcomeTitle: "Welcome to OpenBuilder",
   welcomeSubtitle: "Desktop cockpit for opencode server — connect one to get started",

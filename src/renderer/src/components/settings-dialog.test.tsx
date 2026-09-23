@@ -90,10 +90,7 @@ vi.mock("../app", () => ({
       loading: "加载中…",
       modelLoadFailed: "加载失败，点击重试",
       modelsTitle: "模型",
-      modelsSearch: "搜索模型（名称/id/provider）…",
       modelsNoProject: "打开项目后可在此管理模型",
-      modelsHint: "关闭的模型不出现在模型选择列表。",
-      modelsOffCount: " 已关闭 {off} / 共 {total}",
       modelsEmpty: "无可用模型",
       scGroupGlobal: "全局",
       scGroupInput: "输入与视图",
@@ -846,7 +843,8 @@ describe("ModelsSettings（模型页签）", () => {
     await waitFor(() => expect(screen.getByText("GLM Air")).toBeTruthy())
     fireEvent.click(screen.getByRole("checkbox", { name: /GLM Air/ }))
     expect(setDisabled).toHaveBeenCalledWith("zai", "glm-air", true)
-    // 关态渲染：disabledModelsFor 返回关闭集 → 行未勾选、组头/提示统计收缩
+    // 关态渲染：disabledModelsFor 返回关闭集 → 行未勾选、组头统计收缩
+    //（2026-09-23 精简：全局提示行已移除，断言其不渲染）
     cleanup()
     setDisabled.mockClear()
     connectStore({ zai: ["glm-air"] })
@@ -857,23 +855,12 @@ describe("ModelsSettings（模型页签）", () => {
       ),
     )
     expect(screen.getByText("2/3")).toBeTruthy()
-    expect(screen.getByText(/已关闭 1 \/ 共 4/)).toBeTruthy()
+    expect(screen.queryByText(/已关闭/)).toBeNull()
     fireEvent.click(screen.getByRole("checkbox", { name: /GLM Air/ }))
     expect(setDisabled).toHaveBeenCalledWith("zai", "glm-air", false)
   })
 
-  it("搜索过滤：name/id/providerID 命中，无匹配组隐藏", async () => {
-    connectStore()
-    render(<ModelsSettings />)
-    await waitFor(() => expect(screen.getByText("GLM 5.3")).toBeTruthy())
-    fireEvent.change(screen.getByPlaceholderText(/搜索模型/), { target: { value: "deepseek" } })
-    expect(screen.queryByText("GLM 5.3")).toBeNull()
-    expect(screen.getByText("DeepSeek V4 Flash")).toBeTruthy()
-    fireEvent.change(screen.getByPlaceholderText(/搜索模型/), { target: { value: "zzz" } })
-    expect(screen.queryByText("DeepSeek V4 Flash")).toBeNull()
-  })
-
-  it("失败态（无缓存）：失败提示在场、刷新钮可点（重试入口不被 loading 禁死）、无「加载中」", async () => {
+  it("失败态（无缓存）：提示可点击重试（refreshModelCatalog），无「加载中」并列", async () => {
     storeState.current = {
       ...storeState.current,
       activeProfileId: "p1",
@@ -888,10 +875,7 @@ describe("ModelsSettings（模型页签）", () => {
     render(<ModelsSettings />)
     await waitFor(() => expect(screen.getByText("加载失败，点击重试")).toBeTruthy())
     expect(screen.queryByText("加载中…")).toBeNull()
-    // 刷新钮 = 唯一重试入口（D-ML-5）：启用且文案非「刷新中」
-    const btn = screen.getByText("刷新") as HTMLButtonElement
-    expect(btn.disabled).toBe(false)
-    fireEvent.click(btn)
+    fireEvent.click(screen.getByText("加载失败，点击重试"))
     expect(refresh).toHaveBeenCalledWith("/repo")
   })
 

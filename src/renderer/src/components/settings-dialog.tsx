@@ -992,17 +992,18 @@ export function ProviderKeyForm({
 
 /** 「模型」页签（design-model-list）：按 provider 分组列出已配置供应商的全部
  *  模型，每行开关（开 = 出现在模型选择列表）。数据源 = picker 同一目录缓存
- *  （/config/providers，SWR）；开关为 profile 级本地持久化（models.disabled，
- *  D-ML-2 展示按目录、存储按服务器），行内即时写（无网络无 loading）。 */
+ *  （/config/providers）；开关为 profile 级本地持久化（models.disabled，
+ *  D-ML-2 展示按目录、存储按服务器），行内即时写（无网络无 loading）。
+ *  无搜索框/手动刷新/提示行（2026-09-23 修订，初版三件按用户反馈精简）：
+ *  列表刷新依赖挂载拉取与 picker 打开时的 SWR；失败态提示可点击重试 */
 export function ModelsSettings() {
   const store = useStore()
   const { t } = useI18n()
-  const [query, setQuery] = useState("")
   const directory = store.scopeQuery.directory
   const connected = !!store.getActiveClient()
 
-  // 挂载/作用域变化拉取目录（缓存命中即渲染，命中不重拉；「刷新」钮 =
-  // 重拉/失败重试入口）；守卫态在 effect 之后（hooks 顺序恒定——同
+  // 挂载/作用域变化拉取目录（缓存命中即渲染，命中不重拉；失败态由下方
+  // 可点击提示重试）；守卫态在 effect 之后（hooks 顺序恒定——同
   // ProviderSettings 模式）
   useEffect(() => {
     if (connected && directory) void store.ensureModelCatalog(directory)
@@ -1028,56 +1029,36 @@ export function ModelsSettings() {
   const models = store.modelCatalogFor(directory).models
   const failed = store.modelCatalogFailedFor(directory)
   // 加载中 = 无缓存且未失败。失败态（失败且无缓存）须排除——refreshModelCatalog
-  // 失败只记 modelCatalogFailed 不落缓存，loading 恒真会把刷新钮（唯一重试入口，
-  // D-ML-5）永久禁用并误标「刷新中」，与失败提示「点击重试」矛盾
+  // 失败只记 modelCatalogFailed 不落缓存，loading 恒真会与失败提示「点击重试」矛盾
   const loading = !failed && !store.modelCatalogs.has(directory)
   const disabled = store.disabledModelsFor()
 
-  // 搜索与 ModelControl 同语义（name/id/providerID 子串，大小写不敏感）；
-  // 空搜索 = 全量。分组保首现序（与 picker 一致）
-  const q = query.trim().toLowerCase()
+  // 分组保首现序（与 picker 一致），行 = 名称 + id（mono）+ 开关
   const groups = new Map<string, ModelInfo[]>()
   for (const m of models) {
-    if (q && !`${m.name} ${m.id} ${m.providerID}`.toLowerCase().includes(q)) continue
     const arr = groups.get(m.providerID) ?? []
     arr.push(m)
     groups.set(m.providerID, arr)
   }
-  // 统计按全量（不受搜索影响）——提示行语义是「这个服务器关了多少」
-  const offCount = models.reduce(
-    (n, m) => n + (isModelDisabled(disabled, m.providerID, m.id) ? 1 : 0),
-    0,
-  )
 
   return (
     <div className="settings-models">
-      <div className="scan-section-title">
-        <input
-          className="provider-search"
-          placeholder={t.modelsSearch}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
-        <button type="button" disabled={loading} onClick={() => void store.refreshModelCatalog(directory)}>
-          {loading ? t.providerReloading : t.providerRefresh}
+      {failed && (
+        <button
+          type="button"
+          className="models-retry"
+          onClick={() => void store.refreshModelCatalog(directory)}
+        >
+          {t.modelLoadFailed}
         </button>
-      </div>
-      {failed && <div className="form-note">{t.modelLoadFailed}</div>}
+      )}
       {loading && models.length === 0 && <div className="form-note">{t.loading}</div>}
       {!failed && !loading && models.length === 0 && (
         <div className="form-note">{t.modelsEmpty}</div>
       )}
-      {!failed && !loading && models.length > 0 && (
-        <div className="form-note">
-          {t.modelsHint}
-          {t.modelsOffCount
-            .replace("{off}", String(offCount))
-            .replace("{total}", String(models.length))}
-        </div>
-      )}
       <div className="model-list">
         {[...groups.entries()].map(([pid, arr]) => {
-          // 组头计数按当前匹配集（搜索时随可见行收缩，同 picker 分组计数）
+          // 组头计数：开启数/总数（关闭行仍列出、呈关态，开关即恢复）
           const on = arr.reduce(
             (n, m) => n + (isModelDisabled(disabled, pid, m.id) ? 0 : 1),
             0,
