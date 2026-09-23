@@ -3774,12 +3774,7 @@
   margin: -4px 0 8px;
 }
 
-/* ---------- Provider 页签（design-provider-config） ---------- */
-
-.provider-search {
-  flex: 1;
-  min-width: 0;
-}
+/* ---------- Provider 页签（design-provider-config，2026-09-23 修订：搜索/手动刷新移除） ---------- */
 
 .provider-list {
   display: flex;

@@ -3,12 +3,13 @@
  * binaries 并行、先到先列），候选一键建档；手动入口进 manual 表单。
  * manual 表单按模式分化（design-managed-config §1）：模式段置顶（segment），
  * managed 隐藏 URL/凭据、显示二进制路径（2026-09-07 起手动页无扫描候选）；attach 字段齐全。
- * Provider 页签（design-provider-config）：已连接组/搜索/设删 key（ops 注入）。
+ * Provider 页签（design-provider-config，2026-09-23 修订：搜索/手动刷新移除）：
+ * 已配置列表（key 非空/connected/自定义 source）/设删 key（ops 注入）。
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { ProviderKeyForm, ProviderSettings, SettingsDialog, type ProviderOps } from "./settings-dialog"
-import type { ProviderCatalog, ProviderInfo } from "@shared/api-types"
+import type { ProviderCatalog } from "@shared/api-types"
 
 const scanBinaries = vi.fn(async () => [
   { path: "/usr/bin/opencode", version: "1.18.20" },
@@ -68,9 +69,6 @@ vi.mock("../app", () => ({
       serverLogTitle: "服务器日志",
       serverLogEmpty: "暂无日志",
       serverLogCopy: "复制日志",
-      providerSearch: "搜索 provider（全部目录）…",
-      providerRefresh: "刷新",
-      providerKeyHint: "API key 存于 server 侧",
       providerNoneConnected: "尚无已配置的 provider",
       providerModels: "模型 {count}",
       providerKeySet: "设置 key",
@@ -618,34 +616,6 @@ describe("服务器列表切换", () => {
 
 // ============ Provider 页签（design-provider-config） ============
 
-import { filterProviders } from "./settings-dialog"
-
-describe("filterProviders 纯函数", () => {
-  const all: ProviderInfo[] = [
-    { id: "anthropic", name: "Anthropic", source: "env", env: [], models: { m1: {} } },
-    { id: "deepseek", name: "DeepSeek", source: "api", env: [], key: "k", models: {} },
-    { id: "openrouter", name: "OpenRouter", source: "env", env: [], models: {} },
-  ]
-  it("空查询 = 空结果；id/名称子串不区分大小写", () => {
-    expect(filterProviders(all, "")).toEqual([])
-    expect(filterProviders(all, "  ")).toEqual([])
-    expect(filterProviders(all, "deep").map((p) => p.id)).toEqual(["deepseek"])
-    expect(filterProviders(all, "SEEK").map((p) => p.id)).toEqual(["deepseek"])
-    expect(filterProviders(all, "Anthropic").map((p) => p.id)).toEqual(["anthropic"])
-  })
-  it("上限 20", () => {
-    const many: ProviderInfo[] = Array.from({ length: 50 }, (_, i) => ({
-      id: `p${i}`,
-      name: `P${i}`,
-      source: "env",
-      env: [],
-      models: {},
-    }))
-    expect(filterProviders(many, "p")).toHaveLength(20)
-  })
-})
-
-
 describe("ProviderSettings 组件", () => {
   const onEditKey = vi.fn()
   const cat: ProviderCatalog = {
@@ -673,7 +643,7 @@ describe("ProviderSettings 组件", () => {
     }
   }
 
-  it("默认视图只显示已配置 key 的 provider（名称/source/模型数）；搜索切全目录", async () => {
+  it("列表仅显示已配置项（key/自定义 source）；env 未配置隐藏；无搜索/刷新控件", async () => {
     connectStore()
     const { ops, list } = mkOps()
     render(<ProviderSettings ops={ops} onEditKey={onEditKey} />)
@@ -682,12 +652,12 @@ describe("ProviderSettings 组件", () => {
     expect(list).toHaveBeenCalledWith("/repo")
     expect(screen.getByText("模型 2")).toBeTruthy()
     expect(screen.getByText("更换 key")).toBeTruthy()
-    // 搜索 anthropic → 全目录命中，未配置项出现
-    fireEvent.change(screen.getByPlaceholderText(/搜索 provider/), {
-      target: { value: "anthropic" },
-    })
-    await waitFor(() => expect(screen.getByText("Anthropic")).toBeTruthy())
+    // 自定义 provider（无 key）也展示，行内是「设置 key」
+    expect(screen.getByText("OpenCode")).toBeTruthy()
     expect(screen.getByText("设置 key")).toBeTruthy()
+    // 2026-09-23 修订：搜索框与手动刷新按钮移除
+    expect(screen.queryByPlaceholderText(/搜索 provider/)).toBeNull()
+    expect(screen.queryByText("刷新")).toBeNull()
   })
 
   it("设置 key：onEditKey 提升到弹窗层（ProviderSettings 不再自持编辑态）", async () => {
@@ -695,13 +665,9 @@ describe("ProviderSettings 组件", () => {
     const { ops } = mkOps()
     render(<ProviderSettings ops={ops} onEditKey={onEditKey} />)
     await waitFor(() => expect(screen.getByText("DeepSeek")).toBeTruthy())
-    fireEvent.change(screen.getByPlaceholderText(/搜索 provider/), {
-      target: { value: "anthropic" },
-    })
-    await waitFor(() => expect(screen.getByText("设置 key")).toBeTruthy())
     fireEvent.click(screen.getByText("设置 key"))
     expect(onEditKey).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "anthropic", name: "Anthropic" }),
+      expect.objectContaining({ id: "opencode", name: "OpenCode" }),
     )
   })
 
