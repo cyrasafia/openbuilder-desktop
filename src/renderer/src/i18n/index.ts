@@ -141,7 +141,7 @@ const zh = {
   discoverRescan: "重新搜索",
   discoverManualEntry: "手动配置…",
   addProfileManualTitle: "手动配置服务器",
-  // 新增服务器启用流挂起态（design-guided-add-server 修订 2：连接中弹窗内 loading）
+  // 新建/切换服务器挂起连接中文案（design-guided-add-server 修订 3：独立连接弹窗）
   addProfileConnecting: "正在连接…",
   editProfile: "编辑",
   back: "返回",
@@ -197,7 +197,6 @@ const zh = {
   welcomeTitle: "欢迎使用 OpenBuilder",
   welcomeSubtitle: "opencode server 的桌面驾驶舱——先连接一台 server 开始",
   welcomeStartAndConnect: "启动并连接",
-  welcomeConnecting: "连接中…",
   welcomeInstallHint: "未发现 server 与本机 opencode。可安装后重新搜索，或手动配置连接已有 server：",
   welcomeConnect: "连接",
   // 会话附件（design-session-attachments）
@@ -491,7 +490,6 @@ const en: typeof zh = {
   welcomeTitle: "Welcome to OpenBuilder",
   welcomeSubtitle: "Desktop cockpit for opencode server — connect one to get started",
   welcomeStartAndConnect: "Start & connect",
-  welcomeConnecting: "Connecting…",
   welcomeInstallHint:
     "No server or local opencode found. Install and search again, or configure manually to connect to an existing server:",
   welcomeConnect: "Connect",

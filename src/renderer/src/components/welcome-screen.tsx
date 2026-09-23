@@ -6,16 +6,19 @@
  * 挂起；attach 先 health 验证再建档，失败不残留——managed 建档→connect，原分支
  * 各自语义保留）、busy（连接/预验中禁用）、emptyContent（首装安装指引）。连接
  * 成功直接关闭欢迎屏（无 provider/默认模型引导）——Shell 接管，未打开项目时中
- * 栏即「打开项目」页。连接中卡片内「连接中…」行带 spinner（与设置弹窗挂起行
- * 同视觉，design-guided-add-server 修订 2）；失败停在原视图（候选可再点）。
+ * 栏即「打开项目」页。**连接中切换到独立连接弹窗**（design-guided-add-server
+ * 修订 3，2026-09-23 与设置弹窗同语义）：卡片整体隐藏（display:none 保挂载，
+ * 视图/草稿不丢）、ConnectingDialog 独占屏幕；失败卡片恢复，pickError/
+ * connectionError 行展示（候选可再点）。
  * 替代 Shell 渲染（TitleBar 由 App 层保留）；入口页无设置入口（2026-09-08
  * 修订，仅保留「添加服务器」）。
  */
 import { useEffect, useState } from "react"
-import { ArrowLeft, Check, Copy, LoaderCircle } from "lucide-react"
+import { ArrowLeft, Check, Copy } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import type { ConnectionProfile } from "@shared/ipc"
 import { ApiError, RestClient } from "@shared/rest-client"
+import { ConnectingDialog } from "./connecting-dialog"
 import { DiscoverView, ProfileFormView, newProfileDraft } from "./settings-dialog"
 
 type View = "entry" | "discover" | "manual"
@@ -81,52 +84,60 @@ export function WelcomeScreen() {
   }
 
   return (
-    <div className="welcome-wrap">
-      <div className="welcome-card">
-        {view === "entry" ? (
-          <>
-            <div className="welcome-title">{t.welcomeTitle}</div>
-            <div className="welcome-sub">{t.welcomeSubtitle}</div>
-            <div className="welcome-body">
-              <button className="btn-primary welcome-entry-btn" onClick={() => setView("discover")}>
-                {t.addProfileTitle}
-              </button>
-            </div>
-          </>
-        ) : view === "discover" ? (
-          <>
-            <WelcomeHeader title={t.addProfileTitle} onBack={() => setView("entry")} />
-            <DiscoverView
-              busy={busy}
-              emptyContent={<InstallHint />}
-              onManual={() => setView("manual")}
-              onPick={pick}
-            />
-          </>
-        ) : (
-          <>
-            <WelcomeHeader title={t.addProfileManualTitle} onBack={() => setView("discover")} />
-            <ProfileFormView
-              profile={newProfileDraft()}
-              saveLabel={(mode) => (mode === "managed" ? t.welcomeStartAndConnect : t.welcomeConnect)}
-              busy={busy}
-              onCancel={() => setView("discover")}
-              onSave={pick}
-            />
-          </>
-        )}
-        {connecting && (
-          <div className="form-note welcome-connecting">
-            <LoaderCircle className="welcome-connecting-spinner" size={14} aria-hidden />
-            <span>{t.welcomeConnecting}</span>
+    <>
+      {/* 连接中（修订 3）：卡片整体隐藏（display:none 保挂载——视图/草稿/扫描
+          结果不丢，失败恢复零成本），由平级 ConnectingDialog 独占屏幕；TitleBar
+          在 App 层保留渲染但被独立弹窗遮罩盖住不可交互 */}
+      <div className={"welcome-wrap" + (connecting ? " connecting-host-hidden" : "")}>
+        <div className="welcome-card">
+          {view === "entry" ? (
+            <>
+              <div className="welcome-title">{t.welcomeTitle}</div>
+              <div className="welcome-sub">{t.welcomeSubtitle}</div>
+              <div className="welcome-body">
+                <button className="btn-primary welcome-entry-btn" onClick={() => setView("discover")}>
+                  {t.addProfileTitle}
+                </button>
+              </div>
+            </>
+          ) : view === "discover" ? (
+            <>
+              <WelcomeHeader title={t.addProfileTitle} onBack={() => setView("entry")} />
+              <DiscoverView
+                busy={busy}
+                emptyContent={<InstallHint />}
+                onManual={() => setView("manual")}
+                onPick={pick}
+              />
+            </>
+          ) : (
+            <>
+              <WelcomeHeader title={t.addProfileManualTitle} onBack={() => setView("discover")} />
+              <ProfileFormView
+                profile={newProfileDraft()}
+                saveLabel={(mode) => (mode === "managed" ? t.welcomeStartAndConnect : t.welcomeConnect)}
+                busy={busy}
+                onCancel={() => setView("discover")}
+                onSave={pick}
+              />
+            </>
+          )}
+          {/* 失败反馈行（修订 3）：连接反馈在独立弹窗期不可见，失败收尾卡片恢复
+              后展示——attach 预验失败（pickError）或连接失败（connectionError），
+              候选可再点重试 */}
+          {pickError && <div className="form-note welcome-error">{pickError}</div>}
+          {store.connectionError && !connecting && (
+            <div className="form-note welcome-error">{store.connectionError}</div>
+          )}
           </div>
-        )}
-        {pickError && <div className="form-note welcome-error">{pickError}</div>}
-        {store.connectionError && !connecting && (
-          <div className="form-note welcome-error">{store.connectionError}</div>
-        )}
       </div>
-    </div>
+      {/* 共存去重（review 2026-09-23）：删光 profile 后设置弹窗未关即再新增服务器
+          时 App 欢迎分支同时挂 WelcomeScreen + SettingsDialog（saveProfiles 清空
+          激活置 welcomeOpen、settingsOpen 不清）——设置弹窗挂起流已渲染独立弹窗
+          （pendingNew 严格窄于全局 connecting），欢迎屏侧让位，避免双遮罩叠加与
+          双 aria-live 重复播报；欢迎侧自发连接时设置弹窗必不在场（无入口） */}
+      {connecting && !store.settingsOpen && <ConnectingDialog />}
+    </>
   )
 }
 

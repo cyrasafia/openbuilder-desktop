@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
-import { ArrowLeft, LoaderCircle, Pencil, RefreshCw, X } from "lucide-react"
+import { ArrowLeft, Pencil, RefreshCw, X } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import type { BinaryCandidate, ConnectionProfile, ManagedNotice, ServerCandidate } from "@shared/ipc"
 import { MIN_SERVER_VERSION } from "@shared/semver"
 import { ApiError, RestClient } from "@shared/rest-client"
 import type { ProviderCatalog, ProviderInfo } from "@shared/api-types"
 import { ConfirmDialog } from "./confirm-dialog"
+import { ConnectingDialog } from "./connecting-dialog"
 import { managedNoticeText } from "./managed-notice"
 import { ModelSwitcherBar } from "./model-switcher"
 import { SHORTCUT_GROUPS } from "./shortcuts"
@@ -29,10 +30,13 @@ export function newProfileDraft(): ConnectionProfile {
 
 /** 设置弹窗（dialog-lg）。模态不重叠（DESIGN.md §标准弹窗）：添加/编辑服务器
  *  在弹窗内跳转视图（标题行左置返回钮），不叠加二级弹窗。新增服务器的启用
- *  流挂起期间（连接中）弹窗保持打开：loading 行 + 动作冻结（design-guided-
- *  add-server 修订 2），成功关弹窗直达项目列表，失败回原视图。列表「切换」
- *  （2026-09-07）走同一挂起流（loading 在 tabs 视图标题行下渲染），成功后
- *  同样关弹窗但不带 openPickerAfter——直达主页面，不弹项目列表 */
+ *  流挂起期间（连接中）**切换到独立连接弹窗**（design-guided-add-server 修
+ *  订 3，2026-09-23）：本弹窗 display:none 隐藏（保挂载——editing/草稿/扫描
+ *  结果不丢，失败恢复零成本）+ 独立小弹窗居中承接连接反馈（连接不可中断，
+ *  无关闭/Esc/遮罩动作）；成功关本弹窗直达项目列表，失败回原视图 +
+ *  connectionError 内联行。列表「切换」（2026-09-07）走同一挂起流（独立弹
+ *  窗期间停在列表视图），成功后同样关弹窗但不带 openPickerAfter——直达主
+ *  页面，不弹项目列表 */
 export function SettingsDialog() {
   const store = useStore()
   const { t } = useI18n()
@@ -56,25 +60,16 @@ export function SettingsDialog() {
     store.closeSettings()
   }
 
-  // 列表/发现视图聚焦弹窗容器（Esc keydown 有落脚点，review 第二轮：providerEdit
-  // 返回路径同样需要——否则焦点回落 body，Esc 分层最后一跳静默失效）。
-  // 发现视图同样需要（guided review 修订）：它无 autoFocus 元素，进入时焦点
-  // 随「添加」按钮卸载回落 body。manual/provider 表单由各自 autoFocus 输入框
-  // 落焦点，不在聚焦范围（条件须含 !providerEdit——否则抢走 provider key 表单
-  // 的 autoFocus）
-  useEffect(() => {
-    if ((!editing && !providerEdit) || editing?.view === "discover") dialogRef.current?.focus()
-  }, [editing, providerEdit])
-
   // 保存 = upsert 直落 store（弹窗内视图跳转后 ConnectionSettings 卸载重挂，
   // 列表从 store 直读，无本地镜像；持久化用计算出的 next 列表）。
   // 编辑（from="edit"，isNew=false）：只 upsert 不激活，激活走列表「切换」，
   // 保存后即回列表。
   // 新增（from="discover"/"manual"，design-guided-add-server 修订 2）与列表
   // 「切换」（from="switch"，2026-09-07）共用同一挂起流：保存/激活即连接 +
-  // **保持弹窗打开直到连接结束**——连接中弹窗挂 loading 态（动作全禁用，防
-  // 二次触发）；成功关弹窗（项目列表仅新增流经 store 内 openPickerAfter 直达，
-  // 切换不带标记 = 落主页面）；失败回到原视图（discover/manual 草稿保留，可改
+  // **挂起期切换到独立连接弹窗**（修订 3）——本弹窗 display:none 隐藏（保挂
+  // 载，防二次触发由隐藏 + 独立弹窗独占屏幕兜底；控件 disabled 一并保留防
+  // 御）；成功关弹窗（项目列表仅新增流经 store 内 openPickerAfter 直达，切
+  // 换不带标记 = 落主页面）；失败回到原视图（discover/manual 草稿保留，可改
   // 可换；切换留在列表）+ connectionError 内联展示。
   // 先断开再改激活（此时旧 profile 仍激活，managed 模式才能正确 stop 旧进程——
   // 顺序同列表「切换」activate；saveProfiles 先行会 disconnect 按 profile 的
@@ -122,12 +117,25 @@ export function SettingsDialog() {
   // 盖住左栏（review 修订 2 P3），失败原因必须弹窗内可见
   const [connectError, setConnectError] = useState<string | null>(null)
 
-  // 挂起新增的收尾（design-guided-add-server 修订 2，订阅驱动不经渲染）：
+  // 列表/发现视图聚焦弹窗容器（Esc keydown 有落脚点，review 第二轮：providerEdit
+  // 返回路径同样需要——否则焦点回落 body，Esc 分层最后一跳静默失效）。
+  // 发现视图同样需要（guided review 修订）：它无 autoFocus 元素，进入时焦点
+  // 随「添加」按钮卸载回落 body。manual/provider 表单由各自 autoFocus 输入框
+  // 落焦点，不在聚焦范围（条件须含 !providerEdit——否则抢走 provider key 表单
+  // 的 autoFocus）。挂起期弹窗隐藏（修订 3）焦点回落 body；失败收尾恢复显示
+  // 时拉回容器——Esc 分层在回退后即刻可用
+  useEffect(() => {
+    if (pendingNew) return
+    if ((!editing && !providerEdit) || editing?.view === "discover") dialogRef.current?.focus()
+  }, [editing, providerEdit, pendingNew])
+
+  // 挂起新增的收尾（design-guided-add-server 修订 2/3，订阅驱动不经渲染）：
   // started 置位（= disconnect 完成）后：connecting → 记已见 + 清 connectError
-  // 起挂 loading；streaming → 成功关弹窗（项目列表直达已在 store 内）；
-  // disconnected（已见过 connecting）→ 失败回原视图 + connectionError 内联
-  // 展示（弹窗遮罩下左栏不可见）。卸载即解订（订阅生命周期 = 组件挂载）；
-  // 回调经 pendingRef/editingRef 读最新值（订阅只挂一次，不能闭包旧值）
+  // （挂起期独立连接弹窗在场）；streaming → 成功关弹窗（项目列表直达已在
+  // store 内）；disconnected（已见过 connecting）→ 失败回原视图（弹窗本体
+  // 恢复显示）+ connectionError 内联展示（弹窗遮罩下左栏不可见）。卸载即解
+  // 订（订阅生命周期 = 组件挂载）；回调经 pendingRef/editingRef 读最新值
+  // （订阅只挂一次，不能闭包旧值）
   const pendingRef = useRef(pendingNew)
   pendingRef.current = pendingNew
   const editingRef = useRef(editing)
@@ -176,190 +184,185 @@ export function SettingsDialog() {
   }
 
   return (
-    <div
-      className="dialog-mask"
-      onClick={() => {
-        if (!pendingNew) close()
-      }}
-    >
+    <>
+      {/* 挂起期（修订 3）：弹窗本体 display:none 隐藏（保挂载——editing/草稿/
+          扫描结果不丢，失败恢复零成本），由平级 ConnectingDialog 独占屏幕；
+          隐藏后遮罩/关闭钮/onClick 均不可达，冻结由隐藏本身兜底 */}
       <div
-        ref={dialogRef}
-        className="dialog dialog-lg"
-        tabIndex={-1}
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          // IME 组合中的 Escape 是取消候选词，不能顺手关弹窗（同项目选择器）
-          if (e.nativeEvent.isComposing) return
-          // 挂起新增（连接中）：Esc 不关弹窗不退层（连接不可中断，UI 冻结在 loading）
-          if (pendingNew) return
-          // Esc 分层（review P2 + design-guided-add-server §2）：manual（新增）
-          // / provider 表单先退回上一层，其余退回列表
-          if (e.key === "Escape") {
-            if (editing?.view === "manual" && editing.isNew) setEditing({ view: "discover" })
-            else if (editing) setEditing(null)
-            else if (providerEdit) setProviderEdit(null)
-            else close()
-          }
+        className={"dialog-mask" + (pendingNew ? " connecting-host-hidden" : "")}
+        onClick={() => {
+          if (!pendingNew) close()
         }}
       >
-        {editing ? (
-          <>
-            <div className="dialog-title dialog-title-row">
-              <div className="dialog-title-side">
+        <div
+          ref={dialogRef}
+          className="dialog dialog-lg"
+          tabIndex={-1}
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            // IME 组合中的 Escape 是取消候选词，不能顺手关弹窗（同项目选择器）
+            if (e.nativeEvent.isComposing) return
+            // 挂起新增（连接中）：Esc 不关弹窗不退层（连接不可中断，UI 冻结在 loading）
+            if (pendingNew) return
+            // Esc 分层（review P2 + design-guided-add-server §2）：manual（新增）
+            // / provider 表单先退回上一层，其余退回列表
+            if (e.key === "Escape") {
+              if (editing?.view === "manual" && editing.isNew) setEditing({ view: "discover" })
+              else if (editing) setEditing(null)
+              else if (providerEdit) setProviderEdit(null)
+              else close()
+            }
+          }}
+        >
+          {editing ? (
+            <>
+              <div className="dialog-title dialog-title-row">
+                <div className="dialog-title-side">
+                  <button
+                    className="icon-btn"
+                    title={t.back}
+                    aria-label={t.back}
+                    disabled={!!pendingNew}
+                    onClick={editingBack}
+                  >
+                    <ArrowLeft size={14} aria-hidden />
+                  </button>
+                  <span>{editingTitle}</span>
+                </div>
                 <button
                   className="icon-btn"
-                  title={t.back}
-                  aria-label={t.back}
+                  title={t.close}
+                  aria-label={t.close}
                   disabled={!!pendingNew}
-                  onClick={editingBack}
+                  onClick={close}
                 >
-                  <ArrowLeft size={14} aria-hidden />
+                  <X size={14} aria-hidden />
                 </button>
-                <span>{editingTitle}</span>
               </div>
-              <button
-                className="icon-btn"
-                title={t.close}
-                aria-label={t.close}
-                disabled={!!pendingNew}
-                onClick={close}
-              >
-                <X size={14} aria-hidden />
-              </button>
-            </div>
-            {pendingNew ? (
-              <div className="pending-connect">
-                <LoaderCircle className="pending-connect-spinner" size={14} aria-hidden />
-                <span>{t.addProfileConnecting}</span>
-              </div>
-            ) : (
-              connectError && <div className="pending-connect pending-connect-error">{connectError}</div>
-            )}
+              {/* 失败原因行（修订 3）：挂起期弹窗本体隐藏、连接反馈由独立弹窗承接；
+               *  失败收尾恢复显示后错误在此内联（遮罩盖左栏，须弹窗内可见） */}
+              {connectError && <div className="pending-connect pending-connect-error">{connectError}</div>}
             {editing.view === "discover" ? (
-              <DiscoverView
-                busy={!!pendingNew || store.connectionState === "connecting"}
-                onManual={() => setEditing({ view: "manual", profile: newProfileDraft(), isNew: true })}
-                onPick={(p) => void saveProfile(p, "discover")}
+                <DiscoverView
+                  busy={!!pendingNew || store.connectionState === "connecting"}
+                  onManual={() => setEditing({ view: "manual", profile: newProfileDraft(), isNew: true })}
+                  onPick={(p) => void saveProfile(p, "discover")}
+                />
+              ) : (
+                <ProfileFormView
+                  profile={editing.profile}
+                  busy={!!pendingNew || store.connectionState === "connecting"}
+                  onCancel={editingBack}
+                  onSave={(p) =>
+                    editing.isNew ? void saveProfile(p, "manual") : void saveProfile(p, "edit")
+                  }
+                />
+              )}
+            </>
+          ) : providerEdit ? (
+            <>
+              <div className="dialog-title dialog-title-row">
+                <div className="dialog-title-side">
+                  <button
+                    className="icon-btn"
+                    title={t.back}
+                    aria-label={t.back}
+                    onClick={() => setProviderEdit(null)}
+                  >
+                    <ArrowLeft size={14} aria-hidden />
+                  </button>
+                  <span>{t.providerKeyFor.replace("{name}", providerEdit.name)}</span>
+                </div>
+                <button className="icon-btn" title={t.close} aria-label={t.close} onClick={close}>
+                  <X size={14} aria-hidden />
+                </button>
+              </div>
+              <ProviderKeyForm
+                provider={providerEdit}
+                onCancel={() => setProviderEdit(null)}
+                onSaved={() => setProviderEdit(null)}
               />
-            ) : (
-              <ProfileFormView
-                profile={editing.profile}
-                busy={!!pendingNew || store.connectionState === "connecting"}
-                onCancel={editingBack}
-                onSave={(p) =>
-                  editing.isNew ? void saveProfile(p, "manual") : void saveProfile(p, "edit")
-                }
-              />
-            )}
-          </>
-        ) : providerEdit ? (
-          <>
-            <div className="dialog-title dialog-title-row">
-              <div className="dialog-title-side">
+            </>
+          ) : (
+            <>
+              <div className="dialog-title dialog-title-row">
+                <span>{t.settings}</span>
                 <button
                   className="icon-btn"
-                  title={t.back}
-                  aria-label={t.back}
-                  onClick={() => setProviderEdit(null)}
+                  title={t.close}
+                  aria-label={t.close}
+                  disabled={!!pendingNew}
+                  onClick={close}
                 >
-                  <ArrowLeft size={14} aria-hidden />
+                  <X size={14} aria-hidden />
                 </button>
-                <span>{t.providerKeyFor.replace("{name}", providerEdit.name)}</span>
               </div>
-              <button className="icon-btn" title={t.close} aria-label={t.close} onClick={close}>
-                <X size={14} aria-hidden />
-              </button>
-            </div>
-            <ProviderKeyForm
-              provider={providerEdit}
-              onCancel={() => setProviderEdit(null)}
-              onSaved={() => setProviderEdit(null)}
-            />
-          </>
-        ) : (
-          <>
-            <div className="dialog-title dialog-title-row">
-              <span>{t.settings}</span>
-              <button
-                className="icon-btn"
-                title={t.close}
-                aria-label={t.close}
-                disabled={!!pendingNew}
-                onClick={close}
-              >
-                <X size={14} aria-hidden />
-              </button>
-            </div>
-            {/* 列表「切换」挂起流（2026-09-07）：loading/失败原因行与子视图共用
-             *  骨架——渲染在页签上方，任何页签在场都可见 */}
-            {pendingNew ? (
-              <div className="pending-connect">
-                <LoaderCircle className="pending-connect-spinner" size={14} aria-hidden />
-                <span>{t.addProfileConnecting}</span>
+              {/* 失败原因行（列表「切换」挂起流，2026-09-07 骨架沿用）：挂起期
+               *  独立弹窗承接连接反馈；失败收尾恢复显示后错误在页签上方内联——
+               *  任何页签在场都可见 */}
+              {connectError && <div className="pending-connect pending-connect-error">{connectError}</div>}
+              <div className="settings-tabs">
+                {/* 挂起期冻结页签切换（review 2026-09-07）：失败原因行渲染在
+                 *  页签上方，切走页签后失败将不可见；冻结保证反馈始终在场 */}
+                <button
+                  className={tab === "connection" ? "active" : ""}
+                  disabled={!!pendingNew}
+                  onClick={() => setTab("connection")}
+                >
+                  {t.connectionTitle}
+                </button>
+                <button
+                  className={tab === "providers" ? "active" : ""}
+                  disabled={!!pendingNew}
+                  onClick={() => setTab("providers")}
+                >
+                  {t.providerTitle}
+                </button>
+                <button
+                  className={tab === "appearance" ? "active" : ""}
+                  disabled={!!pendingNew}
+                  onClick={() => setTab("appearance")}
+                >
+                  {t.appearanceTitle}
+                </button>
+                <button
+                  className={tab === "defaults" ? "active" : ""}
+                  disabled={!!pendingNew}
+                  onClick={() => setTab("defaults")}
+                >
+                  {t.defaultsTitle}
+                </button>
+                <button
+                  className={tab === "shortcuts" ? "active" : ""}
+                  disabled={!!pendingNew}
+                  onClick={() => setTab("shortcuts")}
+                >
+                  {t.shortcutsTitle}
+                </button>
               </div>
-            ) : (
-              connectError && <div className="pending-connect pending-connect-error">{connectError}</div>
-            )}
-            <div className="settings-tabs">
-              {/* 挂起期冻结页签切换（review 2026-09-07）：loading/失败原因行渲染在
-               *  页签上方，切走页签后失败将不可见；冻结保证反馈始终在场 */}
-              <button
-                className={tab === "connection" ? "active" : ""}
-                disabled={!!pendingNew}
-                onClick={() => setTab("connection")}
-              >
-                {t.connectionTitle}
-              </button>
-              <button
-                className={tab === "providers" ? "active" : ""}
-                disabled={!!pendingNew}
-                onClick={() => setTab("providers")}
-              >
-                {t.providerTitle}
-              </button>
-              <button
-                className={tab === "appearance" ? "active" : ""}
-                disabled={!!pendingNew}
-                onClick={() => setTab("appearance")}
-              >
-                {t.appearanceTitle}
-              </button>
-              <button
-                className={tab === "defaults" ? "active" : ""}
-                disabled={!!pendingNew}
-                onClick={() => setTab("defaults")}
-              >
-                {t.defaultsTitle}
-              </button>
-              <button
-                className={tab === "shortcuts" ? "active" : ""}
-                disabled={!!pendingNew}
-                onClick={() => setTab("shortcuts")}
-              >
-                {t.shortcutsTitle}
-              </button>
-            </div>
-            <div className="dialog-body">
-              {tab === "connection" ? (
-                <ConnectionSettings
-                  busy={!!pendingNew}
-                  onEdit={setEditing}
-                  onSwitch={(p) => void saveProfile(p, "switch")}
-                />
-              ) : tab === "providers" ? (
-                <ProviderSettings onEditKey={setProviderEdit} />
-              ) : tab === "appearance" ? (
-                <AppearanceSettings />
-              ) : tab === "shortcuts" ? (
-                <ShortcutsSettings />
-              ) : (
-                <DefaultsSettings />
-              )}
-            </div>
-          </>
-        )}
+              <div className="dialog-body">
+                {tab === "connection" ? (
+                  <ConnectionSettings
+                    busy={!!pendingNew}
+                    onEdit={setEditing}
+                    onSwitch={(p) => void saveProfile(p, "switch")}
+                  />
+                ) : tab === "providers" ? (
+                  <ProviderSettings onEditKey={setProviderEdit} />
+                ) : tab === "appearance" ? (
+                  <AppearanceSettings />
+                ) : tab === "shortcuts" ? (
+                  <ShortcutsSettings />
+                ) : (
+                  <DefaultsSettings />
+                )}
+              </div>
+            </>
+          )}
+        </div>
       </div>
-    </div>
+      {pendingNew && <ConnectingDialog />}
+    </>
   )
 }
 

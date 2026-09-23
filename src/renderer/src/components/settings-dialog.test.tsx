@@ -1,9 +1,12 @@
 /**
  * 添加服务器引导式（design-guided-add-server）：点「添加」先搜索（servers +
  * binaries 并行、先到先列），候选一键建档；手动入口进 manual 表单。
+ * 挂起流呈现（修订 3，2026-09-23）：新建/切换连接中**切换独立连接弹窗**
+ * （.connecting-dialog）——设置弹窗 host display:none 隐藏（保挂载，失败回
+ * 原视图零成本），成功关弹窗、失败恢复显示 + 错误内联。
  * manual 表单按模式分化（design-managed-config §1）：模式段置顶（segment），
  * managed 隐藏 URL/凭据、显示二进制路径（2026-09-07 起手动页无扫描候选）；attach 字段齐全。
- * Provider 页签（design-provider-config）：已连接组/搜索/设删 key（ops 注入）。
+ * Provider 页签（design-provider-config）：已配置组/搜索/设删 key（ops 注入）。
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -210,8 +213,8 @@ describe("添加服务器引导式（design-guided-add-server）", () => {
     expect(screen.getByText("手动配置…")).toBeTruthy()
   })
 
-  it("点击 server 候选：一键建档并启用——弹窗保持打开 + loading，成功才关弹窗 + 直达连接", async () => {
-    // 受控 connect 桩（connecting 挂起）：挂起期断言 loading 与冻结，释放后走成功收尾
+  it("点击 server 候选：一键建档并启用——切换独立连接弹窗（设置弹窗隐藏），成功才关弹窗 + 直达连接", async () => {
+    // 受控 connect 桩（connecting 挂起）：挂起期断言独立弹窗与隐藏，释放后走成功收尾
     let releaseConnect!: () => void
     const emit = () => (globalThis as { __emitStore?: () => void }).__emitStore?.()
     storeState.current.connect = vi.fn(async () => {
@@ -223,7 +226,7 @@ describe("添加服务器引导式（design-guided-add-server）", () => {
       storeState.current.connectionState = "streaming"
       emit()
     })
-    render(<SettingsDialog />)
+    const { container } = render(<SettingsDialog />)
     fireEvent.click(screen.getByText("添加"))
     await waitFor(() => expect(screen.getByText("127.0.0.1:4096")).toBeTruthy())
     fireEvent.click(screen.getByText("127.0.0.1:4096"))
@@ -234,8 +237,13 @@ describe("添加服务器引导式（design-guided-add-server）", () => {
       expect(last?.[0]).toEqual([expect.objectContaining({ baseUrl: "http://127.0.0.1:4096", mode: "attach" })])
       expect(last?.[1]).toEqual(expect.any(String))
     })
-    // 挂起期（连接中）：弹窗保持打开 + loading 行可见；未关弹窗
+    // 挂起期（连接中）：切换独立连接弹窗——设置弹窗 host 隐藏（display:none
+    // 保挂载，草稿/视图不丢）+ 独立弹窗在场；未关弹窗
     await waitFor(() => expect(screen.getByText("正在连接…")).toBeTruthy())
+    expect(
+      container.querySelector(".dialog-lg")?.closest(".dialog-mask")?.className,
+    ).toContain("connecting-host-hidden")
+    expect(container.querySelector(".connecting-dialog")).toBeTruthy()
     expect(storeState.current.closeSettings).not.toHaveBeenCalled()
     // 拆旧连接 + 带 openPickerAfter 标记连接
     await waitFor(() => expect(storeState.current.disconnect).toHaveBeenCalled())
@@ -260,7 +268,7 @@ describe("添加服务器引导式（design-guided-add-server）", () => {
       storeState.current.connectionState = "streaming"
       emit()
     })
-    render(<SettingsDialog />)
+    const { container } = render(<SettingsDialog />)
     fireEvent.click(screen.getByText("添加"))
     await waitFor(() => expect(screen.getByText("/usr/bin/opencode")).toBeTruthy())
     fireEvent.click(screen.getByText("/usr/bin/opencode"))
@@ -271,12 +279,15 @@ describe("添加服务器引导式（design-guided-add-server）", () => {
       expect(last?.[1]).toEqual(expect.any(String))
     })
     await waitFor(() => expect(screen.getByText("正在连接…")).toBeTruthy())
+    expect(
+      container.querySelector(".dialog-lg")?.closest(".dialog-mask")?.className,
+    ).toContain("connecting-host-hidden")
     expect(storeState.current.closeSettings).not.toHaveBeenCalled()
     releaseConnect()
     await waitFor(() => expect(storeState.current.closeSettings).toHaveBeenCalled())
   })
 
-  it("挂起新增连接失败：回到原视图（发现页），loading 消失、错误内联展示、候选可再点", async () => {
+  it("挂起新增连接失败：回到原视图（发现页），独立弹窗消失、设置弹窗恢复显示、错误内联展示、候选可再点", async () => {
     // 可控 connect 桩：置 connecting（emit）后挂起——失败落点由 release 手动推进
     let fail!: () => void
     const emit = () => (globalThis as { __emitStore?: () => void }).__emitStore?.()
@@ -290,15 +301,22 @@ describe("添加服务器引导式（design-guided-add-server）", () => {
       storeState.current.connectionError = "连接被拒"
       emit()
     })
-    render(<SettingsDialog />)
+    const { container } = render(<SettingsDialog />)
     fireEvent.click(screen.getByText("添加"))
     await waitFor(() => expect(screen.getByText("127.0.0.1:4096")).toBeTruthy())
     fireEvent.click(screen.getByText("127.0.0.1:4096"))
     await waitFor(() => expect(screen.getByText("正在连接…")).toBeTruthy())
+    expect(
+      container.querySelector(".dialog-lg")?.closest(".dialog-mask")?.className,
+    ).toContain("connecting-host-hidden")
     // 连接失败落 disconnected（emit）：订阅收尾同步执行
     fail()
-    // 失败收尾：挂起清（loading 消失）、错误内联可见（遮罩盖左栏）、停在发现视图、不关弹窗（可重试）
+    // 失败收尾：独立弹窗卸载（文案消失）、设置弹窗恢复显示（hidden 类移除）、
+    // 错误内联可见（遮罩盖左栏）、停在发现视图、不关弹窗（可重试）
     await waitFor(() => expect(screen.queryByText("正在连接…")).toBeNull())
+    expect(
+      container.querySelector(".dialog-lg")?.closest(".dialog-mask")?.className,
+    ).not.toContain("connecting-host-hidden")
     expect(screen.getByText("连接被拒")).toBeTruthy()
     expect(screen.getByText("手动配置…")).toBeTruthy()
     expect(storeState.current.closeSettings).not.toHaveBeenCalled()
@@ -346,7 +364,7 @@ describe("添加服务器引导式（design-guided-add-server）", () => {
     await waitFor(() => expect(storeState.current.closeSettings).toHaveBeenCalled())
   })
 
-  it("manual 表单挂起期控件全冻结（review 修订 2 P2）：模式段/输入/取消不可点，草稿不丢", async () => {
+  it("manual 表单挂起期控件全冻结（review 修订 2 P2 + 修订 3）：弹窗隐藏 + 控件禁用，草稿不丢", async () => {
     let release!: () => void
     const emit = () => (globalThis as { __emitStore?: () => void }).__emitStore?.()
     storeState.current.connect = vi.fn(async () => {
@@ -359,14 +377,19 @@ describe("添加服务器引导式（design-guided-add-server）", () => {
       storeState.current.connectionError = "boom"
       emit()
     })
-    render(<SettingsDialog />)
+    const { container } = render(<SettingsDialog />)
     fireEvent.click(screen.getByText("添加"))
     await waitFor(() => expect(screen.getByText("手动配置…")).toBeTruthy())
     fireEvent.click(screen.getByText("手动配置…"))
     fireEvent.change(screen.getByLabelText("服务器地址"), { target: { value: "http://10.0.0.5:4096" } })
     fireEvent.click(screen.getByText("保存"))
     await waitFor(() => expect(screen.getByText("正在连接…")).toBeTruthy())
-    // 挂起期：取消/模式段/输入全禁用
+    // 挂起期：切换独立弹窗，表单 host 隐藏（display:none 保挂载——组件不卸载
+    // 是失败草稿保留的实现根基）；控件 disabled 一并保留（防御性冻结）
+    expect(
+      container.querySelector(".dialog-lg")?.closest(".dialog-mask")?.className,
+    ).toContain("connecting-host-hidden")
+    expect(container.querySelector(".connecting-dialog")).toBeTruthy()
     expect((screen.getByText("取消") as HTMLButtonElement).disabled).toBe(true)
     expect((screen.getByText("本机启动") as HTMLButtonElement).disabled).toBe(true)
     expect((screen.getByLabelText("服务器地址") as HTMLInputElement).disabled).toBe(true)
@@ -519,7 +542,7 @@ describe("ProfileFormView 模式分化", () => {
     await waitFor(() => expect(screen.getByTitle("编辑")).toBeTruthy())
   })
 
-  it("手动新增保存 = 启用流（挂起）：loading 保持弹窗，成功后关弹窗；disconnect 先于 saveProfiles", async () => {
+  it("手动新增保存 = 启用流（挂起）：切独立连接弹窗，成功后关弹窗；disconnect 先于 saveProfiles", async () => {
     let releaseConnect!: () => void
     const emit = () => (globalThis as { __emitStore?: () => void }).__emitStore?.()
     storeState.current.connect = vi.fn(async () => {
@@ -541,7 +564,7 @@ describe("ProfileFormView 模式分化", () => {
       expect(last?.[0]).toEqual([expect.objectContaining({ baseUrl: "http://127.0.0.1:9999", mode: "attach" })])
       expect(last?.[1]).toEqual(expect.any(String))
     })
-    // 挂起期：loading 行 + 弹窗未关
+    // 挂起期：独立连接弹窗在场 + 弹窗未关
     await waitFor(() => expect(screen.getByText("正在连接…")).toBeTruthy())
     expect(storeState.current.closeSettings).not.toHaveBeenCalled()
     await waitFor(() => expect(storeState.current.disconnect).toHaveBeenCalled())
@@ -572,13 +595,16 @@ describe("服务器列表切换", () => {
     storeState.current.activeProfileId = "p1"
   }
 
-  it("切换：disconnect → saveProfiles(激活 p2) → connect 不带 openPickerAfter；挂起 loading 在页签视图，成功关弹窗", async () => {
+  it("切换：disconnect → saveProfiles(激活 p2) → connect 不带 openPickerAfter；挂起切独立连接弹窗，成功关弹窗", async () => {
     setupList()
-    render(<SettingsDialog />)
+    const { container } = render(<SettingsDialog />)
     fireEvent.click(screen.getByText("切换"))
-    // 挂起期：loading 行渲染在页签视图标题行下 + 弹窗未关 + 页签切换冻结
-    // （切走页签后失败原因将不可见，review 2026-09-07）
+    // 挂起期：切独立连接弹窗（设置弹窗 host 隐藏）+ 弹窗未关 + 页签切换冻结
+    // （失败收尾后失败原因行渲染在页签上方，切走页签将不可见，review 2026-09-07）
     await waitFor(() => expect(screen.getByText("正在连接…")).toBeTruthy())
+    expect(
+      container.querySelector(".dialog-lg")?.closest(".dialog-mask")?.className,
+    ).toContain("connecting-host-hidden")
     expect((screen.getByText("Provider").closest("button") as HTMLButtonElement).disabled).toBe(true)
     expect(storeState.current.closeSettings).not.toHaveBeenCalled()
     await waitFor(() => {
@@ -596,7 +622,7 @@ describe("服务器列表切换", () => {
     await waitFor(() => expect(storeState.current.closeSettings).toHaveBeenCalled())
   })
 
-  it("切换失败：loading 消失、失败原因内联展示、留在列表可重试，弹窗不关", async () => {
+  it("切换失败：独立弹窗消失、失败原因内联展示、留在列表可重试，弹窗不关", async () => {
     const emit = () => (globalThis as { __emitStore?: () => void }).__emitStore?.()
     setupList()
     storeState.current.connect = vi.fn(async () => {

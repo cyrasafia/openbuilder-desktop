@@ -8,8 +8,9 @@
 - 新流程把发现提到最前：多数场景用户点一下候选即完成配置（零表单、零输入）；手填降级为兜底入口
 - 交互形态源自欢迎屏的扫描→候选→连接链路；**2026-09-06 反向统一：欢迎页只呈现「添加服务器」入口，点击后同源复用本设计的 DiscoverView + ProfileFormView**（design-welcome-screen §3，非复制），行为差异全部参数化（欢迎屏注入 busy/emptyContent/saveLabel/onPick 连接语义）
 - ~~设置弹窗内不引入连接副作用，激活仍走列表「启用」~~ **2026-09-06 修订**：新增建档 = **保存即启用**——激活 profile + `connect({openPickerAfter})`（连接成功且无已打开项目时直达项目选择器）；仅**编辑**（isNew=false）仍保持原语义：只 upsert 不激活不连接，激活走列表「启用」
-- **2026-09-07 修订（列表激活改走挂起流）**：列表「启用」（use）更名**「切换」**（switch），不再自持静默 connect——点击后**走同一挂起流**（连接中弹窗保持打开 + loading 行，页签切换一并冻结），成功关弹窗但**不带 `openPickerAfter`**（落主页面，不弹项目列表），失败留在列表 + connectionError 内联展示可重试。挂起流实现同一收口：`ConnectionSettings` 的 onSwitch → 弹窗层 `saveProfile(p, "switch")`，loading/错误行提升到页签视图标题行下（原只在 discover/manual 子视图内）
-- **2026-09-06 修订 2（连接反馈闭环）**：启用流挂起期间**设置弹窗保持打开**——标题行下方 loading 行（spinner + 「正在连接…」），候选/手动入口/模式段/表单输入/取消/返回/关闭/Esc/遮罩**全部冻结**（连接不可中断，manual 草稿不可丢，review P2）；收尾以**本次尝试代际**驱动（三轮 review）——`started` 标记在 `disconnect()` 完成后置位，且 `disconnected` 须**本次已见过 connecting**才认失败：旧连接 managed 断开窗口的 streaming、disconnect→connect 之间 saveProfiles IPC 窗口的 disconnected、无关在途 connect 的 connecting 一律不认（review P1/P2 + 三轮 review P1）。收尾**订阅 store.emit**（逐 emit 同步触发，不经渲染路径——rAF 合帧会吞 connecting→终态的瞬态）。连接**成功**关弹窗（项目列表由 store 内 `openPickerAfter` 一次性标记直达，无打开项目时不弹）；连接**失败**回到原视图（discover 或 manual，草稿保留）+ **connectionError 在弹窗内 loading 位换色内联展示**（弹窗遮罩盖住左栏，错误必须弹窗内可见，review P3；左栏状态行仍同步可见），重试（再点保存）或关闭弹窗即清
+- **2026-09-07 修订（列表激活改走挂起流）**：列表「启用」（use）更名**「切换」**（switch），不再自持静默 connect——点击后**走同一挂起流**（~~连接中弹窗保持打开 + loading 行~~，2026-09-23 修订 3：切独立连接弹窗；页签切换一并冻结），成功关弹窗但**不带 `openPickerAfter`**（落主页面，不弹项目列表），失败留在列表 + connectionError 内联展示可重试。挂起流实现同一收口：`ConnectionSettings` 的 onSwitch → 弹窗层 `saveProfile(p, "switch")`，失败原因行渲染在页签视图标题行下（原只在 discover/manual 子视图内）
+- ~~**2026-09-06 修订 2（连接反馈闭环）**：启用流挂起期间**设置弹窗保持打开**——标题行下方 loading 行（spinner + 「正在连接…」），候选/手动入口/模式段/表单输入/取消/返回/关闭/Esc/遮罩**全部冻结**~~（挂起期呈现已被 2026-09-23 修订 3 改为独立连接弹窗；冻结语义本身保留——连接不可中断、manual 草稿不可丢，review P2）；收尾以**本次尝试代际**驱动（三轮 review）——`started` 标记在 `disconnect()` 完成后置位，且 `disconnected` 须**本次已见过 connecting**才认失败：旧连接 managed 断开窗口的 streaming、disconnect→connect 之间 saveProfiles IPC 窗口的 disconnected、无关在途 connect 的 connecting 一律不认（review P1/P2 + 三轮 review P1）。收尾**订阅 store.emit**（逐 emit 同步触发，不经渲染路径——rAF 合帧会吞 connecting→终态的瞬态）。连接**成功**关弹窗（项目列表由 store 内 `openPickerAfter` 一次性标记直达，无打开项目时不弹）；连接**失败**回到原视图（discover 或 manual，草稿保留）+ **connectionError 在弹窗内 loading 位换色内联展示**（弹窗遮罩盖住左栏，错误必须弹窗内可见，review P3；左栏状态行仍同步可见），重试（再点保存）或关闭弹窗即清
+- **2026-09-23 修订 3（挂起期呈现 = 独立连接弹窗）**：新建/切换启用流挂起期间不再在设置弹窗内嵌 loading 行——设置弹窗**整体隐藏**（`.connecting-host-hidden`：display:none **保挂载**，editing/草稿/发现列表状态不丢，失败恢复零成本），由平级渲染的**独立连接弹窗**（`connecting-dialog.tsx`，320 档小弹窗居中 + 遮罩：spinner + `addProfileConnecting` 文案）独占屏幕。弹窗**无任何可交互控件**——无关闭钮、Esc 无效、遮罩点击无操作（连接不可中断；冻结由「宿主隐藏 + 独占」兜底，控件 disabled 一并保留作防御）。成功收尾不变（关设置弹窗、openPickerAfter 直达项目列表/主页面）；失败收尾不变（设置弹窗恢复显示在原视图 + connectionError 内联行——展示位即原 loading 位），新增**焦点恢复**：失败恢复显示时弹窗容器 refocus（隐藏期焦点回落 body，Esc 分层需落点；manual 表单输入焦点不恢复——键盘用户点回输入框，接受）。**欢迎屏同语义统一**（design-welcome-screen §3 修订）：连接中卡片整体隐藏 + 同一独立弹窗（单一来源非复制）；失败卡片恢复、pickError/connectionError 行展示；成功由既有 streaming effect 关欢迎屏
 
 ## 1. 视图状态机
 
@@ -44,7 +45,7 @@ type EditingState =
 - attach 候选：`{ id: prof_*, name: url, baseUrl: url, mode: "attach" }`——health 已在扫描侧验证（design-auto-scan §3.3），无需再测
 - managed 候选：`{ id: prof_*, name: "", baseUrl: "", mode: "managed", binaryPath: 候选路径 }`
 - ~~点击即调 `saveProfiles(next, store.activeProfileId)`（追加，不自动激活）→ 退回列表视图；用户在列表「启用」才连接~~（2026-09-06 修订）点击即走**启用流**（同 manual 新增保存）：`disconnect()`（**先于**改激活——此时旧 profile 仍激活，managed 模式才能正确 stop 旧进程，顺序同列表「切换」activate）→ `saveProfiles(next, profile.id)`（激活）→ `connect({ openPickerAfter: true })`。连接成功且无已打开项目时直达项目选择器（store 内一次性标记，见 app-store `doConnect` 收尾；失败错误经左栏状态行可见，重试走列表「切换」，标记保留到下次成功连接）
-- **2026-09-06 修订 2**：启用流挂起期间弹窗保持打开（loading 行 + 动作冻结），成功关弹窗、失败回原视图（见 §0 修订 2）；设置弹窗与欢迎屏（`connectWithProfile`）同语义——欢迎屏卡片内「连接中…」行带 spinner，streaming 关欢迎屏、失败停在原视图
+- **2026-09-06 修订 2 / 2026-09-23 修订 3**：启用流挂起期间弹窗宿主隐藏、**切独立连接弹窗**（见 §0 修订 3），成功关弹窗、失败回原视图；设置弹窗与欢迎屏（`connectWithProfile`）同语义——~~欢迎屏卡片内「连接中…」行带 spinner~~（2026-09-23：同一独立连接弹窗，卡片隐藏），streaming 关欢迎屏、失败停在原视图
 - name 取 url/空串与欢迎屏候选建档口径一致（2026-09-06 起两侧同源复用 DiscoverView/ProfileFormView——空名 managed → 列表回落展示 binaryPath）；欢迎屏 `connectWithProfile` 同步 `disconnect` 先行 + `openPickerAfter`（建档连接成功后同样直达项目选择）
 
 ### 2.3 手动入口常驻
@@ -61,19 +62,20 @@ type EditingState =
 ## 4. 交互细节
 
 - ~~建档后不弹 toast、不自动激活：列表视图回显新行即反馈（profile-list 直读 store）~~（2026-09-06 修订：新增即启用流，弹窗关闭；编辑保存回显不变——列表视图回显新行即反馈）
-- **2026-09-06 修订 2**：新增即启用流弹窗**不立即关闭**——挂起 loading 期动作全禁用；成功才关（项目列表直达），失败回原视图
+- **2026-09-06 修订 2 / 2026-09-23 修订 3**：新增即启用流弹窗**不立即关闭**——挂起期**切换到独立连接弹窗**（设置弹窗宿主 display:none 隐藏，保挂载）；成功才关（项目列表直达），失败回原视图
 - discover 视图无「取消」钮——返回钮/Esc 即取消（无草稿可丢）
 - manual（新增）的「取消」丢弃草稿回 discover（不是列表）——用户可能只是想换一种模式再来，回发现视图少一跳
-- 连接失败的处理（2026-09-06 修订 2）：挂起收尾**回到原视图**（discover/manual 草稿保留）——`connectionError` 在弹窗 loading 位换色内联展示（review P3：弹窗遮罩盖住左栏，「左栏可见」在弹窗打开期间不成立；左栏状态行仍同步可见）；用户可改参数重试、换候选或换模式
+- 连接失败的处理（2026-09-06 修订 2）：挂起收尾**回到原视图**（discover/manual 草稿保留）——`connectionError` 在弹窗内联展示（修订 3：失败收尾独立弹窗消失、设置弹窗恢复显示后，错误在原 loading 位换色呈现；弹窗遮罩盖住左栏，「左栏可见」在弹窗打开期间不成立，review P3；左栏状态行仍同步可见）；用户可改参数重试、换候选或换模式
 
 ## 5. 实现落点
 
 | 文件 | 内容 |
 |---|---|
-| `settings-dialog.tsx` | `EditingState` 状态机；`DiscoverView`（双扫描并行 + 代际守卫 + 候选建档；**导出供欢迎屏复用**，`busy`/`emptyContent` props，2026-09-06）；ProfileFormView 模式段置顶（**导出**，`saveLabel`/`busy` props）；Esc 分层扩展；**挂起新增流（修订 2）**：`pendingNew` 本地态 + **store.subscribe 收尾**（started/seenConnecting 双闸门：streaming 关弹窗 / disconnected（已见过 connecting）回原视图），loading 行 `.pending-connect`、错误行 `.pending-connect-error` |
-| i18n | `discover*` 6 键（2026-09-06 修订：删 `discoverServersTitle`/`discoverBinariesTitle`（候选单列表混排无段标题）与 `discoverSourceLoopback`/`discoverSourceMdns`（来源徽标取消），增 `discoverAttachTitle`/`discoverManagedTitle` 多行卡片标题文案）+ `addProfileManualTitle` + `addProfileConnecting`（挂起 loading 文案，zh/en）+ `modeAttachDesc`/`modeManagedDesc` + `modeAttach`/`modeManaged` 改短标签（zh/en） |
-| app.css | `.discover-candidate`（多行卡片：首行 `.discover-candidate-head` 标题居左 + 版本居右、次行 `.discover-candidate-detail` mono 明细，attach/managed 同构）、`.discover-actions`（space-between）、`.profile-mode-seg`/`.profile-mode-desc`、`.pending-connect`/`.pending-connect-spinner`/`.pending-connect-error`（修订 2 挂起 loading/错误行）、欢迎屏 `.welcome-connecting*` |
-| 测试 | `settings-dialog.test.tsx`：发现视图组（并行启动、先到先列、悬挂一路保持搜索中、空态、server/binary 候选建档**并启用挂起**（loading 出现 + closeSettings 未调 + connect({openPickerAfter})；成功 rerender 后关弹窗；失败回原视图可重试）、重新搜索、Esc 分层）+ manual 组（模式段切换、字段分化、编辑直落、**手动新增保存启用流挂起**）；store 侧 `app-store.test.ts` 的 `connect({openPickerAfter})` 组（消费即清/已有项目不弹/普通 connect 不弹/失败保留标记） |
+| `connecting-dialog.tsx` | **独立连接弹窗（修订 3）**：纯展示组件（dialog-mask + `.connecting-dialog`，spinner + `addProfileConnecting`），无交互件；设置弹窗与欢迎屏共用（单一来源） |
+| `settings-dialog.tsx` | `EditingState` 状态机；`DiscoverView`（双扫描并行 + 代际守卫 + 候选建档；**导出供欢迎屏复用**，`busy`/`emptyContent` props，2026-09-06）；ProfileFormView 模式段置顶（**导出**，`saveLabel`/`busy` props）；Esc 分层扩展；**挂起新增流**：`pendingNew` 本地态 + **store.subscribe 收尾**（started/seenConnecting 双闸门：streaming 关弹窗 / disconnected（已见过 connecting）回原视图），**修订 3 呈现**：pendingNew 时弹窗宿主 `.connecting-host-hidden` 隐藏（display:none 保挂载）+ 平级 `<ConnectingDialog/>`；失败错误行 `.pending-connect-error`（原 loading 位）；失败恢复显示时容器 refocus（Esc 落点） |
+| i18n | `discover*` 6 键（2026-09-06 修订：删 `discoverServersTitle`/`discoverBinariesTitle`（候选单列表混排无段标题）与 `discoverSourceLoopback`/`discoverSourceMdns`（来源徽标取消），增 `discoverAttachTitle`/`discoverManagedTitle` 多行卡片标题文案）+ `addProfileManualTitle` + `addProfileConnecting`（修订 3：独立连接弹窗文案，zh/en）+ `modeAttachDesc`/`modeManagedDesc` + `modeAttach`/`modeManaged` 改短标签（zh/en）；`welcomeConnecting` 随欢迎屏卡片内行移除而删（2026-09-23） |
+| app.css | `.discover-candidate`（多行卡片：首行 `.discover-candidate-head` 标题居左 + 版本居右、次行 `.discover-candidate-detail` mono 明细，attach/managed 同构）、`.discover-actions`（space-between）、`.profile-mode-seg`/`.profile-mode-desc`、`.pending-connect-error`（修订 3 后仅失败错误行）、`.pending-connect-spinner`（独立弹窗复用）、**修订 3**：`.connecting-dialog`（320 档、水平排布）+ `.connecting-host-hidden`（置于 `.dialog-mask`/`.welcome-wrap` 之后，源序覆盖 display）；`.welcome-connecting*` 随卡片内行移除而删 |
+| 测试 | `settings-dialog.test.tsx`：发现视图组（并行启动、先到先列、悬挂一路保持搜索中、空态、server/binary 候选建档**并启用挂起**（独立连接弹窗在场 + 宿主 hidden 类 + closeSettings 未调 + connect({openPickerAfter})；成功 rerender 后关弹窗；失败独立弹窗消失、宿主恢复显示、错误内联、可重试）、重新搜索、Esc 分层）+ manual 组（模式段切换、字段分化、编辑直落、**手动新增保存启用流挂起**（挂起期宿主隐藏 + 控件禁用，失败草稿保留——display:none 保挂载的实现根基））；store 侧 `app-store.test.ts` 的 `connect({openPickerAfter})` 组（消费即清/已有项目不弹/普通 connect 不弹/失败保留标记） |
 
 ## 6. 已知取舍
 
@@ -84,7 +86,8 @@ type EditingState =
 
 ## 7. 测试
 
-- 组件（settings-dialog.test.tsx，22 用例）：
+- 组件（settings-dialog.test.tsx）：
   - 发现视图：双扫描并行启动；先回先列（servers 悬挂时 binaries 已列 + 搜索中提示不消失）；空态文案与手动入口常驻；server/binary 候选点击建档（mode/baseUrl/binaryPath 断言）+ 退回列表；重新搜索双触发 + 重搜期间按钮禁用与搜索中提示回归；焦点落弹窗容器（真 focus 语义，含 manual 返回路径）；新增路径 Esc 三跳分层
+  - 挂起流（修订 3 呈现）：server/binary 候选与手动保存启用——挂起期**独立连接弹窗在场 + 宿主 hidden 类 + 未关弹窗 + connect({openPickerAfter})**，成功关弹窗；失败独立弹窗消失、宿主恢复显示（hidden 类移除）、connectionError 内联、候选可再点；manual 挂起期控件禁用 + 失败草稿保留（display:none 保挂载的实现根基）；旧连接 streaming 断开窗口不误判成功（代际闸门，review 修订 2 P1）；列表「切换」挂起同独立弹窗 + connect 不带 openPickerAfter、失败留列表可重试
   - manual：模式段切换（URL/凭据 ↔ 二进制路径分化 + 说明随动）；attach 字段齐全不触发扫描；浏览填入；编辑既有 profile 直落 manual（跳过 discover）+ 保存 upsert
   - mock 注意：`mockReturnValue` 跨 `mockClear` 存留——悬挂 Promise 用例覆写后须在 `beforeEach` 复位实现（文件头注释）
