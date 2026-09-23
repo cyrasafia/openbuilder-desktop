@@ -2,7 +2,10 @@
  * 欢迎屏（design-welcome-screen，2026-09-06 二次修订）：入口视图只呈现「添加
  * 服务器」（2026-09-08 修订：设置入口移除）；点击后复用设置弹窗引导式流程
  * （DiscoverView 双扫描混排 + 手动配置 ProfileFormView），动作语义 = 建档 +
- * 激活 + 连接；streaming 直接关闭（无 provider 引导）。mock ../app 与 window.desktop。
+ * 激活 + 连接；streaming 直接关闭（无 provider 引导）。连接中**切独立连接弹
+ * 窗**（design-guided-add-server 修订 3）：卡片隐藏（display:none 保挂载）、
+ * ConnectingDialog 独占屏幕；失败卡片恢复、错误行可重试。mock ../app 与
+ * window.desktop。
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -44,7 +47,7 @@ vi.mock("../app", () => ({
       welcomeTitle: "欢迎使用 OpenBuilder",
       welcomeSubtitle: "先连接一台 server 开始",
       welcomeStartAndConnect: "启动并连接",
-      welcomeConnecting: "连接中…",
+      addProfileConnecting: "正在连接…",
       welcomeInstallHint: "未发现 server 与本机 opencode",
       welcomeConnect: "连接",
       addProfileTitle: "添加服务器",
@@ -253,13 +256,53 @@ describe("WelcomeScreen", () => {
     expect(screen.queryByText("设置默认模型")).toBeNull()
   })
 
-  it("connecting 态：候选与手动入口禁用 + 连接中提示（防重复触发）", async () => {
+  it("connecting 态：切独立连接弹窗（卡片隐藏）+ 候选/手动入口禁用（防重复触发）", async () => {
     storeState.current.connectionState = "connecting"
     await enterDiscover()
-    await waitFor(() => expect(screen.getByText("连接中…")).toBeTruthy())
+    // 独立连接弹窗在场（spinner + 文案）；卡片 host 隐藏（display:none 保挂载）
+    await waitFor(() => expect(screen.getByText("正在连接…")).toBeTruthy())
+    expect(document.querySelector(".connecting-dialog")).toBeTruthy()
+    expect(document.querySelector(".welcome-wrap")?.className).toContain("connecting-host-hidden")
     const binaryBtn = screen.getByText("/usr/bin/opencode").closest("button")
     expect(binaryBtn?.disabled).toBe(true)
     expect((screen.getByText("手动配置…") as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it("设置弹窗共存时去重（review 2026-09-23）：settingsOpen 在场欢迎屏不渲染独立弹窗（设置侧独占）", async () => {
+    // 删光 profile 后设置弹窗未关即再新增：saveProfiles 清空激活置 welcomeOpen、
+    // settingsOpen 不清——App 欢迎分支同时挂两者，设置侧已渲染独立弹窗
+    storeState.current.connectionState = "connecting"
+    storeState.current.settingsOpen = true
+    await enterDiscover()
+    // 卡片仍随 connecting 隐藏；独立弹窗由设置侧独占（不重复渲染）
+    expect(document.querySelector(".welcome-wrap")?.className).toContain("connecting-host-hidden")
+    expect(document.querySelector(".connecting-dialog")).toBeNull()
+  })
+
+  it("connecting → 独立弹窗独占；失败 → 卡片恢复 + connectionError 行，候选可再点（修订 3）", async () => {
+    const { rerender } = render(<WelcomeScreen />)
+    fireEvent.click(screen.getByRole("button", { name: "添加服务器" }))
+    await waitFor(() => expect(screen.getByText("手动配置…")).toBeTruthy())
+    // 连接中：切独立弹窗，卡片隐藏（display:none 保挂载——视图/扫描结果不丢）
+    storeState.current.connectionState = "connecting"
+    rerender(<WelcomeScreen />)
+    expect(screen.getByText("正在连接…")).toBeTruthy()
+    expect(document.querySelector(".welcome-wrap")?.className).toContain("connecting-host-hidden")
+    // 失败收尾：独立弹窗消失、卡片恢复显示（hidden 类移除）、connectionError 行在场
+    storeState.current = {
+      ...storeState.current,
+      connectionState: "disconnected",
+      connectionError: "连接被拒",
+    }
+    rerender(<WelcomeScreen />)
+    expect(screen.queryByText("正在连接…")).toBeNull()
+    expect(document.querySelector(".welcome-wrap")?.className).not.toContain(
+      "connecting-host-hidden",
+    )
+    expect(screen.getByText("连接被拒")).toBeTruthy()
+    // 视图恢复在发现页（挂载未卸载），候选可再点重试
+    const binaryBtn = screen.getByText("/usr/bin/opencode").closest("button")
+    expect(binaryBtn?.disabled).toBe(false)
   })
 
   it("连接失败：connectionError 展示在卡片内，候选可再点（重试）", async () => {

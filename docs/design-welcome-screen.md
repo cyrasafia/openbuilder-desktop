@@ -26,7 +26,7 @@
   - 动作语义：`onPick`/`onSave` = 建档（固定 id `welcome-managed`/`welcome-attach` upsert，重试/往返不堆 profile）+ 激活 + `connect()`（设置弹窗仅建档不激活）。**建档时序按模式保留原分支语义（review 追问后恢复）**：attach 先带凭据 `health()` 验证，通过才建档——失败不残留死 profile（候选虽经扫描无凭据预验证，复验一并关闭"扫描后 server 下线"窄窗）；managed 建档先于 connect（spawn 失败保留固定 id profile，设置内可调整重试）
   - `busy`：连接中（connectionState connecting）或 attach 预验中禁用候选与动作（设置弹窗不传）
   - `emptyContent`：双路皆空时覆盖默认空态，展示安装指引（首装用户兜底，设置弹窗不传）——文案 + 平台命令（linux/macOS `curl -fsSL https://opencode.ai/install | bash`、brew、npm 三行，逐行复制按钮；范围外：不自动安装）
-- 连接反馈（卡片底部，视图无关）：connecting「连接中…」提示行**带 spinner**（design-guided-add-server 修订 2，与设置弹窗挂起行同视觉）；attach 预验失败 / 连接失败展示对应错误可重试；成功 streaming → §1 关闭路径
+- 连接反馈（**2026-09-23 修订，design-guided-add-server 修订 3 同语义统一**）：connecting（connectionState）时**切换到独立连接弹窗**（`ConnectingDialog`，与设置弹窗共用单一来源）——卡片整体隐藏（`.connecting-host-hidden`：display:none 保挂载，视图/草稿/扫描结果不丢）、独立小弹窗（spinner + 「正在连接…」）独占屏幕，无任何可交互控件（连接不可中断）；成功 streaming → §1 关闭路径（独立弹窗随 connecting 消失）；失败卡片恢复显示 + attach 预验失败（pickError）/ 连接失败（connectionError）行展示，可重试。~~原卡片底部「连接中…」提示行~~（修订 3 移除）。**共存去重（review 2026-09-23）**：删光 profile 后设置弹窗未关即再新增服务器时，App 欢迎分支同时挂 WelcomeScreen + SettingsDialog——欢迎屏侧 `!settingsOpen` 门控不渲染独立弹窗（设置侧挂起流已渲染，避免双遮罩叠加与双 aria-live 重复播报；欢迎侧自发连接时设置弹窗必不在场，无入口）
 
 ## 4. ~~连接成功后的 provider 检查（引导视图）~~（已移除，2026-09-06）
 
@@ -42,11 +42,12 @@
 
 | 文件 | 内容 |
 |---|---|
-| `src/renderer/src/components/welcome-screen.tsx` | WelcomeScreen（entry/discover/manual 三视图状态机；入口页；`pick` = 建档固定 id upsert + 激活 + 连接；InstallHint 安装指引 emptyContent；streaming effect 直接 closeWelcome；卡片底部 connecting/connectionError 反馈行） |
+| `src/renderer/src/components/welcome-screen.tsx` | WelcomeScreen（entry/discover/manual 三视图状态机；入口页；`pick` = 建档固定 id upsert + 激活 + 连接；InstallHint 安装指引 emptyContent；streaming effect 直接 closeWelcome；**2026-09-23 修订 3**：connecting 时 `.welcome-wrap` 加 `.connecting-host-hidden` 隐藏 + 平级 `<ConnectingDialog/>`；失败 pickError/connectionError 行展示） |
+| `src/renderer/src/components/connecting-dialog.tsx` | 独立连接弹窗（纯展示：spinner + `addProfileConnecting`，无交互件），设置弹窗与欢迎屏共用 |
 | `src/renderer/src/components/settings-dialog.tsx` | 导出 `DiscoverView`/`ProfileFormView`/`newProfileDraft` 供欢迎屏同源复用；DiscoverView 新增 `busy`/`emptyContent` props、ProfileFormView 新增 `saveLabel`/`busy` props（设置弹窗自身用法不变） |
 | `src/renderer/src/store/app-store.ts` | `welcomeOpen` + `closeWelcome`；doInit 无 profile 置位；`saveProfiles` 清空激活置位（回欢迎页）；`openSettings(tab?)` 初始页签提示字段（providers/defaults 直达仅剩主界面设置入口在用；欢迎页入口 2026-09-08 移除） |
 | `src/renderer/src/app.tsx` | ready 后分支渲染 WelcomeScreen / Shell |
-| i18n / app.css | 删 choose/guidance 废弃键（zh/en）；`.welcome-discover-actions`/`.welcome-error` 新增，`.welcome-entry*`/`.welcome-action`/`.welcome-link` 随旧视图移除 |
+| i18n / app.css | 删 choose/guidance 废弃键（zh/en）；`.welcome-discover-actions`/`.welcome-error` 新增，`.welcome-entry*`/`.welcome-action`/`.welcome-link` 随旧视图移除；**2026-09-23**：`welcomeConnecting` 键随卡片内行删除，`.welcome-connecting*` 样式随行删（独立弹窗样式见 design-guided-add-server §5） |
 
 ## 7. 测试
 
@@ -55,7 +56,7 @@
   - 发现视图：server/binary 候选混排（来源徽标+版本）；返回回入口页
   - 候选连接：server 候选先 health（fetch 桩）后建 attach profile（固定 id + baseUrl）+ connect；**health 失败不建档不连接**；binary 候选建 managed profile（binaryPath + 空名）+ connect；固定 id upsert 重试不堆 profile
   - 空态：双路皆空给安装指引命令 + 复制按钮（emptyContent 覆盖默认空态），手动入口常驻
-  - 重新搜索双触发；connecting 态候选/手动入口禁用 + 提示；connectionError 展示且候选可再点
+  - 重新搜索双触发；connecting 态切独立连接弹窗（卡片 hidden 类）+ 候选/手动入口禁用；connecting → 失败卡片恢复 + connectionError 行（独立弹窗消失、hidden 类移除、候选可再点，2026-09-23）；connectionError 展示且候选可再点；**settingsOpen 共存去重**（欢迎屏不重复渲染独立弹窗，2026-09-23）
   - 手动配置页：URL 草稿默认值 + 「连接」主按钮先 health 再建档连接（固定 id）；切 managed 段字段分化 + 主按钮文案切换；返回回发现视图
   - streaming → 组件侧 closeWelcome（无 provider/默认模型引导回归断言）
 - store：doInit 无 profile 置 welcomeOpen；saveProfiles 清空激活置位（回欢迎页）；激活存在时不置位（不变）
