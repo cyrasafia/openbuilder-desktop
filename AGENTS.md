@@ -28,7 +28,7 @@ opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录�
 
 - **不用 `@opencode-ai/sdk`**——npm 发布滞后于 server，是过期契约。通信层自写（REST + SSE 直连），API 契约以 `../openbuilder/opencode_openapi.json` 为准（与移动端同源）
 - 文档命名遵循移动端项目体系：`docs/design-*.md`（功能/技术设计）、`docs/plan-*.md`（计划）、`docs/review-*.md`（复盘）、`docs/spec-*.md`（版本范围）；根目录 `DESIGN.md` 专属视觉设计、`PRINCIPLES.md` 专属设计原则，**不得**用作其他用途
-- 中文文档、中文 commit message，前缀惯例 `feat:` / `fix:` / `ui:` / `build:` / `chore:` / `docs:`（见 git log）
+- 中文文档、中文 commit message，前缀惯例 `feat:` / `fix:` / `ui:` / `build:` / `chore:` / `docs:`（见 git log）；**commit 标题只用一句话讲最核心的信息**（范本 9d85f0e / c15cdff，实测 ≤76 字；至多带一处 `——`/`（）` 紧凑定位短语），根因、方案细节、review 修订、测试计数、文档同步一律放正文——按主题分段、约 60 字换行，不得把细节整段挤进标题单行（2026-09-23 增补）
 - 合并其他分支到 main 默认用普通合并（`git merge --no-ff`，保留分支提交历史，生成 merge commit；2026-08-31 修订，原 squash merge 单提交方案弃用）
 - 架构文档是"决策记录"性质：修订需在文档内改写决策及依据，而不是只改代码留文档过期
 
