@@ -2825,14 +2825,16 @@ export class AppStore {
    *  新 worktree 随 SSE 事件到达，用户切过去时即见）。 */
   async createWorkspace(projectId: string = this.currentProject?.id ?? ""): Promise<{ ok: boolean; error?: string }> {
     const project = this.projects.find((p) => p.id === projectId)
-    if (!this.client || !project) return { ok: false, error: "no project" }
+    const clientV2 = this.clientV2
+    if (!clientV2 || !project) return { ok: false, error: "no project" }
     // 非 git 项目（v2 伪项目行）：无 worktree 概念（左栏也不渲染该入口，此处兜底）
     if (!project.vcs) {
       return { ok: false, error: "non-git project has no worktree" }
     }
     const isCurrent = project.id === this.currentProject?.id
     try {
-      const result = await this.client.createWorktree(project.worktree)
+      // v2：name 省略 = server 随机 slug；父目录省略 = 项目配置/默认数据目录
+      const result = await clientV2.createWorktree(project.id)
       // worktree API 返回轻量对象，重拉列表拿完整 Workspace 记录（刷新全局 projects）
       await this.refreshWorkspacesForProject(project)
       if (isCurrent && this.currentProject?.sandboxes?.includes(result.directory)) {
@@ -5883,6 +5885,7 @@ export class AppStore {
   mountReconciler() {
     this.reconciler = new Reconciler({
       client: () => this.client,
+      clientV2: () => this.clientV2,
       // 对账目录源 = 打开项目全集（与事件闸门同源；单全局流下无"订阅集"概念）
       getOpenedDirectories: () => this.openedDirectories(),
       getActiveSessions: () =>

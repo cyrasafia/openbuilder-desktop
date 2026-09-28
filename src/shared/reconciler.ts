@@ -5,6 +5,8 @@
  */
 import type { Session, SessionStatusValue } from "./api-types"
 import type { RestClient } from "./rest-client"
+import type { RestClientV2 } from "./rest-client-v2"
+import { toInternalMessages, toInternalSession as toInternalSessionForReconcile } from "./v2-adapter"
 import { mergeSnapshotIntoMessages } from "./message-merge"
 import type { MessageWithParts } from "./api-types"
 import { runLimited } from "./run-limited"
@@ -12,6 +14,8 @@ import { runLimited } from "./run-limited"
 export interface ReconcilerDeps {
   /** 连接拆除后返回 null（reconcile 直接放弃，不再非空断言） */
   client: () => RestClient | null
+  /** v2 client（M6：消息快照换绑——v1 listMessages 在 v2 server 全 404） */
+  clientV2: () => RestClientV2 | null
   getOpenedDirectories: () => string[]
   getActiveSessions: () => Array<{ sessionID: string; directory: string }>
   onSessionsSnapshot: (directory: string, sessions: Session[]) => void
@@ -76,23 +80,26 @@ export class Reconciler {
   private async reconcileOnce() {
     const client = this.d.client()
     if (!client) return
+    const clientV2 = this.d.clientV2()
+    if (!clientV2) return
     // 在途闸门：client() 变化（disconnect/切 profile/teardown）即丢弃本轮剩余
     // 结果——防止旧连接的迟到快照写回已清空/新连接的状态
-    const stale = () => this.d.client() !== client
+    const stale = () => this.d.client() !== client || this.d.clientV2() !== clientV2
     // 会话快照逐目录并发受限 + 容错：目录数 = 打开项目全集（单全局流后无
     // 5 条订阅上限，可达几十），无界扇出会让排队请求的 15s 超时从分发起算、
     // 尾部饿死（run-limited 注释记录过的失败模式）；单目录失败跳过回调
     // （保留旧值），不拖垮其余目录
     const dirs = [...new Set(this.d.getOpenedDirectories())]
     await runLimited(dirs, 3, async (dir) => {
-      const sessions = await client.listSessions(dir).catch(() => null)
+      // M6：消息快照换绑 v2（v1 listMessages 在 v2 server 全 404——typed union
+      // 经 toInternalMessages 收敛为内部形状，与 loadSessionMessages 同管道）
+      const page = await clientV2.listSessions({ directory: dir, limit: 200 }).catch(() => null)
       if (stale()) return
-      if (sessions !== null) this.d.onSessionsSnapshot(dir, sessions)
+      if (page !== null) this.d.onSessionsSnapshot(dir, page.data.map((s) => toInternalSessionForReconcile(s)))
     })
     if (this.d.onPendingSnapshot) {
-      // pending 拉取逐目录串行（预算克制）；失败传 null（保留本地），与移动端
-      // _backfillPermissions/_backfillQuestions 的 failedDirs 语义一致；单目录
-      // 失败不拖垮整个 reconcile
+      // M6：pending 拉取仍走 v1 端点（v2 的 permission/form 待办端点在 M6 决策）——
+      // v2 server 上全 404 → null（保留本地），无功能但无阻塞
       for (const dir of dirs) {
         const permissions = await client.listPendingPermissions(dir).catch(() => null)
         const questions = await client.listPendingQuestions(dir).catch(() => null)
@@ -100,13 +107,11 @@ export class Reconciler {
         this.d.onPendingSnapshot(dir, permissions, questions)
       }
     }
-    // 消息快照同样并发受限：全量开 Tab 后 N 可达几十，无界扇出会挤占空闲槽
-    // 导致整批超时（一损俱损）。逐项容错同上两阶段：对账在途时会话可能已被
-    // 删除（404），失败项跳过回调，不拖垮整轮
+    // 消息快照（M6：换绑 v2——typed union + cursor，与 loadSessionMessages 同管道）
     await runLimited(this.d.getActiveSessions(), 4, async ({ sessionID, directory }) => {
-      const msgs = await client.listMessages(sessionID, directory, RECONCILE_WINDOW).catch(() => null)
+      const page = await clientV2.listMessagesPage(sessionID, { limit: RECONCILE_WINDOW }).catch(() => null)
       if (stale()) return
-      if (msgs !== null) this.d.onMessagesSnapshot(sessionID, msgs)
+      if (page !== null) this.d.onMessagesSnapshot(sessionID, page.entries)
     })
   }
 }
