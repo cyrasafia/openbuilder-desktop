@@ -13,6 +13,8 @@ import type {
   ServerInfo,
   SessionInfo,
 } from "./api-v2-types"
+import { toInternalMessages, type V2MessageEntry } from "./v2-adapter"
+import type { MessageWithParts } from "./api-types"
 
 export interface RestClientV2Options {
   baseUrl: string
@@ -244,6 +246,63 @@ export class RestClientV2 {
       method: "DELETE",
       body: JSON.stringify({ projectID, directory, force: opts.force ?? false }),
       timeoutMs: 60000,
+    })
+  }
+
+  // ============ 消息域（M4a） ============
+
+  /**
+   * GET /api/session/:sessionID/message：typed union 列表 + body cursor（双向）。
+   * 分页语义对齐 v1 管线：order=desc（新→旧）翻页取 cursor.next（更旧方向 =
+   * v1 before 参数）；返回经 toInternalMessages 收敛为内部 MessageWithParts。
+   */
+  async listMessagesPage(
+    sessionID: string,
+    opts: { limit: number; cursor?: string },
+  ): Promise<{ entries: MessageWithParts[]; nextCursor: string | null }> {
+    const q = new URLSearchParams({ limit: String(opts.limit) })
+    if (opts.cursor !== undefined) q.set("cursor", opts.cursor)
+    const page = await this.fetchJson<{ data: unknown[]; cursor?: { previous?: string; next?: string } }>(
+      `/api/session/${encodeURIComponent(sessionID)}/message?${q.toString()}`,
+      { timeoutMs: 20000 },
+    )
+    return {
+      entries: toInternalMessages(sessionID, (page?.data ?? []) as V2MessageEntry[]),
+      nextCursor: page?.cursor?.next ?? null,
+    }
+  }
+
+  /**
+   * POST /api/session/:sessionID/prompt：200 + `{data: SessionInbox.User}` 准入
+   * 回执（非 v1 的 204 盲发）。回执是 inbox 项（无投影消息 id）——user 消息的
+   * 落地由调用方 post-200 首页重取（回执驱动，plan M4）。
+   * files = v1 FilePartInput → v2 {uri, name}。
+   */
+  async prompt(
+    sessionID: string,
+    input: { text: string; files?: Array<{ uri: string; name?: string }> },
+  ): Promise<void> {
+    await this.fetchResponse(`/api/session/${encodeURIComponent(sessionID)}/prompt`, {
+      method: "POST",
+      body: JSON.stringify({
+        text: input.text,
+        ...(input.files?.length ? { files: input.files } : {}),
+      }),
+      // 大附件同 v1 放宽（design-session-attachments §6）：data URL 总长 >1MB → 120s
+      timeoutMs:
+        (input.files ?? []).reduce((s, f) => s + (f.uri.startsWith("data:") ? f.uri.length : 0), 0) >
+          1024 * 1024
+          ? 120000
+          : 15000,
+    })
+  }
+
+  /** POST /api/session/:sessionID/interrupt（取代 v1 abort） */
+  async interrupt(sessionID: string): Promise<void> {
+    await this.fetchResponse(`/api/session/${encodeURIComponent(sessionID)}/interrupt`, {
+      method: "POST",
+      // 中断在途执行需等待结算（server awaitSettlement）——放宽超时
+      timeoutMs: 30000,
     })
   }
 }

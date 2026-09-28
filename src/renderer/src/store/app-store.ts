@@ -4,7 +4,14 @@
  */
 import { RestClient, ApiError } from "@shared/rest-client"
 import { RestClientV2, ApiError as ApiErrorV2 } from "@shared/rest-client-v2"
-import { archivedAtOf, isArchivedSession, toInternalProject, toInternalSession } from "@shared/v2-adapter"
+import {
+  archivedAtOf,
+  contentText as contentTextOf,
+  errorMessage as errorMessageOf,
+  isArchivedSession,
+  toInternalProject,
+  toInternalSession,
+} from "@shared/v2-adapter"
 import { SseSubscriber, type SseStatus, type SseEventMeta } from "@shared/sse-subscriber"
 import { Reconciler } from "@shared/reconciler"
 import { mergeSessionsSnapshot } from "@shared/session-merge"
@@ -1249,6 +1256,192 @@ export class AppStore {
   }
 
   /**
+   * v2 assistant 流式事件 → v1 消息管线（M4a 翻译层）：
+   * - step.started → message.updated（assistant 消息壳：agent/model）
+   * - step.ended → message.updated（finish/cost/time.completed 终态）
+   * - text/reasoning started/delta/ended → message.part.updated（TextPart；
+   *   delta 为**片段**——按 messageID+ordinal 累积缓冲，ended 为全量权威值）
+   * - tool.input.started/delta/ended + tool.called/progress/success/failed →
+   *   message.part.updated（ToolPart 状态机：input 流式缓冲 → called running →
+   *   success/failed 终态）
+   * 部件 id 规则与 toInternalMessages 的 assistantContentToParts 一致
+   * （text/reasoning = `<messageID>:c:<n>` 递增序号、tool = tool id）——
+   * 流式与快照两条路径产出的部件可互相覆盖/合并。
+   */
+  private v2StreamBuffers = new Map<string, string>()
+
+  private streamPartUpsert(
+    directory: string,
+    sessionID: string,
+    part: { id: string; type: string; [k: string]: unknown },
+  ) {
+    this.handleEvent(directory, { type: "message.part.updated", properties: { sessionID, part } })
+  }
+
+  private applyV2StreamEvent(
+    directory: string,
+    ev: { type: string; properties: Record<string, unknown> },
+    eventTime: number,
+  ): boolean {
+    const p = ev.properties
+    const sessionID = String(p.sessionID ?? "")
+    const messageID = String(p.assistantMessageID ?? "")
+    if (!sessionID || !messageID) return false
+    switch (ev.type) {
+      case "session.step.started": {
+        this.handleEvent(directory, {
+          type: "message.updated",
+          properties: {
+            sessionID,
+            info: {
+              id: messageID,
+              sessionID,
+              role: "assistant",
+              time: { created: eventTime },
+              ...(p.agent != null ? { agent: p.agent } : {}),
+              ...(p.model != null ? { model: p.model } : {}),
+            },
+          },
+        })
+        return true
+      }
+      case "session.step.ended": {
+        // 终态收敛：finish/cost/tokens（time.completed 用事件时间近似——
+        // 精确 streamed/completed 由对账快照纠正）
+        const conv = this.messagesBySession.get(sessionID)
+        const msg = conv?.get(messageID)
+        if (msg) {
+          conv!.set(messageID, {
+            info: {
+              ...msg.info,
+              ...(p.finish != null ? { finish: p.finish } : {}),
+              ...(p.cost != null ? { cost: p.cost } : {}),
+              ...(p.tokens != null ? { tokens: p.tokens } : {}),
+              time: { ...msg.info.time, completed: eventTime },
+            } as typeof msg.info,
+            parts: msg.parts,
+          })
+        }
+        return true
+      }
+      case "session.text.started":
+      case "session.reasoning.started": {
+        const kind = ev.type.startsWith("session.reasoning") ? "reasoning" : "text"
+        this.v2StreamBuffers.set(`${sessionID}\0${messageID}\0${kind}\0${p.ordinal}`, "")
+        return true
+      }
+      case "session.text.delta":
+      case "session.reasoning.delta": {
+        const kind = ev.type.startsWith("session.reasoning") ? "reasoning" : "text"
+        const key = `${sessionID}\0${messageID}\0${kind}\0${p.ordinal}`
+        const acc = (this.v2StreamBuffers.get(key) ?? "") + String(p.delta ?? "")
+        this.v2StreamBuffers.set(key, acc)
+        this.streamPartUpsert(directory, sessionID, {
+          id: `${messageID}:c:${p.ordinal}`,
+          sessionID,
+          messageID,
+          type: kind,
+          text: acc,
+          time: { start: eventTime },
+        })
+        return true
+      }
+      case "session.text.ended":
+      case "session.reasoning.ended": {
+        const kind = ev.type.startsWith("session.reasoning") ? "reasoning" : "text"
+        const key = `${sessionID}\0${messageID}\0${kind}\0${p.ordinal}`
+        this.v2StreamBuffers.delete(key)
+        this.streamPartUpsert(directory, sessionID, {
+          id: `${messageID}:c:${p.ordinal}`,
+          sessionID,
+          messageID,
+          type: kind,
+          text: String(p.text ?? ""),
+          time: { start: eventTime, end: eventTime },
+        })
+        return true
+      }
+      case "session.tool.input.started": {
+        this.v2StreamBuffers.set(`${sessionID}\0${messageID}\0tool\0${p.id}`, "")
+        this.streamPartUpsert(directory, sessionID, {
+          id: String(p.id),
+          sessionID,
+          messageID,
+          type: "tool",
+          callID: String(p.id),
+          tool: String(p.name ?? ""),
+          state: { status: "running", input: "" },
+        })
+        return true
+      }
+      case "session.tool.input.delta":
+      case "session.tool.input.ended": {
+        const key = `${sessionID}\0${messageID}\0tool\0${p.id}`
+        const value =
+          ev.type === "session.tool.input.ended"
+            ? String(p.text ?? "")
+            : (this.v2StreamBuffers.get(key) ?? "") + String(p.delta ?? "")
+        if (ev.type === "session.tool.input.delta") this.v2StreamBuffers.set(key, value)
+        else this.v2StreamBuffers.delete(key)
+        // 工具名沿袭既有 part（input.started 建立后此流不再携带 name）
+        const conv = this.messagesBySession.get(sessionID)
+        const existingTool = (conv?.get(messageID)?.parts.find((x) => x.id === p.id) as { tool?: string } | undefined)?.tool ?? ""
+        this.streamPartUpsert(directory, sessionID, {
+          id: String(p.id),
+          sessionID,
+          messageID,
+          type: "tool",
+          callID: String(p.id),
+          tool: existingTool,
+          state: { status: "running", input: value },
+        })
+        return true
+      }
+      case "session.tool.called":
+      case "session.tool.progress":
+      case "session.tool.success":
+      case "session.tool.failed": {
+        // 状态机终态/进行中：复用 v2-adapter 的 ToolState 映射（content/error 归一）
+        const conv = this.messagesBySession.get(sessionID)
+        const existing = conv?.get(messageID)?.parts.find((x) => x.id === p.id)
+        const toolName =
+          (existing as { tool?: string } | undefined)?.tool ?? ""
+        const state =
+          ev.type === "session.tool.called"
+            ? { status: "running", input: p.input }
+            : ev.type === "session.tool.progress"
+              ? { status: "running", input: (existing as { state?: { input?: unknown } } | undefined)?.state?.input, metadata: p.metadata }
+              : ev.type === "session.tool.success"
+                ? {
+                    status: "completed",
+                    input: (existing as { state?: { input?: unknown } } | undefined)?.state?.input,
+                    output: contentTextOf(p.content),
+                    title: toolName,
+                    ...(p.metadata != null ? { metadata: p.metadata } : {}),
+                  }
+                : {
+                    status: "error",
+                    input: (existing as { state?: { input?: unknown } } | undefined)?.state?.input,
+                    error: errorMessageOf(p.error),
+                  }
+        this.streamPartUpsert(directory, sessionID, {
+          id: String(p.id),
+          sessionID,
+          messageID,
+          type: "tool",
+          callID: String(p.id),
+          tool: toolName,
+          state,
+          ...(p.executed != null ? { executed: p.executed } : {}),
+        })
+        return true
+      }
+      default:
+        return false
+    }
+  }
+
+  /**
    * v2 会话事件 → 既有语义（M3a 翻译层）：v2 拆掉 session.updated（renamed/
    * metadata.updated/permissions/viewed/...），payload 为增量字段而非完整
    * info——与本地会话合并后走 applySessionEvent；created 构造骨架（事件字段
@@ -1372,6 +1565,8 @@ export class AppStore {
     // 仅打开项目的目录全集（worktree ∪ sandboxes）放行——关闭项目 = 事件忽略。
     // 此前 message.*/session.created 等依赖"订阅集合即打开集合"隐式隔离，单流后必须显式过滤
     if (!this.isOpenedDirectory(directory)) return
+    // ---- v2 流式翻译层（M4a）：assistant 流式事件 → v1 part 管线 ----
+    if (this.applyV2StreamEvent(directory, ev, meta?.created ?? Date.now())) return
     // ---- v2 细粒度会话事件翻译层（M3a）：见 applyV2SessionEvent ----
     if (this.applyV2SessionEvent(directory, ev, meta?.created ?? Date.now())) return
     switch (ev.type) {
@@ -1755,6 +1950,26 @@ export class AppStore {
     const isChild = !!this.findSession(sessionID)?.parentID
     if (!hasTab && !isChild && this.messagesBySession.size >= 20) return
     this.messagesBySession.set(sessionID, new Map())
+  }
+
+  /**
+   * POST /prompt 200 后的消息首页重取（回执驱动）：拾取投影 user 消息并清除
+   * 对应乐观项（v2 无 message.updated user 事件，SSE 只推 assistant 侧流式）。
+   * 容错：重取失败保留乐观（下次对账/翻页收敛）；多次发送以 createdAt 匹配。
+   */
+  private async refreshMessagesAfterPrompt(sessionID: string, optimisticCreatedAt: number) {
+    const clientV2 = this.clientV2
+    const session = this.findSession(sessionID)
+    if (!clientV2 || !session) return
+    const page = await clientV2.listMessagesPage(sessionID, { limit: 20 }).catch(() => null)
+    if (this.clientV2 !== clientV2 || !page) return
+    this.mergeMessagePage(sessionID, page.entries)
+    // 投影 user 消息到达（created >= 乐观创建时刻）→ 清除已落地的乐观项
+    const projected = page.entries.some(
+      (m) => m.info.role === "user" && m.info.time.created >= optimisticCreatedAt,
+    )
+    if (projected) this.clearOptimistic(sessionID)
+    this.emit()
   }
 
   private clearOptimistic(sessionID: string) {
@@ -3072,13 +3287,11 @@ export class AppStore {
   }
 
   async loadSessionMessages(sessionID: string, directory: string) {
-    const client = this.client
-    if (!client) return
-    const page = await client
-      .listMessagesPage(sessionID, directory, { limit: 100 })
-      .catch(() => null)
+    const clientV2 = this.clientV2
+    if (!clientV2) return
+    const page = await clientV2.listMessagesPage(sessionID, { limit: 100 }).catch(() => null)
     // 世代守卫：await 期间断开/切 profile → 迟到响应不写新连接（同 loadEarlierMessages 模式）
-    if (this.client !== client) return
+    if (this.clientV2 !== clientV2) return
     if (!page) {
       // 失败且无既有状态：置 error 种子（cursor null + 未穷尽 = 可重试态）——
       // 空内容会话无法触发滚动，error 行是唯一重试入口（review P2-1）
@@ -3140,7 +3353,7 @@ export class AppStore {
    * - 失败置 error（UI 重试行），不判穷尽可重试。
    */
   async loadEarlierMessages(sessionID: string) {
-    const client = this.client
+    const client = this.clientV2
     const session = this.findSession(sessionID)
     if (!client || !session) return
     let state = this.sessionPages.get(sessionID)
@@ -3151,9 +3364,7 @@ export class AppStore {
       state = { nextCursor: null, exhausted: false, loading: true, error: false }
       this.sessionPages.set(sessionID, state)
       this.emit()
-      const seed = await client
-        .listMessagesPage(sessionID, session.directory, { limit: 100 })
-        .catch(() => null)
+      const seed = await client.listMessagesPage(sessionID, { limit: 100 }).catch(() => null)
       if (this.sessionPages.get(sessionID) !== state) return
       state.loading = false
       if (!seed) {
@@ -3174,10 +3385,7 @@ export class AppStore {
     state.error = false
     this.emit()
     try {
-      const page = await client.listMessagesPage(sessionID, session.directory, {
-        limit: 100,
-        before,
-      })
+      const page = await client.listMessagesPage(sessionID, { limit: 100, cursor: before })
       // 身份守卫：在途期间关 Tab 重开/断开重建了状态 → 旧页整体丢弃
       const cur = this.sessionPages.get(sessionID)
       if (cur !== state) return
@@ -3300,14 +3508,19 @@ export class AppStore {
     ])
     this.emit()
     try {
-      const parts: Array<{ type: "text"; text: string } | FilePartInput> = []
-      if (text) parts.push({ type: "text", text })
-      for (const ref of refs ?? []) parts.push(fileRefToFilePart(ref))
-      // 附件（design-session-attachments §2）：data URL 内联，无 source 字段
-      for (const a of attachments ?? []) {
-        parts.push({ type: "file", mime: a.mime, url: a.dataUrl, filename: a.filename })
+      const files: Array<{ uri: string; name?: string }> = []
+      for (const ref of refs ?? []) {
+        const p = fileRefToFilePart(ref)
+        if (p.type === "file") files.push({ uri: p.url, name: p.filename })
       }
-      await this.client.promptAsync(sessionID, session.directory, parts)
+      // 附件（design-session-attachments §2）：data URL 内联
+      for (const a of attachments ?? []) {
+        files.push({ uri: a.dataUrl, name: a.filename })
+      }
+      await this.clientV2!.prompt(sessionID, { text: text || ".", files })
+      // 回执驱动（plan M4）：v2 无 user 消息 SSE 事件——POST 200 准入后首页
+      // 重取拾取投影 user 消息（真实 id），乐观清除挂在其到达
+      void this.refreshMessagesAfterPrompt(sessionID, optimistic.createdAt)
       // 发送成功引用/附件即清（失败保留供重发，design-file-reference §2）
       this.clearFileRefs(sessionID)
       this.clearAttachments(sessionID)
@@ -3403,7 +3616,7 @@ export class AppStore {
     if (!this.client) return
     const session = this.findSession(sessionID)
     if (!session) return
-    await this.client.abortSession(sessionID, session.directory).catch(() => {})
+    await this.clientV2?.interrupt(sessionID).catch(() => {})
   }
 
   // ============ 回滚（design-message-revert） ============
@@ -4680,7 +4893,8 @@ export class AppStore {
    */
   async loadDiffTab(type: DiffTabType, directory: string) {
     const client = this.client
-    if (!client) return
+    const clientV2 = this.clientV2
+    if (!client || !clientV2) return
     const tabKey = diffTabKey(directory)
     const key = diffDataKey(type, directory)
     const prev = this.diffData.get(key)
@@ -4696,8 +4910,8 @@ export class AppStore {
           directory,
         )[0]
         if (session) {
-          const page = await client
-            .listMessagesPage(session.id, session.directory ?? directory, { limit: 100 })
+          const page = await clientV2
+            .listMessagesPage(session.id, { limit: 100 })
             .catch(() => null)
           const lastUser = [...(page?.entries ?? [])]
             .reverse()

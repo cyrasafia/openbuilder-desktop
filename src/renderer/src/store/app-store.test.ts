@@ -51,6 +51,10 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve }
 }
 
+  function clientV2Of() {
+    return (store as unknown as { clientV2: Record<string, unknown> }).clientV2
+  }
+
 function sessionsOf(...list: Session[]): Map<string, Session> {
   return new Map(list.map((s) => [s.id, s]))
 }
@@ -129,6 +133,13 @@ beforeEach(() => {
       updateSession: async () => {},
       deleteSession: async () => {},
       deleteWorktree: async () => {},
+      // M4a 消息域：typed union 已在真 client 收敛，fake 直接产内部形状
+      listMessagesPage: async (
+        _sid: string,
+        _opts: { limit?: number; cursor?: string } = {},
+      ): Promise<{ entries: MessageWithParts[]; nextCursor: string | null }> => ({ entries: [], nextCursor: null }),
+      prompt: async () => {},
+      interrupt: async () => {},
     }
   store.projects = [project()]
   store.projectStates = {
@@ -687,7 +698,7 @@ describe("busy 补充发送（design-supplement-send）", () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.promptAsync = async () => {}
+    clientV2Of().prompt = async () => {}
     // 会话 busy + 已有活跃流式 assistant（created 200，completed 空）
     setBusy()
     dispatch({
@@ -736,7 +747,7 @@ describe("busy 补充发送（design-supplement-send）", () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.promptAsync = async () => {}
+    clientV2Of().prompt = async () => {}
     setBusy()
 
     await store.sendPrompt("s1", "补充一")
@@ -761,7 +772,7 @@ describe("busy 补充发送（design-supplement-send）", () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.promptAsync = async () => {}
+    clientV2Of().prompt = async () => {}
     setRetry()
 
     const res = await store.sendPrompt("s1", "补充")
@@ -875,7 +886,7 @@ describe("合成 text part 过滤（design-file-reference §5，引用回显只�
   })
 
   it("快照路径（loadSessionMessages）：全合成消息登记并隐藏，混合消息正常", async () => {
-    ;(store as unknown as { client: unknown }).client = {
+    ;(store as unknown as { clientV2: unknown }).clientV2 = {
       listMessagesPage: async () => ({
         entries: [
           {
@@ -1066,17 +1077,14 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
     return { info: { id, sessionID: "s1", role: "user", time: { created } }, parts: [] }
   }
 
-  /** 顺序页夹具：每次 listMessagesPage 调用按序消费；耗尽后复用最后一页 */
+  /** 顺序页夹具：每次 listMessagesPage 调用按序消费；耗尽后复用最后一页。
+   *  注入目标 = clientV2（M4a 换绑；opts.cursor 即 v1 before） */
   function seedPageClient(pages: Array<{ entries: ReturnType<typeof msg>[]; nextCursor: string | null }>) {
-    const calls: Array<{ limit?: number; before?: string }> = []
+    const calls: Array<{ limit?: number; cursor?: string }> = []
     return {
       calls,
       client: {
-        listMessagesPage: async (
-          _sid: string,
-          _dir: string,
-          opts: { limit?: number; before?: string } = {},
-        ) => {
+        listMessagesPage: async (_sid: string, opts: { limit?: number; cursor?: string } = {}) => {
           calls.push(opts)
           return pages[Math.min(calls.length - 1, pages.length - 1)]
         },
@@ -1098,7 +1106,7 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
       { entries: [msg("m1", 1)], nextCursor: null },
       { entries: [], nextCursor: null },
     ])
-    ;(store as unknown as { client: unknown }).client = client
+    ;(store as unknown as { clientV2: unknown }).clientV2 = client
 
     await store.loadSessionMessages("s1", ROOT)
     expect(store.sessionPages.get("s1")).toEqual({
@@ -1109,7 +1117,7 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
     })
 
     await store.loadEarlierMessages("s1")
-    expect(calls[1]).toEqual({ limit: 100, before: "c8" })
+    expect(calls[1]).toEqual({ limit: 100, cursor: "c8" })
     expect(store.sessionPages.get("s1")?.nextCursor).toBe("c5")
     expect(store.chatEntries("s1").map((e) => (e.kind === "message" ? e.data.info.id : e.kind))).toEqual([
       "m5",
@@ -1134,15 +1142,11 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
     seedSession()
     let fail = false
     const calls: Array<{ limit?: number; before?: string }> = []
-    ;(store as unknown as { client: unknown }).client = {
-      listMessagesPage: async (
-        _sid: string,
-        _dir: string,
-        opts: { limit: number; before?: string },
-      ) => {
+    ;(store as unknown as { clientV2: unknown }).clientV2 = {
+      listMessagesPage: async (_sid: string, opts: { limit?: number; cursor?: string }) => {
         calls.push(opts)
         if (fail) throw new Error("boom")
-        if (opts.before) return { entries: [msg("m1", 1)], nextCursor: null }
+        if (opts.cursor) return { entries: [msg("m1", 1)], nextCursor: null }
         return { entries: [msg("m8", 8)], nextCursor: "c8" }
       },
     }
@@ -1163,7 +1167,7 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
     expect(calls).toEqual([
       { limit: 100 }, // 失败的种子
       { limit: 100 }, // 重试种子
-      { limit: 100, before: "c8" }, // 同调用内继续分页
+      { limit: 100, cursor: "c8" }, // 同调用内继续分页
     ])
     expect(store.sessionPages.get("s1")).toEqual({
       nextCursor: null,
@@ -1176,7 +1180,7 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
 
   it("挂载窗口加载失败置 error 种子：空会话的 error 行可达（无滚动也可重试）", async () => {
     seedSession()
-    ;(store as unknown as { client: unknown }).client = {
+    ;(store as unknown as { clientV2: unknown }).clientV2 = {
       listMessagesPage: async () => {
         throw new Error("boom")
       },
@@ -1192,9 +1196,9 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
 
     // 网络恢复后点 error 行（= loadEarlierMessages 种子重试）：成功后正常分页
     const d = deferred<{ entries: ReturnType<typeof msg>[]; nextCursor: string | null }>()
-    ;(store as unknown as { client: unknown }).client = {
-      listMessagesPage: async (_sid: string, _dir: string, opts: { before?: string }) => {
-        if (opts.before) return d.promise
+    ;(store as unknown as { clientV2: unknown }).clientV2 = {
+      listMessagesPage: async (_sid: string, opts: { cursor?: string }) => {
+        if (opts.cursor) return d.promise
         return { entries: [msg("m8", 8)], nextCursor: "c8" }
       },
     }
@@ -1213,7 +1217,7 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
 
   it("error 种子不残留：重激活成功覆盖（review R3-P2 路径 A）", async () => {
     seedSession()
-    ;(store as unknown as { client: unknown }).client = {
+    ;(store as unknown as { clientV2: unknown }).clientV2 = {
       listMessagesPage: async () => {
         throw new Error("boom")
       },
@@ -1222,7 +1226,7 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
     expect(store.sessionPages.get("s1")?.error).toBe(true)
 
     // 切回 Tab 重挂载重拉成功 → error 种子被覆盖为正常种子（不残留失败行）
-    ;(store as unknown as { client: unknown }).client = {
+    ;(store as unknown as { clientV2: unknown }).clientV2 = {
       listMessagesPage: async () => ({ entries: [msg("m8", 8)], nextCursor: "c8" }),
     }
     await store.loadSessionMessages("s1", ROOT)
@@ -1236,7 +1240,7 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
 
   it("error 种子不残留：对账回填清除（review R3-P2 路径 B）", async () => {
     seedSession()
-    ;(store as unknown as { client: unknown }).client = {
+    ;(store as unknown as { clientV2: unknown }).clientV2 = {
       listMessagesPage: async () => {
         throw new Error("boom")
       },
@@ -1260,15 +1264,11 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
     seedSession()
     let fail = false
     const calls: Array<{ limit?: number; before?: string }> = []
-    ;(store as unknown as { client: unknown }).client = {
-      listMessagesPage: async (
-        _sid: string,
-        _dir: string,
-        opts: { limit: number; before?: string },
-      ) => {
+    ;(store as unknown as { clientV2: unknown }).clientV2 = {
+      listMessagesPage: async (_sid: string, opts: { limit?: number; cursor?: string }) => {
         calls.push(opts)
         if (fail) throw new Error("boom")
-        if (opts.before) return { entries: [msg("m1", 1)], nextCursor: null }
+        if (opts.cursor) return { entries: [msg("m1", 1)], nextCursor: null }
         return { entries: [msg("m8", 8)], nextCursor: "c8" }
       },
     }
@@ -1299,14 +1299,10 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
     seedSession()
     const calls: Array<{ limit?: number; before?: string }> = []
     const d = deferred<{ entries: ReturnType<typeof msg>[]; nextCursor: string | null }>()
-    ;(store as unknown as { client: unknown }).client = {
-      listMessagesPage: async (
-        _sid: string,
-        _dir: string,
-        opts: { limit: number; before?: string },
-      ) => {
+    ;(store as unknown as { clientV2: unknown }).clientV2 = {
+      listMessagesPage: async (_sid: string, opts: { limit?: number; cursor?: string }) => {
         calls.push(opts)
-        if (opts.before) return d.promise
+        if (opts.cursor) return d.promise
         return { entries: [msg("m8", 8)], nextCursor: "c8" }
       },
     }
@@ -1323,16 +1319,12 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
 
   it("在途竞态：关 Tab 清状态后重开（新状态对象），旧页落地整体丢弃", async () => {
     seedSession()
-    const calls: Array<{ limit?: number; before?: string }> = []
+    const calls: Array<{ limit?: number; cursor?: string }> = []
     const d = deferred<{ entries: ReturnType<typeof msg>[]; nextCursor: string | null }>()
-    ;(store as unknown as { client: unknown }).client = {
-      listMessagesPage: async (
-        _sid: string,
-        _dir: string,
-        opts: { limit: number; before?: string },
-      ) => {
+    ;(store as unknown as { clientV2: unknown }).clientV2 = {
+      listMessagesPage: async (_sid: string, opts: { limit?: number; cursor?: string }) => {
         calls.push(opts)
-        if (opts.before) return d.promise
+        if (opts.cursor) return d.promise
         return { entries: [msg("m8", 8)], nextCursor: "c8" }
       },
     }
@@ -1364,7 +1356,7 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
       { entries: [msg("m8", 8)], nextCursor: "c8" },
       { entries: [], nextCursor: null },
     ])
-    ;(store as unknown as { client: unknown }).client = client
+    ;(store as unknown as { clientV2: unknown }).clientV2 = client
 
     await store.loadSessionMessages("s1", ROOT)
     await store.loadEarlierMessages("s1")
@@ -1380,7 +1372,7 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
       // 重激活的窗口响应（服务端可能又长了）：cursor 锚点更新（c9），但不得覆盖 c5
       { entries: [msg("m9", 9), msg("m10", 10), msg("m11", 11)], nextCursor: "c9" },
     ])
-    ;(store as unknown as { client: unknown }).client = client
+    ;(store as unknown as { clientV2: unknown }).clientV2 = client
 
     await store.loadSessionMessages("s1", ROOT)
     await store.loadEarlierMessages("s1")
@@ -1406,7 +1398,7 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
     const { client } = seedPageClient([
       { entries: [msg("m8", 8)], nextCursor: "c8" },
     ])
-    ;(store as unknown as { client: unknown }).client = client
+    ;(store as unknown as { clientV2: unknown }).clientV2 = client
     await store.loadSessionMessages("s1", ROOT)
     expect(store.sessionPages.has("s1")).toBe(true)
     ;(store as unknown as { cleanupSessionState: (id: string) => void }).cleanupSessionState("s1")
@@ -2126,8 +2118,8 @@ describe("回滚到指定消息（design-message-revert）", () => {
     seedSession()
     const calls: string[] = []
     const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.abortSession = async () => {
-      calls.push("abort")
+    clientV2Of().interrupt = async () => {
+      calls.push("interrupt")
     }
     client.revertMessage = async () => {
       calls.push("revert")
@@ -2141,7 +2133,7 @@ describe("回滚到指定消息（design-message-revert）", () => {
 
     const res = await store.revertToMessage("s1", "msg_u1")
     expect(res.ok).toBe(true)
-    expect(calls).toEqual(["abort", "revert"])
+    expect(calls).toEqual(["interrupt", "revert"])
   })
 
   it("revertToMessage 409：ok:false 且 connectionError 记录", async () => {
@@ -3069,6 +3061,52 @@ describe("快捷键支撑（design-keyboard-shortcuts）", () => {
     expect(store.closedTabs.length).toBe(0)
   })
 
+describe("v2 流式翻译层（M4a：assistant 事件 → v1 part 管线）", () => {
+  /** 直驱 handleEvent（闸门目录 = ROOT；会话需在打开项目目录内） */
+  function dispatch(ev: { type: string; properties: unknown }, dir = ROOT) {
+    ;(store as unknown as { handleEvent: (d: string, e: unknown) => void }).handleEvent(dir, ev)
+  }
+
+  it("step.started → assistant 消息壳；text.delta 累积 → ended 全量权威收口", () => {
+    dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a1", agent: "build", model: { id: "glm-5.3", providerID: "zai" } } })
+    // 消息壳（v1 message.updated 路径落地）
+    expect(store.messagesBySession.get("s1")?.get("msg_a1")?.info).toMatchObject({ role: "assistant", agent: "build" })
+
+    dispatch({ type: "session.text.started", properties: { sessionID: "s1", assistantMessageID: "msg_a1", ordinal: 0 } })
+    dispatch({ type: "session.text.delta", properties: { sessionID: "s1", assistantMessageID: "msg_a1", ordinal: 0, delta: "你" } })
+    dispatch({ type: "session.text.delta", properties: { sessionID: "s1", assistantMessageID: "msg_a1", ordinal: 0, delta: "好" } })
+    let parts = store.messagesBySession.get("s1")?.get("msg_a1")?.parts
+    expect(parts?.find((p) => p.id === "msg_a1:c:0")).toMatchObject({ type: "text", text: "你好" })
+
+    dispatch({ type: "session.text.ended", properties: { sessionID: "s1", assistantMessageID: "msg_a1", ordinal: 0, text: "你好（全量）" } })
+    parts = store.messagesBySession.get("s1")?.get("msg_a1")?.parts
+    expect(parts?.find((p) => p.id === "msg_a1:c:0")).toMatchObject({ text: "你好（全量）" })
+  })
+
+  it("tool.input 流式缓冲 → called/success 终态；缓冲随 ended 清", () => {
+    dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a2" } })
+    dispatch({ type: "session.tool.input.started", properties: { sessionID: "s1", assistantMessageID: "msg_a2", id: "tool_9", name: "edit" } })
+    dispatch({ type: "session.tool.input.delta", properties: { sessionID: "s1", assistantMessageID: "msg_a2", id: "tool_9", delta: '{"path"' } })
+    let part = store.messagesBySession.get("s1")?.get("msg_a2")?.parts.find((p) => p.id === "tool_9") as unknown as { state: { input?: unknown }; tool?: string }
+    expect(part.state).toMatchObject({ status: "running", input: '{"path"' })
+    expect(part.tool).toBe("edit")
+
+    dispatch({ type: "session.tool.success", properties: { sessionID: "s1", assistantMessageID: "msg_a2", id: "tool_9", content: [{ type: "text", text: "ok" }], executed: true } })
+    part = store.messagesBySession.get("s1")?.get("msg_a2")?.parts.find((p) => p.id === "tool_9") as unknown as { state: { input?: unknown; output?: string; title?: string } }
+    expect(part.state).toMatchObject({ status: "completed", output: "ok", title: "edit" })
+  })
+
+  it("step.ended → finish/cost 终态收敛到消息 info", () => {
+    dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a3" } })
+    dispatch({ type: "session.text.ended", properties: { sessionID: "s1", assistantMessageID: "msg_a3", ordinal: 0, text: "x" } })
+    dispatch({ type: "session.step.ended", properties: { sessionID: "s1", assistantMessageID: "msg_a3", finish: "stop", cost: { amount: "0.01", currency: "USD" }, tokens: { input: 10, output: 5 } } })
+    const info = store.messagesBySession.get("s1")?.get("msg_a3")?.info
+    expect(info).toMatchObject({ finish: "stop" })
+    expect((info as { cost?: unknown }).cost).toBeTruthy()
+    expect((info as { time?: { completed?: number } }).time?.completed).toBeTruthy()
+  })
+})
+
 describe("D1 归档私约（M2：metadata.archivedAt，双源识别）", () => {
   /** v2 双源归档可见性：visibleSessions 过滤 / archivedSessions 收录 */
   function seed(s: Session) {
@@ -3820,15 +3858,11 @@ describe("文件引用（design-file-reference）", () => {
 
   it("sendPrompt parts 构造：文本 + 引用 file part（absolute file:// + source）", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
-    let sentParts: unknown[] = []
-    ;(store as unknown as { client: unknown }).client = {
-      listSessions: async () => [],
-      listSessionStatus: async () => ({}),
-      listProjects: async () => [project()],
-      listPendingPermissions: async () => [],
-      listPendingQuestions: async () => [],
-      promptAsync: async (_id: string, _dir: string, parts: unknown[]) => {
-        sentParts = parts
+    const sentBox: { v: { text: string; files?: Array<{ uri: string; name?: string }> } | null } = { v: null }
+    ;(store as unknown as { clientV2: unknown }).clientV2 = {
+      ...clientV2Of(),
+      prompt: async (_id: string, input: { text: string; files?: Array<{ uri: string; name?: string }> }) => {
+        sentBox.v = input
       },
     }
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
@@ -3836,23 +3870,14 @@ describe("文件引用（design-file-reference）", () => {
     store.addFileRef("s1", ref("docs/", `${ROOT}/docs`, true))
     const res = await store.sendPrompt("s1", "看下这些", store.fileRefsFor("s1"))
     expect(res.ok).toBe(true)
-    expect(sentParts).toEqual([
-      { type: "text", text: "看下这些" },
-      {
-        type: "file",
-        mime: "text/plain",
-        url: `file://${ROOT}/src/a.ts`,
-        filename: "a.ts",
-        source: { type: "file", path: "src/a.ts", text: { value: "", start: 0, end: 0 } },
-      },
-      {
-        type: "file",
-        mime: "text/plain",
-        url: `file://${ROOT}/docs`,
-        filename: "docs",
-        source: { type: "file", path: "docs/", text: { value: "", start: 0, end: 0 } },
-      },
-    ])
+    // v2 payload：text + files（v1 file part 的 mime/source 不上送——server 自行读取）
+    expect(sentBox.v).toEqual({
+      text: "看下这些",
+      files: [
+        { uri: `file://${ROOT}/src/a.ts`, name: "a.ts" },
+        { uri: `file://${ROOT}/docs`, name: "docs" },
+      ],
+    })
     // 发送成功引用即清（乐观消息仍带 refs 快照）
     expect(store.fileRefsFor("s1").length).toBe(0)
     expect(store.optimisticBySession.get("s1")![0]!.refs?.length).toBe(2)
@@ -3860,26 +3885,29 @@ describe("文件引用（design-file-reference）", () => {
 
   it("纯引用发送合法；全空拒绝", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
-    let sentParts: unknown[] = []
-    ;(store as unknown as { client: unknown }).client = {
-      promptAsync: async (_id: string, _dir: string, parts: unknown[]) => {
-        sentParts = parts
+    const sentBox: { v: { text: string; files?: Array<{ uri: string }> } | null } = { v: null }
+    ;(store as unknown as { clientV2: unknown }).clientV2 = {
+      ...clientV2Of(),
+      prompt: async (_id: string, input: { text: string; files?: Array<{ uri: string }> }) => {
+        sentBox.v = input
       },
     }
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
     store.addFileRef("s1", ref("a.ts", `${ROOT}/a.ts`))
     const res = await store.sendPrompt("s1", "", store.fileRefsFor("s1"))
     expect(res.ok).toBe(true)
-    expect(sentParts.length).toBe(1)
-    expect((sentParts[0] as { type: string }).type).toBe("file")
+    // 纯引用合法：text 用占位 "."（v2 text 必填，全空仍拒绝在入口守卫）
+    expect(sentBox.v?.files?.length).toBe(1)
+    expect(sentBox.v?.text).toBe(".")
     const empty = await store.sendPrompt("s1", "", [])
     expect(empty.ok).toBe(false)
   })
 
   it("发送失败：引用保留供重发（乐观撤回）", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
-    ;(store as unknown as { client: unknown }).client = {
-      promptAsync: async () => {
+    ;(store as unknown as { clientV2: unknown }).clientV2 = {
+      ...clientV2Of(),
+      prompt: async () => {
         throw new Error("net down")
       },
     }
@@ -5682,11 +5710,11 @@ describe("attachments + sendPrompt 附件扩展", () => {
 
   it("sendPrompt parts：文本 + 引用 + 附件混排（附件无 source、data URL 内联）；成功清附件", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
-    let sentParts: unknown[] = []
-    ;(store as unknown as { client: unknown }).client = {
-      listSessions: async () => [],
-      promptAsync: async (_id: string, _dir: string, parts: unknown[]) => {
-        sentParts = parts
+    const sentBox: { v: { text: string; files?: Array<{ uri: string; name?: string }> } | null } = { v: null }
+    ;(store as unknown as { clientV2: unknown }).clientV2 = {
+      ...clientV2Of(),
+      prompt: async (_id: string, input: { text: string; files?: Array<{ uri: string; name?: string }> }) => {
+        sentBox.v = input
       },
     }
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
@@ -5694,17 +5722,13 @@ describe("attachments + sendPrompt 附件扩展", () => {
     store.addAttachments("s1", [att("a1", "image/png", "shot.png", true)])
     const res = await store.sendPrompt("s1", "看图", store.fileRefsFor("s1"), store.attachmentsFor("s1"))
     expect(res.ok).toBe(true)
-    expect(sentParts).toEqual([
-      { type: "text", text: "看图" },
-      {
-        type: "file",
-        mime: "text/plain",
-        url: `file://${ROOT}/a.ts`,
-        filename: "a.ts",
-        source: { type: "file", path: "a.ts", text: { value: "", start: 0, end: 0 } },
-      },
-      { type: "file", mime: "image/png", url: "data:image/png;base64,AA==", filename: "shot.png" },
-    ])
+    expect(sentBox.v).toEqual({
+      text: "看图",
+      files: [
+        { uri: `file://${ROOT}/a.ts`, name: "a.ts" },
+        { uri: "data:image/png;base64,AA==", name: "shot.png" },
+      ],
+    })
     expect(store.attachmentsFor("s1")).toHaveLength(0)
     // 乐观消息携带附件（气泡即见）
     expect(store.optimisticBySession.get("s1")![0]!.attachments?.length).toBe(1)
@@ -5712,11 +5736,11 @@ describe("attachments + sendPrompt 附件扩展", () => {
 
   it("纯附件发送合法（无文本无引用）；大附件走放宽超时（rest-client 内部，见其测试）", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
-    let sentParts: unknown[] = []
-    ;(store as unknown as { client: unknown }).client = {
-      listSessions: async () => [],
-      promptAsync: async (_id: string, _dir: string, parts: unknown[]) => {
-        sentParts = parts
+    const sentBox: { v: { text: string; files?: Array<{ uri: string }> } | null } = { v: null }
+    ;(store as unknown as { clientV2: unknown }).clientV2 = {
+      ...clientV2Of(),
+      prompt: async (_id: string, input: { text: string; files?: Array<{ uri: string }> }) => {
+        sentBox.v = input
       },
     }
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
@@ -5725,15 +5749,15 @@ describe("attachments + sendPrompt 附件扩展", () => {
     store.addAttachments("s1", [big])
     const res = await store.sendPrompt("s1", "", [], store.attachmentsFor("s1"))
     expect(res.ok).toBe(true)
-    expect(sentParts).toHaveLength(1)
-    expect((sentParts[0] as { type: string }).type).toBe("file")
+    expect(sentBox.v?.files).toHaveLength(1)
+    expect(sentBox.v?.files?.[0]?.uri.startsWith("data:application/pdf")).toBe(true)
   })
 
   it("失败保留附件供重发", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
-    ;(store as unknown as { client: unknown }).client = {
-      listSessions: async () => [],
-      promptAsync: async () => {
+    ;(store as unknown as { clientV2: unknown }).clientV2 = {
+      ...clientV2Of(),
+      prompt: async () => {
         throw new Error("boom")
       },
     }
