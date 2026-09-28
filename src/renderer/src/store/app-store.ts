@@ -60,7 +60,11 @@ import {
 } from "@shared/pending-requests"
 import { normalizeTodoList } from "@shared/session-todos"
 import { isLoopbackBaseUrl } from "@shared/loopback"
-import { migrateLegacyGlobalState } from "@shared/project-entries"
+import {
+  migrateLegacyGlobalState,
+  migrateLegacyMemoryProjectIds,
+  migrateLegacyPersistedProjectIds,
+} from "@shared/project-entries"
 import type { BrowserViewState, ConnectionProfile, ManagedNotice } from "@shared/ipc"
 import "@shared/ipc-global"
 import { belowMinServerVersion, MIN_SERVER_VERSION_V2 } from "@shared/semver"
@@ -801,13 +805,23 @@ export class AppStore {
     // v1→v2 持久化键迁移（M1b，连接期一次）：global\0<dir> entry 键与
     // currentProjectId="global" 按 worktree 匹配转项目 ID（含伪项目行）；未匹配
     // （零会话目录无项目行）的键丢弃——可经选择器重开。projectStates 已整体
-    // 载入内存，全部 profile 切片一并迁移
+    // 载入内存，全部 profile 切片一并迁移。
+    // 评审 2026-09-28 增补：tabs.memory/tabs.session 的 projectId="global"
+    // 遗留同源归一（记忆匹配/forgetProjectMemory/sessionEntryOwned 均按
+    // projectId 精确比对，遗留值会退化为首次全量打开且清理不到）
     {
-      let migrated = false
+      let stateChanged = false
       for (const key of Object.keys(this.projectStates)) {
-        if (migrateLegacyGlobalState(this.projectStates[key]!, projects)) migrated = true
+        if (migrateLegacyGlobalState(this.projectStates[key]!, projects)) stateChanged = true
       }
-      if (migrated) void window.desktop.storeSet("project.state", this.projectStates).catch(() => {})
+      const memoryChanged = migrateLegacyMemoryProjectIds(this.tabMemory, projects)
+      const sessionChanged = migrateLegacyPersistedProjectIds(this.tabSession, projects)
+      if (stateChanged)
+        void window.desktop.storeSet("project.state", this.projectStates).catch(() => {})
+      if (memoryChanged)
+        void window.desktop.storeSet("tabs.memory", this.tabMemory).catch(() => {})
+      if (sessionChanged)
+        void window.desktop.storeSet("tabs.session", this.tabSession).catch(() => {})
     }
     // 连接归属切片键落位（teardown 外科修剪用它定位；见 sessionProfileKey 注释）
     this.sessionProfileKey = this.profileKey()

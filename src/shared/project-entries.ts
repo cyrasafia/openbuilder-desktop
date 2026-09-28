@@ -64,3 +64,67 @@ export function migrateLegacyGlobalState(
   if (changed) ps.opened = [...new Set(opened)]
   return changed
 }
+
+/**
+ * 目录 → v2 项目 ID（worktree 精确优先，sandboxes 认领；未命中 null）——
+ * 归一 v1 记忆/投影的 `projectId="global"` 遗留用。
+ */
+export function legacyProjectIdForDirectory(
+  directory: string,
+  projects: ReadonlyArray<{ id: string; worktree: string; sandboxes?: string[] }>,
+): string | null {
+  const p = projects.find(
+    (x) => x.worktree === directory || (x.sandboxes ?? []).includes(directory),
+  )
+  return p?.id ?? null
+}
+
+/**
+ * tabs.memory 各条目（profile → directory → {projectId,…}）的 `"global"` 归属
+ * 按目录转项目 ID（评审 2026-09-28 增补：restoreScopeTabs 的记忆匹配与
+ * forgetProjectMemory 的清理按 projectId 精确比对，遗留值使恢复退化为首次
+ * 全量打开且清理不到）。未命中的条目保持原值（死条目无害，记忆归零风险
+ * 大于残留）。返回是否有变更。
+ */
+export function migrateLegacyMemoryProjectIds(
+  memory: Record<string, Record<string, { projectId: string }>>,
+  projects: ReadonlyArray<{ id: string; worktree: string; sandboxes?: string[] }>,
+): boolean {
+  let changed = false
+  for (const slice of Object.values(memory)) {
+    if (!slice) continue
+    for (const [dir, mem] of Object.entries(slice)) {
+      if (!mem || mem.projectId !== GLOBAL_PROJECT_ID) continue
+      const id = legacyProjectIdForDirectory(dir, projects)
+      if (id) {
+        mem.projectId = id
+        changed = true
+      }
+    }
+  }
+  return changed
+}
+
+/**
+ * tabs.session 投影条目（projectId + directory）的 `"global"` 归属按目录转
+ * 项目 ID（chat 条目仅作顺序标记，归一为一致性；非 chat 条目的
+ * sessionEntryOwned 闸门按 projectId 比对）。未命中保持原值。返回是否有变更。
+ */
+export function migrateLegacyPersistedProjectIds(
+  session: Record<string, { tabs?: Array<{ projectId: string; directory: string }> }>,
+  projects: ReadonlyArray<{ id: string; worktree: string; sandboxes?: string[] }>,
+): boolean {
+  let changed = false
+  for (const slice of Object.values(session)) {
+    if (!slice?.tabs) continue
+    for (const tab of slice.tabs) {
+      if (tab.projectId !== GLOBAL_PROJECT_ID) continue
+      const id = legacyProjectIdForDirectory(tab.directory, projects)
+      if (id) {
+        tab.projectId = id
+        changed = true
+      }
+    }
+  }
+  return changed
+}

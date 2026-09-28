@@ -5546,6 +5546,42 @@ describe("connect({openPickerAfter}) 一次性标记", () => {
     expect(store.pickerOpen).toBe(true)
   })
 
+  it("v1 遗留 projectId=global 的记忆/投影：连接期归一为项目 ID（评审 2026-09-28 增补）", async () => {
+    attachProfileDesktop([project()])
+    const gmem = { projectId: "global", tabs: ["s1"], active: "s1" }
+    const pmem = { projectId: "proj1", tabs: [], active: null }
+    store.tabMemory = { p1: { [ROOT]: gmem, "/other": pmem } }
+    ;(store as unknown as { tabSession: unknown }).tabSession = {
+      p1: {
+        tabs: [
+          { kind: "chat", key: "chat:s1", projectId: "global", directory: ROOT, title: "s1" },
+          { kind: "file", key: "file:/nowhere/a", projectId: "global", directory: "/nowhere", title: "a" },
+        ],
+        scopeActive: {},
+      },
+    }
+    const memoryWrites: unknown[] = []
+    const sessionWrites: unknown[] = []
+    ;(window as unknown as { desktop: { storeSet: (k: string, v: unknown) => Promise<void> } }).desktop.storeSet =
+      async (k, v) => {
+        // 深拷贝捕获：写入的是 store 活引用，后续 persistTabSession 会原地改写
+        const snapshot = JSON.parse(JSON.stringify(v))
+        if (k === "tabs.memory") memoryWrites.push(snapshot)
+        if (k === "tabs.session") sessionWrites.push(snapshot)
+      }
+    await store.connect()
+    // ROOT 归属 proj1（worktree 匹配）；/nowhere 无项目行保持遗留值。
+    // tabSession 的内存态在恢复段被 persistTabSession 派生投影覆盖（预期行为），
+    // 归一结果以迁移期的**首次**写入为准
+    expect(store.tabMemory.p1?.[ROOT]?.projectId).toBe("proj1")
+    expect(store.tabMemory.p1?.["/other"]?.projectId).toBe("proj1")
+    expect(memoryWrites[0]).toBeTruthy()
+    const first = sessionWrites[0] as {
+      p1: { tabs: Array<{ projectId: string; directory: string }> }
+    }
+    expect(first.p1.tabs.map((tab) => tab.projectId)).toEqual(["proj1", "global"])
+  })
+
   it("v1 server 探活（unsupported/not-found）：明确报错指引，不进入连接", async () => {
     attachProfileDesktop([project()])
     vi.spyOn(RestClientV2.prototype, "serverInfo").mockRejectedValue(

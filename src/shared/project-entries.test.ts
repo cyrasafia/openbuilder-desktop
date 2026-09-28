@@ -3,7 +3,13 @@
  * "global" → 项目 ID（按 worktree 匹配）；未匹配丢弃；幂等。
  */
 import { describe, expect, it } from "vitest"
-import { GLOBAL_ENTRY_PREFIX, globalDirectoryOfKey, migrateLegacyGlobalState } from "./project-entries"
+import {
+  GLOBAL_ENTRY_PREFIX,
+  globalDirectoryOfKey,
+  migrateLegacyGlobalState,
+  migrateLegacyMemoryProjectIds,
+  migrateLegacyPersistedProjectIds,
+} from "./project-entries"
 
 const PROJECTS = [
   { id: "p_git", worktree: "/repo" },
@@ -55,5 +61,53 @@ describe("migrateLegacyGlobalState", () => {
     const ps = { opened: ["p_git", "p_hash"], currentProjectId: "p_git", currentWorkspaceId: "/wt" }
     expect(migrateLegacyGlobalState(ps, PROJECTS)).toBe(false)
     expect(ps).toEqual({ opened: ["p_git", "p_hash"], currentProjectId: "p_git", currentWorkspaceId: "/wt" })
+  })
+})
+
+describe("migrateLegacyMemoryProjectIds / migrateLegacyPersistedProjectIds", () => {
+  const PROJECTS2 = [
+    { id: "p_git", worktree: "/repo", sandboxes: ["/repo/.wt"] },
+    { id: "p_hash", worktree: "/plain", sandboxes: [] },
+  ]
+
+  it("memory：global 归属按 worktree 匹配转 ID（全 profile 切片）", () => {
+    const memory = {
+      profA: { "/plain": { projectId: "global", tabs: ["s1"], active: "s1" } },
+      profB: { "/repo": { projectId: "global", tabs: [], active: null } },
+    }
+    expect(migrateLegacyMemoryProjectIds(memory, PROJECTS2)).toBe(true)
+    expect(memory.profA["/plain"]!.projectId).toBe("p_hash")
+    expect(memory.profB["/repo"]!.projectId).toBe("p_git")
+  })
+
+  it("memory：sandboxes 认领 + 未命中保持原值 + 非 global 不动（幂等 false）", () => {
+    const memory = {
+      p: {
+        "/repo/.wt": { projectId: "global", tabs: [], active: null },
+        "/nowhere": { projectId: "global", tabs: [], active: null },
+        "/repo": { projectId: "p_git", tabs: [], active: null },
+      },
+    }
+    expect(migrateLegacyMemoryProjectIds(memory, PROJECTS2)).toBe(true)
+    expect(memory.p["/repo/.wt"]!.projectId).toBe("p_git")
+    expect(memory.p["/nowhere"]!.projectId).toBe("global")
+    expect(migrateLegacyMemoryProjectIds(memory, PROJECTS2)).toBe(false)
+  })
+
+  it("persisted：投影条目 global 归属按 directory 归一；未命中保持", () => {
+    const session = {
+      p: {
+        tabs: [
+          { kind: "chat", key: "chat:s1", projectId: "global", directory: "/plain", title: "t" },
+          { kind: "file", key: "file:/repo/a", projectId: "global", directory: "/repo/.wt", title: "a" },
+          { kind: "file", key: "file:/nowhere/a", projectId: "global", directory: "/nowhere", title: "a" },
+          { kind: "file", key: "file:/repo/b", projectId: "p_git", directory: "/repo", title: "b" },
+        ],
+        scopeActive: {},
+      },
+    }
+    expect(migrateLegacyPersistedProjectIds(session, PROJECTS2)).toBe(true)
+    expect(session.p.tabs.map((t) => t.projectId)).toEqual(["p_hash", "p_git", "global", "p_git"])
+    expect(migrateLegacyPersistedProjectIds(session, PROJECTS2)).toBe(false)
   })
 })
