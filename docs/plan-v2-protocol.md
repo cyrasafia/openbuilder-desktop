@@ -26,7 +26,7 @@
 - app-store 连接流程换绑：探活 `/global/health` → `/api/info`（`serverInfo()`）；**连 v1 server 的明确报错指引**（双兼容裁定：错误指引而非分派——探活 404/HTML 即判 v1，提示「server 版本不支持，需 opencode v2」）；
 - 401 凭据交互沿用现有 prompt 流（app-store.ts:756-774 已有 username 默认 `opencode` + 401 弹窗，无需新做，仅验证对 v2 生效）；
 - `listProjects()` 换绑左栏数据源（`ProjectInfo.canonical` 替代 `worktree` 字段，basename 展示逻辑不变）；`resolveProject(/project/current)` → `resolveLocation(directory)`（返回含 project{id, directory, canonical}）；
-- global 项目发现：`GET /session?scope=project&directory=/` → `listSessions({})` 无过滤**翻页全量**（cursor 循环拉取，limit 取上限）→ 按 `location.directory` 分组；`openedGlobalDirectories` 闸门语义保留；
+- **global 语义退役（用户裁定 A，2026-09-28，M1b 落地）**：原案「global 发现改无过滤翻页全量 + openedGlobalDirectories 闸门保留」**作废**——v2 实测无 global 项目行（非 git 目录 = 目录哈希伪项目行），非 git 目录以普通项目行进左栏，v1 的 `global\0<dir>` entry 模型/发现快照/事件闸门 global 分支整体删除；持久化旧键由 `migrateLegacyGlobalState` 连接期按 worktree 匹配迁移（实测：本机两个 profile 的旧键均能命中项目行）；新目录发现 = 项目列表刷新（连接/选择器打开 syncWorktrees/60s diff/M3 起 project.updated）；
 - 验收：真实 server 上连接 → 项目列表渲染 → global 目录发现全通；`app-store.test.ts` 连接/项目用例换绑 v2 mock。
 
 ### M2 会话域（列表/创建/归档）

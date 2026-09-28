@@ -60,15 +60,7 @@ import {
 } from "@shared/pending-requests"
 import { normalizeTodoList } from "@shared/session-todos"
 import { isLoopbackBaseUrl } from "@shared/loopback"
-import {
-  GLOBAL_PROJECT_ID,
-  globalDirectoryName,
-  globalDirectoryOfKey,
-  globalDirectoryRows,
-  globalEntryKey,
-  migrateOpenedKeys,
-  type GlobalDirectoryRow,
-} from "@shared/project-entries"
+import { migrateLegacyGlobalState } from "@shared/project-entries"
 import type { BrowserViewState, ConnectionProfile, ManagedNotice } from "@shared/ipc"
 import "@shared/ipc-global"
 import { belowMinServerVersion, MIN_SERVER_VERSION_V2 } from "@shared/semver"
@@ -273,21 +265,21 @@ export interface ClosedTabEntry {
 export type ConnectionState = "disconnected" | "connecting" | "streaming" | "degraded"
 
 export interface ProjectState {
-  /** 左栏 entry 键：普通项目 = project.id；global 目录 = `global\0<directory>` */
+  /** 左栏 entry 键 = project.id（v2 全项目统一；v1 的 `global\0<dir>` 键由
+   *  migrateLegacyGlobalState 在连接期收敛，见 project-entries） */
   opened: string[]
   currentProjectId: string | null
-  /** 当前作用域目录（普通项目 = worktree 路径；global = 会话目录；null = 项目根） */
+  /** 当前作用域目录（worktree 路径；null = 项目根） */
   currentWorkspaceId: string | null
 }
 
-/** 左栏「项目行」：普通项目 1 行（worktree）；global 项目按 directory 拆成 N 行 */
+/** 左栏「项目行」：每项目 1 行（含 v2 伪项目行——非 git 目录；M1b 后无 global 拆分） */
 export interface ProjectEntry {
   key: string
   project: Project
-  /** 作用域根目录（global = 会话 directory；普通 = worktree） */
+  /** 作用域根目录（= worktree/canonical） */
   directory: string
   name: string
-  isGlobal: boolean
 }
 
 /** 左栏可遍历行（design-keyboard-shortcuts §3 Alt 预览-提交）：entry 行按 key、
@@ -652,20 +644,10 @@ export class AppStore {
     }
     this.profiles = profileData.profiles
     this.activeProfileId = profileData.activeId
-    const ps = await window.desktop.storeGet("project.state")
-    if (ps) {
-      // global 拆分迁移：旧版裸 "global" → 根目录 entry（幂等；变更即时落盘）
-      let migrated = false
-      for (const key of Object.keys(ps)) {
-        const next = migrateOpenedKeys(ps[key].opened)
-        if (next.join("\u0001") !== ps[key].opened.join("\u0001")) {
-          ps[key].opened = next
-          migrated = true
-        }
-      }
-      this.projectStates = ps
-      if (migrated) void window.desktop.storeSet("project.state", ps).catch(() => {})
-    }
+    // v1→v2 global 键迁移统一在 doConnect（projects 落地后）执行（M1b）：此处
+    // projects 未知无法按 worktree 匹配；旧键在迁移前对 openedEntries 不可见（无
+    // 行渲染、无作用域恢复），无损
+    this.projectStates = (await window.desktop.storeGet("project.state")) ?? {}
     this.tabMemory = (await window.desktop.storeGet("tabs.memory")) ?? {}
     // 会话层逐切片校验（design-tab-session-restore §2）：坏切片/坏条目丢弃，等效无记录
     this.tabSession = sanitizeTabSessionMap(await window.desktop.storeGet("tabs.session"))
@@ -816,6 +798,17 @@ export class AppStore {
     this.client = client
     this.clientV2 = clientV2
     this.projects = projects
+    // v1→v2 持久化键迁移（M1b，连接期一次）：global\0<dir> entry 键与
+    // currentProjectId="global" 按 worktree 匹配转项目 ID（含伪项目行）；未匹配
+    // （零会话目录无项目行）的键丢弃——可经选择器重开。projectStates 已整体
+    // 载入内存，全部 profile 切片一并迁移
+    {
+      let migrated = false
+      for (const key of Object.keys(this.projectStates)) {
+        if (migrateLegacyGlobalState(this.projectStates[key]!, projects)) migrated = true
+      }
+      if (migrated) void window.desktop.storeSet("project.state", this.projectStates).catch(() => {})
+    }
     // 连接归属切片键落位（teardown 外科修剪用它定位；见 sessionProfileKey 注释）
     this.sessionProfileKey = this.profileKey()
     // 生效凭据（managed 模式为主进程生成值）——后续 SSE 重建统一使用
@@ -842,10 +835,7 @@ export class AppStore {
       {
         const slice = this.tabMemory[this.profileKey()] ?? {}
         for (const p of this.openedProjects) {
-          const dirs =
-            p.id === GLOBAL_PROJECT_ID
-              ? this.openedGlobalDirectories
-              : [...new Set([p.worktree, ...(p.sandboxes ?? [])])]
+          const dirs = [...new Set([p.worktree, ...(p.sandboxes ?? [])])]
           for (const dir of dirs) {
             if (slice[dir]) this.restoreScopeTabs(dir, false)
           }
@@ -1112,19 +1102,11 @@ export class AppStore {
    * 将单目录会话快照合入项目 map（按 projectID 过滤后交 session-merge 分域合并）。
    * 闸门：在途快照落地时项目可能已关闭、目录可能已被删除（removeWorkspace）——
    * 过期快照直接丢弃，防止复活已卸载的 worktree 会话。
-   * global：目录闸门 = 已打开 entry ∪ 已知会话域（发现快照走 refreshGlobalSessions
-   * 直合并，不经此处）。
    */
   private applySessionsSnapshot(projectId: string, directory: string, sessions: Session[]) {
     const project = this.openedProjects.find((p) => p.id === projectId)
     if (!project) return
-    if (project.id === GLOBAL_PROJECT_ID) {
-      if (
-        !this.openedGlobalDirectories.includes(directory) &&
-        !this.globalKnownDirectories().has(directory)
-      )
-        return
-    } else if (directory !== project.worktree && !(project.sandboxes ?? []).includes(directory)) {
+    if (directory !== project.worktree && !(project.sandboxes ?? []).includes(directory)) {
       return
     }
     const filtered = sessions.filter((s) => s.projectID === projectId)
@@ -1180,20 +1162,14 @@ export class AppStore {
   }
 
   /**
-   * 打开项目目录全集（worktree ∪ sandboxes；global = 已打开目录 entry）——事件闸门、
-   * 对账、状态快照的统一目录源。单全局流（design-sse-global-event）下连接与打开集合
-   * 解耦：开关项目/切工作区不再触发任何连接操作，只影响此集合的过滤范围。
-   * global 无连接预算约束（单流覆盖全部目录），但未打开 global 目录的事件仍被
-   * 闸门丢弃——新目录发现靠 scope=project 快照（refreshGlobalSessions）。
+   * 打开项目目录全集（worktree ∪ sandboxes）——事件闸门、对账、状态快照的统一
+   * 目录源。单全局流（design-sse-global-event）下连接与打开集合解耦：开关项目/
+   * 切工作区不再触发任何连接操作，只影响此集合的过滤范围。未打开目录的事件被
+   * 闸门丢弃——新目录发现靠项目列表刷新（v2/A：伪项目行）。
    */
   private openedDirectories(): string[] {
     const dirs = new Set<string>()
     for (const p of this.openedProjects) {
-      // global：worktree 恒为 "/" 且 sandboxes 恒空，目录全集 = 已打开 entry 目录
-      if (p.id === GLOBAL_PROJECT_ID) {
-        for (const d of this.openedGlobalDirectories) dirs.add(d)
-        continue
-      }
       dirs.add(p.worktree)
       for (const d of p.sandboxes ?? []) dirs.add(d)
     }
@@ -1743,121 +1719,55 @@ export class AppStore {
     }
   }
 
-  /** 目录是否仍属于某个打开项目（root 或其 worktree/global 目录）——在途状态快照的闸门 */
+  /** 目录是否仍属于某个打开项目（root 或其 worktree）——在途状态快照的闸门 */
   private isOpenedDirectory(dir: string): boolean {
-    return this.openedProjects.some((p) => {
-      if (p.id === GLOBAL_PROJECT_ID) return this.openedGlobalDirectories.includes(dir)
-      return p.worktree === dir || (p.sandboxes ?? []).includes(dir)
-    })
+    return this.openedProjects.some(
+      (p) => p.worktree === dir || (p.sandboxes ?? []).includes(dir),
+    )
   }
 
   // ============ 项目/工作区 ============
 
-  get globalProject(): Project | null {
-    return this.projects.find((p) => p.id === GLOBAL_PROJECT_ID) ?? null
-  }
-
-  /** 已打开的 global 目录（entry 键解析；顺序 = opened 追加序） */
-  get openedGlobalDirectories(): string[] {
-    const ps = this.projectStates[this.profileKey()]
-    if (!ps) return []
-    return ps.opened.map(globalDirectoryOfKey).filter((d): d is string => d != null)
-  }
-
-  /** global 项目已知会话目录集（发现快照/事件累积的域） */
-  private globalKnownDirectories(): Set<string> {
-    const set = new Set<string>()
-    for (const s of this.sessionsByProject.get(GLOBAL_PROJECT_ID)?.values() ?? []) {
-      if (s.directory) set.add(s.directory)
-    }
-    return set
-  }
-
   /**
-   * global 目录行（含零会话的已打开目录，updated=0 兜底——否则全部归档后
-   * 该行消失、无法导航/关闭）。排序 = 会话活跃度降序。
-   */
-  private globalDirectoryRowsAll(): GlobalDirectoryRow[] {
-    const rows = globalDirectoryRows([
-      ...(this.sessionsByProject.get(GLOBAL_PROJECT_ID)?.values() ?? []),
-    ])
-    const byDir = new Map(rows.map((r) => [r.directory, r]))
-    for (const dir of this.openedGlobalDirectories) {
-      if (!byDir.has(dir)) {
-        const row = { directory: dir, name: globalDirectoryName(dir), updated: 0 }
-        rows.push(row)
-        byDir.set(dir, row)
-      }
-    }
-    return rows.sort((a, b) => b.updated - a.updated)
-  }
-
-  /** global 目录候选（选择器数据源：全部已知目录，含已打开——由调用方过滤） */
-  globalDirectoryRows(): GlobalDirectoryRow[] {
-    return this.globalDirectoryRowsAll()
-  }
-
-  /**
-   * 左栏「项目行」（entry）：普通项目 1 行；global 按目录拆 N 行。
-   * 左栏/选择器唯一数据源——不直接消费 openedProjects。
+   * 左栏「项目行」（entry）：每项目 1 行（含 v2 伪项目行——非 git 目录，用户
+   * 裁定 A）。左栏/选择器唯一数据源——不直接消费 openedProjects。
    * 行序 = `ProjectState.opened` 打开序（2026-08-29 修订，原 server projects
-   * 快照序 = 创建序弃用）：新开 entry 追加末位（openProject/openGlobalDirectory
-   * push 语义），关闭移除键、重开落末位，拖拽重排整体覆盖该数组（applyEntryOrder）。
-   * 无法解析的键（项目快照未落地）跳过不占位。
+   * 快照序 = 创建序弃用）：新开 entry 追加末位（openProject push 语义），关闭
+   * 移除键、重开落末位，拖拽重排整体覆盖该数组（applyEntryOrder）。
+   * 无法解析的键（项目快照未落地/迁移后无项目行）跳过不占位。
    */
   get openedEntries(): ProjectEntry[] {
     const ps = this.projectStates[this.profileKey()]
     if (!ps) return []
     const out: ProjectEntry[] = []
-    const gp = this.globalProject
-    const rowsByDir = new Map(this.globalDirectoryRowsAll().map((r) => [r.directory, r]))
     for (const key of ps.opened) {
-      const dir = globalDirectoryOfKey(key)
-      if (dir != null) {
-        const row = rowsByDir.get(dir)
-        if (!gp || !row) continue
-        out.push({
-          key,
-          project: gp,
-          directory: row.directory,
-          name: row.name,
-          isGlobal: true,
-        })
-      } else {
-        const p = this.projects.find((x) => x.id === key)
-        if (!p || p.id === GLOBAL_PROJECT_ID) continue
-        out.push({
-          key: p.id,
-          project: p,
-          directory: p.worktree,
-          name: p.name || p.worktree.split("/").pop() || p.id,
-          isGlobal: false,
-        })
-      }
+      const p = this.projects.find((x) => x.id === key)
+      if (!p) continue
+      out.push({
+        key: p.id,
+        project: p,
+        directory: p.worktree,
+        name: p.name || p.worktree.split("/").pop() || p.id,
+      })
     }
     return out
   }
 
   /**
-   * entry 行是否为当前激活作用域——selectEntry 跳过条件与行高亮共用。
-   * 普通项目 = 当前项目**且主工作区态**（worktree 态点击项目行 = 回主工作区，
-   * 不得跳过）；global = 目录匹配。
+   * entry 行是否为当前激活作用域——selectEntry 跳过条件与行高亮共用：
+   * 当前项目**且主工作区态**（worktree 态点击项目行 = 回主工作区，不得跳过）。
    */
   isEntryActive(key: string): boolean {
     const p = this.currentProject
     if (!p) return false
-    if (p.id !== GLOBAL_PROJECT_ID) return key === p.id && this.currentWorkspace == null
-    const dir = globalDirectoryOfKey(key)
-    return dir != null && (this.currentWorkspace?.directory ?? p.worktree) === dir
+    return key === p.id && this.currentWorkspace == null
   }
 
   get openedProjects(): Project[] {
     const ps = this.projectStates[this.profileKey()]
     if (!ps) return []
     const ids = new Set(ps.opened)
-    // global 不再有整项目键——只要有任一目录 entry 打开即视为打开项目
-    const hasGlobal = this.openedGlobalDirectories.length > 0
-    return this.projects.filter((p) => ids.has(p.id) || (p.id === GLOBAL_PROJECT_ID && hasGlobal))
+    return this.projects.filter((p) => ids.has(p.id))
   }
 
   get currentProject(): Project | null {
@@ -1872,12 +1782,6 @@ export class AppStore {
     const p = this.projects.find((x) => x.id === ps.currentProjectId)
     const dir = ps.currentWorkspaceId
     if (!p) return null
-    if (p.id === GLOBAL_PROJECT_ID) {
-      // global：currentWorkspaceId = 当前 global 目录（entry 模型复用该字段）；
-      // 仅认可已打开 entry 的目录（防陈旧持久化值复活已关目录）
-      if (!this.openedGlobalDirectories.includes(dir)) return null
-      return { name: globalDirectoryName(dir), directory: dir }
-    }
     if (!p.sandboxes?.includes(dir)) return null
     return { name: dir.split("/").pop() ?? dir, directory: dir }
   }
@@ -1891,14 +1795,10 @@ export class AppStore {
     return { directory: this.currentWorkspace?.directory ?? this.currentProject?.worktree ?? "" }
   }
 
-  /** 当前作用域显示名（引导页 hero 等）：global = 目录末段（根目录显示 "global"） */
+  /** 当前作用域显示名（引导页 hero 等） */
   get scopeDisplayName(): string {
     const p = this.currentProject
     if (!p) return ""
-    if (p.id === GLOBAL_PROJECT_ID) {
-      const dir = this.currentWorkspace?.directory ?? p.worktree
-      return dir ? globalDirectoryName(dir) : GLOBAL_PROJECT_ID
-    }
     return this.currentWorkspace?.name ?? p.name ?? p.worktree.split("/").pop() ?? ""
   }
 
@@ -1976,20 +1876,16 @@ export class AppStore {
     this.restoreScopeTabs(expectedDir, true)
   }
 
-  /** 打开左栏 entry（普通项目 id 或 `global\0<directory>`）并切换作用域 */
+  /** 打开左栏 entry（项目 id）并切换作用域 */
   async openEntry(key: string) {
     this.cancelScopePreview() // 作用域操作介入：作废 Alt 预览（§3 修订）
-    const dir = globalDirectoryOfKey(key)
-    if (dir == null) return this.openProject(key)
-    return this.openGlobalDirectory(dir)
+    return this.openProject(key)
   }
 
-  /** 关闭左栏 entry（global 目录 = 关闭该目录作用域；普通项目走 closeProject） */
+  /** 关闭左栏 entry（走 closeProject） */
   async closeEntry(key: string) {
     this.cancelScopePreview() // 同 openEntry
-    const dir = globalDirectoryOfKey(key)
-    if (dir == null) return this.closeProject(key)
-    return this.closeGlobalDirectory(dir)
+    return this.closeProject(key)
   }
 
   /**
@@ -2029,37 +1925,12 @@ export class AppStore {
    * 打开/切入 global 目录 entry：目录 = 根（`/`）时按"项目根"语义（workspace
    * 置 null，作用域经 worktree 兜底到 `/`），与普通项目主工作区行一致。
    */
-  private async openGlobalDirectory(directory: string) {
-    const epoch = ++this.switchEpoch
-    const key = globalEntryKey(directory)
-    const ps = this.projectStateFor()
-    if (!ps.opened.includes(key)) ps.opened.push(key)
-    ps.currentProjectId = GLOBAL_PROJECT_ID
-    const rootDir = this.globalProject?.worktree ?? "/"
-    ps.currentWorkspaceId = directory === rootDir ? null : directory
-    // 先切换后加载（同 openProject，7c43827）：同步段立即登记 + 渲染，
-    // 快照与 Tab 恢复转后台——切换跟手（latest-wins 见 switchEpoch）
-    this.projectStates[this.profileKey()] = ps
-    const expectedDir = this.scopeDirectory()
-    this.resetFileTree()
-    this.restoreScopeTabs(expectedDir, true, true)
-    this.emit()
-    await this.persistProjectState()
-    if (epoch !== this.switchEpoch) return
-    await this.refreshAllOpenedProjects()
-    if (epoch !== this.switchEpoch) return
-    if (this.scopeDirectory() !== expectedDir) return
-    this.restoreScopeTabs(expectedDir, true)
-    void this.backfillPending()
-  }
-
   /**
    * 新建项目（design-new-project）：系统目录选择器选中的文件夹 → `GET
-   * /project/current?directory=` 让 server 注册/解析（Project.fromDirectory upsert：
-   * git 仓库 → 独立项目；非 git → 归入 global），刷新项目全集后**直接打开**——
-   * git 项目走 openProject（独立项目行）；非 git 走 openGlobalDirectory（global
-   * 目录 entry，不动文件系统，D1）。失败向上抛（选择器内联呈现，弹窗不关可重试）。
-   * 重复创建幂等（server upsert + opened 已含 key 仅切换）。
+   * /api/location?location[directory]=` 让 server 解析（resolve → upsert：git
+   * 仓库 → 独立项目；非 git → 目录哈希伪项目行，用户裁定 A——统一走普通项目
+   * 行），刷新项目全集后**直接打开**。失败向上抛（选择器内联呈现，弹窗不关可
+   * 重试）。重复创建幂等（server upsert + opened 已含 key 仅切换）。
    * signal：选择器弹窗被关闭（Escape/遮罩）时中止——各 await 之间检查，中止后
    * 不再打开（静默返回，弹窗已卸载无错误呈现方）。
    */
@@ -2084,146 +1955,22 @@ export class AppStore {
     return this.openProject(location.project.id)
   }
 
-  /** 关闭单个 global 目录 entry（其余 global 目录不受影响） */
-  private async closeGlobalDirectory(directory: string) {
-    const key = globalEntryKey(directory)
-    const rootDir = this.globalProject?.worktree ?? "/"
-    const ps = this.projectStateFor()
-    ps.opened = ps.opened.filter((k) => k !== key)
-    // 当前作用域在该目录 → 回退：其余已打开 global 目录中最活跃的，否则最近活跃普通项目
-    const wasCurrent =
-      ps.currentProjectId === GLOBAL_PROJECT_ID &&
-      (ps.currentWorkspaceId ?? rootDir) === directory
-    if (wasCurrent) {
-      const rest = this.globalDirectoryRowsAll().filter(
-        (r) => r.directory !== directory && this.openedGlobalDirectories.includes(r.directory),
-      )
-      if (rest[0]) {
-        ps.currentWorkspaceId = rest[0].directory === rootDir ? null : rest[0].directory
-      } else {
-        const remaining = this.projects
-          .filter((p) => ps.opened.includes(p.id) && p.id !== GLOBAL_PROJECT_ID)
-          .sort((a, b) => b.time.updated - a.time.updated)
-        ps.currentProjectId = remaining[0]?.id ?? null
-        ps.currentWorkspaceId = null
-      }
-    }
-    // 卸载该目录的会话域（关闭 = 不展示 + 不更新；重开时 REST 快照重建）
-    const map = this.sessionsByProject.get(GLOBAL_PROJECT_ID)
-    if (map) {
-      for (const [id, s] of map) {
-        if (s.directory === directory) map.delete(id)
-      }
-    }
-    this.purgeStatusForDirectories([directory])
-    // 目录卸载随清引导页草稿（目录失去订阅/展示，草稿同灭，design-compose-draft §3）
-    this.guideDrafts.delete(directory)
-    this.scheduleDraftPersist()
-    this.fileRefs.delete(directory)
-    this.attachments.delete(directory)
-    this.killPtyInDirectory(directory)
-    this.disposeBrowserViewsInDirectory(directory)
-    // 该目录的 file/diff Tab 与 global 会话的 chat Tab 随之关闭（仅关 Tab，不归档——
-    // 归档只发生在显式关闭 Tab；file Tab 作用域化后随目录卸载，2026-08-25 §18）。
-    // 双行目录（git 项目 + global 会话共存）下按
-    // projectId 过滤：git 项目的 Tab 归 closeProject 管，不随 global entry 关闭
-    for (const tab of [...this.tabs]) {
-      if (
-        (tab.kind === "diff" || tab.kind === "file" || tab.kind === "terminal" || tab.kind === "browser") &&
-        tab.directory === directory &&
-        tab.projectId === GLOBAL_PROJECT_ID
-      ) {
-        this.closeTab(tab.key)
-        continue
-      }
-      if (
-        tab.kind === "chat" &&
-        tab.directory === directory &&
-        tab.projectId === GLOBAL_PROJECT_ID
-      ) {
-        this.closeTab(tab.key)
-        this.cleanupSessionState(tab.key.slice(5))
-      }
-    }
-    // 最后激活记录随目录卸载（须在关 Tab 之后——关激活 Tab 的回退钩子会
-    // recordScopeActive 重建条目，先删会被写回 null 哨兵，重开误落引导页）
-    this.scopeActiveKeys.delete(directory)
-    // 该目录 Tab 记忆清除（须在关 Tab 之后——closeTab 的记忆同步会重建条目）。
-    // 仅删 global 侧记忆：双行目录的记忆经 findProjectOwningDirectory 归属
-    // git 项目（projectId ≠ global），关 global entry 不得误删
-    const memKey = this.profileKey()
-    if (this.tabMemory[memKey]?.[directory]?.projectId === GLOBAL_PROJECT_ID) {
-      delete this.tabMemory[memKey][directory]
-      void window.desktop.storeSet("tabs.memory", this.tabMemory).catch(() => {})
-    }
-    // 最近访问切片修剪（§1.5 review）：同 tabs.memory——双行目录 git 侧仍打开则保留
-    this.forgetBrowserRecents([directory])
-    // 会话层整体派生（design-tab-session-restore §5，同 closeProject：循环/删除之后修剪）
-    this.persistTabSession()
-    await this.persistProjectState()
-    await this.switchProjectContext()
-    this.emit()
-  }
 
-  /**
-   * global 全量发现快照（`GET /session?scope=project&directory=<worktree>`）：
-   * 一次返回 global 项目全部目录的未归档会话。连接时与项目选择器打开时调用——
-   * 新目录的首个会话事件无从订阅（不在订阅集），只能靠此快照发现。
-   * 按 directory 分域全量合并（权威快照，不经 applySessionsSnapshot 逐目录
-   * 闸门——新目录必须能进 map）。关目录后迟到的发现快照可能复活其会话域：
-   * 该目录 entry 已关、UI 不展示，重开时 refreshSessionsForProject 重新拉取覆盖。
-   */
-  async refreshGlobalSessions() {
-    const client = this.client
-    const gp = this.globalProject
-    if (!client || !gp) return
-    const sessions = await client.listProjectSessions(gp.worktree).catch(() => null)
-    if (!sessions || this.client !== client) return
-    const filtered = sessions.filter((s) => s.projectID === GLOBAL_PROJECT_ID)
-    const byDir = new Map<string, Session[]>()
-    for (const s of filtered) {
-      if (!s.directory) continue
-      const list = byDir.get(s.directory) ?? []
-      list.push(s)
-      byDir.set(s.directory, list)
-    }
-    for (const [dir, list] of byDir) {
-      const local = this.sessionsByProject.get(GLOBAL_PROJECT_ID) ?? new Map<string, Session>()
-      this.sessionsByProject.set(GLOBAL_PROJECT_ID, mergeSessionsSnapshot(local, dir, list))
-      // 与 refreshSessionsForProject 同规则标记可信快照（Tab 恢复/死 Tab 收敛
-      // 的 snapshottedDirs 闸门依赖；否则 global 目录只经发现快照落地时，
-      // restoreScopeTabs 会误判"快照未落地"拒绝恢复/收敛）
-      this.snapshottedDirs.add(dir)
-    }
-    this.emit()
-  }
 
   async closeProject(projectId: string) {
     this.cancelScopePreview() // 作用域操作介入：作废 Alt 预览（§3 修订）
     const ps = this.projectStateFor()
     ps.opened = ps.opened.filter((id) => id !== projectId)
     if (ps.currentProjectId === projectId) {
-      // 回退候选 = 剩余打开普通项目 + 已打开 global 目录，按最近活跃统一排序
-      //（entry 模型下两类平权；与 closeGlobalDirectory 的回退对称——原实现只查
-      // project id，global entry 键永不匹配，会绕过仍在左栏的 global 行直接空态）
-      const rootDir = this.globalProject?.worktree ?? "/"
-      const candidates: Array<
-        { kind: "project"; id: string; updated: number } | { kind: "global"; directory: string; updated: number }
-      > = [
-        ...this.projects
-          .filter((p) => ps.opened.includes(p.id) && p.id !== GLOBAL_PROJECT_ID)
-          .map((p) => ({ kind: "project" as const, id: p.id, updated: p.time.updated })),
-        ...this.globalDirectoryRowsAll()
-          .filter((r) => this.openedGlobalDirectories.includes(r.directory))
-          .map((r) => ({ kind: "global" as const, directory: r.directory, updated: r.updated })),
-      ].sort((a, b) => b.updated - a.updated)
+      // 回退候选 = 剩余打开项目（含伪项目行），按最近活跃排序
+      const candidates = this.projects
+        .filter((p) => ps.opened.includes(p.id))
+        .map((p) => ({ id: p.id, updated: p.time.updated }))
+        .sort((a, b) => b.updated - a.updated)
       const top = candidates[0]
-      if (top?.kind === "project") {
+      if (top) {
         ps.currentProjectId = top.id
         ps.currentWorkspaceId = null
-      } else if (top) {
-        ps.currentProjectId = GLOBAL_PROJECT_ID
-        ps.currentWorkspaceId = top.directory === rootDir ? null : top.directory
       } else {
         ps.currentProjectId = null
         ps.currentWorkspaceId = null
@@ -2253,9 +2000,7 @@ export class AppStore {
       this.dropPendingForDirectories(dirs)
     }
     // 该项目的 chat/file/diff Tab 随之关闭（仅关 Tab，不归档——归档只发生在显式
-    // 关闭 Tab；file/diff 按 projectId 归属，否则成永久不可见的孤儿，2026-08-25 §18）。
-    // 双行目录下按 projectId 过滤：global entry 的 Tab 归 closeGlobalDirectory 管，
-    // 不随 git 项目关闭（与 chat 分支一致）
+    // 关闭 Tab；file/diff 按 projectId 归属，否则成永久不可见的孤儿，2026-08-25 §18）
     for (const tab of [...this.tabs]) {
       if (tab.kind === "file" || tab.kind === "diff" || tab.kind === "terminal" || tab.kind === "browser") {
         if (tab.projectId === projectId) this.closeTab(tab.key)
@@ -2265,7 +2010,7 @@ export class AppStore {
       if (tab.projectId === projectId) {
         this.closeTab(tab.key)
         this.cleanupSessionState(tab.key.slice(5))
-      } else if (project && tab.directory === project.worktree && tab.projectId !== GLOBAL_PROJECT_ID) {
+      } else if (project && tab.directory === project.worktree) {
         this.closeTab(tab.key)
         this.cleanupSessionState(tab.key.slice(5))
       }
@@ -2303,17 +2048,9 @@ export class AppStore {
     const project = this.currentProject
     if (!project) return
     // 幻影 directory 防御（同 openProject）：不在 sandboxes 内的目录视为主工作区，
-    // 防把幻影 currentWorkspaceId 持久化（currentWorkspace getter 会拒认、下次启动才自愈）。
-    // global：currentWorkspaceId = global 目录（entry 模型复用该字段），有效性 =
-    // 已打开 entry（v0.1 路径 openGlobalDirectory 直写不经此处，此分支防未来调用）
+    // 防把幻影 currentWorkspaceId 持久化（currentWorkspace getter 会拒认、下次启动才自愈）
     const valid =
-      project.id === GLOBAL_PROJECT_ID
-        ? directory != null && this.openedGlobalDirectories.includes(directory)
-          ? directory
-          : null
-        : directory != null && (project.sandboxes ?? []).includes(directory)
-          ? directory
-          : null
+      directory != null && (project.sandboxes ?? []).includes(directory) ? directory : null
     const ps = this.projectStateFor()
     if (ps.currentWorkspaceId === valid) return
     const epoch = ++this.switchEpoch
@@ -2359,18 +2096,16 @@ export class AppStore {
     void window.desktop.storeSet("tabs.memory", this.tabMemory).catch(() => {})
   }
 
-  /** 目录是否仍有**已打开** entry 认领（§1.5 修剪判定）：已打开普通项目的
-   *  worktree/sandboxes 覆盖，或已打开 global 目录 entry 同路径——双行目录
-   *  对侧仍开着时最近访问切片须保留（findProjectOwningDirectory 按服务端
-   *  存在性解析，关项目后仍命中，不适用关闭/卸载路径） */
+  /** 目录是否仍有**已打开** entry 认领（§1.5 修剪判定）：已打开项目的
+   *  worktree/sandboxes 覆盖时最近访问切片须保留（findProjectOwningDirectory
+   *  按服务端存在性解析，关项目后仍命中，不适用关闭/卸载路径） */
   private directoryClaimedByOpenedEntry(directory: string): boolean {
     const ps = this.projectStateFor()
     for (const id of ps.opened) {
-      if (id === GLOBAL_PROJECT_ID) continue
       const p = this.projects.find((x) => x.id === id)
       if (p && (p.worktree === directory || (p.sandboxes ?? []).includes(directory))) return true
     }
-    return this.openedGlobalDirectories.includes(directory)
+    return false
   }
 
   /**
@@ -2398,32 +2133,15 @@ export class AppStore {
 
   /**
    * 目录 → 所属项目（Tab 记忆归属 / restoreScopeTabs 会话集解析）。
-   * 普通（git）项目精确匹配优先，global 只兜底无人认领的目录——双行目录
-   * （先建会话后 init git，global 会话与 git 项目共存）解析到 git 项目：
-   * worktree/sandboxes 定义上拥有该目录，global 的散点会话不构成所有权。
-   * global 在 projects 数组首位，若不区分顺序直接 find，双行目录永远命中
-   * global——P 的作用域会恢复 global 会话的 Tab、记忆错标 projectId。
+   * v2 下项目行含伪项目（非 git 目录 = worktree 精确匹配）；git 项目经
+   * worktree/sandboxes 认领。未命中返回 null。
    */
-  private findProjectOwningDirectory(directory: string): Project | null {    const normal = this.projects.find(
-      (p) =>
-        p.id !== GLOBAL_PROJECT_ID &&
-        (p.worktree === directory || (p.sandboxes ?? []).includes(directory)),
+  private findProjectOwningDirectory(directory: string): Project | null {
+    return (
+      this.projects.find(
+        (p) => p.worktree === directory || (p.sandboxes ?? []).includes(directory),
+      ) ?? null
     )
-    if (normal) return normal
-    // global 兜底 = 已知会话目录 ∪ **已打开 entry 目录**（口径同 applySessionsSnapshot
-    // 的 global 闸门）：后者覆盖「未 git、零会话」的新目录——首个会话建立前
-    // globalKnownDirectories 不含它，漏掉会使 restoreScopeTabs 的 owner 闸门整段
-    // no-op，跨作用域激活清算不执行（旧项目 Tab 残留中栏、引导页不显示，
-    // 2026-09-09 修复）。sessionEntryOwned 的 openedGlobalDirectories 兜底随之幂等
-    const gp = this.globalProject
-    if (
-      gp &&
-      (this.globalKnownDirectories().has(directory) ||
-        this.openedGlobalDirectories.includes(directory))
-    ) {
-      return gp
-    }
-    return null
   }
 
   /** live tabs → 记忆派生落盘（§5 挂点：openChatTab/closeTab/setActiveTab） */
@@ -2518,12 +2236,10 @@ export class AppStore {
     }
   }
 
-  /** 模板条目的作用域归属闸门：findProjectOwningDirectory 解析（git 优先，global 兜底）；
-   *  global 无会话目录（仅 file/diff 等实体）以已打开 entry 认领 */
+  /** 模板条目的作用域归属闸门：findProjectOwningDirectory 解析（worktree/sandboxes 认领） */
   private sessionEntryOwned(e: PersistedTab): boolean {
     const owner = this.findProjectOwningDirectory(e.directory)
-    if (owner) return owner.id === e.projectId
-    return e.projectId === GLOBAL_PROJECT_ID && this.openedGlobalDirectories.includes(e.directory)
+    return owner != null && owner.id === e.projectId
   }
 
   /** 单条非 chat 实体重建（§3 kind 分流）。返回 false = 不可恢复（browser 不可用等），跳过 */
@@ -2806,8 +2522,7 @@ export class AppStore {
   }
 
   /**
-   * 拉取项目会话快照：global = 已打开目录逐个拉取（发现走 refreshGlobalSessions）；
-   * 普通项目 = 项目根 + 各 worktree 目录**逐目录**拉取（实测
+   * 拉取项目会话快照：项目根 + 各 worktree 目录**逐目录**拉取（实测
    * /session?directory=X 精确匹配，项目根快照不含 worktree 会话，切进工作区/
    * 左栏指示器都依赖 worktree 目录有自己的快照）；合并按 directory 分域。
    * 同一批目录附带拉会话状态快照（GET /session/status，冷启动/项目打开路径；
@@ -2823,10 +2538,7 @@ export class AppStore {
     const client = this.client
     const clientV2 = this.clientV2
     if (!client || !clientV2) return
-    const dirs =
-      project.id === GLOBAL_PROJECT_ID
-        ? [...new Set(this.openedGlobalDirectories)]
-        : [...new Set([project.worktree, ...(project.sandboxes ?? [])])]
+    const dirs = [...new Set([project.worktree, ...(project.sandboxes ?? [])])]
     await runLimited(dirs, 3, async (dir) => {
       // v2：flat directory query + {data, cursor} envelope；limit 200 覆盖 v0.x 规模
       // （>200 目录的分页是 M2 决策点）。**不过滤归档**：v1 快照同构含归档会话，
@@ -2843,10 +2555,7 @@ export class AppStore {
       // 闸门：在途快照落地时项目可能已关闭/目录可能已删——过期状态直接丢弃
       const still = this.openedProjects.find((p) => p.id === project.id)
       const stillHasDir =
-        still &&
-        (still.id === GLOBAL_PROJECT_ID
-          ? this.openedGlobalDirectories.includes(dir)
-          : still.worktree === dir || (still.sandboxes ?? []).includes(dir))
+        still && (still.worktree === dir || (still.sandboxes ?? []).includes(dir))
       if (stillHasDir) {
         this.applyStatusSnapshot(dir, statuses)
       }
@@ -2860,9 +2569,9 @@ export class AppStore {
   async createWorkspace(projectId: string = this.currentProject?.id ?? ""): Promise<{ ok: boolean; error?: string }> {
     const project = this.projects.find((p) => p.id === projectId)
     if (!this.client || !project) return { ok: false, error: "no project" }
-    // global 非 git 项目：无 worktree 概念（左栏也不渲染该入口，此处兜底）
-    if (project.id === GLOBAL_PROJECT_ID) {
-      return { ok: false, error: "global project has no worktree" }
+    // 非 git 项目（v2 伪项目行）：无 worktree 概念（左栏也不渲染该入口，此处兜底）
+    if (!project.vcs) {
+      return { ok: false, error: "non-git project has no worktree" }
     }
     const isCurrent = project.id === this.currentProject?.id
     try {
@@ -2957,7 +2666,8 @@ export class AppStore {
    */
   requestWorktreeDelete(directory: string, projectId: string = this.currentProject?.id ?? "") {
     const project = this.projects.find((p) => p.id === projectId)
-    if (!project || project.id === GLOBAL_PROJECT_ID) return
+    // 非 git 项目（v2 伪项目行）无 worktree 概念（左栏不渲染子行，此处兜底）
+    if (!project || !project.vcs) return
     if (this.isWorkspaceDeleting(projectId, directory)) return
     this.pendingWorktreeDelete = { directory, projectId }
     this.emit()
@@ -2971,21 +2681,16 @@ export class AppStore {
   }
 
   /**
-   * Alt+C 关闭当前激活 entry（design-keyboard-shortcuts §1.2）：普通项目 = 当前
-   * 项目 entry（worktree 态亦关整个项目——entry 是关闭的最小单位，与左栏行 X 钮
-   * 同语义）；global = 当前目录 entry（作用域目录复用 currentWorkspace 字段，
-   * 同 isEntryActive 推导）。单 entry 不动作——对齐左栏单 entry 隐藏关闭按钮的
-   * "最后一个不关"。无二次确认：纯客户端状态、无 server 副作用，可随时重开。
+   * Alt+C 关闭当前激活 entry（design-keyboard-shortcuts §1.2）：当前项目 entry
+   * （worktree 态亦关整个项目——entry 是关闭的最小单位，与左栏行 X 钮同语义）。
+   * 单 entry 不动作——对齐左栏单 entry 隐藏关闭按钮的"最后一个不关"。无二次
+   * 确认：纯客户端状态、无 server 副作用，可随时重开。
    */
   closeActiveEntry() {
     const cur = this.currentProject
     if (!cur) return
-    const key =
-      cur.id === GLOBAL_PROJECT_ID
-        ? globalEntryKey(this.currentWorkspace?.directory ?? cur.worktree)
-        : cur.id
     if (this.openedEntries.length <= 1) return
-    void this.closeEntry(key)
+    void this.closeEntry(cur.id)
   }
 
   /**
@@ -3018,9 +2723,7 @@ export class AppStore {
     this.disposeBrowserViewsInDirectory(directory)
     // 显式关闭该目录全部 live Tab：订阅即将拆除，chat 的 session.deleted 事件
     // 兜底存在窗口期（design-tab-memory §5）；file/diff 无事件兜底，随目录卸载
-    // （全 kind 作用域化，2026-08-25 §18）。双行目录（git worktree 与 global 会话
-    // 同路径）下按 projectId 过滤——与 closeGlobalDirectory 对称：global 会话 Tab
-    // 归 global entry 管，删 git worktree 不得误关
+    // （全 kind 作用域化，2026-08-25 §18），按 projectId 过滤
     for (const tab of [...this.tabs]) {
       if (
         (tab.kind === "file" || tab.kind === "diff" || tab.kind === "terminal" || tab.kind === "browser") &&
@@ -3038,15 +2741,14 @@ export class AppStore {
     // 最后激活记录随目录卸载（须在关 Tab 之后——关激活 Tab 的回退钩子会
     // recordScopeActive 重建条目，先删会被写回，重开误落引导页/错激活）
     this.scopeActiveKeys.delete(directory)
-    // 删除该目录记忆（目录已死；须在关 Tab 之后——closeTab 同步会重建条目）。
-    // 仅删该项目侧记忆：双行目录的记忆经 findProjectOwningDirectory 归属，
-    // global 侧记忆（projectId === global）不随 worktree 删除——与 closeGlobalDirectory 对称
+    // 删除该目录记忆（目录已死；须在关 Tab 之后——closeTab 同步会重建条目），
+    // 按 projectId 精确匹配
     const key = this.profileKey()
     if (this.tabMemory[key]?.[directory]?.projectId === projectId) {
       delete this.tabMemory[key][directory]
       void window.desktop.storeSet("tabs.memory", this.tabMemory).catch(() => {})
     }
-    // 最近访问切片修剪（§1.5 review）：目录已死；双行目录 global 侧仍打开则保留
+    // 最近访问切片修剪（§1.5 review）：目录已死，已打开 entry 认领则保留
     this.forgetBrowserRecents([directory])
     // 会话层整体派生（design-tab-session-restore §5，同 closeProject：循环/删除之后修剪）
     this.persistTabSession()
@@ -3091,7 +2793,6 @@ export class AppStore {
     // 补偿入口（左栏展示本身随 projects 更新自然出现，无需处理）
     const appeared: string[] = []
     for (const old of before) {
-      if (old.id === GLOBAL_PROJECT_ID) continue
       const opened = this.openedProjects.some((p) => p.id === old.id)
       if (!opened) continue
       const next = fresh.find((p) => p.id === old.id)
@@ -5225,26 +4926,24 @@ export class AppStore {
   private ensureScopeFor(entry: ClosedTabEntry): boolean {
     const dir = entry.directory
     if (!dir || this.scopeDirectory() === dir) return true
-    // 当前项目内（仅普通项目——global 项目 sandboxes 恒空，跨目录恢复走 entry
-    // 分支，否则会被误判不可达）：项目根或 worktree
+    // 当前项目内：项目根或 worktree
     const cur = this.currentProject
-    if (cur && entry.projectId === cur.id && cur.id !== GLOBAL_PROJECT_ID) {
+    if (cur && entry.projectId === cur.id) {
       if (dir === cur.worktree) void this.setCurrentWorkspace(null)
       else if ((cur.sandboxes ?? []).includes(dir)) void this.setCurrentWorkspace(dir)
       else return false
       return true
     }
-    // 其他已打开 entry：entry 根/global 目录走 openEntry；普通项目的 worktree
-    // 一步直达 setCurrentProject（= openProject(projectId, dir)，同步段落位——
-    // 先 openEntry 再补 setCurrentWorkspace 会把 Tab 开在项目根作用域）
+    // 其他已打开 entry：entry 根走 openEntry；项目 worktree 一步直达
+    // setCurrentProject（= openProject(projectId, dir)，同步段落位——先 openEntry
+    // 再补 setCurrentWorkspace 会把 Tab 开在项目根作用域）
     const target = this.openedEntries.find(
       (e) =>
         e.project.id === entry.projectId &&
-        (e.directory === dir ||
-          (!e.isGlobal && (e.project.sandboxes ?? []).includes(dir))),
+        (e.directory === dir || (e.project.sandboxes ?? []).includes(dir)),
     )
     if (!target) return false
-    if (target.isGlobal || dir === target.directory) void this.openEntry(target.key)
+    if (dir === target.directory) void this.openEntry(target.key)
     else void this.setCurrentProject(target.project.id, dir)
     return true
   }
@@ -5318,19 +5017,17 @@ export class AppStore {
     this.emit()
   }
 
-  /** 平铺可遍历行（左栏显示顺序）：entry 行 +（普通项目）其工作区行；
-   *  删除中（清理中）的工作区行排除——与左栏点击禁用同口径（design-layout
-   *  §工作区行），当前作用域不受影响（删当前作用域时 removeWorkspace 同步段
-   *  已跳回项目根） */
+  /** 平铺可遍历行（左栏显示顺序）：entry 行 + 其工作区行（伪项目无 sandboxes
+   *  自然无子行）；删除中（清理中）的工作区行排除——与左栏点击禁用同口径
+   *  （design-layout §工作区行），当前作用域不受影响（删当前作用域时
+   *  removeWorkspace 同步段已跳回项目根） */
   private scopeNavRows(): ScopeNavRow[] {
     const rows: ScopeNavRow[] = []
     for (const e of this.openedEntries) {
       rows.push({ kind: "entry", key: e.key })
-      if (!e.isGlobal) {
-        for (const w of this.workspacesOfProject(e.project.id)) {
-          if (this.isWorkspaceDeleting(e.project.id, w.directory)) continue
-          rows.push({ kind: "ws", projectId: e.project.id, directory: w.directory })
-        }
+      for (const w of this.workspacesOfProject(e.project.id)) {
+        if (this.isWorkspaceDeleting(e.project.id, w.directory)) continue
+        rows.push({ kind: "ws", projectId: e.project.id, directory: w.directory })
       }
     }
     return rows

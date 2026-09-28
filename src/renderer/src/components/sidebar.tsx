@@ -3,7 +3,6 @@ import { FolderGit2, FolderPlus, LoaderCircle, Plus, Settings, Trash2, TriangleA
 import { useI18n, useStore } from "../app"
 import { ConfirmDialog } from "./confirm-dialog"
 import { relativeTime } from "../i18n"
-import { GLOBAL_PROJECT_ID, globalEntryKey } from "@shared/project-entries"
 import type { Project, Session } from "@shared/api-types"
 import { MIN_SERVER_VERSION } from "@shared/semver"
 import { managedNoticeText } from "./managed-notice"
@@ -166,11 +165,12 @@ function ServerStatus() {
 
 /**
  * 项目/工作区两级树（有活跃 profile 时的左栏主体）。
- * global 项目按 directory 拆为 N 个顶级 entry 行（design-layout §3）：行视觉与
- * 普通项目行一致（头像 + 名称/路径两行），无子行（global 非 git 无 worktree）。
+ * 每项目 1 个顶级 entry 行（M1b 后无 global 拆分——v2 伪项目行与非 git 目录
+ * 统一走普通项目行，见 design-v2-migration D 系列/plan-v2-protocol）：行视觉
+ * 一致（头像 + 名称/路径两行），git 项目带 worktree 子行、伪项目无子行。
  * 项目行可拖拽排序（行序 = 打开序，松手按预览 DOM 序调 store.applyEntryOrder
  * 整体重排；实时预览式——拖动中列表即时重排、拖拽项在目标位渲染占位样式；
- * worktree 行不入拖拽、随项目组移动；global 目录行与普通项目行平权参与）。
+ * worktree 行不入拖拽、随项目组移动）。
  */
 function ProjectTree() {
   const store = useStore()
@@ -222,8 +222,7 @@ function ProjectTree() {
       ? [...base.slice(0, slot), entries[dragIdx]!, ...base.slice(slot)]
       : entries
 
-  /** 选 entry 行（普通项目 = 主工作区入口，worktree 态点击 = 回主工作区——
-   *  openProject 内含切回；global = 该目录作用域，openGlobalDirectory 先切换后加载） */
+  /** 选 entry 行（主工作区入口，worktree 态点击 = 回主工作区——openProject 内含切回） */
   const selectEntry = (key: string) => {
     if (store.isEntryActive(key)) return
     void store.openEntry(key)
@@ -302,10 +301,10 @@ function ProjectTree() {
         }}
       >
         {previewEntries.map((e) => {
-          // global 按目录拆行：作用域 = 该目录本身；普通项目行 = 主工作区入口
+          // 项目行 = 主工作区入口（伪项目无 worktree 时 workspaces 自然为空）
           const isActive = store.isEntryActive(e.key)
           const isCurrentProject = e.project.id === current?.id
-          const workspaces = e.isGlobal ? [] : store.workspacesOfProject(e.project.id)
+          const workspaces = store.workspacesOfProject(e.project.id)
           // Alt 预览光标（design-keyboard-shortcuts §3 修订）：entry 行按 key 命中
           const cursor = preview?.kind === "entry" && preview.key === e.key
           return (
@@ -337,14 +336,13 @@ function ProjectTree() {
                 {/* 指示器行内流式（名称/路径行尾），文本提前省略不与其重叠 */}
                 <SessionIndicator sessions={store.sessionsInDirectory(e.project.id, e.directory)} />
                 {/* 操作按钮 = 单个绝对定位带背景 overlay（hover 全行显示），不占行内流式空间，
-                    名称/路径不再被隐藏按钮截断。工作区新增仅普通项目（global 非 git，无
+                    名称/路径不再被隐藏按钮截断。工作区新增仅 git 项目（伪项目非 git 无
                     worktree），非当前项目点击不切当前项目、仅在其下创建 worktree
-                    （createWorkspace 接 projectId）；关闭按钮任意已打开项目/global 目录均可
-                    （closeEntry 按 key 工作，纯客户端状态，无副作用），单项目时无意义隐藏。
-                    2026-08-25 修订：原 global 仅激活态、普通项目仅当前项目可关，hover 不一致 */}
-                {(!e.isGlobal || entries.length > 1) && (
+                    （createWorkspace 接 projectId）；关闭按钮任意已打开项目均可（closeEntry
+                    按 key 工作，纯客户端状态，无副作用），单项目时无意义隐藏 */}
+                {(
                   <div className="row-actions">
-                    {!e.isGlobal && (
+                    {e.project.vcs && (
                       <button
                         className="icon-btn row-action"
                         title={t.newWorkspace}
@@ -372,7 +370,7 @@ function ProjectTree() {
                   </div>
                 )}
               </div>
-              {/* 工作区跟随项目，全部展示（仅当前项目可新增/删除；global 无子行） */}
+              {/* 工作区跟随项目，全部展示（仅当前项目可新增/删除；伪项目无子行） */}
               {workspaces.map((w) => {
                 // 删除中（非阻塞删除，design-layout §工作区行）：整行禁用样式、
                 // 不可点击，右缘 loading 常显（替代 hover 才显的删除钮/指示点）
@@ -552,9 +550,10 @@ function ProjectPicker({ onClose }: { onClose: () => void }) {
   }, [])
 
   const opened = new Set(store.openedEntries.map((e) => e.key))
+  // v2/A：选择器候选 = 全部项目行（含伪项目——非 git 目录），v1 global 行已退役
   const candidates: PickerCandidate[] = [
     ...store.projects
-      .filter((p) => p.id !== GLOBAL_PROJECT_ID && !opened.has(p.id))
+      .filter((p) => !opened.has(p.id))
       .map((p) => ({
         key: p.id,
         name: p.name || p.worktree.split("/").pop() || p.id,
@@ -562,10 +561,6 @@ function ProjectPicker({ onClose }: { onClose: () => void }) {
         updated: p.time.updated,
         icon: p.icon,
       })),
-    ...store
-      .globalDirectoryRows()
-      .filter((r) => !opened.has(globalEntryKey(r.directory)))
-      .map((r) => ({ key: globalEntryKey(r.directory), name: r.name, path: r.directory, updated: r.updated })),
   ].sort((a, b) => b.updated - a.updated)
 
   const kw = query.trim().toLowerCase()

@@ -196,6 +196,7 @@ v2 server 默认强制密码（移动端基线 §认证）。桌面端影响：
 | D4 | 确认（canonical 自愈红利；本机 v2.0.18 实测验证通过） |
 | D5 | 确认（dispose 不映射 reload；refresh + 服务层自管理） |
 | 双兼容 | **不做兼容；v0.5 起仅支持 v2**（0.4.x 及以前维持 v1.18.x 契约；v0.5 按版本规则打 tag） |
+| **D6（M1 实施期增补）** | **global 语义退役**：v2 实测无 global 项目行（非 git 目录 = 目录哈希伪项目行，出现在 `GET /api/project`）——v1 的 `global\0<dir>` entry 模型整体删除，非 git 目录以普通项目行进左栏；持久化旧键连接期按 worktree 匹配迁移（`migrateLegacyGlobalState`）；M1b 已落地（AGENTS.md 锁定语义已同步改写） |
 
 ### 修复复审
 

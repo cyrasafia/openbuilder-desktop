@@ -9,7 +9,6 @@ import { AppStore, diffTabKey, FILE_WATCH_DEBOUNCE_MS } from "./app-store"
 import { ApiError, RestClient } from "@shared/rest-client"
 import { ApiError as ApiErrorV2, RestClientV2 } from "@shared/rest-client-v2"
 import { SseSubscriber } from "@shared/sse-subscriber"
-import { globalEntryKey } from "@shared/project-entries"
 import type { ModelCatalog } from "@shared/model-catalog"
 import type { MessageWithParts, ModelRef, Part, Project, Session } from "@shared/api-types"
 
@@ -21,7 +20,7 @@ vi.spyOn(SseSubscriber.prototype, "start").mockImplementation(() => {})
 vi.spyOn(SseSubscriber.prototype, "stop").mockImplementation(() => {})
 
 function project(): Project {
-  return { id: "proj1", worktree: ROOT, time: { created: 0, updated: 0 }, sandboxes: [WT1, WT2] }
+  return { id: "proj1", worktree: ROOT, vcs: "git", time: { created: 0, updated: 0 }, sandboxes: [WT1, WT2] }
 }
 
 /** v1 形状 fixture → v2 wire 形状（ProjectInfo）：覆盖 clientV2.listProjects mock 时使用 */
@@ -3381,29 +3380,29 @@ describe("关闭栈跨作用域恢复（design-keyboard-shortcuts §2.1 修订�
     expect(tab!.key).toBe(diffTabKey("/other/wt9"))
   })
 
-  it("M1：global 跨目录恢复走 entry 分支（不误判不可达）", () => {
-    const gx = session("gx", "/tmp/x", { created: 1, updated: 1 })
-    const gy = session("gy", "/tmp/y", { created: 1, updated: 2 })
-    gx.projectID = "global"
-    gy.projectID = "global"
+  it("M1：跨目录恢复走 entry 分支（不误判不可达）——伪项目行（v2/A，M1b）", () => {
+    const hx = { ...session("gx", "/tmp/x", { created: 1, updated: 1 }), projectID: "hashX" }
+    const hy = { ...session("gy", "/tmp/y", { created: 1, updated: 2 }), projectID: "hashY" }
     store.projects = [
       project(),
-      { id: "global", worktree: "/", time: { created: 0, updated: 0 }, sandboxes: [] },
+      { id: "hashX", worktree: "/tmp/x", time: { created: 0, updated: 0 }, sandboxes: [] },
+      { id: "hashY", worktree: "/tmp/y", time: { created: 0, updated: 0 }, sandboxes: [] },
     ]
     store.sessionsByProject = new Map([
       ["proj1", new Map()],
-      ["global", sessionsOf(gx, gy)],
+      ["hashX", sessionsOf(hx)],
+      ["hashY", sessionsOf(hy)],
     ])
     store.projectStates = {
       default: {
-        opened: ["proj1", "global\u0000/tmp/x", "global\u0000/tmp/y"],
-        currentProjectId: "global",
-        currentWorkspaceId: "/tmp/y",
+        opened: ["proj1", "hashX", "hashY"],
+        currentProjectId: "hashY",
+        currentWorkspaceId: null,
       },
     }
     store.tabs = []
     store.closedTabs = [
-      { kind: "file", key: "file:/tmp/x/a.txt", projectId: "global", directory: "/tmp/x", title: "a.txt" },
+      { kind: "file", key: "file:/tmp/x/a.txt", projectId: "hashX", directory: "/tmp/x", title: "a.txt" },
     ]
     store.restoreClosedTab()
     expect(store.scopeQuery.directory).toBe("/tmp/x")
@@ -4285,18 +4284,12 @@ describe("浏览器 Tab（design-browser-tab）", () => {
     expect(store.browserRecentsOf("browser:file:///repo/a.html")).toEqual(["file:///repo/a.html"])
   })
 
-  it("最近访问（review）：目录卸载修剪切片——关项目清除（重开 = 首开）；双行对侧仍打开则保留", async () => {
+  it("最近访问（review）：目录卸载修剪切片——关项目清除（重开 = 首开）", async () => {
     await store.openBrowserTab("file:///repo/a.html")
     expect(store.browserRecents.default?.[ROOT]).toEqual(["file:///repo/a.html"])
     await store.closeProject("proj1")
     // proj1 关闭后 ROOT 无已打开 entry 认领 → 切片清除
     expect(store.browserRecents.default?.[ROOT]).toBeUndefined()
-    // 双行目录：同路径 global entry 仍打开 → 关 git 项目不得误删对侧切片
-    await store.openProject("proj1")
-    await store.openBrowserTab("file:///repo/a.html")
-    store.projectStates.default!.opened.push(globalEntryKey(ROOT))
-    await store.closeProject("proj1")
-    expect(store.browserRecents.default?.[ROOT]).toEqual(["file:///repo/a.html"])
   })
 
   it("restoreClosedTab browser 分支：按关闭时 URL 重开", async () => {
@@ -4619,25 +4612,6 @@ describe("左栏 entry 顺序与拖拽（design-layout §3 打开序）", () => 
     }
     store.applyEntryOrder(["p2", "p2", "p1", "ghost"])
     expect(store.openedEntries.map((e) => e.key)).toEqual(["p2", "p1"])
-  })
-})
-
-describe("左栏 entry 顺序与拖拽（design-layout §3 打开序）——global 平权", () => {
-  it("global 目录行与普通项目混合参与打开序与 applyEntryOrder 落位", () => {
-    const gsession = { ...session("g1", "/docs", { created: 1, updated: 1 }), projectID: "global" }
-    store.projects = [
-      { id: "global", worktree: "/", time: { created: 0, updated: 0 } },
-      { id: "p1", worktree: "/wt-p1", time: { created: 0, updated: 0 }, sandboxes: [] },
-    ]
-    store.sessionsByProject.set("global", sessionsOf(gsession))
-    const gkey = globalEntryKey("/docs")
-    store.projectStates = {
-      default: { opened: ["p1", gkey], currentProjectId: "p1", currentWorkspaceId: null },
-    }
-    expect(store.openedEntries.map((e) => e.key)).toEqual(["p1", gkey])
-    store.applyEntryOrder([gkey, "p1"])
-    expect(store.openedEntries.map((e) => e.key)).toEqual([gkey, "p1"])
-    expect(store.projectStates.default.opened).toEqual([gkey, "p1"])
   })
 })
 
@@ -5743,15 +5717,15 @@ describe("Alt 域动作：requestWorktreeDelete / closeActiveEntry", () => {
     expect(store.pendingWorktreeDelete).toBeNull()
   })
 
-  it("global 项目与删除中目标不动作（Alt+⌫ 对 global 作用域触达的兜底拒绝）", () => {
-    store.deletingWorkspaces.add(`proj1\u0000${WT1}`)
+  it("删除中目标与非 git 项目不动作（Alt+⌫ 兜底拒绝；伪项目无 worktree，M1b）", () => {
+    store.deletingWorkspaces.add(`proj1 ${WT1}`)
     store.requestWorktreeDelete(WT1)
     expect(store.pendingWorktreeDelete).toBeNull()
     store.projects = [
       ...store.projects,
-      { id: "global", worktree: "/", time: { created: 0, updated: 0 }, sandboxes: [] },
+      { id: "hashX", worktree: "/home/x", time: { created: 0, updated: 0 }, sandboxes: [] },
     ]
-    store.requestWorktreeDelete("/home/x", "global")
+    store.requestWorktreeDelete("/home/x", "hashX")
     expect(store.pendingWorktreeDelete).toBeNull()
   })
 
@@ -5766,19 +5740,6 @@ describe("Alt 域动作：requestWorktreeDelete / closeActiveEntry", () => {
     expect(store.projectStates.default.opened).toEqual(["proj2"])
     expect(store.projectStates.default.currentProjectId).toBe("proj2")
     expect(store.projectStates.default.currentWorkspaceId).toBeNull()
-  })
-
-  it("closeActiveEntry：global 激活 = 关当前目录 entry（作用域目录复用 currentWorkspace 字段）", async () => {
-    store.projects = [
-      project(),
-      { id: "global", worktree: "/", time: { created: 0, updated: 0 }, sandboxes: [] },
-    ]
-    store.projectStates.default.opened = ["proj1", globalEntryKey("/home/g")]
-    store.projectStates.default.currentProjectId = "global"
-    store.projectStates.default.currentWorkspaceId = "/home/g"
-    await store.closeActiveEntry()
-    expect(store.projectStates.default.opened).toEqual(["proj1"])
-    expect(store.projectStates.default.currentProjectId).toBe("proj1")
   })
 
   it("closeActiveEntry：单 entry 不动作（对齐左栏单 entry 隐藏关闭按钮）", async () => {
