@@ -387,7 +387,10 @@ export type SessionStatusValue =
  * 过滤规则见 model-catalog.ts：`!hidden && mode !== 'subagent'`。
  */
 export interface AgentInfo {
+  /** 标识符（v1 语义沿用；v2 wire 的 id——切换/匹配键，勿用显示标签） */
   name: string
+  /** 显示标签（v2 wire 的 name，如 "Build"；v1 数据源无此字段 → 回落 name） */
+  label?: string
   description?: string
   /** "subagent" | "primary" | "all"（config 自定义 agent 默认 "all"） */
   mode: string

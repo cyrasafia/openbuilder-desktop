@@ -12,6 +12,7 @@ import {
   parseAgents,
   parseCatalog,
   parseModels,
+  parseModelsV2,
   parseVariants,
   sanitizeDisabledModels,
   setDefaults,
@@ -20,6 +21,7 @@ import {
   type ModelDefaults,
 } from "./model-catalog"
 import type { AgentInfo, ConfigProviders } from "./api-types"
+import type { V2ModelInfo } from "./api-v2-types"
 
 const agent = (name: string, mode: string, hidden = false): AgentInfo => ({
   name,
@@ -136,6 +138,51 @@ describe("parseModels", () => {
     expect(parseModels(null)).toEqual([])
     expect(parseModels(undefined)).toEqual([])
     expect(parseModels({ providers: [] })).toEqual([])
+  })
+})
+
+describe("parseModelsV2（v2 /api/model 平铺列表，M6b）", () => {
+  const raw: V2ModelInfo[] = [
+    {
+      id: "glm-5.3",
+      providerID: "zhipuai-coding-plan",
+      name: "GLM 5.3",
+      status: "active",
+      enabled: true,
+      variants: [{ id: "high" }, { id: "max" }],
+    },
+    { id: "glm-beta", providerID: "zai", name: "GLM beta", status: "beta" },
+    { id: "glm-dead", providerID: "zai", status: "deprecated" },
+    { id: "glm-off", providerID: "zai", status: "disabled" },
+    { id: "unconfigured", providerID: "zai", enabled: false },
+    { id: "no-name", providerID: "zai", status: "active" },
+    // wire 畸形条目（缺 id）：防御式丢弃——类型断言模拟越界输入
+    { name: "缺 id/providerID 丢弃", providerID: "zai" } as unknown as V2ModelInfo,
+  ]
+
+  it("黑名单（deprecated/disabled）+ enabled:false 过滤；name 缺省回退 id", () => {
+    const m = parseModelsV2(raw)
+    expect(m.map((x) => `${x.providerID}/${x.id}`).sort()).toEqual(
+      ["zhipuai-coding-plan/glm-5.3", "zai/glm-beta", "zai/no-name"].sort(),
+    )
+    expect(m.find((x) => x.id === "no-name")!.name).toBe("no-name")
+  })
+
+  it("variants 数组形态解析为 id 列表（活体形状 [{id:\"high\"}]）", () => {
+    const m = parseModelsV2(raw)
+    expect(m.find((x) => x.id === "glm-5.3")!.variants.sort()).toEqual(["high", "max"])
+    expect(m.find((x) => x.id === "glm-beta")!.variants).toEqual([])
+  })
+
+  it("enabled 缺省视为启用（对齐移动端：未配置层不算禁用）", () => {
+    const m = parseModelsV2([{ id: "m1", providerID: "p" }])
+    expect(m).toHaveLength(1)
+  })
+
+  it("空/缺省返回空数组", () => {
+    expect(parseModelsV2(null)).toEqual([])
+    expect(parseModelsV2(undefined)).toEqual([])
+    expect(parseModelsV2([])).toEqual([])
   })
 })
 

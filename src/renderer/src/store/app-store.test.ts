@@ -10,7 +10,20 @@ import { ApiError, RestClient } from "@shared/rest-client"
 import { ApiError as ApiErrorV2, RestClientV2 } from "@shared/rest-client-v2"
 import { SseSubscriber } from "@shared/sse-subscriber"
 import type { ModelCatalog } from "@shared/model-catalog"
-import type { MessageWithParts, ModelRef, Part, Project, Session } from "@shared/api-types"
+import type { V2ModelInfo } from "@shared/api-v2-types"
+import type {
+  AgentInfo,
+  FileContentData,
+  FileDiff,
+  FileNode,
+  MessageWithParts,
+  ModelRef,
+  Part,
+  Project,
+  Pty,
+  PtyTicket,
+  Session,
+} from "@shared/api-types"
 
 const ROOT = "/repo"
 const WT1 = "/repo/.git/opencode-worktrees/wt1"
@@ -151,6 +164,24 @@ beforeEach(() => {
         time: { created: 1, updated: 1 },
         location: { directory: ROOT },
       }),
+      // M6a 待办人机交互：默认无待办（用例按需覆盖 respondPermission/replyForm/cancelForm）
+      respondPermission: async () => {},
+      replyForm: async () => {},
+      cancelForm: async () => {},
+      switchAgent: async () => {},
+      switchModel: async () => {},
+      // M6b 文件/diff/pty/目录：默认空结果（失败用例按需挂 spy）
+      listAgents: async () => [] as AgentInfo[],
+      listModels: async () => [] as V2ModelInfo[],
+      listFiles: async () => [] as FileNode[],
+      readFileContent: async () => ({ type: "text", content: "" }) as FileContentData,
+      findFiles: async () => [] as string[],
+      listVcsDiff: async () => [] as FileDiff[],
+      listSessionDiff: async () => [] as FileDiff[],
+      createPty: async () => ({ id: "pty_1", command: "", cwd: ROOT, status: "running", pid: 1 }) as Pty,
+      updatePtySize: async () => ({ id: "pty_1", command: "", cwd: ROOT, status: "running", pid: 1 }) as Pty,
+      deletePty: async () => {},
+      ptyConnectToken: async () => ({ ticket: "t", expires_in: 60 }) as PtyTicket,
     }
   store.projects = [project()]
   store.projectStates = {
@@ -1672,7 +1703,7 @@ describe("diff Tab：每作用域单 Tab + segment 切换（design-diff-view §2
   /** 在既有 fake client 上挂 listVcsDiff spy */
   function vcsClient() {
     const listVcsDiff = vi.fn(async (_dir: string, _mode: "git" | "branch") => [])
-    const client = (store as unknown as { client: Record<string, unknown> }).client
+    const client = (store as unknown as { clientV2: Record<string, unknown> }).clientV2
     client.listVcsDiff = listVcsDiff
     return listVcsDiff
   }
@@ -1750,7 +1781,7 @@ describe("文件监听（design-file-watcher）", () => {
   }
 
   function clientRef(): Record<string, unknown> {
-    return (store as unknown as { client: Record<string, unknown> }).client
+    return (store as unknown as { clientV2: Record<string, unknown> }).clientV2
   }
 
   beforeEach(() => vi.useFakeTimers())
@@ -1871,8 +1902,8 @@ describe("文件监听（design-file-watcher）", () => {
     watcherEvent(ROOT, ROOT + "/top.ts", "unlink") // 父 = 根（"."）
     await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS)
     expect(listFiles).toHaveBeenCalledTimes(2)
-    expect(listFiles).toHaveBeenCalledWith(ROOT, "src/", undefined)
-    expect(listFiles).toHaveBeenCalledWith(ROOT, ".", undefined)
+    expect(listFiles).toHaveBeenCalledWith(ROOT, "src/")
+    expect(listFiles).toHaveBeenCalledWith(ROOT, ".")
   })
 
   it("change 已加载目录节点重列自身；文件 change 不触发树刷新", async () => {
@@ -1885,7 +1916,7 @@ describe("文件监听（design-file-watcher）", () => {
     watcherEvent(ROOT, ROOT + "/src/a.ts", "change")
     await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS)
     expect(listFiles).toHaveBeenCalledTimes(1)
-    expect(listFiles).toHaveBeenCalledWith(ROOT, "src/", undefined)
+    expect(listFiles).toHaveBeenCalledWith(ROOT, "src/")
   })
 
   it("树重置（切作用域）作废挂起的树刷新：定时器不打进新作用域", async () => {
@@ -1919,7 +1950,7 @@ describe("文件监听（design-file-watcher）", () => {
 // （与文件 Tab 图片同缓存）；作用域取当前 scopeQuery
 describe("markdown 相对图片（design-markdown-preview §2.8）", () => {
   function clientRef(): Record<string, unknown> {
-    return (store as unknown as { client: Record<string, unknown> }).client
+    return (store as unknown as { clientV2: Record<string, unknown> }).clientV2
   }
 
   it("ensureFileImage：在途/已缓存不重复拉取；成功落 binary/mimeType 条目", async () => {
@@ -1934,7 +1965,7 @@ describe("markdown 相对图片（design-markdown-preview §2.8）", () => {
     store.ensureFileImage(ROOT + "/img/a.png")
     store.ensureFileImage(ROOT + "/img/a.png") // 在途 → 合并为一次请求
     expect(readFileContent).toHaveBeenCalledTimes(1)
-    expect(readFileContent).toHaveBeenCalledWith(ROOT, ROOT + "/img/a.png", undefined)
+    expect(readFileContent).toHaveBeenCalledWith(ROOT, ROOT + "/img/a.png")
 
     await vi.waitFor(() =>
       expect(store.fileContents.get(ROOT + "/img/a.png")).toEqual({
@@ -3949,26 +3980,19 @@ describe("文件引用（design-file-reference）", () => {
 describe("终端 Tab（design-terminal-tab）", () => {
   function ptyClient(pty = { id: "pty_1", title: "bash", command: "bash", cwd: ROOT, status: "running", pid: 1 }) {
     const calls: string[] = []
-    ;(store as unknown as { client: unknown }).client = {
-      listSessions: async () => [],
-      listSessionStatus: async () => ({}),
-      listProjects: async () => [project()],
-      listPendingPermissions: async () => [],
-      listPendingQuestions: async () => [],
-      listShells: async () => [
-        { path: "/bin/false", name: "false", acceptable: false },
-        { path: "/bin/bash", name: "bash", acceptable: true },
-      ],
-      createPty: async (dir: string, body: { command?: string }) => {
-        calls.push(`create:${dir}:${body.command}`)
-        return { ...pty, cwd: dir }
-      },
-      deletePty: async (id: string) => {
-        calls.push(`delete:${id}`)
-      },
-      ptyConnectToken: async () => ({ ticket: "tkt", expires_in: 30 }),
-      ptyWsOrigin: () => "ws://127.0.0.1:1",
+    // v2 client fake（M6b 换绑）：pty 方法覆盖在既有 fake 上（保住 listSessions
+    // 等基础面——其余路径仍会调用）+ ptyWsOrigin（URL 组装用）
+    const c = clientV2Of()
+    c.createPty = async (dir: string, body: { command?: string }) => {
+      calls.push(`create:${dir}:${body.command}`)
+      return { ...pty, cwd: dir }
     }
+    c.updatePtySize = async () => pty
+    c.deletePty = async (id: string) => {
+      calls.push(`delete:${id}`)
+    }
+    c.ptyConnectToken = async () => ({ ticket: "tkt", expires_in: 30 })
+    c.ptyWsOrigin = () => "ws://127.0.0.1:1"
     return calls
   }
 
@@ -3984,11 +4008,12 @@ describe("终端 Tab（design-terminal-tab）", () => {
 
   it("openTerminalTab 显示环境注入（design-terminal-tab §1.1）：回环 server 随 body.env 回填主进程显示切片", async () => {
     const bodies: Array<{ command?: string; env?: Record<string, string> }> = []
-    ;(store as unknown as { client: unknown }).client = {
-      createPty: async (_dir: string, body: { command?: string; env?: Record<string, string> }) => {
-        bodies.push(body)
-        return { id: "pty_1", title: "bash", command: "bash", cwd: ROOT, status: "running", pid: 1 }
-      },
+    clientV2Of().createPty = async (
+      _dir: string,
+      body: { command?: string; env?: Record<string, string> },
+    ) => {
+      bodies.push(body)
+      return { id: "pty_1", title: "bash", command: "bash", cwd: ROOT, status: "running", pid: 1 }
     }
     store.managedBaseUrl = "http://127.0.0.1:15120"
     ;(window as unknown as { desktop: Record<string, unknown> }).desktop.ptyDisplayEnv = async () => ({
@@ -4007,12 +4032,10 @@ describe("终端 Tab（design-terminal-tab）", () => {
   it("远程 attach server 不注入（DISPLAY 语义属远端，覆盖破坏 ssh -X 等）；空切片/IPC 失败同不注入", async () => {
     const bodies: Array<{ env?: Record<string, string> }> = []
     let seq = 0
-    ;(store as unknown as { client: unknown }).client = {
-      createPty: async (_dir: string, body: { env?: Record<string, string> }) => {
-        bodies.push(body)
-        seq += 1
-        return { id: `pty_${seq}`, title: "bash", command: "bash", cwd: ROOT, status: "running", pid: seq }
-      },
+    clientV2Of().createPty = async (_dir: string, body: { env?: Record<string, string> }) => {
+      bodies.push(body)
+      seq += 1
+      return { id: `pty_${seq}`, title: "bash", command: "bash", cwd: ROOT, status: "running", pid: seq }
     }
     const desktop = (window as unknown as { desktop: Record<string, unknown> }).desktop
     const spy = vi.fn(async () => ({ DISPLAY: ":0" }))
@@ -4088,27 +4111,29 @@ describe("终端 Tab（design-terminal-tab）", () => {
     expect(store.tabs.length).toBe(0)
   })
 
-  it("ptyConnectUrl：ticket 组装；cursor 省略 = 全量回放、携带 = 续传（design-terminal-tab §1.2a）", async () => {
+  it("ptyConnectUrl：ticket 组装；cursor 省略 = 全量回放、携带 = 续传（design-terminal-tab §1.2a；v2 路径 M6b）", async () => {
     ptyClient()
     await store.openTerminalTab()
     const res = await store.ptyConnectUrl("pty_1")
-    expect(res).toEqual({ url: "ws://127.0.0.1:1/pty/pty_1/connect?ticket=tkt&directory=%2Frepo" })
+    expect(res).toEqual({
+      url: "ws://127.0.0.1:1/api/pty/pty_1/connect?ticket=tkt&location%5Bdirectory%5D=%2Frepo",
+    })
     const resumed = await store.ptyConnectUrl("pty_1", 103)
     expect(resumed).toEqual({
-      url: "ws://127.0.0.1:1/pty/pty_1/connect?ticket=tkt&directory=%2Frepo&cursor=103",
+      url: "ws://127.0.0.1:1/api/pty/pty_1/connect?ticket=tkt&location%5Bdirectory%5D=%2Frepo&cursor=103",
     })
   })
 
   it("ptyConnectUrl 三态：404 → gone（终态）；网络错误 → null（可重试）", async () => {
     ptyClient()
     await store.openTerminalTab()
-    const c = (store as unknown as { client: { ptyConnectToken: unknown } }).client
+    const c = (store as unknown as { clientV2: { ptyConnectToken: unknown } }).clientV2
     c.ptyConnectToken = async () => {
-      throw new ApiError(404, "not-found", "HTTP 404")
+      throw new ApiErrorV2(404, "not-found", "HTTP 404")
     }
     expect(await store.ptyConnectUrl("pty_1")).toEqual({ gone: true })
     c.ptyConnectToken = async () => {
-      throw new ApiError(0, "network", "fetch failed")
+      throw new ApiErrorV2(0, "network", "fetch failed")
     }
     expect(await store.ptyConnectUrl("pty_1")).toBeNull()
   })
@@ -4857,7 +4882,7 @@ describe("Tab 会话持久层（design-tab-session-restore）", () => {
   it("冷启动恢复：非 chat 实体重建 + 模板序合并 + 规则 1.5 激活 file Tab", async () => {
     seedRootMemory([session("s1", ROOT, { created: 1, updated: 1 })])
     const readCalls: unknown[][] = []
-    ;(store as unknown as { client: Record<string, unknown> }).client.readFileContent = async (
+    ;(store as unknown as { clientV2: Record<string, unknown> }).clientV2.readFileContent = async (
       ...args: unknown[]
     ) => {
       readCalls.push(args)
@@ -4882,7 +4907,7 @@ describe("Tab 会话持久层（design-tab-session-restore）", () => {
     // pty 运行时播种（挂载即全量回放；已亡则 token 404 终态）
     expect(store.ptyRuntimeFor("pty1")).toEqual({ exited: false, disconnected: false, title: "zsh" })
     // 内容预拉用 Tab 归属目录（跨作用域 Tab 不用当前 scopeQuery、不带 workspace）
-    expect(readCalls).toContainEqual([ROOT, `${ROOT}/a.md`, undefined])
+    expect(readCalls).toContainEqual([ROOT, `${ROOT}/a.md`])
   })
 
   it("引导页哨兵跨重启：scopeActive null → 冷启动落引导页", async () => {
@@ -5241,7 +5266,7 @@ describe("Tab 会话持久层（design-tab-session-restore）", () => {
   })
 
   it("teardown 外科修剪：pty 已杀/view 已 dispose 的 terminal/browser 剔除，file 保留", async () => {
-    const client = (store as unknown as { client: Record<string, unknown> }).client
+    const client = (store as unknown as { clientV2: Record<string, unknown> }).clientV2
     client.createPty = async () => ({ id: "p1", title: "zsh" })
     client.deletePty = async () => {}
     const { writes } = captureSessionWrites()
@@ -5262,7 +5287,7 @@ describe("Tab 会话持久层（design-tab-session-restore）", () => {
   })
 
   it("teardown 修剪同步清除指向被剔除实体的 scopeActive 悬挂指针（review 二轮）", async () => {
-    const client = (store as unknown as { client: Record<string, unknown> }).client
+    const client = (store as unknown as { clientV2: Record<string, unknown> }).clientV2
     client.createPty = async () => ({ id: "p2", title: "zsh" })
     client.deletePty = async () => {}
     const { writes } = captureSessionWrites()

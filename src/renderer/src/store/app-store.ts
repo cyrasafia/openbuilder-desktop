@@ -4,6 +4,7 @@
  */
 import { RestClient, ApiError } from "@shared/rest-client"
 import { RestClientV2, ApiError as ApiErrorV2 } from "@shared/rest-client-v2"
+import type { V2ModelInfo } from "@shared/api-v2-types"
 import {
   archivedAtOf,
   contentText as contentTextOf,
@@ -41,7 +42,7 @@ import {
   getDefaults,
   normalizeModelRef,
   parseAgents,
-  parseModels,
+  parseModelsV2,
   sanitizeDisabledModels,
   setDefaults,
   setDisabledModels,
@@ -86,7 +87,6 @@ import {
 import type {
   AgentInfo,
   CommandInfo,
-  ConfigProviders,
   FileContentData,
   FileDiff,
   FileNode,
@@ -997,7 +997,7 @@ export class AppStore {
     this.sseSubscriber = null
     // pty 全杀（fire-and-forget）+ 运行时全清——**必须在 client 置 null 之前**
     // 执行（评审 H2：置 null 后再杀是死代码，远程 server 留孤儿进程）
-    const killClient = this.client
+    const killClient = this.clientV2
     if (killClient) {
       for (const tab of this.tabs) {
         if (tab.kind !== "terminal" || !tab.directory) continue
@@ -3748,9 +3748,9 @@ export class AppStore {
    * （浮层显示空态/加载态，不打扰输入）；结果为相对 directory 的路径。
    */
   async searchFiles(query: string, directory: string): Promise<string[] | null> {
-    if (!this.client) return null
+    if (!this.clientV2) return null
     try {
-      return await this.client.findFiles(query, directory)
+      return await this.clientV2.findFiles(query, directory)
     } catch {
       return null
     }
@@ -4118,26 +4118,26 @@ export class AppStore {
   }
 
   refreshModelCatalog(directory: string | null): Promise<void> {
-    const client = this.client
+    const client = this.clientV2
     if (!client || !directory) return Promise.resolve()
     const existing = this.modelCatalogLoading.get(directory)
     if (existing) return existing
     let p!: Promise<void>
     p = (async () => {
       let agents: AgentInfo[] | null = null
-      let providers: ConfigProviders | null = null
+      let models: V2ModelInfo[] | null = null
       try {
-        ;[agents, providers] = await Promise.all([
+        ;[agents, models] = await Promise.all([
           client.listAgents(directory).catch(() => null),
-          client.listConfigProviders(directory).catch(() => null),
+          client.listModels(directory).catch(() => null),
         ])
       } catch {
         // 两个请求均保留 null（失败即按失败处理）
       }
       // client 身份守卫：迟到于 teardown 的旧 fetch 不写新连接
-      if (this.client !== client) return
+      if (this.clientV2 !== client) return
       const prev = this.modelCatalogs.get(directory)
-      if (agents === null && providers === null) {
+      if (agents === null && models === null) {
         // 失败保留好缓存（设计错误表"目录加载失败"）；
         // 完全失败且无缓存 → 记入失败态，工具条显示重试
         if (!prev) this.modelCatalogFailed.add(directory)
@@ -4146,7 +4146,7 @@ export class AppStore {
         // 按数据源分别保留：单源失败不覆盖该源的好缓存
         const catalog: ModelCatalog = {
           agents: agents !== null ? parseAgents(agents) : (prev?.agents ?? []),
-          models: providers !== null ? parseModels(providers) : (prev?.models ?? []),
+          models: models !== null ? parseModelsV2(models) : (prev?.models ?? []),
         }
         this.modelCatalogs.set(directory, catalog)
       }
@@ -4401,16 +4401,16 @@ export class AppStore {
    * shell 选择器。
    */
   async openTerminalTab(): Promise<boolean> {
-    if (!this.client || !this.scopeDirectory()) {
+    if (!this.clientV2 || !this.scopeDirectory()) {
       this.connectionError = "无法创建终端：未连接或无作用域"
       this.emit()
       return false
     }
     // 入口同步捕获（M1）：await 期间作用域可能已切走——directory/projectId 用
     // 捕获值（Tab 归属创建时作用域），激活只在仍在该作用域时抢；client 同步捕获
-    // （显示环境 IPC 的 await 会放大窗口：teardown 置 null 后 this.client.createPty
+    // （显示环境 IPC 的 await 会放大窗口：teardown 置 null 后 this.clientV2.createPty
     // 抛 TypeError 落 catch 变晦涩 connectionError——review 2026-09-11）
-    const client = this.client
+    const client = this.clientV2
     const directory = this.scopeDirectory()
     const projectId = this.currentProject?.id ?? ""
     try {
@@ -4466,54 +4466,56 @@ export class AppStore {
   }
 
   /**
-   * WS 连接 URL 组装（design-terminal-tab §1.2）：connect-token（POST + 专用头）→
-   * ws://…/pty/{id}/connect?ticket=&directory=[&cursor=]。cursor 省略 = 全量回放
-   * （重挂载全新 Terminal 的语义）；携带 = 断线重连增量续传（server 只回放
-   * cursor 之后的输出，0x00 控制帧回新锚点）。**必须带 directory**（实测）：
-   * pty 路由按 directory 实例路由，缺参落到 server cwd 实例 → pty NotFound 404。
+   * WS 连接 URL 组装（design-terminal-tab §1.2；v2 契约 M6b 活体核对）：
+   * connect-token（POST + 专用头）→
+   * ws://…/api/pty/{id}/connect?ticket=&location[directory]=&cursor=。cursor
+   * 省略 = 全量回放（重挂载全新 Terminal 的语义）；携带 = 断线重连增量续传
+   * （server 只回放 cursor 之后的输出，0x00 控制帧回新锚点 {cursor:N}——JSON）。
    * 返回三态：{url} 组装成功；{gone:true} = token 请求 404（pty 已不在
-   * server——退出被 legacy 路由回收 / server 重启内存态丢失，调用方应标终态
-   * 不再重试）；null = 瞬态失败（网络/未连接/无 Tab directory，可退避重试）。
+   * server——PtyNotFoundError，调用方应标终态不再重试）；null = 瞬态失败
+   * （网络/未连接/无 Tab directory，可退避重试）。
+   * close 分流（v2 实测）：1000 = live 内自然退出（exit/Ctrl+D）；4404
+   * "session exited" = 连接时 pty 已退出——terminal-view 的既有分流不变。
    */
   async ptyConnectUrl(
     ptyID: string,
     cursor?: number,
   ): Promise<{ url: string } | { gone: true } | null> {
-    if (!this.client) return null
+    if (!this.clientV2) return null
     const directory = this.tabs.find((t) => t.key === `terminal:${ptyID}`)?.directory
     if (!directory) return null
     try {
-      const ticket = await this.client.ptyConnectToken(ptyID, directory)
-      const qs = new URLSearchParams({ ticket: ticket.ticket, directory })
+      const ticket = await this.clientV2.ptyConnectToken(ptyID, directory)
+      const qs = new URLSearchParams({ ticket: ticket.ticket, "location[directory]": directory })
       if (cursor !== undefined) qs.set("cursor", String(cursor))
       return {
-        url: `${this.client.ptyWsOrigin()}/pty/${encodeURIComponent(ptyID)}/connect?${qs.toString()}`,
+        url: `${this.clientV2.ptyWsOrigin()}/api/pty/${encodeURIComponent(ptyID)}/connect?${qs.toString()}`,
       }
     } catch (e) {
-      if (e instanceof ApiError && e.kind === "not-found") return { gone: true }
+      if (e instanceof ApiErrorV2 && e.kind === "not-found") return { gone: true }
       return null
     }
   }
 
   /** pty resize 上报（TerminalView 节流调用；失败静默——尺寸下次再同步） */
   reportPtySize(ptyID: string, rows: number, cols: number) {
-    if (!this.client) return
+    if (!this.clientV2) return
     const directory = this.tabs.find((t) => t.key === `terminal:${ptyID}`)?.directory
     if (!directory) return
-    void this.client.updatePtySize(ptyID, directory, { rows, cols }).catch(() => {})
+    void this.clientV2.updatePtySize(ptyID, directory, { rows, cols }).catch(() => {})
   }
 
   /**
    * 关终端 Tab = 杀 pty（design-terminal-tab §1.1）：DELETE（404 = 已退出被
-   * legacy 路由回收，视为成功）；入关闭栈（Ctrl+Shift+T 恢复 = 原目录新建）。
+   * 路由回收，视为成功）；入关闭栈（Ctrl+Shift+T 恢复 = 原目录新建）。
    */
   async closeTerminalTab(ptyID: string): Promise<void> {
     const key = `terminal:${ptyID}`
     const tab = this.tabs.find((t) => t.key === key)
     const directory = tab?.directory
-    if (this.client && directory && !this.ptyRuntimes.get(ptyID)?.exited) {
+    if (this.clientV2 && directory && !this.ptyRuntimes.get(ptyID)?.exited) {
       try {
-        await this.client.deletePty(ptyID, directory)
+        await this.clientV2.deletePty(ptyID, directory)
       } catch {
         // 404（已退出）/ 网络失败：本地 Tab 照关（server 侧孤儿由其自身回收）
       }
@@ -4524,12 +4526,12 @@ export class AppStore {
 
   /** 目录卸载（关项目/删工作区/teardown）时杀该目录运行中 pty（fire-and-forget，防孤儿） */
   private killPtyInDirectory(directory: string) {
-    if (!this.client) return
+    if (!this.clientV2) return
     for (const tab of this.tabs) {
       if (tab.kind !== "terminal" || tab.directory !== directory) continue
       const id = tab.key.slice("terminal:".length)
       if (!this.ptyRuntimes.get(id)?.exited) {
-        void this.client.deletePty(id, directory).catch(() => {})
+        void this.clientV2.deletePty(id, directory).catch(() => {})
       }
       this.ptyRuntimes.delete(id)
     }
@@ -4873,13 +4875,13 @@ export class AppStore {
             .find((m) => m.info.role === "user")
           files =
             lastUser != null
-              ? await client.listSessionDiff(session.id, session.directory ?? directory, lastUser.info.id)
+              ? await clientV2.listSessionDiff(session.id, lastUser.info.id)
               : []
         } else {
           files = []
         }
       } else {
-        files = await client.listVcsDiff(directory, type === "uncommitted" ? "git" : "branch")
+        files = await clientV2.listVcsDiff(directory, type === "uncommitted" ? "git" : "branch")
       }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e)
@@ -4894,9 +4896,8 @@ export class AppStore {
    *  口径不带 workspace）；缺省 = 当前作用域（openFileTab 时 Tab 归属即当前作用域） */
   async loadFileContent(absolutePath: string, directory?: string) {
     const dir = directory ?? this.scopeQuery.directory
-    const workspace = directory == null ? this.scopeQuery.workspace : undefined
     try {
-      const fc = await this.client!.readFileContent(dir, absolutePath, workspace)
+      const fc = await this.clientV2!.readFileContent(dir, absolutePath)
       this.fileContents.set(absolutePath, fileContentEntry(fc))
     } catch (e) {
       this.fileContents.set(absolutePath, {
@@ -4917,21 +4918,21 @@ export class AppStore {
    * 丢弃）。不跟随 file watch（监听仅覆盖打开的 file Tab）。
    */
   ensureFileImage(absolutePath: string): void {
-    const client = this.client
+    const client = this.clientV2
     const cached = this.fileContents.get(absolutePath)
     if (!client || (cached && !cached.error) || this.fileImageInflight.has(absolutePath)) {
       return
     }
-    const { directory, workspace } = this.scopeQuery
+    const { directory } = this.scopeQuery
     this.fileImageInflight.add(absolutePath)
     void client
-      .readFileContent(directory, absolutePath, workspace)
+      .readFileContent(directory, absolutePath)
       .then((fc) => {
-        if (this.client !== client) return
+        if (this.clientV2 !== client) return
         this.fileContents.set(absolutePath, fileContentEntry(fc))
       })
       .catch((e: unknown) => {
-        if (this.client !== client) return
+        if (this.clientV2 !== client) return
         this.fileContents.set(absolutePath, {
           content: "",
           error: e instanceof Error ? e.message : String(e),
@@ -5550,11 +5551,10 @@ export class AppStore {
   // ============ 文件树 ============
 
   async loadFileNodes(dirPath: string) {
-    const { directory, workspace } = this.scopeQuery
-    if (!this.client || !directory) return
-    const nodes = await this.client
-      .listFiles(directory, dirPath, workspace)
-      .catch(() => null)
+    const client = this.clientV2
+    const directory = this.scopeQuery.directory
+    if (!client || !directory) return
+    const nodes = await client.listFiles(directory, dirPath).catch(() => null)
     // 闸门：在途请求落地时作用域可能已切走——旧目录节点不得污染新作用域文件树
     if (nodes && this.scopeQuery.directory === directory) {
       this.fileTreeNodes.set(dirPath, nodes)
@@ -5638,7 +5638,7 @@ export class AppStore {
       this.fileReloadDirty.add(file)
       return
     }
-    const client = this.client
+    const client = this.clientV2
     const tab = this.tabs.find((t) => t.kind === "file" && t.key === `file:${file}`)
     if (!client || !tab || !tab.directory) return
     this.fileReloadInflight.add(file)
@@ -5646,11 +5646,11 @@ export class AppStore {
       // directory = Tab 打开时作用域（非当前 scopeQuery）：Tab 跨作用域混排，
       // 事件到达时当前作用域可能已不是该 Tab 的
       const fc = await client.readFileContent(tab.directory, file)
-      if (this.client !== client || !this.tabs.some((t) => t.key === `file:${file}`)) return
+      if (this.clientV2 !== client || !this.tabs.some((t) => t.key === `file:${file}`)) return
       this.fileContents.set(file, fileContentEntry(fc))
       this.emit()
     } catch (e) {
-      if (this.client !== client || !this.tabs.some((t) => t.key === `file:${file}`)) return
+      if (this.clientV2 !== client || !this.tabs.some((t) => t.key === `file:${file}`)) return
       this.fileContents.set(file, {
         content: "",
         error: e instanceof Error ? e.message : String(e),

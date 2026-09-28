@@ -3,14 +3,18 @@
  * 所有函数纯：不触网络、不读写持久化，输入/输出可序列化。vitest 覆盖。
  *
  * 坑与对策（见设计文档"移动端踩过的坑"表）：
- * - LR-1 数据源：v1 /config/providers（非 v2 /api/model）
- * - LR-2 Provider.key 明文，解析期丢弃（parseModels 不读 key 字段）
+ * - LR-1 数据源：v1 /config/providers（非 v2 /api/model）——**v2 迁移修订
+ *   （2026-09-29，M6b）**：LR-1 所述「/api/model 只返回 opencode 一家」在
+ *   2.0.18 实测已不成立（65 模型跨 5 provider），v0.5 起数据源换绑
+ *   `GET /api/model`（v1 端点已不可用），拍平逻辑随之退役
+ * - LR-2 Provider.key 明文，解析期丢弃（parseModels 不读 key 字段；v2 端点无此问题）
  * - LR-3 variants 是 dict `{"high":{...}}` 也可能是 List，双形态兼容
  * - LR-BL1 status 黑名单：仅排除 deprecated/disabled，其余（active/beta/缺省）放行
  * - AM-FIX-1 agent 过滤 !hidden && mode !== 'subagent'（与 server agent.ts:337 一致，
  *   有意偏离移动端"只留 primary"——config 自定义 agent 默认 mode:"all"，排除会全藏掉）
  */
 import type { AgentInfo, ConfigProviders, ModelInfo, ModelRef } from "./api-types"
+import type { V2ModelInfo } from "./api-v2-types"
 
 export interface ModelCatalog {
   agents: AgentInfo[]
@@ -75,6 +79,29 @@ export function parseCatalog(
   providers: ConfigProviders | null | undefined,
 ): ModelCatalog {
   return { agents: parseAgents(agents), models: parseModels(providers) }
+}
+
+/**
+ * v2 `GET /api/model` 平铺列表 → ModelInfo[]（M6b 换绑）：
+ * status 黑名单沿用 LR-BL1（deprecated/disabled），另滤 enabled === false
+ * （provider 层显式禁用；缺省视为启用——对齐移动端 listModels 过滤）。
+ */
+export function parseModelsV2(raw: V2ModelInfo[] | null | undefined): ModelInfo[] {
+  if (!Array.isArray(raw)) return []
+  const out: ModelInfo[] = []
+  for (const m of raw) {
+    if (!m || !m.id || !m.providerID) continue
+    if (m.status === "deprecated" || m.status === "disabled") continue
+    if (m.enabled === false) continue
+    out.push({
+      id: m.id,
+      providerID: m.providerID,
+      name: m.name ?? m.id,
+      status: m.status,
+      variants: parseVariants(m.variants),
+    })
+  }
+  return out
 }
 
 /** (providerID, id) 双字段匹配（LR-4：跨 provider 重名不 id-only lookup）。 */

@@ -12,11 +12,23 @@ import type {
   ProjectInfo,
   ServerInfo,
   SessionInfo,
+  V2AgentInfo,
+  V2FileDiff,
   V2FormAnswer,
+  V2FsEntry,
+  V2ModelInfo,
   V2PermissionDecision,
 } from "./api-v2-types"
 import { toInternalMessages, type V2MessageEntry } from "./v2-adapter"
-import type { MessageWithParts } from "./api-types"
+import type {
+  AgentInfo,
+  FileContentData,
+  FileDiff,
+  FileNode,
+  MessageWithParts,
+  Pty,
+  PtyTicket,
+} from "./api-types"
 
 export interface RestClientV2Options {
   baseUrl: string
@@ -92,8 +104,11 @@ export class RestClientV2 {
 
   /**
    * pty WebSocket 连接基址：http(s) → ws(s) 换 scheme。
-   * **⚠️ v2 的 WS connect/ticket 契约未核对**（plan-v2-terminal 首项任务，
-   * 评审 V2D-2）——M1+ 代码不得在核对前调用本方法。
+   * v2 WS 契约已活体核对（M6b，V2D-2 关闭）：
+   * `GET /api/pty/:id/connect?ticket=&location[directory]=&cursor=`（HTTP 101
+   * 升级）；帧协议 TEXT=输出流、二进制 0x00+`{cursor:N}`=锚点回执；close
+   * 1000=live 内自然退出 / 4404 "session exited"=连接时已退出——terminal-view
+   * 既有分流不变。
    */
   ptyWsOrigin(): string {
     return this.base.replace(/^http/, "ws")
@@ -448,5 +463,223 @@ export class RestClientV2 {
       method: "POST",
       body: JSON.stringify({ model: body }),
     })
+  }
+
+  // ============ agent / model 目录（M6b 补换绑） ============
+
+  /**
+   * GET /api/agent：agent 目录。**wire→内部映射（评审修复 #1）**：v2 的
+   * id 是标识符（"build"）、name 是显示标签（"Build"）——内部 AgentInfo.name
+   * 沿袭 v1 语义 = 标识符（切换键/默认值匹配/选中态），wire name 落 label。
+   * 过滤在 model-catalog。
+   */
+  async listAgents(directory: string): Promise<AgentInfo[]> {
+    const res = await this.fetchJson<{ data: V2AgentInfo[] }>(
+      `/api/agent${this.locationQuery(directory)}`,
+    )
+    return res.data.map((a) => ({
+      name: a.id,
+      label: a.name,
+      description: a.description,
+      mode: a.mode,
+      hidden: a.hidden,
+    }))
+  }
+
+  /**
+   * GET /api/model：模型目录（平铺 Model.Info[]，取代 v1 /config/providers 的
+   * providers→models 拍平——LR-1「只返回 opencode 一家」的判断在 2.0.18 实测
+   * 已不成立：65 模型跨 5 provider）。转换/过滤在 model-catalog.parseModelsV2。
+   */
+  async listModels(directory: string): Promise<V2ModelInfo[]> {
+    const res = await this.fetchJson<{ data: V2ModelInfo[] }>(
+      `/api/model${this.locationQuery(directory)}`,
+    )
+    return res.data
+  }
+
+  // ============ 文件系统（M6b：fs 组，deepObject location + Entry 模型） ============
+
+  /** location 组共用的 deepObject query（`location[directory]=`） */
+  private locationQuery(directory?: string): string {
+    if (directory === undefined) return ""
+    const q = new URLSearchParams()
+    q.set("location[directory]", directory)
+    return `?${q.toString()}`
+  }
+
+  /**
+   * GET /api/fs/list：目录列表。Entry.path 相对请求的 location（目录带尾 /），
+   * 响应 envelope 的 location.directory 是解析基址（server 可规范化入参）——
+   * absolute 以其为基拼接。**ignored 降级**：v2 Entry 无 gitignore 标记
+   * （v1 /file 的 ignored 字段），恒 false（弱化样式退役，同移动端）。
+   */
+  async listFiles(directory: string, path: string): Promise<FileNode[]> {
+    const q = new URLSearchParams()
+    q.set("location[directory]", directory)
+    if (path && path !== ".") q.set("path", path)
+    const res = await this.fetchJson<{
+      location: { directory: string }
+      data: V2FsEntry[]
+    }>(`/api/fs/list?${q.toString()}`)
+    const base = res.location.directory.replace(/\/+$/, "")
+    return res.data.map((e) => {
+      const isDir = e.type === "directory"
+      const withoutSlash = isDir && e.path.endsWith("/") ? e.path.slice(0, -1) : e.path
+      const segs = withoutSlash.split("/").filter(Boolean)
+      return {
+        name: segs.length === 0 ? withoutSlash : segs[segs.length - 1],
+        path: e.path,
+        absolute: withoutSlash ? `${base}/${withoutSlash}` : base,
+        type: e.type,
+        ignored: false,
+      }
+    })
+  }
+
+  /**
+   * GET /api/fs/read/*：原始字节流（application/octet-stream 等）——路径作 URL
+   * 剩余段（逐段编码，`?`/`#` 等特殊字符不致截断）。文本/二进制由客户端判定
+   * （v1 是 server 返回 type 字段）：**NUL 嗅探为主**（前 8K 含 0x00 = 二进制，
+   * 救回 server MIME 库对 .ts 的 video/mp2t 误判）+ image/* mime 直判二进制
+   * （svg 例外：文本源码，imageSrcFor 的 svg 分支依赖 text）。
+   * binary 时 content 为 base64（mimeType 透传，图片预览分发依据）。
+   */
+  async readFileContent(directory: string, path: string): Promise<FileContentData> {
+    const encoded = path
+      .split("/")
+      .map((s) => encodeURIComponent(s))
+      .join("/")
+    const res = await this.fetchResponse(
+      `/api/fs/read/${encoded}${this.locationQuery(directory)}`,
+      { timeoutMs: 30000 },
+    )
+    // 响应体读取中途断网与 fetchJson 同契约：包成 ApiError（模块只抛 ApiError）
+    let buffer: ArrayBuffer
+    try {
+      buffer = await res.arrayBuffer()
+    } catch (e) {
+      throw classifyFetchError(e)
+    }
+    const bytes = new Uint8Array(buffer)
+    const mime = (res.headers.get("content-type") ?? "").split(";")[0].trim() || undefined
+    const isImage = !!mime && mime.startsWith("image/") && mime !== "image/svg+xml"
+    const binary = isImage || bytes.subarray(0, 8192).includes(0)
+    if (binary) {
+      // 分块 base64（spread 大文件会栈溢出）
+      let binaryStr = ""
+      const CHUNK = 0x8000
+      for (let i = 0; i < bytes.length; i += CHUNK) {
+        binaryStr += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
+      }
+      return { type: "binary", content: btoa(binaryStr), encoding: "base64", mimeType: mime }
+    }
+    return { type: "text", content: new TextDecoder("utf-8").decode(bytes) }
+  }
+
+  /**
+   * GET /api/fs/find：模糊搜索。返回相对 directory 的 path 数组（目录带尾 /，
+   * 与 v1 /find/file 的返回形态对齐——@ 浮层数据源直接消费 string[]）。
+   */
+  async findFiles(query: string, directory: string, limit = 20): Promise<string[]> {
+    const q = new URLSearchParams()
+    q.set("location[directory]", directory)
+    q.set("query", query)
+    q.set("limit", String(limit))
+    const res = await this.fetchJson<{ data: V2FsEntry[] }>(
+      `/api/fs/find?${q.toString()}`,
+    )
+    return res.data.map((e) => e.path)
+  }
+
+  // ============ diff（M6b：vcs 组 deepObject + session turn 语义） ============
+
+  /**
+   * GET /api/vcs/diff：mode 映射 v1 → v2（git 工作区未提交 → working、分支对比
+   * → branch）。context 恒显式传（v2 端点明确「Omit for full-file patches」——
+   * 与 v1 相同的全文件 patch 陷阱，3 对齐 git diff --unified=3）。
+   */
+  async listVcsDiff(
+    directory: string,
+    mode: "git" | "branch",
+    opts: { context?: number } = {},
+  ): Promise<FileDiff[]> {
+    const q = new URLSearchParams()
+    q.set("location[directory]", directory)
+    q.set("mode", mode === "git" ? "working" : "branch")
+    q.set("context", String(opts.context ?? 3))
+    const res = await this.fetchJson<{ data: V2FileDiff[] }>(
+      `/api/vcs/diff?${q.toString()}`,
+      { timeoutMs: 30000 },
+    )
+    return res.data
+  }
+
+  /**
+   * GET /api/session/:sessionID/diff：turn 语义（v1 是 messageID query）——
+   * from = user 消息 ID（其 turn 的改动），缺省 server 取最新 user turn。
+   * context 同 vcs（显式传 3，v1 时代只能靠 diff-parse 的 narrowHunk 客户端
+   * 收窄——v2 可从请求侧根治，收窄层保留为无害冗余）。
+   */
+  async listSessionDiff(
+    sessionID: string,
+    messageID: string | undefined,
+    opts: { context?: number } = {},
+  ): Promise<FileDiff[]> {
+    const q = new URLSearchParams()
+    if (messageID !== undefined) q.set("from", messageID)
+    q.set("context", String(opts.context ?? 3))
+    const res = await this.fetchJson<{ data: V2FileDiff[] }>(
+      `/api/session/${encodeURIComponent(sessionID)}/diff?${q.toString()}`,
+      { timeoutMs: 30000 },
+    )
+    return res.data
+  }
+
+  // ============ pty（M6b：契约经活体核对，design-terminal-tab §1） ============
+
+  /**
+   * POST /api/pty：创建 pty（cwd = 作用域目录；command 省略时 server 用默认
+   * shell）。body 同 v1（command/args/cwd/title/env——env 的显示环境注入见
+   * app-store ptyDisplayEnvForServer）。
+   */
+  async createPty(
+    directory: string,
+    body: { command?: string; args?: string[]; cwd?: string; title?: string; env?: Record<string, string> } = {},
+  ): Promise<Pty> {
+    const res = await this.fetchJson<{ data: Pty }>(`/api/pty${this.locationQuery(directory)}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    })
+    return res.data
+  }
+
+  /** PUT /api/pty/:ptyID（resize；失败静默由调用方 catch） */
+  async updatePtySize(ptyID: string, directory: string, size: { rows: number; cols: number }): Promise<Pty> {
+    const res = await this.fetchJson<{ data: Pty }>(
+      `/api/pty/${encodeURIComponent(ptyID)}${this.locationQuery(directory)}`,
+      { method: "PUT", body: JSON.stringify({ size }) },
+    )
+    return res.data
+  }
+
+  /** DELETE /api/pty/:ptyID（关 Tab = 杀 pty；404 = 已退出，调用方视为成功） */
+  async deletePty(ptyID: string, directory: string): Promise<void> {
+    await this.fetchResponse(`/api/pty/${encodeURIComponent(ptyID)}${this.locationQuery(directory)}`, {
+      method: "DELETE",
+    })
+  }
+
+  /**
+   * POST /api/pty/:ptyID/connect-token：WS 连接票据。**必须带头
+   * `x-opencode-ticket: 1`**（无此头 403 PtyForbiddenError——"我知道我在开 WS"
+   * 的客户端确认信号，v1 同规则沿用）；响应 envelope `{location, data}`。
+   */
+  async ptyConnectToken(ptyID: string, directory: string): Promise<PtyTicket> {
+    const res = await this.fetchJson<{ data: PtyTicket }>(
+      `/api/pty/${encodeURIComponent(ptyID)}/connect-token${this.locationQuery(directory)}`,
+      { method: "POST", headers: { "x-opencode-ticket": "1" } },
+    )
+    return res.data
   }
 }

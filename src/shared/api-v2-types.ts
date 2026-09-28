@@ -133,6 +133,51 @@ export type V2FormAnswer = Record<string, V2FormValue>
 /** Permission.Reply（reply 端点的 decision 枚举，与 v1 response 同值域） */
 export type V2PermissionDecision = "once" | "always" | "reject"
 
+// ---- 文件系统 / diff / pty（M6b，契约 FileSystem.*/FileDiff.*/Pty.*）----
+
+/** FileSystem.Entry：path 相对请求的 location（目录带尾随 /） */
+export interface V2FsEntry {
+  path: string
+  type: "file" | "directory"
+}
+
+/** FileDiff.Info（/api/vcs/diff 与 /api/session/:id/diff 的条目；与内部 FileDiff 同构） */
+export interface V2FileDiff {
+  file: string
+  patch: string
+  additions: number
+  deletions: number
+  status: "added" | "deleted" | "modified"
+}
+
+// ---- agent / model 目录（M6b 补换绑；LR-1 判断已过时，见 model-catalog 注释）----
+
+/**
+ * Agent.Info wire 形状（M6b 评审修复：**id 是标识符、name 是显示标签**——
+ * 活体 2.0.18：`{id:"build", name:"Build", …}`。内部 AgentInfo 的 name 沿袭
+ * v1 语义 = 标识符，wire name 映射到内部 label）。
+ */
+export interface V2AgentInfo {
+  id: string
+  name: string
+  description?: string
+  mode: "subagent" | "primary" | "all" | (string & {})
+  hidden?: boolean
+}
+
+/**
+ * Model.Info（wire 宽松化：仅目录消费面）。status 枚举 alpha/beta/deprecated/active；
+ * enabled 是 provider 配置层的启用位（false = 未配 key 等，不进列表）。
+ */
+export interface V2ModelInfo {
+  id: string
+  providerID: string
+  name?: string
+  status?: string
+  enabled?: boolean
+  variants?: Array<{ id?: string } | Record<string, unknown>>
+}
+
 /** GET /api/session query（flat 风格；与 location 组的 deepObject 风格并存，勿统一） */
 export interface ListSessionsInput {
   directory?: string

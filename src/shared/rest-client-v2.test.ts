@@ -244,6 +244,161 @@ describe("待办人机交互与会话切换（M6a）", () => {
   })
 })
 
+describe("agent / model 目录（M6b 补换绑）", () => {
+  it("listAgents：wire id/name 错位映射——id 是标识符（切换键）落 name，wire name 落 label（活体形状）", async () => {
+    const client = mkClient(
+      () =>
+        new Response(
+          JSON.stringify({
+            location: { directory: "/r" },
+            data: [
+              { id: "build", name: "Build", mode: "primary", hidden: false },
+              { id: "general", name: "General", mode: "subagent", hidden: false },
+            ],
+          }),
+        ),
+    )
+    const agents = await client.listAgents("/r")
+    expect(agents).toEqual([
+      { name: "build", label: "Build", description: undefined, mode: "primary", hidden: false },
+      { name: "general", label: "General", description: undefined, mode: "subagent", hidden: false },
+    ])
+  })
+
+  it("listModels：deepObject location + envelope 解包", async () => {
+    const seen: string[] = []
+    const client = mkClient((url) => {
+      seen.push(url)
+      return new Response(
+        JSON.stringify({ location: { directory: "/r" }, data: [{ id: "x", providerID: "p", enabled: true }] }),
+      )
+    })
+    await client.listModels("/r")
+    expect(seen).toEqual(["http://server/api/model?location%5Bdirectory%5D=%2Fr"])
+  })
+})
+
+describe("文件系统（M6b）", () => {
+  it("listFiles：Entry 相对 path + 响应 location 为基址拼 absolute；目录尾 / 剥离进 name；ignored 恒 false", async () => {
+    // 活体形状（2.0.18）：location 回显**请求** location（不含 path 前缀），
+    // Entry.path 含请求 path 前缀（相对请求 location）
+    const client = mkClient(() =>
+      new Response(
+        JSON.stringify({
+          location: { directory: "/repo" },
+          data: [
+            { path: "src/shared/", type: "directory" },
+            { path: "src/main/index.ts", type: "file" },
+          ],
+        }),
+      ),
+    )
+    const nodes = await client.listFiles("/repo", "src")
+    expect(nodes).toEqual([
+      { name: "shared", path: "src/shared/", absolute: "/repo/src/shared", type: "directory", ignored: false },
+      { name: "index.ts", path: "src/main/index.ts", absolute: "/repo/src/main/index.ts", type: "file", ignored: false },
+    ])
+  })
+
+  it("findFiles：query 透传，返回 Entry.path 数组", async () => {
+    let seenUrl = ""
+    const client = mkClient((url) => {
+      seenUrl = url
+      return new Response(JSON.stringify({ data: [{ path: "a.ts", type: "file" }, { path: "d/", type: "directory" }] }))
+    })
+    const out = await client.findFiles("adapter", "/repo", 20)
+    expect(out).toEqual(["a.ts", "d/"])
+    expect(seenUrl).toBe("http://server/api/fs/find?location%5Bdirectory%5D=%2Frepo&query=adapter&limit=20")
+  })
+
+  it("readFileContent：文本（无 NUL）→ text + UTF-8 解码；路径逐段编码 + deepObject location", async () => {
+    let seenUrl = ""
+    const client = mkClient((url) => {
+      seenUrl = url
+      return new Response(new TextEncoder().encode("héllo 你好"), { headers: { "content-type": "text/plain; charset=utf-8" } })
+    })
+    const fc = await client.readFileContent("/repo", "src/a b?.ts")
+    expect(fc).toEqual({ type: "text", content: "héllo 你好" })
+    expect(seenUrl).toBe("http://server/api/fs/read/src/a%20b%3F.ts?location%5Bdirectory%5D=%2Frepo")
+  })
+
+  it("readFileContent：NUL 嗅探判二进制（.ts 误判 video/mp2t 也能救回文本；真二进制走 base64）", async () => {
+    // 真 NUL 字节 → binary（mime 非图片也判二进制）
+    const bin = mkClient(() => new Response(new Uint8Array([0x89, 0x50, 0x00, 0x0d]), { headers: { "content-type": "application/octet-stream" } }))
+    const fc1 = await bin.readFileContent("/r", "a.png")
+    expect(fc1.type).toBe("binary")
+    expect(fc1.encoding).toBe("base64")
+    expect(fc1.mimeType).toBe("application/octet-stream")
+    // .ts 文本被 server 误标 video/mp2t：无 NUL → text（M6b 活体发现的坑）
+    const ts = mkClient(() => new Response(new TextEncoder().encode("export {}"), { headers: { "content-type": "video/mp2t" } }))
+    expect((await ts.readFileContent("/r", "a.ts")).type).toBe("text")
+    // image/* 直判二进制（svg 例外：文本源码）
+    const svg = mkClient(() => new Response(new TextEncoder().encode("<svg/>"), { headers: { "content-type": "image/svg+xml" } }))
+    expect((await svg.readFileContent("/r", "a.svg")).type).toBe("text")
+  })
+
+  it("listVcsDiff：mode 映射 git→working、branch 直传；context 恒显式", async () => {
+    const seen: string[] = []
+    const client = mkClient((url) => {
+      seen.push(url)
+      return new Response(JSON.stringify({ data: [] }))
+    })
+    await client.listVcsDiff("/r", "git")
+    await client.listVcsDiff("/r", "branch", { context: 5 })
+    expect(seen[0]).toBe("http://server/api/vcs/diff?location%5Bdirectory%5D=%2Fr&mode=working&context=3")
+    expect(seen[1]).toBe("http://server/api/vcs/diff?location%5Bdirectory%5D=%2Fr&mode=branch&context=5")
+  })
+
+  it("listSessionDiff：from 透传（缺省省略）+ context；无 directory 参数", async () => {
+    const seen: string[] = []
+    const client = mkClient((url) => {
+      seen.push(url)
+      return new Response(JSON.stringify({ data: [] }))
+    })
+    await client.listSessionDiff("ses_1", "msg_u1")
+    await client.listSessionDiff("ses_1", undefined)
+    expect(seen[0]).toBe("http://server/api/session/ses_1/diff?from=msg_u1&context=3")
+    expect(seen[1]).toBe("http://server/api/session/ses_1/diff?context=3")
+  })
+})
+
+describe("pty（M6b，契约活体核对 V2D-2）", () => {
+  it("createPty/updatePtySize/deletePty：deepObject location；envelope 解包", async () => {
+    const seen: Array<{ url: string; method: string }> = []
+    const client = mkClient((url, init) => {
+      seen.push({ url, method: init.method ?? "" })
+      return new Response(JSON.stringify({ data: { id: "pty_1", command: "", cwd: "/r", status: "running", pid: 1 } }))
+    })
+    await client.createPty("/r", { cwd: "/r" })
+    await client.updatePtySize("pty_1", "/r", { rows: 24, cols: 80 })
+    expect(seen).toEqual([
+      { url: "http://server/api/pty?location%5Bdirectory%5D=%2Fr", method: "POST" },
+      { url: "http://server/api/pty/pty_1?location%5Bdirectory%5D=%2Fr", method: "PUT" },
+    ])
+    const seenDel: string[] = []
+    const del = mkClient((url, init) => {
+      seenDel.push(`${init.method} ${url}`)
+      return new Response(null, { status: 204 })
+    })
+    await del.deletePty("pty_1", "/r")
+    expect(seenDel).toEqual(["DELETE http://server/api/pty/pty_1?location%5Bdirectory%5D=%2Fr"])
+  })
+
+  it("ptyConnectToken：POST + x-opencode-ticket 头（无头 server 403，活体核对）+ envelope 解包", async () => {
+    let header = ""
+    let method = ""
+    const client = mkClient((_url, init) => {
+      method = init.method ?? ""
+      header = (init.headers as Record<string, string>)["x-opencode-ticket"] ?? ""
+      return new Response(JSON.stringify({ data: { ticket: "tkt", expires_in: 60 } }))
+    })
+    const t = await client.ptyConnectToken("pty_1", "/r")
+    expect(t).toEqual({ ticket: "tkt", expires_in: 60 })
+    expect(method).toBe("POST")
+    expect(header).toBe("1")
+  })
+})
+
 describe("鉴权与错误分类", () => {
   it("Basic 头注入（用户名缺省 opencode）", async () => {
     let auth = ""
