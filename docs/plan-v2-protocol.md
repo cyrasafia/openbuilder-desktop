@@ -9,7 +9,7 @@
 
 - **新增自包含模块**：`src/shared/api-v2-types.ts`（wire 类型，按里程碑增量补字段）+ `src/shared/rest-client-v2.ts`（v2 client，**最终命名**，不与 v1 方法临时共存）。错误分类/鉴权/fetch 管道在 v2 模块内自持（复用 v1 的 ApiError 会造成收敛期反向依赖）；
 - app-store 等调用方按里程碑**逐子系统换绑**到 v2 client（测试 mock 同步换绑）；
-- **收敛步（M6）**：删除 `rest-client.ts`/`api-types.ts` v1 面，`rest-client-v2.ts` 更名为 `rest-client.ts`（或调用方 import 统一改指），全局 grep 无 v1 路径残留；AGENTS.md 契约约束与 spec 同步修订，版本号升 0.5.0 + tag。
+- **收敛步（M6a–M6d）**：逐批换绑剩余 v1 消费面后，删除 `rest-client.ts`/`api-types.ts` v1 面，`rest-client-v2.ts` 更名为 `rest-client.ts`（或调用方 import 统一改指），全局 grep 无 v1 路径残留；AGENTS.md 契约约束与 spec 同步修订，版本号升 0.5.0 + tag。
 
 ## 里程碑
 
@@ -55,11 +55,40 @@
 - `location.reload`/`debug evict` 不接（D5）；`instance/dispose` 调用点删除；
 - 验收：D2 交互（删除后消失/外部删除对账消失）。
 
-### M6 收敛与发版
+### M6 收敛与发版（2026-09-29 拆分为 M6a–M6d）
 
-- 删除 v1 面（rest-client.ts/api-types.ts 及 v1 测试）、v2 模块更名、全局 grep `/session?` `/project` `/global/event` 等无残留；
-- AGENTS.md（联调说明、契约约束、归档锁定语义修订）、spec v0.5、版本号 0.5.0 + `git tag v0.5`；
-- 验收：`npm run test`/`typecheck` 全绿；打包冒烟。
+原 M6 单体拆分为四批——审计发现剩余 v1 消费面远超单 turn 量（pty/文件/diff/权限/命令五大子系统），逐批换绑每步测试全绿。
+
+#### M6a 交互核心恢复（P1：权限/agent/model 切换）
+
+- `respondPermission` → `POST /api/session/:id/permission/:requestID/reply`；
+- `replyQuestion`/`rejectQuestion` → v2 form 体系 `POST /api/session/:id/form/:formID/reply`；
+- `switchAgent`/`switchModel` → `POST /api/session/:id/agent` 与 `/model`（过渡 /api 面已有路径，只需换 client）；
+- 验收：授权弹窗按钮可用、会话默认 agent/model 可设置。
+
+#### M6b 文件/diff/终端（P2：Tab 三类恢复）
+
+- `readFileContent` → `GET /api/fs/read/*`（deepObject location）；
+- `findFiles` → `GET /api/fs/find`；
+- `listSessionDiff` → `GET /api/session/:id/diff?from&to&context`（turn 语义）；
+- `listVcsDiff` → `GET /api/vcs/diff`（deepObject + base 参数）；
+- pty 六方法 → `POST/PUT/DELETE /api/pty` + `connect-token` + WS connect（路径不变，只换 client——**ticket/WS 契约需逐项核对**，V2D-2）；
+- 验收：文件 Tab 打开/搜索、diff Tab 双模式、终端 Tab 创建/退出分流。
+
+#### M6c 命令面板与 pending（P3：设计决策 + 死代码清理）
+
+- `listCommands`/`sendCommand`：v2 `GET /api/command` 注册制不同（无外部 skill 扫描、不合并 skill）——**设计决策**：换绑（命令集缩小）或降级隐藏入口（v0.5 无斜杠命令，v0.6 评估）；
+- `listSessionTodos` → 删除（v2 无 todo 端点）；
+- `backfillPending`（listPendingPermissions/listPendingQuestions）→ v2 `GET /api/permission/request` + form 待办，或删（reconciler 的 pending 阶段 v2 下恒 null）；
+- 死代码清理：`commandEchoPending`、`applyStatusSnapshot`、v1 死 case（message.updated user 分支/message.removed/message.part.removed/todo.updated/catalog.updated）、reconciler 死 import（SessionStatusValue/toInternalMessages）。
+
+#### M6d 收敛发版
+
+- 删除 v1 面（rest-client.ts/api-types.ts 及 v1 测试）、`rest-client-v2.ts` 更名 `rest-client.ts`（或 import 统一改指），全局 grep `/session?`（根路径）/`/project`（非 /api 前缀）/`/global/event` 等无残留；
+- AGENTS.md（联调说明、契约约束换 pin 至 opencode_openapi_v2.json、归档锁定语义修订——D1 metadata.archivedAt）、spec-v0.5、版本号 0.5.0（package.json + PKGBUILD + spec 三落点）+ `git tag v0.5`；
+- 验收：`npm run test`/`typecheck` 全绿；打包冒烟（`npm run package:linux`）。
+
+**已落地（M6 首批，`f9928f3`）**：createWorkspace v2 换绑丢失修复（M5 脚本中断）+ Reconciler 会话/消息快照换绑 v2（v1 listSessions/listMessages 在 v2 server 全 404——重连对账的消息恢复路径断裂）。
 
 ## 落地前复核清单（每里程碑启动时过一遍）
 
@@ -70,4 +99,6 @@
 
 - v2 小版本契约漂移 → 每里程碑复核 pin；
 - app-store 体量（~6000 行）换绑面大 → 逐里程碑小步提交，每步测试全绿；
-- SSE 事件表重写波及渲染层 → M3 与 M4 之间设联合验证点。
+- SSE 事件表重写波及渲染层 → M3 与 M4 之间设联合验证点；
+- pty WS 契约（ticket/connect/退出分流）在 M6b 前未逐项核对——**M6b 首项任务**（V2D-2），核对不可跳过；
+- 斜杠命令 v2 注册制差异（无外部 skill 扫描）是 M6c 的**设计决策**而非纯换绑——命令集缩小对用户可感知，需产品判断。
