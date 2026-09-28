@@ -16,14 +16,14 @@ function mkClient(handler: (url: string, init: RequestInit) => Response, opts?: 
 }
 
 describe("serverInfo / listProjects", () => {
-  it("GET /api/info 与 /api/project：路径正确、null 容忍为数组", async () => {
+  it("GET /api/info 与 /api/project：路径正确", async () => {
     const seen: string[] = []
     const client = mkClient((url) => {
       seen.push(url)
       if (url.endsWith("/api/info")) {
         return new Response(JSON.stringify({ version: "2.0.18", pid: 1, urls: [], paths: { tmp: "/tmp" } }))
       }
-      return new Response("")
+      return new Response(JSON.stringify([]))
     })
     await expect(client.serverInfo()).resolves.toMatchObject({ version: "2.0.18" })
     await expect(client.listProjects()).resolves.toEqual([])
@@ -88,10 +88,17 @@ describe("listSessions（flat query + envelope）", () => {
     expect(page.cursor).toEqual({ previous: "P", next: "N" })
   })
 
-  it("空响应体：data 空、cursor 空对象，不抛解析错", async () => {
+  it("空响应体：ApiError（unknown/空响应），v2 读端点必有 JSON 体", async () => {
     const client = mkClient(() => new Response(""))
-    const page = await client.listSessions()
-    expect(page).toEqual({ data: [], cursor: {} })
+    await expect(client.listSessions()).rejects.toMatchObject({ kind: "unknown" })
+    await expect(client.serverInfo()).rejects.toMatchObject({ kind: "unknown" })
+  })
+
+  it("200 + HTML（v1 server SPA fallback 形态）：ApiError unsupported，不裸抛 SyntaxError", async () => {
+    const client = mkClient(() => new Response("<!doctype html><html>…</html>", { headers: { "content-type": "text/html" } }))
+    const err = await client.serverInfo().catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ApiError)
+    expect(err).toMatchObject({ kind: "unsupported", status: 200 })
   })
 })
 
@@ -104,6 +111,19 @@ describe("鉴权与错误分类", () => {
     }, { password: "pw" })
     await client.listProjects()
     expect(auth).toBe("Basic " + btoa("opencode:pw"))
+  })
+
+  it("非 Latin1 密码（中文）：UTF-8 字节 base64，构造不抛、值可独立复算", async () => {
+    let auth = ""
+    const client = mkClient((_url, init) => {
+      auth = (init.headers as Record<string, string>)["Authorization"]
+      return new Response("[]")
+    }, { password: "密码123" })
+    await client.listProjects()
+    const expected =
+      "Basic " +
+      btoa(String.fromCharCode(...new TextEncoder().encode("opencode:密码123")))
+    expect(auth).toBe(expected)
   })
 
   it("401 → auth 分类；400 → 状态码透传（ApiError）", async () => {

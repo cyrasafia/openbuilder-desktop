@@ -38,9 +38,7 @@ export class ApiError extends Error {
   }
 }
 
-/** 错误分类转换（参考 openbuilder design-network-error-handling：不暴露响应体）。
- *  v2 下连到 v1 server 的 legacy 端点会返回 200 HTML（SPA fallback）——
- *  "unsupported" 分类由调用方在 JSON 解析失败时标记（探活逻辑用，M1 接线）。 */
+/** 错误分类转换（参考 openbuilder design-network-error-handling：不暴露响应体） */
 export function classifyFetchError(e: unknown): ApiError {
   if (e instanceof ApiError) return e
   if (e instanceof DOMException && (e.name === "AbortError" || e.name === "TimeoutError")) {
@@ -53,6 +51,15 @@ export function classifyFetchError(e: unknown): ApiError {
   return new ApiError(0, "unknown", "未知错误")
 }
 
+/** Basic 头（UTF-8 字节 base64）：btoa 直拼对非 Latin1 密码（如中文）抛
+ *  InvalidCharacterError；服务端按 UTF-8 解码凭据，此编码与其对齐（ASCII 两者逐字节一致） */
+function basicAuthHeader(username: string, password: string): string {
+  const bytes = new TextEncoder().encode(`${username}:${password}`)
+  let binary = ""
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return "Basic " + btoa(binary)
+}
+
 export class RestClientV2 {
   private base: string
   private authHeader: string | undefined
@@ -61,13 +68,17 @@ export class RestClientV2 {
   constructor(opts: RestClientV2Options) {
     this.base = opts.baseUrl.replace(/\/+$/, "")
     if (opts.username || opts.password) {
-      this.authHeader = "Basic " + btoa(`${opts.username ?? "opencode"}:${opts.password ?? ""}`)
+      this.authHeader = basicAuthHeader(opts.username ?? "opencode", opts.password ?? "")
     }
     // Electron renderer 的 fetch 是绑定 window 的包装，脱离 this 调用会 Illegal invocation
     this.f = opts.fetchImpl ?? fetch.bind(globalThis)
   }
 
-  /** pty WebSocket 连接基址：http(s) → ws(s) 换 scheme（与 v1 同规则） */
+  /**
+   * pty WebSocket 连接基址：http(s) → ws(s) 换 scheme。
+   * **⚠️ v2 的 WS connect/ticket 契约未核对**（plan-v2-terminal 首项任务，
+   * 评审 V2D-2）——M1+ 代码不得在核对前调用本方法。
+   */
   ptyWsOrigin(): string {
     return this.base.replace(/^http/, "ws")
   }
@@ -106,25 +117,39 @@ export class RestClientV2 {
     return res
   }
 
-  /** JSON 响应统一解析：空体容忍为 null（对齐 v1 client 防御行为） */
-  private async fetchJson<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T | null> {
+  /**
+   * JSON 响应统一解析（**严格**契约，评审修复 2026-09-28）：
+   * - `res.text()` 中途失败 → classifyFetchError（网络中断/中止）；
+   * - 200 + 非 JSON（v1 server 的 SPA fallback HTML 即此形态）→ ApiError
+   *   `unsupported`——M1 探活以此判定「server 版本不支持」；
+   * - 空响应体 → ApiError（v2 各读端点必有 JSON 体，空体即异常信号）；
+   * - JSON.parse 失败不再裸抛 SyntaxError（违反模块「只抛 ApiError」契约，
+   *   v1 client 同场景为 catch 后抛 ApiError——修复前 v2 漏掉了这层）。
+   */
+  private async fetchJson<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
     const res = await this.fetchResponse(path, init)
-    const text = await res.text()
-    if (!text) return null
-    return JSON.parse(text) as T
+    let text: string
+    try {
+      text = await res.text()
+    } catch (e) {
+      throw classifyFetchError(e)
+    }
+    if (!text) throw new ApiError(0, "unknown", "空响应")
+    try {
+      return JSON.parse(text) as T
+    } catch {
+      throw new ApiError(res.status, "unsupported", "响应不是 JSON（疑似 server 版本不支持）")
+    }
   }
 
   /** GET /api/info：v2 探活/版本识别（取代 v1 /global/health） */
   async serverInfo(): Promise<ServerInfo> {
-    const info = await this.fetchJson<ServerInfo>("/api/info")
-    if (!info) throw new ApiError(0, "unknown", "空响应")
-    return info
+    return this.fetchJson<ServerInfo>("/api/info")
   }
 
   /** GET /api/project：项目列表（无 query、无 envelope；左栏数据源，canonical 取代 worktree） */
   async listProjects(): Promise<ProjectInfo[]> {
-    const list = await this.fetchJson<ProjectInfo[]>("/api/project")
-    return list ?? []
+    return this.fetchJson<ProjectInfo[]>("/api/project")
   }
 
   /**
@@ -139,15 +164,15 @@ export class RestClientV2 {
       q.set("location[directory]", directory)
       path += `?${q.toString()}`
     }
-    const info = await this.fetchJson<LocationInfo>(path)
-    if (!info) throw new ApiError(0, "unknown", "空响应")
-    return info
+    return this.fetchJson<LocationInfo>(path)
   }
 
   /**
    * GET /api/session：会话列表（flat query + `{data, cursor}` envelope）。
    * 无过滤 = 全量（global 发现用，翻页拉取）；parentID null = 只取根会话
-   * （wire 上是字符串 "null"）。cursor 与 order 不可并用（v2 契约）。
+   * （wire 上是字符串 "null"）。cursor 为不透明锚点（方向自含），调用方
+   * 翻页时不需重传 order——**messages 端点**的契约则明确 cursor 与 order
+   * 互斥（M4 实现时注意，见 protocol groups/message.ts）。
    */
   async listSessions(input: ListSessionsInput = {}): Promise<CursorPage<SessionInfo>> {
     const q = new URLSearchParams()
@@ -160,8 +185,6 @@ export class RestClientV2 {
     if (input.parentID !== undefined) q.set("parentID", input.parentID === null ? "null" : input.parentID)
     if (input.cursor !== undefined) q.set("cursor", input.cursor)
     const suffix = q.toString()
-    const page = await this.fetchJson<CursorPage<SessionInfo>>(`/api/session${suffix ? `?${suffix}` : ""}`)
-    if (!page) return { data: [], cursor: {} }
-    return page
+    return this.fetchJson<CursorPage<SessionInfo>>(`/api/session${suffix ? `?${suffix}` : ""}`)
   }
 }
