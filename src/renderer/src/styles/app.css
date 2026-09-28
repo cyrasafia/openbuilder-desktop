@@ -3201,6 +3201,48 @@
   gap: 8px;
 }
 
+/* 快捷键角标（design-keyboard-shortcuts §1.1b 待处理卡片）：Ctrl 按住期间按钮/
+   选项行右上角显示键位提示（.btn-tile-badge 同 idiom 几何缩小适配 28 高控件；
+   Enter 键位显示 "↵"）。禁用（回复中/未答）/收起不渲染（快捷键同样不动作）。
+   中性面 chip（surface + 描边）：落点含实心按钮（danger 红/emphasis 绿），
+   强调色 chip 会与按钮底撞色，中性面在任何底色上可读。
+   字形纵向居中（2026-09-28 二修，review 反馈"文字相对边框靠上"）：键位字符用
+   --font-mono（同 .sc-kbd 键位 chip 惯例）——headless Electron 像素实测（8×
+   放大 0.125px 分辨率）：sans（system-ui）下 "1" 因字形自带旗+底脚 ink 高 9px
+   （其余 8px），居中偏上 0.5px（上白隙 1px/下 2px，2:1 可感知）；mono 数字/
+   字母 ink 高度均一，全字形居中偏差 0.00px（dpr 1/2 一致）。flex+line-height:1
+   居中机制不变。例外 .enter（↵ 回车符号）：mono 字体下该符号偏低 1.5–1.75px，
+   保留 sans（居中偏差 ≤0.5px）——符号非键名字母，无 mono 语义损失 */
+.pending-card-actions > button,
+.pending-option {
+  position: relative;
+}
+
+.pending-key-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  line-height: 1;
+  background: var(--surface);
+  color: var(--on-surface);
+  border: 1px solid var(--outline-variant);
+  pointer-events: none;
+}
+
+.pending-key-badge.enter {
+  font-family: var(--font-sans);
+}
+
 .pending-card-error {
   font-size: var(--text-sm);
   color: var(--status-error);

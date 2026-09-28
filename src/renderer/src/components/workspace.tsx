@@ -1941,7 +1941,36 @@ function permissionTitle(t: Catalog, p: PendingPermission): string {
   }
 }
 
-function PermissionCard({
+/**
+ * 待处理卡片快捷键入口守卫（design-keyboard-shortcuts §1.1b）：与引导页磁贴
+ * （§1.1）同约定——IME 组合中/已被内层消费/Shift/Alt 组合/按住重复不触发，
+ * mac ⌘ 经 metaKey 等价。卡片级守卫（收起/回复中/overlay）由各卡 handler 自查。
+ */
+function isCardShortcutEvent(e: globalThis.KeyboardEvent): boolean {
+  return (
+    !e.isComposing &&
+    !e.defaultPrevented &&
+    !e.altKey &&
+    !e.shiftKey &&
+    !e.repeat &&
+    (e.ctrlKey || e.metaKey)
+  )
+}
+
+/**
+ * 文本域聚焦判定（KeyA/KeyY 让行守卫共用，design-keyboard-shortcuts §1.1b）：
+ * target 为 HTMLElement 且自身 contenteditable 或位于 textarea/input 内——
+ * 同 ChatView onKeySelectAll 的守卫先例。window/document 直发（测试）非
+ * Element 落 false。
+ */
+function isEditableTarget(e: globalThis.KeyboardEvent): boolean {
+  const t = e.target
+  return (
+    t instanceof HTMLElement && (t.isContentEditable || t.closest("textarea,input") !== null)
+  )
+}
+
+export function PermissionCard({
   permission,
   queueTotal,
 }: {
@@ -1971,6 +2000,50 @@ function PermissionCard({
     // 成功：卡片随 store 移除而卸载，不回设状态
   }
 
+  // 快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增；同日键位改字母）：
+  // Ctrl+N = 拒绝、Ctrl+A = 总是允许、Ctrl+Y = 允许一次（首字母语义），与按钮
+  // 点击同路径、同禁用态（回复中/收起/overlay 遮挡不动作）；A/Y 另设文本域
+  // 聚焦让行（保住全选/redo 打字语义，isEditableTarget）。监听挂卡片组件内
+  // 随卡挂载/卸载——卡片仅在激活 chat Tab 的 ChatView 内渲染，天然仅会话页生效，
+  // 不经全局 useShortcuts 分发（§1.1 引导页先例）。effect 不带依赖数组（每渲染
+  // 重挂）：闭包恒新，replying/collapsed 守卫不 stale（state 闭包过期会让
+  // "回复中不动作"失效）。按 code 匹配 Key*（布局无关，KeyB 先例）
+  const ctrlHeld = useCtrlHeld()
+  useEffect(() => {
+    const onKeyDown = (e: globalThis.KeyboardEvent) => {
+      if (!isCardShortcutEvent(e) || collapsed || replying || store.overlayCount > 0) return
+      // 拒绝 = Ctrl+N（文本域无语义，输入框聚焦照常动作）
+      if (e.code === "KeyN") {
+        e.preventDefault()
+        void respond("reject")
+        return
+      }
+      // 总是允许 = Ctrl+A：文本域聚焦时让行——保住 Chromium 全选草稿默认行为
+      //（同 ChatView onKeySelectAll 的守卫先例），防"想全选却持久授权"误触；
+      // 焦点在消息区时 onKeySelectAll 已先行消费（defaultPrevented 守卫跳过
+      // 本层），消息区全选语义同样不受扰
+      if (e.code === "KeyA") {
+        if (isEditableTarget(e)) return
+        e.preventDefault()
+        void respond("always")
+        return
+      }
+      // 允许一次 = Ctrl+Y：文本域聚焦时同样让行——Chromium 文本框 redo 在
+      // Windows 上就是 Ctrl+Y（规范键而非变体，Linux/mac 变体主键 Ctrl+Shift+Z
+      // 不受影响），卡存活期劫持会打断打字流（2026-09-28 review 补，原判
+      // "罕见且低害不设守卫"低估了 Windows 语义）；非文本域聚焦照常动作
+      if (e.code === "KeyY") {
+        if (isEditableTarget(e)) return
+        e.preventDefault()
+        void respond("once")
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => {
+      window.removeEventListener("keydown", onKeyDown)
+    }
+  })
+
   return (
     <div className="pending-card permission">
       <button className="pending-card-header" onClick={() => setCollapsed(!collapsed)}>
@@ -1991,12 +2064,27 @@ function PermissionCard({
           {detail && <pre className="pending-card-detail mono">{detail}</pre>}
           <div className="pending-card-actions">
             <button className="btn-danger" disabled={replying} onClick={() => void respond("reject")}>
+              {ctrlHeld && !replying && (
+                <span className="pending-key-badge" aria-hidden>
+                  N
+                </span>
+              )}
               {t.reject}
             </button>
             <button className="btn-tonal" disabled={replying} onClick={() => void respond("always")}>
+              {ctrlHeld && !replying && (
+                <span className="pending-key-badge" aria-hidden>
+                  A
+                </span>
+              )}
               {t.permissionAlwaysAllow}
             </button>
             <button className="btn-primary" disabled={replying} onClick={() => void respond("once")}>
+              {ctrlHeld && !replying && (
+                <span className="pending-key-badge" aria-hidden>
+                  Y
+                </span>
+              )}
               {t.permissionAllowOnce}
             </button>
           </div>
@@ -2044,7 +2132,7 @@ function TypingSlot({ status }: { status: SessionStatusValue }) {
   )
 }
 
-function QuestionCard({
+export function QuestionCard({
   question,
   queueTotal,
 }: {
@@ -2096,6 +2184,45 @@ function QuestionCard({
     }
   }
 
+  // 快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增）：Ctrl+1..9 = 切换
+  // 选中选项（与点击同 toggle 语义；第 10+ 项无快捷键）、Ctrl+0 = 拒绝、
+  // Ctrl+Enter = 下一步/末步提交（当前步未选不动作，同按钮禁用态）。作用域/
+  // 守卫/effect 无依赖数组（闭包恒新）——同 PermissionCard 注释，不赘述。
+  // Ctrl+Enter 经 window 冒泡层 preventDefault 抑制输入框换行插入（§1.1b 取舍）
+  const ctrlHeld = useCtrlHeld()
+  useEffect(() => {
+    const onKeyDown = (e: globalThis.KeyboardEvent) => {
+      if (!isCardShortcutEvent(e) || collapsed || replying || store.overlayCount > 0) return
+      // 选项 = Ctrl+1..9（按 code 匹配，布局无关）；未映射序号不消费（放行无语义）
+      const digit = /^Digit([1-9])$/.exec(e.code)
+      if (digit) {
+        const opt = q.options[Number(digit[1]) - 1]
+        if (opt) {
+          e.preventDefault()
+          toggle(opt.label)
+        }
+        return
+      }
+      // 拒绝 = Ctrl+0（Chromium zoomReset 加速键被消费抑制，§1.1b 核查）
+      if (e.code === "Digit0") {
+        e.preventDefault()
+        void finish("reject")
+        return
+      }
+      // 下一步/提交 = Ctrl+Enter（key 匹配覆盖 NumpadEnter；未选不动作同禁用态）
+      if (e.key === "Enter") {
+        if (!stepAnswered) return
+        e.preventDefault()
+        if (isLast) void finish("reply")
+        else setStep(stepIdx + 1)
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => {
+      window.removeEventListener("keydown", onKeyDown)
+    }
+  })
+
   return (
     <div className="pending-card question">
       <button className="pending-card-header" onClick={() => setCollapsed(!collapsed)}>
@@ -2119,7 +2246,7 @@ function QuestionCard({
         <div className="pending-card-body">
           <div className="pending-question-text">{q.question}</div>
           <div className="pending-options">
-            {q.options.map((opt) => {
+            {q.options.map((opt, i) => {
               const active = sel.includes(opt.label)
               return (
                 <button
@@ -2128,6 +2255,11 @@ function QuestionCard({
                   disabled={replying}
                   onClick={() => toggle(opt.label)}
                 >
+                  {ctrlHeld && !replying && i < 9 && (
+                    <span className="pending-key-badge" aria-hidden>
+                      {i + 1}
+                    </span>
+                  )}
                   <span
                     className={
                       "pending-option-mark " + (q.multiple ? "checkbox" : "radio") + (active ? " on" : "")
@@ -2144,6 +2276,11 @@ function QuestionCard({
           </div>
           <div className="pending-card-actions">
             <button className="btn-danger" disabled={replying} onClick={() => void finish("reject")}>
+              {ctrlHeld && !replying && (
+                <span className="pending-key-badge" aria-hidden>
+                  0
+                </span>
+              )}
               {t.reject}
             </button>
             {isLast ? (
@@ -2152,6 +2289,11 @@ function QuestionCard({
                 disabled={replying || !stepAnswered}
                 onClick={() => void finish("reply")}
               >
+                {ctrlHeld && !replying && stepAnswered && (
+                  <span className="pending-key-badge enter" aria-hidden>
+                    ↵
+                  </span>
+                )}
                 {t.questionSubmit}
               </button>
             ) : (
@@ -2160,6 +2302,11 @@ function QuestionCard({
                 disabled={replying || !stepAnswered}
                 onClick={() => setStep(stepIdx + 1)}
               >
+                {ctrlHeld && !replying && stepAnswered && (
+                  <span className="pending-key-badge enter" aria-hidden>
+                    ↵
+                  </span>
+                )}
                 {t.questionNext}
               </button>
             )}

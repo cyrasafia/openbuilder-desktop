@@ -45,6 +45,8 @@
 | Ctrl+Shift+T | 恢复刚关闭的 Tab（§2 关闭栈） |
 | **F5（仅非 mac，2026-09-19 增）** | 刷新激活浏览器 Tab（与浏览器 Tab 工具条刷新钮同路径：`browserViewIdFor` → `browserReload`）；仅 browser kind 动作，其余视图/无 viewId 放行（未映射组合语义）；**页面 F5 语义（review 2026-09-19 澄清）**：按键不吞、页面仍收到 F5，但应用侧刷新无条件触发——页面 `preventDefault` 无法抑制（before-input-event 转发/分发先于页面意愿可知，与 Chrome 页面可拦 F5 相反，接受的取舍）；**overlay 遮挡时仅消费不动作**（§1.2 闸门）；无修饰键限定——Ctrl+F5 硬刷新 / Shift+F5 不做（Keep Lean）；**mac 不绑**：⌘R 惯例且已可用——未消费的 ⌘R 回流 Electron 默认菜单 reload 加速键作用于聚焦 webContents（视图持焦刷视图、主窗持焦刷主窗 renderer）。浏览器视图持焦时经转发入同一分发（转发过滤扩裸 F5，非 mac；转发不消费按键，见 design-browser-tab §1.2）；主窗 renderer 持焦时 window keydown 入口 gate 对裸 F5 单键放行进分发 |
 | Ctrl+1 / Ctrl+2 / Ctrl+3（**仅引导页**，2026-09-06 增，§1.1） | 分别开 diff / 终端 / 网页 Tab（与引导页磁贴点击同路径、同禁用态）；Ctrl 按住期间磁贴右上角显示对应数字角标 |
+| Ctrl+N / Ctrl+A / Ctrl+Y（**仅会话页授权卡**，2026-09-28 增，§1.1b） | 拒绝 / 总是允许 / 允许一次（与卡片按钮同路径同禁用态；Ctrl+A / Ctrl+Y 在文本域聚焦时让行 全选 / redo）；Ctrl 按住期间按钮显示键位角标 |
+| Ctrl+1..9 / Ctrl+0 / Ctrl+Enter（**仅会话页问题卡**，2026-09-28 增，§1.1b） | 切换选中选项 / 拒绝 / 下一步（末步提交）；角标同上（Enter 显示 "↵"） |
 | Ctrl+Tab / Ctrl+PageDown | 下一个可见 Tab（作用域内循环；Shift 反转方向；**仅非 macOS**）。终端聚焦时 Ctrl+Tab 亦生效（2026-09-10 修订，见 §5 终端注）；Ctrl+PgUp/PgDn 在终端内仍归 pty |
 | Ctrl+Shift+Tab / Ctrl+PageUp | 上一个可见 Tab（循环；Shift+PgUp/PgDn 同样反转；**仅非 macOS**）。终端聚焦时 Ctrl+Shift+Tab 亦生效（同上） |
 | ⌘⌥→ / ⌘⌥←（macOS） | 下/上一个可见 Tab（2026-09-03 修订：macOS 浏览器惯例主键；⌘Tab/⌘⇧Tab 是系统应用切换器，永远到不了应用） |
@@ -66,6 +68,29 @@
 - **角标提示**：Ctrl（或 macOS Cmd，metaKey 等价惯例）按住期间三个磁贴右上角显示数字角标（`.btn-tile-badge`）；禁用磁贴不显示（快捷键同样不动作）。keyup Control/Meta 或窗口失焦清（失焦后 keyup 不再派发，不清会残留）。**按住态跟踪在模块级单例**（`ctrl-held.ts` 的 `useCtrlHeld`，2026-09-06 修复）：Ctrl+T 开引导页时页面在 keydown **之后**才挂载，按住的修饰键不再派发 keydown（无自动重复），组件内监听拿不到"已按住"初始态、角标不显示——跟踪器监听随模块加载常驻（keydown 用 capture，先于内层消费方，保持物理按住语义），`useCtrlHeld` 挂载时 lazy 读初始值 + 订阅后续变化
 - **守卫**：`isComposing` 不触发（fcitx5）；已 preventDefault 的事件不处理（同全局 useShortcuts 约定，防未来内层组件消费后双触发）；Shift/Alt 组合不触发；`repeat` 不触发（终端每次调用新建 pty，按住不放不得连开）；按 code `Digit1/2/3` 匹配（布局无关）；消费即 preventDefault
 - **键冲突核查**：Chromium 对 renderer 未消费的 Ctrl+数字无默认行为（Linux 桌面快捷键是合成器层，应用收不到不构成劫持）；输入区聚焦时 Ctrl+数字无文本语义，劫持无损
+
+### 1.1b 会话页待处理卡片快捷键（2026-09-28 增）
+
+> 用户需求：授权/问题卡可键盘应答，Ctrl 按住显键位提示（同引导页磁贴的角标 idiom）。移动端无硬件键盘，无同类先例（头部既有核查结论复用）。
+
+- **作用域 = 待处理卡存活期**：监听（window keydown）挂 `PermissionCard` / `QuestionCard` 组件内，随卡片挂载/卸载；卡片仅在 ChatView（激活 chat Tab）内渲染——`{active?.kind === "chat" && <ChatView/>}` 条件渲染，切走即卸载，**天然仅会话页生效**，不经全局 useShortcuts 分发（同 §1.1 引导页磁贴先例）。授权/问题卡互斥渲染（授权优先），同屏至多一个监听
+- **键位（与按钮点击同路径、同禁用态）**：
+  - 授权卡：**Ctrl+N = 拒绝、Ctrl+A = 总是允许、Ctrl+Y = 允许一次**（动作首字母语义；2026-09-28 同日自 Ctrl+1/2/3 改字母——用户决策，数字域让给问题卡选项）
+  - 问题卡：**Ctrl+1..9 = 切换选中选项**（radio 单选替换 / checkbox 增删，与点击同 toggle 语义；第 10+ 项无快捷键）、**Ctrl+0 = 拒绝**（0 = 否定语义，与选项数字域相邻）、**Ctrl+Enter = 下一步/提交**（当前步未选不动作，同按钮禁用态；多子问步进；NumpadEnter 经 `e.key==="Enter"` 一并覆盖）
+- **角标提示**：Ctrl（mac ⌘，metaKey 等价）按住期间按钮/选项行**右上角**显示键位角标（`.pending-key-badge`，同 §1.1 磁贴角标 idiom；Enter 显示 "↵"）——按住态跟踪复用 §1.1 的 ctrl-held 模块级单例（挂载晚于 keydown 的初始态问题已解）。回复中（replying，按钮禁用）/卡片收起不渲染（快捷键同样不动作，同引导页"禁用磁贴不显示角标"）。**字形纵向居中（2026-09-28 二修，review 反馈"文字相对角标边框靠上"）**：键位字符用 `--font-mono`（同 `.sc-kbd` 键位 chip 惯例）——headless Electron 像素实测（8× 放大 0.125px 分辨率、真实级联、dpr 1/1.25/1.5/2、X11/Wayland、zh-CN lang 均一致）：sans（system-ui）下 "1" 因字形自带旗+底脚 ink 高 9px（其余字形 8px），居中偏上 0.5px（上白隙 1px/下 2px，2:1 可感知）；mono 数字/字母 ink 高度均一，全字形居中偏差 0.00px。居中机制维持 flex + line-height:1（text-box-trim 实测在 flex 匿名项上无效、block 布局变体全部更差）。**例外 ↵（.enter 修饰类）**：mono 字体下该符号偏低 1.5–1.75px，保留 sans（偏差 ≤0.5px）。期间走过一次弯路：把角标改为宿主右缘垂直居中 + 选项行 20px 留位（用户否决——右上角放置本就符合预期），已回退
+- **守卫**：`isComposing` 不触发（fcitx5）；已 preventDefault 的事件不处理（内层消费优先）；Shift/Alt 组合不触发；repeat 不触发（checkbox 连按连切、重复提交）；**overlay 遮挡（overlayCount>0）不动作**（Alt 域/Ctrl+W 同闸门语义——ConfirmDialog 的 Enter=确认自带 stopPropagation 先于 window，闸门是遮罩下无动作的双保险）；卡片收起（collapsed）不动作（按钮不可见，角标亦不显示）
+- **effect 不带依赖数组**（每次渲染重挂）：监听闭包恒新——`replying`/`collapsed`/`step` 等守卫不 stale（§1.1 修复教训的泛化：state 闭包过期会让"回复中不动作"守卫失效）
+- **键冲突核查**：
+  - **授权卡字母系（按 code 匹配 KeyN/KeyA/KeyY，布局无关）**：
+    - **Ctrl+A 与会话页既有全选语义分层**：焦点在**消息区**时 ChatView `onKeySelectAll` 已先行消费（消息内容全选 + preventDefault，本卡 defaultPrevented 守卫跳过）——既有语义不受扰；焦点在**文本域**（composer 草稿）时**卡让行**（editable 守卫，同 onKeySelectAll 的"草稿全选默认行为不受影响"先例）——防"想全选草稿却持久授权"误触（always 是最高害动作）；其余聚焦（卡片按钮/页面非编辑区）动作
+    - **Ctrl+Y 同设文本域让行（2026-09-28 review 补，原判"罕见且低害不设守卫"低估 Windows 语义）**：Chromium 文本框 redo 在 Windows 上就是 Ctrl+Y（规范键而非变体；Linux/mac 为变体，主键 Ctrl+Shift+Z 不受影响）——文本域聚焦时让行保打字流，非文本域聚焦照常动作；让行判定抽 `isEditableTarget`（A/Y 共用）
+    - **N 不设让行**：无文本语义（应用内无绑定——分发表 Alt+N 是另一和弦；§0.2 审计默认菜单 fileMenu 仅 Close/Quit，Linux 实测默认菜单无 Ctrl+N 加速键），输入框聚焦（会话页常态）照常动作
+    - mac ⌘Y 无系统级绑定（Finder Quick Look 是应用内行为）
+    - live 终端/浏览器 Tab：监听随 ChatView 卸载，不涉及（快捷键仅会话页，含盲应答不做）
+  - **Ctrl+Enter 收窄输入框换行惯例**：聊天输入"修饰键+Enter = 换行"在问题卡存活期对 Ctrl+Enter 例外（window 冒泡层 preventDefault 抑制换行插入、触发提交）——Shift+Enter 换行不变。取舍：卡存活期的快捷应答价值高于罕见换行组合（Enter 发送、Shift+Enter 换行是文档化键位，Ctrl+Enter 非宣传键）
+  - **Ctrl+0**：Chromium/Electron 默认菜单 zoomReset 加速键——卡存活期被消费（preventDefault 后加速键不触发，同 Ctrl+W"禁用而非放行"语义）；无卡时维持默认（缩放语义不劫持）
+  - Ctrl+数字在文本域无字符产出（§1.1 已核查），输入框聚焦（会话页常态）时劫持无损打字
+- **子会话（subagent）路由**：授权/问题请求挂子会话 ID 时并入父会话底部面板（design-subagent-status §D6），快捷键对呈现中的卡同样生效（动作走请求自带 sessionID，不改路径）
 
 ### 1.2 Alt 系 = 项目/worktree 域（2026-09-06 增）
 
@@ -152,11 +177,11 @@ private closedTabs: ClosedTabEntry[] = []   // push 尾 / pop 尾，上限 20（
 | `src/renderer/src/components/terminal-view.tsx` | deadRelease 释放集扩 Alt 域四键（live 终端仍归 pty，§0.2；copy/paste 例外须带 Ctrl/⌘ 修饰——裸 Alt+C 不被 KeyC 误吞） |
 | `src/renderer/src/i18n/index.ts` | §8 行 action 复用 `scOpenProject` / `closeProject` / `newWorkspace` / `deleteWorkspace` / `scCycleScope`（缺则补） |
 | `src/renderer/src/app.tsx` | Shell 挂 `useShortcuts()` |
-| `src/renderer/src/components/workspace.tsx` | Tab 关闭按钮改经 tab-actions；§1.1 引导页磁贴快捷键 + 角标（Ctrl+1/2/3 监听在 GuidePage 内；Ctrl 按住态跟踪在 ctrl-held.ts 单例） |
+| `src/renderer/src/components/workspace.tsx` | Tab 关闭按钮改经 tab-actions；§1.1 引导页磁贴快捷键 + 角标（Ctrl+1/2/3 监听在 GuidePage 内；Ctrl 按住态跟踪在 ctrl-held.ts 单例）；**§1.1b（2026-09-28）PermissionCard/QuestionCard 卡内 keydown 监听 + `.pending-key-badge` 角标（export 供测试）** |
 | `src/renderer/src/components/ctrl-held.ts` | Ctrl 按住态模块级单例跟踪 + `useCtrlHeld`（2026-09-06 修复：挂载晚于 keydown 的初始态） |
 | `src/renderer/src/styles/app.css` | `.tree-row.scope-cursor`（§3 修订）；§1.1 `.btn-tile` relative + `.btn-tile-badge` |
 | `docs/spec-v0.4.md` | 新增 #7（Alt 系重构范围行）+ 验收口径行；#6 设置页快捷键列表行同步 Alt 系键位（spec-v0.3 不回溯修订——Ctrl+O 随 v0.3 发布，v0.4 替换） |
-| 测试 | store（关闭栈入/弹/跳过/跨作用域/上限、cycleTab 循环、scopePreview 预览-提交/环游/no-op/作废/虚拟边界、Alt 域 requestWorktreeDelete/closeActiveEntry）；shortcuts（分发表 + begin/commit/cancel + 转发 up + Alt 域四键/overlay 闸门/code 匹配/AltGr 排除/Ctrl+O 移除/Ctrl+W 流式挂 pendingTabClose + overlay 闸门）；confirm-dialog（Enter/Esc）；terminal-view（live 归 pty/dead 释放/copy 例外修饰守卫）；workspace-guide（§1.1 分发/禁用态/角标/卸载） |
+| 测试 | store（关闭栈入/弹/跳过/跨作用域/上限、cycleTab 循环、scopePreview 预览-提交/环游/no-op/作废/虚拟边界、Alt 域 requestWorktreeDelete/closeActiveEntry）；shortcuts（分发表 + begin/commit/cancel + 转发 up + Alt 域四键/overlay 闸门/code 匹配/AltGr 排除/Ctrl+O 移除/Ctrl+W 流式挂 pendingTabClose + overlay 闸门）；confirm-dialog（Enter/Esc）；terminal-view（live 归 pty/dead 释放/copy 例外修饰守卫）；workspace-guide（§1.1 分发/禁用态/角标/卸载）；**workspace-pending-shortcuts（§1.1b：两卡键位分发/守卫（Shift/Alt/repeat/IME/已消费/回复中/收起/overlay/A 与 Y 文本域让行）/角标含 ↵ 与 0/卸载）** |
 
 ## 7. 验收
 
@@ -167,6 +192,7 @@ private closedTabs: ClosedTabEntry[] = []   // push 尾 / pop 尾，上限 20（
 - Alt+N：当前项目新建（随机 slug）并切换到新 worktree；global 不动作
 - Ctrl+O 放行无副作用（Electron 默认菜单无该加速键，§0.2）
 - §1.1：引导页 Ctrl+1/2/3 开 diff/终端/网页 Tab（禁用态不动作）；Ctrl 按住三磁贴显数字角标、松开/失焦消失；离开引导页后按键无动作
+- §1.1b：会话页授权卡 Ctrl+N/A/Y → 拒绝/总是允许/允许一次（preventDefault，与按钮点击同响应；Ctrl+A/Y 文本域聚焦让行 全选/redo、消息区聚焦由 onKeySelectAll 先行消费）；问题卡 Ctrl+1..9 切换选项（radio 排他/checkbox 增删）、Ctrl+0 拒绝、Ctrl+Enter 下一步/末步提交（未选不动作）；回复中/收起/overlay 遮挡不动作；Ctrl 按住按钮与选项显角标（禁用/收起不显，Enter 显示 "↵"）、松开/失焦消失；离开会话页（切 Tab/关 Tab）按键无动作；输入框聚焦时 N 照常动作且无损打字（Ctrl+A/Y 让行 全选/redo）
 - `npm run test` / `typecheck` / `build` 全绿
 
 ## 8. 设置页快捷键列表（2026-09-06）
@@ -175,6 +201,6 @@ private closedTabs: ClosedTabEntry[] = []   // push 尾 / pop 尾，上限 20（
 
 - **数据源单一**：渲染数据 `SHORTCUT_GROUPS` 定义在 `shortcuts.ts`（与 `dispatch` 同文件维护，防表-码漂移）；行结构 `{ keys, macKeys?, action(i18n key), only?: "mac" | "non-mac" }`，" / " 分隔的等效键拆独立 chip
 - **平台分支渲染**：`window.desktop.platform === "darwin"` 时显示 `macKeys`（缺省回退 `keys`）；`only` 行互斥——mac 切 Tab 惯例键（⌘⌥←/→、⌘⇧[/]）与非 mac Ctrl+Tab/PgUp/PgDn 系各只在本平台展示，与 §1 分发表绑定语义一致
-- **范围**：全局组 = §1 表全量（2026-09-06 更新：Ctrl+O 行改 Alt+O / ⌘⌥O，新增 Alt+C 关闭项目、Alt+N 新建工作区、Alt+⌫ 删除工作区行）；「输入与视图」组收分发之外的局部键——Enter/Shift+Enter（聊天输入）、Ctrl+F（code-view CodeMirror searchKeymap + 页面内查找条 design-find-in-page，2026-09-09 起两行分列：文件内查找/页面内查找 + 查找条 Enter/Shift+Enter 行）、终端复制/粘贴（Linux Ctrl+Shift+C/V、mac ⌘C/⌘V，键位随平台展示）、Esc（关闭弹窗/菜单，含确认弹窗取消——§4.1 的 Enter 确认随 Enter 行标注）
+- **范围**：全局组 = §1 表全量（2026-09-06 更新：Ctrl+O 行改 Alt+O / ⌘⌥O，新增 Alt+C 关闭项目、Alt+N 新建工作区、Alt+⌫ 删除工作区行）；「输入与视图」组收分发之外的局部键——Enter/Shift+Enter（聊天输入）、Ctrl+F（code-view CodeMirror searchKeymap + 页面内查找条 design-find-in-page，2026-09-09 起两行分列：文件内查找/页面内查找 + 查找条 Enter/Shift+Enter 行）、终端复制/粘贴（Linux Ctrl+Shift+C/V、mac ⌘C/⌘V，键位随平台展示）、Esc（关闭弹窗/菜单，含确认弹窗取消——§4.1 的 Enter 确认随 Enter 行标注）；**待处理卡片两行（2026-09-28 增，§1.1b：授权卡 Ctrl+N/A/Y、问题卡 Ctrl+1–9 / Ctrl+0 / Ctrl+Enter，action 键 `scPermCard`/`scQuestionCard`）**
 - 设置页签本地类型为 store `settingsInitialTab` 的超集（store 不加宽——无 shortcuts 直达调用方）
 - 样式：`.sc-row`（动作左、键位 chip 右）+ `.sc-kbd`（mono chip），组间 gap 呼吸，token 全复用（DESIGN.md 无新增 token）
