@@ -1955,21 +1955,35 @@ export class AppStore {
   /**
    * POST /prompt 200 后的消息首页重取（回执驱动）：拾取投影 user 消息并清除
    * 对应乐观项（v2 无 message.updated user 事件，SSE 只推 assistant 侧流式）。
-   * 容错：重取失败保留乐观（下次对账/翻页收敛）；多次发送以 createdAt 匹配。
+   * 容错：重取失败保留乐观（下次对账/翻页收敛）；精确清除按 localId 唯一
+   * 匹配（同毫秒并发的 createdAt 不可区分，评审 2026-09-28）。
    */
-  private async refreshMessagesAfterPrompt(sessionID: string, optimisticCreatedAt: number) {
+  private async refreshMessagesAfterPrompt(sessionID: string, optimisticLocalId: string, optimisticCreatedAt: number) {
     const clientV2 = this.clientV2
     const session = this.findSession(sessionID)
     if (!clientV2 || !session) return
     const page = await clientV2.listMessagesPage(sessionID, { limit: 20 }).catch(() => null)
     if (this.clientV2 !== clientV2 || !page) return
     this.mergeMessagePage(sessionID, page.entries)
-    // 投影 user 消息到达（created >= 乐观创建时刻）→ 清除已落地的乐观项
+    // 投影 user 消息到达（created >= 乐观创建时刻）→ **精确**清除该条乐观
+    // （评审 2026-09-28：全清会在 busy 补充发送（design-supplement-send）下误清
+    // 并发在途的未确认乐观——第二条 prompt 的投影写入有延迟窗口，重取只证明
+    // 自己那条落地；按 localId 唯一匹配删一条，createdAt 仅作落地判定）
     const projected = page.entries.some(
       (m) => m.info.role === "user" && m.info.time.created >= optimisticCreatedAt,
     )
-    if (projected) this.clearOptimistic(sessionID)
+    if (projected) this.clearOptimisticAt(sessionID, optimisticLocalId)
     this.emit()
+  }
+
+  /** 按 localId 精确清除单条乐观（回执驱动路径）；无匹配不动作 */
+  private clearOptimisticAt(sessionID: string, localId: string) {
+    const list = this.optimisticBySession.get(sessionID)
+    if (!list) return
+    const next = list.filter((o) => o.localId !== localId)
+    if (next.length === list.length) return
+    if (next.length === 0) this.optimisticBySession.delete(sessionID)
+    else this.optimisticBySession.set(sessionID, next)
   }
 
   private clearOptimistic(sessionID: string) {
@@ -3517,10 +3531,13 @@ export class AppStore {
       for (const a of attachments ?? []) {
         files.push({ uri: a.dataUrl, name: a.filename })
       }
-      await this.clientV2!.prompt(sessionID, { text: text || ".", files })
+      // v2 text 必填且原样落库（fromUserMessage 直接入投影）：纯附件/纯引用
+      // 发送以零宽空格占位——v1 语义是回显只有文件 chip，"." 会成为可见噪音
+      // （评审 2026-09-28）
+      await this.clientV2!.prompt(sessionID, { text: text || "\u200b", files })
       // 回执驱动（plan M4）：v2 无 user 消息 SSE 事件——POST 200 准入后首页
       // 重取拾取投影 user 消息（真实 id），乐观清除挂在其到达
-      void this.refreshMessagesAfterPrompt(sessionID, optimistic.createdAt)
+      void this.refreshMessagesAfterPrompt(sessionID, optimistic.localId, optimistic.createdAt)
       // 发送成功引用/附件即清（失败保留供重发，design-file-reference §2）
       this.clearFileRefs(sessionID)
       this.clearAttachments(sessionID)

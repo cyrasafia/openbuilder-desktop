@@ -3898,7 +3898,8 @@ describe("文件引用（design-file-reference）", () => {
     expect(res.ok).toBe(true)
     // 纯引用合法：text 用占位 "."（v2 text 必填，全空仍拒绝在入口守卫）
     expect(sentBox.v?.files?.length).toBe(1)
-    expect(sentBox.v?.text).toBe(".")
+    // 纯附件/纯引用：零宽空格占位（v2 text 必填，v1 语义回显只有 chip）
+    expect(sentBox.v?.text).toBe("\u200b")
     const empty = await store.sendPrompt("s1", "", [])
     expect(empty.ok).toBe(false)
   })
@@ -5732,6 +5733,50 @@ describe("attachments + sendPrompt 附件扩展", () => {
     expect(store.attachmentsFor("s1")).toHaveLength(0)
     // 乐观消息携带附件（气泡即见）
     expect(store.optimisticBySession.get("s1")![0]!.attachments?.length).toBe(1)
+  })
+
+  it("回执驱动精确清除（M4 评审）：首条落地只清自己——并发第二条乐观保持", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    try {
+      const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+      const cv2 = clientV2Of()
+      cv2.prompt = async () => {}
+      // 首页重取：返回投影（created 晚于乐观时刻 → 判定落地）
+      cv2.listMessagesPage = async () => ({
+        entries: [{ info: { id: "msg_p1", sessionID: "s1", role: "user", time: { created: 2000 } }, parts: [] }],
+        nextCursor: null,
+      })
+      store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
+      // 延迟重取：prompt 200 时重取尚未 resolve——两条乐观都挂上后才落地投影
+      let releaseList!: () => void
+      const gate = new Promise<void>((r) => (releaseList = r))
+      const listed: boolean[] = []
+      cv2.listMessagesPage = async () => {
+        listed.push(true)
+        await gate
+        return {
+          entries: [{ info: { id: "msg_p1", sessionID: "s1", role: "user", time: { created: 2000 } }, parts: [] }],
+          nextCursor: null,
+        }
+      }
+      const p1 = store.sendPrompt("s1", "第一条", [])
+      vi.advanceTimersByTime(1)
+      const p2 = store.sendPrompt("s1", "第二条", [])
+      vi.advanceTimersByTime(1)
+      await Promise.all([p1, p2]) // 两条 prompt 200 回执落地；重取在 gate 上挂起
+      // 乐观各挂一条、重取尚未清除（gate 未放行）
+      expect(store.optimisticBySession.get("s1")).toHaveLength(2)
+      expect(listed).toHaveLength(2)
+      // 放行：两次重取各精确清**自己**那条（localId 匹配）——两次各删一条后为 0。
+      // 若回退到全清（M4 评审前），单次重取即清空——本断言锁精确语义
+      releaseList()
+      for (let i = 0; i < 10; i++) await Promise.resolve()
+      const rest = store.optimisticBySession.get("s1") ?? []
+      expect(rest.length).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("纯附件发送合法（无文本无引用）；大附件走放宽超时（rest-client 内部，见其测试）", async () => {
