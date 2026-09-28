@@ -57,10 +57,12 @@ import {
   type OptimisticMessage,
 } from "@shared/message-merge"
 import {
+  buildFormAnswer,
   mergePendingSnapshot,
+  normalizeForm,
   normalizePermission,
-  normalizeQuestion,
   sessionDotState,
+  type PendingFieldInput,
   type PendingPermission,
   type PendingQuestion,
   type SessionDotState,
@@ -1581,16 +1583,15 @@ export class AppStore {
         this.dropPendingForSession(info.id)
         break
       }
-      // ---- 待处理人机交互（v1/v2 事件 + permission.updated 兼容兜底，同移动端）----
+      // ---- 待处理人机交互（M6a：v2 事件族——permission.* 同名保留、
+      // question → form.created/replied/cancelled；properties 形态见移动端基线实测）----
       case "permission.asked":
-      case "permission.v2.asked":
       case "permission.updated": {
         const p = normalizePermission(ev.properties, directory)
         if (p) this.pendingPermissions.set(p.sessionID, p)
         break
       }
-      case "permission.replied":
-      case "permission.v2.replied": {
+      case "permission.replied": {
         // spec：id 在 requestID 字段（additionalProperties:false，无 permissionID）
         const pid = String((ev.properties as { requestID?: unknown }).requestID ?? "")
         for (const [sid, p] of [...this.pendingPermissions]) {
@@ -1598,17 +1599,14 @@ export class AppStore {
         }
         break
       }
-      case "question.asked":
-      case "question.v2.asked": {
-        const q = normalizeQuestion(ev.properties, directory)
+      case "form.created": {
+        const q = normalizeForm(ev.properties, directory)
         if (q) this.pendingQuestions.set(q.id, q)
         break
       }
-      case "question.replied":
-      case "question.v2.replied":
-      case "question.rejected":
-      case "question.v2.rejected": {
-        this.pendingQuestions.delete(String((ev.properties as { requestID?: unknown }).requestID ?? ""))
+      case "form.replied":
+      case "form.cancelled": {
+        this.pendingQuestions.delete(String((ev.properties as { id?: unknown }).id ?? ""))
         break
       }
       case "todo.updated": {
@@ -3941,9 +3939,11 @@ export class AppStore {
     let changed = false
     await runLimited(dirs, 3, async (dir) => {
       // 两类别串行：每任务在途 ≤1 条，并发上限 3（预算克制，与 reconciler 的
-      // 逐目录串行同答案——SSE 常驻 5 条后 REST 池仅 ~1 空闲）
+      // 逐目录串行同答案——SSE 常驻 5 条后 REST 池仅 ~1 空闲）。
       const permissions = await client.listPendingPermissions(dir).catch(() => null)
-      const questions = await client.listPendingQuestions(dir).catch(() => null)
+      // questions 回填（v1 端点）已随 form 模型切换退役（M6a）——传 null =
+      // 保留本地（SSE form.created 驱动）；v2 `GET /api/form` 接回在 M6c
+      const questions = null
       // 在途闸门（同 applySessionsSnapshot）：disconnect/切 profile 后丢弃旧连接的
       // 迟到结果，防止写回已清空的 map；目录已出打开集合（关项目/删 worktree）同理
       if (this.client !== client || !this.openedDirectories().includes(dir)) return
@@ -3978,18 +3978,19 @@ export class AppStore {
   }
 
   /**
-   * 回复权限卡。200 = 成功；404 = 已被其他端处理（静默移除，同移动端决策 3）；
+   * 回复权限卡（v2：POST /api/session/:id/permission/:requestID/reply，M6a）。
+   * 200 = 成功；404 = 已被其他端处理（静默移除，同移动端决策 3）；
    * 其他错误保留卡片由 UI 提示。
    */
   async respondPermission(
     sessionID: string,
     response: "once" | "always" | "reject",
   ): Promise<{ ok: boolean; error?: string }> {
-    const client = this.client
+    const client = this.clientV2
     const p = this.pendingPermissions.get(sessionID)
     if (!client || !p) return { ok: false, error: "no pending permission" }
     try {
-      await client.respondPermission(sessionID, p.id, p.directory, response)
+      await client.respondPermission(sessionID, p.id, response)
       // 按 id 守卫移除（移动端 removeWhere(p.id == pid) 教训）：in-flight 期间他端
       // 应答 + agent 立即发出同会话新卡会落入同 key，无条件 delete 会误删新卡
       if (this.pendingPermissions.get(sessionID)?.id === p.id) {
@@ -3998,7 +3999,7 @@ export class AppStore {
       this.emit()
       return { ok: true }
     } catch (e) {
-      if (e instanceof ApiError && e.status === 404) {
+      if (e instanceof ApiErrorV2 && e.status === 404) {
         if (this.pendingPermissions.get(sessionID)?.id === p.id) {
           this.pendingPermissions.delete(sessionID)
         }
@@ -4009,21 +4010,22 @@ export class AppStore {
     }
   }
 
-  /** 回答问题卡（answers 按子问题顺序，每项为选中 label 数组）；404 语义同上 */
+  /** 回答表单卡（v2：POST /api/session/:id/form/:formID/reply，M6a）。
+   *  input 按字段下标携带 UI 原始输入，answer 构造见 buildFormAnswer；404 语义同上 */
   async replyQuestion(
     questionID: string,
-    answers: string[][],
+    input: Record<number, PendingFieldInput>,
   ): Promise<{ ok: boolean; error?: string }> {
-    const client = this.client
+    const client = this.clientV2
     const q = this.pendingQuestions.get(questionID)
     if (!client || !q) return { ok: false, error: "no pending question" }
     try {
-      await client.replyQuestion(questionID, q.directory, answers)
+      await client.replyForm(q.sessionID, q.id, buildFormAnswer(q, input))
       this.pendingQuestions.delete(questionID)
       this.emit()
       return { ok: true }
     } catch (e) {
-      if (e instanceof ApiError && e.status === 404) {
+      if (e instanceof ApiErrorV2 && e.status === 404) {
         this.pendingQuestions.delete(questionID)
         this.emit()
         return { ok: true }
@@ -4032,18 +4034,18 @@ export class AppStore {
     }
   }
 
-  /** 拒绝问题卡；404 语义同上 */
+  /** 取消表单卡（v2：DELETE /api/session/:id/form/:formID，M6a）；404 语义同上 */
   async rejectQuestion(questionID: string): Promise<{ ok: boolean; error?: string }> {
-    const client = this.client
+    const client = this.clientV2
     const q = this.pendingQuestions.get(questionID)
     if (!client || !q) return { ok: false, error: "no pending question" }
     try {
-      await client.rejectQuestion(questionID, q.directory)
+      await client.cancelForm(q.sessionID, q.id)
       this.pendingQuestions.delete(questionID)
       this.emit()
       return { ok: true }
     } catch (e) {
-      if (e instanceof ApiError && e.status === 404) {
+      if (e instanceof ApiErrorV2 && e.status === 404) {
         this.pendingQuestions.delete(questionID)
         this.emit()
         return { ok: true }
@@ -4167,9 +4169,9 @@ export class AppStore {
     await this.refreshModelCatalog(directory)
   }
 
-  /** 切换会话 agent：POST 204 → 乐观写本地记录；失败不改本地。 */
+  /** 切换会话 agent（v2 client，M6a）：POST 204 → 乐观写本地记录；失败不改本地。 */
   async switchSessionAgent(sessionID: string, agent: string): Promise<boolean> {
-    const client = this.client
+    const client = this.clientV2
     if (!client) return false
     try {
       await client.switchAgent(sessionID, agent)
@@ -4183,7 +4185,7 @@ export class AppStore {
   }
 
   /**
-   * 切换会话 model：POST 204 → 乐观写本地记录。
+   * 切换会话 model（v2 client，M6a）：POST 204 → 乐观写本地记录。
    * variant 携带规则（carriedVariant）：切到另一模型时同名 variant 沿用，否则省略。
    * 隐式默认（D-AM-4 修订）：手动切换即最后一次选择 → 成功后同步写全局默认值。
    */
@@ -4193,7 +4195,7 @@ export class AppStore {
     id: string,
     variant?: string,
   ): Promise<boolean> {
-    const client = this.client
+    const client = this.clientV2
     if (!client) return false
     const session = this.findSession(sessionID)
     // 切模型时若未显式传 variant，按携带规则推导（仅当新模型有同名 variant 才沿用）
@@ -4228,7 +4230,7 @@ export class AppStore {
     id: string,
     variant: string | undefined,
   ): Promise<boolean> {
-    const client = this.client
+    const client = this.clientV2
     if (!client) return false
     const model: ModelRef = variant ? { id, providerID, variant } : { id, providerID }
     try {
@@ -5922,12 +5924,12 @@ export class AppStore {
           this.setSessionStatus(sessionID, { type: "idle" })
         }
       },
-      onPendingSnapshot: (dir, permissions, questions) => {
+      onPendingSnapshot: (dir, permissions) => {
         // 在途闸门：连接已拆或目录已出打开集合（in-flight reconcile 跨越了 teardown/
         // 关项目）时丢弃，防止写回已清空的 map
         if (!this.client || !this.openedDirectories().includes(dir)) return
         // 各类别独立合并；null = 该目录该类别抓取失败，保留本地
-        mergePendingSnapshot(this.pendingPermissions, this.pendingQuestions, dir, permissions, questions)
+        mergePendingSnapshot(this.pendingPermissions, this.pendingQuestions, dir, permissions, null)
       },
       onReconcileStateChange: (active) => {
         this.reconciling = active

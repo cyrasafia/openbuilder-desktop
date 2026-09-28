@@ -73,6 +73,9 @@ const zh = {
   pendingQueue: "1/{total} 待处理",
   questionSubmit: "提交",
   questionNext: "下一步",
+  // 表单卡（v2 form 体系，M6a）：boolean 字段合成选项
+  formYes: "是",
+  formNo: "否",
   replyFailed: "操作失败",
   // 任务卡（design-task-list；标题对齐移动端 arb todoTitle）
   todoTitle: "任务",
@@ -387,6 +390,9 @@ const en: typeof zh = {
   pendingQueue: "1/{total} pending",
   questionSubmit: "Submit",
   questionNext: "Next",
+  // Form card (v2 form system, M6a): boolean field synthetic options
+  formYes: "Yes",
+  formNo: "No",
   replyFailed: "Action failed",
   // Task card (design-task-list; title aligns with mobile arb todoTitle)
   todoTitle: "Tasks",

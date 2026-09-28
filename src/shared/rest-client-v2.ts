@@ -12,6 +12,8 @@ import type {
   ProjectInfo,
   ServerInfo,
   SessionInfo,
+  V2FormAnswer,
+  V2PermissionDecision,
 } from "./api-v2-types"
 import { toInternalMessages, type V2MessageEntry } from "./v2-adapter"
 import type { MessageWithParts } from "./api-types"
@@ -385,5 +387,66 @@ export class RestClientV2 {
       },
     )
     return res.data
+  }
+
+  // ============ 待办人机交互（M6a：permission reply / form 体系） ============
+
+  /**
+   * POST /api/session/:sessionID/permission/:requestID/reply
+   * （body `{decision}`，取代 v1 `/session/:id/permissions/:pid` 的 `{response}`）。
+   * 无 directory 参数——请求 id 全局唯一。
+   */
+  async respondPermission(
+    sessionID: string,
+    requestID: string,
+    decision: V2PermissionDecision,
+  ): Promise<void> {
+    await this.fetchResponse(
+      `/api/session/${encodeURIComponent(sessionID)}/permission/${encodeURIComponent(requestID)}/reply`,
+      { method: "POST", body: JSON.stringify({ decision }) },
+    )
+  }
+
+  /**
+   * POST /api/session/:sessionID/form/:formID/reply（v2 form 体系，取代 v1
+   * question reply 的 `answers: string[][]`）。answer 键 = field.key，值按字段
+   * 类型（select→value、multiselect→value[]、boolean→bool、number→数值、文本→string）。
+   */
+  async replyForm(sessionID: string, formID: string, answer: V2FormAnswer): Promise<void> {
+    await this.fetchResponse(
+      `/api/session/${encodeURIComponent(sessionID)}/form/${encodeURIComponent(formID)}/reply`,
+      { method: "POST", body: JSON.stringify({ answer }) },
+    )
+  }
+
+  /** DELETE /api/session/:sessionID/form/:formID（取消表单，取代 v1 question reject） */
+  async cancelForm(sessionID: string, formID: string): Promise<void> {
+    await this.fetchResponse(
+      `/api/session/${encodeURIComponent(sessionID)}/form/${encodeURIComponent(formID)}`,
+      { method: "DELETE" },
+    )
+  }
+
+  // ============ 会话 agent / model 切换（M6a，路径同 v1 过渡面） ============
+
+  /** POST /api/session/:sessionID/agent（204；无 directory 参数） */
+  async switchAgent(sessionID: string, agent: string): Promise<void> {
+    await this.fetchResponse(`/api/session/${encodeURIComponent(sessionID)}/agent`, {
+      method: "POST",
+      body: JSON.stringify({ agent }),
+    })
+  }
+
+  /**
+   * POST /api/session/:sessionID/model（204）。variant 条件包含（AM-3）：
+   * 「默认」= 省略字段（实测可清掉已设值）。
+   */
+  async switchModel(sessionID: string, model: ModelRef): Promise<void> {
+    const body: Record<string, unknown> = { id: model.id, providerID: model.providerID }
+    if (model.variant) body.variant = model.variant
+    await this.fetchResponse(`/api/session/${encodeURIComponent(sessionID)}/model`, {
+      method: "POST",
+      body: JSON.stringify({ model: body }),
+    })
   }
 }

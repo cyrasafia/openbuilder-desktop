@@ -1,14 +1,13 @@
 /**
- * 待处理人机交互请求（授权 permission / 问题 question）的归一化与指示器投影。
- * 参考移动端：openbuilder models.dart Permission/QuestionRequest.fromJson
- * （permission ?? action ?? type、patterns ?? resources 的兼容映射）与
+ * 待处理人机交互请求（授权 permission / 问题 form 卡）的归一化与指示器投影。
+ * 参考移动端：openbuilder models.dart Permission/FormInfo.fromJson 与
  * design-agent-status-indicator.md（pending > busy 的确定性显示投影）。
  *
- * directory 是回复路由参数（design-question-card-reply.md：opencode 的
- * pending 按 directory 隔离在 per-instance 内存 Map，reply 不带 directory
- * 会 404）——在事件/回填到达时捕获，不依赖会话信息已知。
+ * directory 现仅作事件闸门/回填归属键（v2 reply 端点按 id 寻址，无 directory
+ * 参数）；在事件/回填到达时捕获，不依赖会话信息已知。
  */
 import type { SessionStatusValue } from "./api-types"
+import type { V2FormInfo, V2FormValue } from "./api-v2-types"
 
 /** 权限请求（per_/sse 会话最多一张，Map 以 sessionID 为 key，与移动端一致） */
 export interface PendingPermission {
@@ -20,29 +19,47 @@ export interface PendingPermission {
   patterns: string[]
   metadata: Record<string, unknown> | null
   always: string[]
-  /** 捕获自 SSE 订阅目录 / 回填查询目录（reply 路由用） */
+  /** 捕获自 SSE 订阅目录 / 回填查询目录（v1 reply 路由用；v2 端点无 directory） */
   directory: string
 }
 
+/**
+ * 问题卡（v2 form 体系，M6a）：frm_* 表单投影。fields 是六型 Form.Field 的
+ * UI 归一化——选项式（select/multiselect）、boolean（UI 合成是/否选项）、
+ * 输入式（text/number）。hidden/external 字段在归一化时剔除（不可呈现：
+ * external 需浏览器授权流，v0.5 范围外）。
+ */
+export type PendingQuestionFieldKind = "select" | "multiselect" | "boolean" | "text" | "number"
+
 export interface PendingQuestionOption {
+  /** answer 回传值（v2 Form.Option.value；v1 question 回传 label，勿混淆） */
+  value: string
   label: string
   description: string
 }
 
-export interface PendingQuestionInfo {
+export interface PendingQuestionField {
+  /** Form.Field.key——answer 的键 */
+  key: string
+  /** field.title（问题文本） */
   question: string
-  header: string
+  /** field.description */
+  description: string
+  kind: PendingQuestionFieldKind
   options: PendingQuestionOption[]
-  multiple: boolean
-  custom: boolean
+  placeholder: string
+  /** Form.Field.required——输入步的空值门控（选项步未选恒禁前进，Q-7） */
+  required: boolean
 }
 
-/** 问题请求（que_*，Map 以问题 id 为 key；一个会话可能多张排队） */
+/** 问题请求（frm_*，Map 以表单 id 为 key；一个会话可能多张排队） */
 export interface PendingQuestion {
-  /** que_* */
+  /** frm_* */
   id: string
   sessionID: string
-  questions: PendingQuestionInfo[]
+  /** form.title（卡片标题） */
+  title: string
+  fields: PendingQuestionField[]
   directory: string
 }
 
@@ -74,37 +91,117 @@ export function normalizePermission(
     type,
     patterns: strArray(props.patterns).length > 0 ? strArray(props.patterns) : strArray(props.resources),
     metadata,
-    always: strArray(props.always),
+    always: strArray(props.always).length > 0 ? strArray(props.always) : strArray(props.save),
     directory,
   }
 }
 
-/** 问题事件/回填负载 → PendingQuestion；id/sessionID/questions 缺失返回 null */
-export function normalizeQuestion(
+/**
+ * Form.Field → UI 字段投影；hidden/external 剔除，类型归一化：
+ * string+options → select；string 无 options → text；multiselect/boolean 直通；
+ * number/integer → number（UI 数值输入）。无 key 丢弃；title 空回落 key。
+ */
+function toField(f: Record<string, unknown>): PendingQuestionField | null {
+  const key = str(f.key)
+  // 无 key 丢弃；title 空回落 key（同移动端 f.title ?? f.key）
+  if (!key) return null
+  const type = str(f.type)
+  // hidden：服务端条件隐藏字段不呈现；external：需浏览器授权流（v0.5 范围外，
+  // M6a 记录于 pending-requests 头注释）——均剔除
+  if (f.hidden === true || type === "external") return null
+  let kind: PendingQuestionFieldKind
+  const options = Array.isArray(f.options)
+    ? f.options
+        .filter((o): o is Record<string, unknown> => !!o && typeof o === "object")
+        .map((o) => ({
+          value: str(o.value) || str(o.label),
+          label: str(o.label) || str(o.value),
+          description: str(o.description),
+        }))
+    : []
+  if (type === "multiselect") kind = "multiselect"
+  else if (type === "boolean") kind = "boolean"
+  else if (type === "number" || type === "integer") kind = "number"
+  else {
+    // string：有 options = 选项式（单选），否则自由文本
+    kind = options.length > 0 ? "select" : "text"
+  }
+  return {
+    key,
+    question: str(f.title) || key,
+    description: str(f.description),
+    kind,
+    options,
+    placeholder: str(f.placeholder),
+    required: f.required === true,
+  }
+}
+
+/** form.created 事件负载（`{form: Form.Info}`）/ 回填条目 → PendingQuestion */
+export function normalizeForm(
   props: Record<string, unknown> | undefined,
   directory: string,
 ): PendingQuestion | null {
   if (!props) return null
-  const id = str(props.id)
-  const sessionID = str(props.sessionID)
+  // 事件负载嵌套在 form 字段；回填条目是 Form.Info 本身
+  const raw = (props.form && typeof props.form === "object" ? props.form : props) as Record<
+    string,
+    unknown
+  >
+  const id = str(raw.id)
+  const sessionID = str(raw.sessionID)
   if (!id || !sessionID) return null
-  const questions = Array.isArray(props.questions)
-    ? props.questions
-        .filter((q): q is Record<string, unknown> => !!q && typeof q === "object")
-        .map((q) => ({
-          question: str(q.question),
-          header: str(q.header),
-          options: Array.isArray(q.options)
-            ? q.options
-                .filter((o): o is Record<string, unknown> => !!o && typeof o === "object")
-                .map((o) => ({ label: str(o.label), description: str(o.description) }))
-            : [],
-          multiple: q.multiple === true,
-          custom: q.custom === true,
-        }))
+  const fields = Array.isArray(raw.fields)
+    ? raw.fields
+        .filter((f): f is Record<string, unknown> => !!f && typeof f === "object")
+        .map(toField)
+        .filter((f): f is PendingQuestionField => f !== null)
     : []
-  if (questions.length === 0) return null
-  return { id, sessionID, questions, directory }
+  if (fields.length === 0) return null
+  return { id, sessionID, title: str(raw.title), fields, directory }
+}
+
+/** UI 每字段原始输入（选项选中值数组 / 自由文本） */
+export interface PendingFieldInput {
+  selected?: string[]
+  text?: string
+}
+
+/**
+ * 构造 Form.Answer（`POST .../form/:formID/reply` 的 answer 体）：
+ * select → 首个选中 value（未选 = ""）；multiselect → 选中数组；boolean →
+ * value "true" 命中即 true（UI 合成选项，未选 = false）；text → 原文；
+ * number → parseFloat（NaN 兜底 0，同移动端 tryParse ?? 0）。
+ */
+export function buildFormAnswer(
+  question: PendingQuestion,
+  input: Record<number, PendingFieldInput>,
+): Record<string, V2FormValue> {
+  const answer: Record<string, V2FormValue> = {}
+  question.fields.forEach((f, i) => {
+    const raw = input[i] ?? {}
+    const selected = raw.selected ?? []
+    switch (f.kind) {
+      case "multiselect":
+        answer[f.key] = selected
+        break
+      case "select":
+        answer[f.key] = selected[0] ?? ""
+        break
+      case "boolean":
+        answer[f.key] = selected.includes("true")
+        break
+      case "number": {
+        const t = (raw.text ?? "").trim()
+        const n = Number(t)
+        answer[f.key] = Number.isFinite(n) ? n : 0
+        break
+      }
+      default:
+        answer[f.key] = raw.text ?? ""
+    }
+  })
+  return answer
 }
 
 /**
@@ -167,15 +264,16 @@ function questionSignature(map: Map<string, PendingQuestion>): string {
  * null 表示该类别在该目录抓取失败——保留本地条目（review-permissions.md
  * R-Perm-2/R-Perm-4 教训：成功目录权威覆盖、失败目录不得误清 SSE 已送达的
  * 条目）；成功目录里已不在快照中的本地条目视为已在他端处理，删除。
- * 变化检测按内容签名（id 对集合）而非数量。返回是否有变化（调用方据此
- * 决定是否 notify）。
+ * questions 已是归一化形态（v2 form 体系，M6a——v1 question 回填端点退役，
+ * M6c 接 `GET /api/form`）。变化检测按内容签名（id 对集合）而非数量。
+ * 返回是否有变化（调用方据此决定是否 notify）。
  */
 export function mergePendingSnapshot(
   permissions: Map<string, PendingPermission>,
   questions: Map<string, PendingQuestion>,
   directory: string,
   freshPermissions: Record<string, unknown>[] | null,
-  freshQuestions: Record<string, unknown>[] | null,
+  freshQuestions: PendingQuestion[] | null,
 ): boolean {
   const prevPermSig = permissionSignature(permissions)
   const prevQSig = questionSignature(questions)
@@ -192,14 +290,11 @@ export function mergePendingSnapshot(
   }
   if (freshQuestions) {
     for (const [qid, q] of [...questions]) {
-      if (q.directory === directory && !freshQuestions.some((x) => str(x.id) === qid)) {
+      if (q.directory === directory && !freshQuestions.some((x) => x.id === qid)) {
         questions.delete(qid)
       }
     }
-    for (const x of freshQuestions) {
-      const q = normalizeQuestion(x, directory)
-      if (q) questions.set(q.id, q)
-    }
+    for (const q of freshQuestions) questions.set(q.id, q)
   }
   return permissionSignature(permissions) !== prevPermSig || questionSignature(questions) !== prevQSig
 }

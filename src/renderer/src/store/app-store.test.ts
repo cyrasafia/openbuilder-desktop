@@ -1445,7 +1445,7 @@ describe("隐式默认模型（D-AM-4 修订）", () => {
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     store.modelCatalogs.set(ROOT, catalog)
     const posted: ModelRef[] = []
-    ;(store as unknown as { client: unknown }).client = seedSwitchClient(posted)
+    ;(store as unknown as { clientV2: unknown }).clientV2 = seedSwitchClient(posted)
 
     expect(await store.switchSessionModel("s1", "zai", "glm-4")).toBe(true)
     expect(posted).toEqual([{ id: "glm-4", providerID: "zai", variant: "high" }])
@@ -1458,7 +1458,7 @@ describe("隐式默认模型（D-AM-4 修订）", () => {
     s1.model = { id: "glm-5.3", providerID: "zai", variant: "high" }
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     store.modelCatalogs.set(ROOT, catalog)
-    ;(store as unknown as { client: unknown }).client = seedSwitchClient([])
+    ;(store as unknown as { clientV2: unknown }).clientV2 = seedSwitchClient([])
 
     await store.switchSessionModel("s1", "zai", "glm-air")
     expect(store.defaultsFor().model).toEqual({ id: "glm-air", providerID: "zai" })
@@ -1468,7 +1468,7 @@ describe("隐式默认模型（D-AM-4 修订）", () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     store.modelCatalogs.set(ROOT, catalog)
-    ;(store as unknown as { client: unknown }).client = seedSwitchClient([], true)
+    ;(store as unknown as { clientV2: unknown }).clientV2 = seedSwitchClient([], true)
 
     expect(await store.switchSessionModel("s1", "zai", "glm-4")).toBe(false)
     expect(store.defaultsFor().model).toBeUndefined()
@@ -1479,7 +1479,7 @@ describe("隐式默认模型（D-AM-4 修订）", () => {
     s1.model = { id: "glm-5.3", providerID: "zai" }
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     store.modelCatalogs.set(ROOT, catalog)
-    ;(store as unknown as { client: unknown }).client = seedSwitchClient([])
+    ;(store as unknown as { clientV2: unknown }).clientV2 = seedSwitchClient([])
 
     await store.switchSessionVariant("s1", "zai", "glm-5.3", "max")
     expect(store.defaultsFor().model).toEqual({ id: "glm-5.3", providerID: "zai", variant: "max" })
@@ -5874,17 +5874,20 @@ describe("subagent 子会话待处理路由（design-subagent-status §D6）", (
     expect(store.childPermissionFor("c1")).toBeNull()
   })
 
-  it("子会话问题卡路由：childQuestionsFor 命中 + 与授权计数并列", () => {
+  it("子会话表单卡路由：childQuestionsFor 命中 + 与授权计数并列（M6a：form 体系）", () => {
     seedChild()
     dispatch({
-      type: "question.asked",
+      type: "form.created",
       properties: {
-        id: "que_1",
-        sessionID: "c1",
-        questions: [{ question: "继续吗", options: [], multiple: false, custom: true }],
+        form: {
+          id: "frm_1",
+          sessionID: "c1",
+          title: "继续吗",
+          fields: [{ key: "k", type: "string", title: "继续吗", options: [{ value: "y", label: "是" }] }],
+        },
       },
     })
-    expect(store.childQuestionsFor("s1").map((q) => q.id)).toEqual(["que_1"])
+    expect(store.childQuestionsFor("s1").map((q) => q.id)).toEqual(["frm_1"])
     expect(store.pendingCountFor("s1")).toBe(1)
   })
 
@@ -5895,11 +5898,14 @@ describe("subagent 子会话待处理路由（design-subagent-status §D6）", (
       properties: { id: "per_1", sessionID: "s1", permission: "bash", patterns: ["ls"], metadata: null },
     })
     dispatch({
-      type: "question.asked",
+      type: "form.created",
       properties: {
-        id: "que_1",
-        sessionID: "c1",
-        questions: [{ question: "继续吗", options: [], multiple: false, custom: true }],
+        form: {
+          id: "frm_1",
+          sessionID: "c1",
+          title: "继续吗",
+          fields: [{ key: "k", type: "boolean", title: "继续吗" }],
+        },
       },
     })
     expect(store.pendingCountFor("s1")).toBe(2)
@@ -5916,6 +5922,20 @@ describe("subagent 子会话待处理路由（design-subagent-status §D6）", (
     expect(store.pendingCountFor("s1")).toBe(0)
   })
 
+  it("他端答复/取消表单：form.replied 与 form.cancelled 均按 properties.id 清除", () => {
+    seedChild()
+    for (const type of ["form.replied", "form.cancelled"] as const) {
+      dispatch({
+        type: "form.created",
+        properties: {
+          form: { id: `frm_${type}`, sessionID: "c1", title: "t", fields: [{ key: "k", type: "boolean" }] },
+        },
+      })
+      dispatch({ type, properties: { id: `frm_${type}`, sessionID: "c1" } })
+    }
+    expect(store.childQuestionsFor("s1")).toHaveLength(0)
+  })
+
   it("无 parentID 关联的会话请求不误路由", () => {
     store.sessionsByProject.set(
       "proj1",
@@ -5930,5 +5950,88 @@ describe("subagent 子会话待处理路由（design-subagent-status §D6）", (
     })
     expect(store.childPermissionFor("s1")).toBeNull()
     expect(store.pendingCountFor("s1")).toBe(0)
+  })
+})
+
+describe("待处理回复动作（M6a：v2 换绑）", () => {
+  /** 直驱 handleEvent + clientV2 mock 替换 */
+  function dispatch(ev: { type: string; properties: unknown }) {
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, ev)
+  }
+
+  it("respondPermission → clientV2.respondPermission(decision)；404 = 他端已答，静默移除", async () => {
+    dispatch({
+      type: "permission.asked",
+      properties: { id: "per_1", sessionID: "s1", action: "bash", resources: ["ls"] },
+    })
+    const calls: Array<[string, string, string]> = []
+    clientV2Of().respondPermission = async (sid: string, rid: string, d: string) => {
+      calls.push([sid, rid, d])
+    }
+    expect(await store.respondPermission("s1", "once")).toEqual({ ok: true })
+    expect(calls).toEqual([["s1", "per_1", "once"]])
+    expect(store.pendingPermissions.has("s1")).toBe(false)
+
+    dispatch({
+      type: "permission.asked",
+      properties: { id: "per_2", sessionID: "s1", action: "bash", resources: ["ls"] },
+    })
+    clientV2Of().respondPermission = async () => {
+      throw new ApiErrorV2(404, "not-found", "HTTP 404")
+    }
+    expect(await store.respondPermission("s1", "reject")).toEqual({ ok: true })
+    expect(store.pendingPermissions.has("s1")).toBe(false)
+  })
+
+  it("replyQuestion → clientV2.replyForm（answer 由 buildFormAnswer 构造）；rejectQuestion → cancelForm", async () => {
+    dispatch({
+      type: "form.created",
+      properties: {
+        form: {
+          id: "frm_1",
+          sessionID: "s1",
+          title: "t",
+          fields: [
+            { key: "b", type: "string", title: "q1", options: [{ value: "x", label: "X" }] },
+            { key: "f", type: "boolean", title: "q2" },
+          ],
+        },
+      },
+    })
+    let seenAnswer: unknown = null
+    let cancelled = ""
+    clientV2Of().replyForm = async (_sid: string, _fid: string, answer: unknown) => {
+      seenAnswer = answer
+    }
+    clientV2Of().cancelForm = async (_sid: string, fid: string) => {
+      cancelled = fid
+    }
+    expect(
+      await store.replyQuestion("frm_1", { 0: { selected: ["x"] }, 1: { selected: ["true"] } }),
+    ).toEqual({ ok: true })
+    expect(seenAnswer).toEqual({ b: "x", f: true })
+    expect(store.pendingQuestions.has("frm_1")).toBe(false)
+
+    dispatch({
+      type: "form.created",
+      properties: { form: { id: "frm_2", sessionID: "s1", title: "t", fields: [{ key: "k", type: "boolean" }] } },
+    })
+    expect(await store.rejectQuestion("frm_2")).toEqual({ ok: true })
+    expect(cancelled).toBe("frm_2")
+    expect(store.pendingQuestions.has("frm_2")).toBe(false)
+  })
+
+  it("非 404 失败保留卡片并回传错误", async () => {
+    dispatch({
+      type: "permission.asked",
+      properties: { id: "per_1", sessionID: "s1", action: "bash", resources: ["ls"] },
+    })
+    clientV2Of().respondPermission = async () => {
+      throw new ApiErrorV2(500, "server", "HTTP 500")
+    }
+    const res = await store.respondPermission("s1", "once")
+    expect(res.ok).toBe(false)
+    expect(res.error).toContain("500")
+    expect(store.pendingPermissions.has("s1")).toBe(true)
   })
 })

@@ -3121,6 +3121,34 @@
   color: var(--on-surface);
 }
 
+/* 表单字段描述（v2 form，M6a）：问题文本下的辅助说明 */
+.pending-question-desc {
+  font-size: var(--text-sm);
+  color: var(--on-surface-variant);
+  white-space: pre-wrap;
+}
+
+/* 表单自由输入框（text/number 字段，M6a）——视觉对齐 pending-option 行 */
+.pending-input {
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: var(--radius-chip);
+  background: var(--surface-container-high);
+  border: 1px solid var(--outline-variant);
+  color: var(--on-surface);
+  font-size: var(--text-md);
+  line-height: 1.5;
+}
+
+.pending-input:focus-visible {
+  outline: none;
+  border-color: var(--tertiary);
+}
+
+.pending-input:disabled {
+  opacity: 0.6;
+}
+
 .pending-options {
   display: flex;
   flex-direction: column;

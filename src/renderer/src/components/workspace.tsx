@@ -2132,6 +2132,12 @@ function TypingSlot({ status }: { status: SessionStatusValue }) {
   )
 }
 
+/**
+ * 表单卡（v2 form 体系，M6a；原 v1 question 卡）。fields 步进式作答：
+ * - select/multiselect/boolean 选项式（boolean 由 UI 合成是/否两项，value
+ *   "true"/"false" 经 buildFormAnswer 还原布尔）；
+ * - text/number 输入式（占位提示，number 输入模式；可空提交，空数值兜底 0）。
+ */
 export function QuestionCard({
   question,
   queueTotal,
@@ -2142,30 +2148,43 @@ export function QuestionCard({
   const store = useStore()
   const { t } = useI18n()
   const [selected, setSelected] = useState<Record<number, string[]>>({})
+  const [texts, setTexts] = useState<Record<number, string>>({})
   const [step, setStep] = useState(0)
   const [replying, setReplying] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const totalSub = question.questions.length
-  // 步进钳制：同 id 载荷重新归一化后子问题变短的防御（当前 server 不会变更已
-  // 排队问题，纯 hardening），防止 questions[step] 越界
+  const totalSub = question.fields.length
+  // 步进钳制：同 id 载荷重新归一化后字段变短的防御（纯 hardening），防止越界
   const stepIdx = Math.min(step, Math.max(0, totalSub - 1))
-  const q = question.questions[stepIdx]
+  const f = question.fields[stepIdx]
   const sel = selected[stepIdx] ?? []
-  const stepAnswered = sel.length > 0
+  const isInput = f.kind === "text" || f.kind === "number"
+  // 前进门控（review-question-cards Q-7：当前步未答不得前进）：选项步未选恒禁；
+  // 输入步 required 非空、可选可空（比 v1 一刀切非空更准，M6a 评审修复）
+  const stepAnswered = isInput
+    ? !f.required || (texts[stepIdx] ?? "").trim() !== ""
+    : sel.length > 0
   const isLast = stepIdx >= totalSub - 1
+  // 选项式字段的可点选项（boolean 合成；select/multiselect 归一化层已映射 value）
+  const options =
+    f.kind === "boolean"
+      ? [
+          { value: "true", label: t.formYes, description: "" },
+          { value: "false", label: t.formNo, description: "" },
+        ]
+      : f.options
 
-  const toggle = (label: string) => {
+  const toggle = (value: string) => {
     if (replying) return
     const i = stepIdx
     setSelected((prev) => {
       const cur = prev[i] ?? []
-      const next = cur.includes(label)
-        ? cur.filter((x) => x !== label)
-        : q.multiple
-          ? [...cur, label]
-          : [label]
+      const next = cur.includes(value)
+        ? cur.filter((x) => x !== value)
+        : f.kind === "multiselect"
+          ? [...cur, value]
+          : [value]
       return { ...prev, [i]: next }
     })
   }
@@ -2173,11 +2192,13 @@ export function QuestionCard({
   const finish = async (action: "reply" | "reject") => {
     setReplying(true)
     setError(null)
-    const answers = question.questions.map((_, i) => selected[i] ?? [])
+    const input = Object.fromEntries(
+      question.fields.map((_, i) => [i, { selected: selected[i] ?? [], text: texts[i] ?? "" }]),
+    )
     const res =
       action === "reject"
         ? await store.rejectQuestion(question.id)
-        : await store.replyQuestion(question.id, answers)
+        : await store.replyQuestion(question.id, input)
     if (!res.ok) {
       setError(res.error ?? t.replyFailed)
       setReplying(false)
@@ -2185,21 +2206,25 @@ export function QuestionCard({
   }
 
   // 快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增）：Ctrl+1..9 = 切换
-  // 选中选项（与点击同 toggle 语义；第 10+ 项无快捷键）、Ctrl+0 = 拒绝、
-  // Ctrl+Enter = 下一步/末步提交（当前步未选不动作，同按钮禁用态）。作用域/
-  // 守卫/effect 无依赖数组（闭包恒新）——同 PermissionCard 注释，不赘述。
-  // Ctrl+Enter 经 window 冒泡层 preventDefault 抑制输入框换行插入（§1.1b 取舍）
+  // 选中选项（与点击同 toggle 语义；第 10+ 项无快捷键；v2 输入步无选项，放行）、
+  // Ctrl+0 = 拒绝、Ctrl+Enter = 下一步/末步提交（当前步未答不动作，同按钮禁用
+  // 态——输入步 required 空同样不动作）。作用域/守卫/effect 无依赖数组（闭包
+  // 恒新）——同 PermissionCard 注释，不赘述。Ctrl+Enter 经 window 冒泡层
+  // preventDefault 抑制输入框换行插入（§1.1b 取舍；对 v2 文本输入步，卡内存续
+  // 期内该键归提交语义）
   const ctrlHeld = useCtrlHeld()
   useEffect(() => {
     const onKeyDown = (e: globalThis.KeyboardEvent) => {
       if (!isCardShortcutEvent(e) || collapsed || replying || store.overlayCount > 0) return
-      // 选项 = Ctrl+1..9（按 code 匹配，布局无关）；未映射序号不消费（放行无语义）
+      // 选项 = Ctrl+1..9（按 code 匹配，布局无关）；未映射序号不消费（放行无语义）；
+      // 输入步（text/number）无选项可切，放行
       const digit = /^Digit([1-9])$/.exec(e.code)
       if (digit) {
-        const opt = q.options[Number(digit[1]) - 1]
+        if (isInput) return
+        const opt = options[Number(digit[1]) - 1]
         if (opt) {
           e.preventDefault()
-          toggle(opt.label)
+          toggle(opt.value)
         }
         return
       }
@@ -2209,7 +2234,7 @@ export function QuestionCard({
         void finish("reject")
         return
       }
-      // 下一步/提交 = Ctrl+Enter（key 匹配覆盖 NumpadEnter；未选不动作同禁用态）
+      // 下一步/提交 = Ctrl+Enter（key 匹配覆盖 NumpadEnter；未答不动作同禁用态）
       if (e.key === "Enter") {
         if (!stepAnswered) return
         e.preventDefault()
@@ -2227,7 +2252,7 @@ export function QuestionCard({
     <div className="pending-card question">
       <button className="pending-card-header" onClick={() => setCollapsed(!collapsed)}>
         <CircleHelp className="pending-card-icon" size={16} aria-hidden />
-        <span className="pending-card-title">{q.header}</span>
+        <span className="pending-card-title">{question.title || f.question}</span>
         {totalSub > 1 && (
           <span className="pending-queue">
             {stepIdx + 1}/{totalSub}
@@ -2244,36 +2269,51 @@ export function QuestionCard({
       </button>
       {!collapsed && (
         <div className="pending-card-body">
-          <div className="pending-question-text">{q.question}</div>
-          <div className="pending-options">
-            {q.options.map((opt, i) => {
-              const active = sel.includes(opt.label)
-              return (
-                <button
-                  key={opt.label}
-                  className={"pending-option" + (active ? " active" : "")}
-                  disabled={replying}
-                  onClick={() => toggle(opt.label)}
-                >
-                  {ctrlHeld && !replying && i < 9 && (
-                    <span className="pending-key-badge" aria-hidden>
-                      {i + 1}
+          <div className="pending-question-text">{f.question}</div>
+          {f.description && <div className="pending-question-desc">{f.description}</div>}
+          {isInput ? (
+            <input
+              className="pending-input"
+              type="text"
+              inputMode={f.kind === "number" ? "decimal" : undefined}
+              placeholder={f.placeholder || (f.kind === "number" ? "0" : undefined)}
+              value={texts[stepIdx] ?? ""}
+              disabled={replying}
+              onChange={(e) => setTexts((prev) => ({ ...prev, [stepIdx]: e.target.value }))}
+            />
+          ) : (
+            <div className="pending-options">
+              {options.map((opt, i) => {
+                const active = sel.includes(opt.value)
+                return (
+                  <button
+                    key={opt.value}
+                    className={"pending-option" + (active ? " active" : "")}
+                    disabled={replying}
+                    onClick={() => toggle(opt.value)}
+                  >
+                    {ctrlHeld && !replying && i < 9 && (
+                      <span className="pending-key-badge" aria-hidden>
+                        {i + 1}
+                      </span>
+                    )}
+                    <span
+                      className={
+                        "pending-option-mark " +
+                        (f.kind === "multiselect" ? "checkbox" : "radio") +
+                        (active ? " on" : "")
+                      }
+                      aria-hidden
+                    />
+                    <span className="pending-option-label">
+                      {opt.label}
+                      {opt.description && <span className="pending-option-desc">{opt.description}</span>}
                     </span>
-                  )}
-                  <span
-                    className={
-                      "pending-option-mark " + (q.multiple ? "checkbox" : "radio") + (active ? " on" : "")
-                    }
-                    aria-hidden
-                  />
-                  <span className="pending-option-label">
-                    {opt.label}
-                    {opt.description && <span className="pending-option-desc">{opt.description}</span>}
-                  </span>
-                </button>
-              )
-            })}
-          </div>
+                  </button>
+                )
+              })}
+            </div>
+          )}
           <div className="pending-card-actions">
             <button className="btn-danger" disabled={replying} onClick={() => void finish("reject")}>
               {ctrlHeld && !replying && (

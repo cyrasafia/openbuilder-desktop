@@ -174,6 +174,76 @@ describe("会话域（M2）", () => {
   })
 })
 
+describe("待办人机交互与会话切换（M6a）", () => {
+  function recorder(): {
+    seen: Array<{ url: string; method: string; body: unknown }>
+    client: ReturnType<typeof mkClient>
+  } {
+    const seen: Array<{ url: string; method: string; body: unknown }> = []
+    const client = mkClient((url, init) => {
+      seen.push({
+        url,
+        method: init.method ?? "",
+        body: init.body ? (JSON.parse(String(init.body)) as unknown) : null,
+      })
+      return new Response(null, { status: 204 })
+    })
+    return { seen, client }
+  }
+
+  it("respondPermission：POST /api/session/:id/permission/:requestID/reply，body {decision}", async () => {
+    const { seen, client } = recorder()
+    await client.respondPermission("ses_1", "per_9", "always")
+    expect(seen[0]).toEqual({
+      url: "http://server/api/session/ses_1/permission/per_9/reply",
+      method: "POST",
+      body: { decision: "always" },
+    })
+  })
+
+  it("replyForm：POST /api/session/:id/form/:formID/reply，body {answer}（键 = field.key）", async () => {
+    const { seen, client } = recorder()
+    await client.replyForm("ses_1", "frm_1", { branch: "main", tags: ["a"], force: true, n: 2 })
+    expect(seen[0]).toEqual({
+      url: "http://server/api/session/ses_1/form/frm_1/reply",
+      method: "POST",
+      body: { answer: { branch: "main", tags: ["a"], force: true, n: 2 } },
+    })
+  })
+
+  it("cancelForm：DELETE /api/session/:id/form/:formID（无 body）", async () => {
+    const { seen, client } = recorder()
+    await client.cancelForm("ses_1", "frm_1")
+    expect(seen[0]).toEqual({
+      url: "http://server/api/session/ses_1/form/frm_1",
+      method: "DELETE",
+      body: null,
+    })
+  })
+
+  it("switchAgent / switchModel：POST /api/session/:id/{agent,model}；model variant 条件包含", async () => {
+    const { seen, client } = recorder()
+    await client.switchAgent("ses_1", "build")
+    await client.switchModel("ses_1", { id: "m1", providerID: "prov" })
+    await client.switchModel("ses_1", { id: "m1", providerID: "prov", variant: "high" })
+    expect(seen[0]).toEqual({
+      url: "http://server/api/session/ses_1/agent",
+      method: "POST",
+      body: { agent: "build" },
+    })
+    expect(seen[1]).toEqual({
+      url: "http://server/api/session/ses_1/model",
+      method: "POST",
+      body: { model: { id: "m1", providerID: "prov" } },
+    })
+    expect(seen[2]).toEqual({
+      url: "http://server/api/session/ses_1/model",
+      method: "POST",
+      body: { model: { id: "m1", providerID: "prov", variant: "high" } },
+    })
+  })
+})
+
 describe("鉴权与错误分类", () => {
   it("Basic 头注入（用户名缺省 opencode）", async () => {
     let auth = ""

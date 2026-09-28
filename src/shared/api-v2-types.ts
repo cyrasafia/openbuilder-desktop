@@ -89,6 +89,50 @@ export interface V2Event<T = Record<string, unknown>> {
   data: T
 }
 
+// ---- form / permission 待办（M6a，契约 Form.*/Permission.*）----
+
+/** Form.Option：value 是 answer 回传值（label 仅展示——v1 question 回传 label，勿混淆） */
+export interface V2FormOption {
+  value: string
+  label: string
+  description?: string
+}
+
+/**
+ * Form.Field 六型公共面（string/number/integer/boolean/multiselect/external；
+ * 枚举型特有字段（format/min/max 等）按需读取，wire 宽松化）。
+ */
+export interface V2FormField {
+  key: string
+  type: "string" | "number" | "integer" | "boolean" | "multiselect" | "external"
+  title?: string
+  description?: string
+  required?: boolean
+  hidden?: boolean
+  placeholder?: string
+  custom?: boolean
+  options?: V2FormOption[]
+  default?: unknown
+}
+
+/** Form.Info（form.created 事件 data.form / GET /api/form 条目） */
+export interface V2FormInfo {
+  id: string
+  sessionID: string
+  title: string
+  metadata?: Record<string, unknown>
+  fields: V2FormField[]
+}
+
+/** Form.Value（answer 的字段值；文本/数字/布尔/多选数组） */
+export type V2FormValue = string | number | boolean | string[]
+
+/** Form.Answer：`POST .../form/:formID/reply` 的 answer 体（键 = field.key） */
+export type V2FormAnswer = Record<string, V2FormValue>
+
+/** Permission.Reply（reply 端点的 decision 枚举，与 v1 response 同值域） */
+export type V2PermissionDecision = "once" | "always" | "reject"
+
 /** GET /api/session query（flat 风格；与 location 组的 deepObject 风格并存，勿统一） */
 export interface ListSessionsInput {
   directory?: string
