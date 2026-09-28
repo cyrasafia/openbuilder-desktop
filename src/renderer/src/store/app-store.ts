@@ -1212,7 +1212,125 @@ export class AppStore {
 
   // ============ 事件处理（闸门 + 应用） ============
 
-  private handleEvent(directory: string, ev: OpencodeEvent, meta?: SseEventMeta) {
+  /**
+   * 会话事件落地（v1 created/updated 与 v2 翻译层共用）：合并入 map、Tab 标题
+   * 同步、归档实时收敛（D1 双源）、当前作用域被动补开。归档判定 isArchivedSession
+   * （time.archived 存量 + metadata.archivedAt 私约）——v2 的他端归档经
+   * session.metadata.updated 翻译为合并后 info 到达此处的 else 分支。
+   */
+  private applySessionEvent(info: Session, directory: string) {
+    if (info.directory !== directory) return
+    let map = this.sessionsByProject.get(info.projectID)
+    if (!map) {
+      map = new Map()
+      this.sessionsByProject.set(info.projectID, map)
+    }
+    map.set(info.id, info)
+    // 同步更新已打开 chat Tab 的 title（会话重命名后 Tab 名跟随刷新）
+    const tab = this.tabs.find((t) => t.kind === "chat" && t.key === `chat:${info.id}`)
+    if (tab) tab.title = info.title || info.slug || ""
+    // 实时收敛（§17 修订二，2026-09-02）：他端归档 → 立即关 Tab（跨作用域，
+    // 同 session.deleted 处置——Tab 集 = 未归档会话投影；archive:false 纯本地
+    // 移除，归档已由他端完成；激活回退/草稿清理/记忆收缩走 closeTab 既有路径）。
+    // 本端关 Tab=归档流程（closeChatTab）在途时抑制——其"先 PATCH 后
+    // closeTab(pushClosed 入关闭栈)"的 SSE 回环可能先到，抢先关会丢
+    // Ctrl+Shift+T 关闭栈条目，交由本地路径收尾
+    if (isArchivedSession(info)) {
+      if (!this.closingChatSessions.has(info.id)) {
+        this.closeTab(`chat:${info.id}`, { archive: false })
+      }
+    }
+    // 实时补开（§17 修订，2026-09-02）：当前作用域未归档顶层会话无 Tab 即
+    // 末尾追加（不激活不抢焦点）。口径同 visibleSessions：subagent 子会话不开；
+    // 非当前作用域目录不开（经 §17 切入补开）。SSE 丢失的补偿路径不变（对账）
+    else if (!info.parentID && info.directory === this.scopeDirectory()) {
+      this.openChatTabPassive(info)
+    }
+  }
+
+  /**
+   * v2 会话事件 → 既有语义（M3a 翻译层）：v2 拆掉 session.updated（renamed/
+   * metadata.updated/permissions/viewed/...），payload 为增量字段而非完整
+   * info——与本地会话合并后走 applySessionEvent；created 构造骨架（事件字段
+   * 足够列表/Tab；time 以事件时间戳播种，对账纠正）；deleted payload 只有
+   * sessionID（本地反查 projectID）。返回 true = 已消费（跳过 v1 表）。
+   * session.moved 暂不翻译（重连对账兜底，M4 会话域收尾）。
+   */
+  private applyV2SessionEvent(
+    directory: string,
+    ev: { type: string; properties: Record<string, unknown> },
+    eventTime: number,
+  ): boolean {
+    switch (ev.type) {
+      case "session.created": {
+        const p = ev.properties as {
+          sessionID?: string
+          projectID?: string
+          parentID?: string
+          title?: string
+          agent?: string
+          model?: ModelRef
+          metadata?: Record<string, unknown>
+        }
+        // v1 形状（properties.info 而非 sessionID）不属 v2 事件——回落 v1 表
+        if (!p.sessionID || !p.projectID) return false
+        this.applySessionEvent(
+          {
+            id: p.sessionID,
+            parentID: p.parentID,
+            projectID: p.projectID,
+            directory,
+            title: p.title,
+            agent: p.agent,
+            model: p.model,
+            metadata: p.metadata,
+            time: { created: eventTime, updated: eventTime },
+          },
+          directory,
+        )
+        return true
+      }
+      case "session.deleted": {
+        // v2 payload {sessionID}（无 v1 的 info）；本地反查 map 归属。
+        // v1 形状（properties.info）回落 v1 表
+        const sid = String(ev.properties.sessionID ?? "")
+        if (!sid) return false
+        const local = this.findSession(sid)
+        if (local) this.sessionsByProject.get(local.projectID)?.delete(sid)
+        this.closeTab(`chat:${sid}`, { archive: false })
+        this.cleanupSessionState(sid)
+        this.setSessionStatus(sid, { type: "idle" })
+        this.dropPendingForSession(sid)
+        return true
+      }
+      case "session.renamed":
+      case "session.metadata.updated":
+      case "session.viewed": {
+        // 增量合并到本地（未加载的会话跳过——重连对账兜底）
+        const sid = String(ev.properties.sessionID ?? "")
+        const local = sid ? this.findSession(sid) : null
+        if (!sid || !local) return true
+        let merged = local
+        if (ev.type === "session.renamed") {
+          merged = { ...local, title: String(ev.properties.title ?? local.title ?? "") }
+        } else if (ev.type === "session.metadata.updated") {
+          const meta = ev.properties.metadata as Record<string, unknown> | undefined
+          merged = { ...local, metadata: meta ?? local.metadata }
+        }
+        this.applySessionEvent(merged, directory)
+        return true
+      }
+      default:
+        return false
+    }
+  }
+
+  /** v1/v2 事件宽松入口（订阅器以 {type, properties} 回调；v2 翻译层在前） */
+  private handleEvent(
+    directory: string,
+    ev: { type: string; properties: Record<string, unknown> },
+    meta?: SseEventMeta,
+  ) {
     // ---- 实例销毁回执：基础设施事件，被销毁目录可能尚未/不再属于打开集合，
     // 须在目录闸门之前放行（reDiscoverInstanceCatalog 的等待点）
     if (ev.type === "server.instance.disposed") {
@@ -1227,59 +1345,39 @@ export class AppStore {
     // ready → 重拉项目列表拿 sandboxes（左栏即时多一行）；failed 仅日志（createWorkspace
     // 是同步 await，无 busy UI 需复位）。本端创建已 await refreshWorkspacesForProject，
     // 他端创建靠此事件刷新。
-    if (ev.type === "worktree.ready" || ev.type === "worktree.failed") {
-      const projectId = meta?.project
-      if (!projectId || !this.openedProjects.some((p) => p.id === projectId)) return
-      if (ev.type === "worktree.ready") {
-        // 重拉项目列表（refreshWorkspacesForProject 全局拉取并覆盖 this.projects，
-        // project 参数仅为文档化作用域，不参与请求——见该函数注释）
-        const project = this.projects.find((p) => p.id === projectId)
-        if (project) void this.refreshWorkspacesForProject(project)
-        // skill 缓存冻结防御（directory 信封 = 新 worktree 路径）：dispose 该目录
-        // 实例并重拉命令注册表，见 reDiscoverInstanceCatalog
-        void this.reDiscoverInstanceCatalog(directory)
-      }
+    // ---- 新目录发现接力（M3，活体实测：首个会话解析出伪项目行时随发
+    // project.updated）：未知项目 id = 新行——重拉项目全集；已知项目仅
+    // time.active 活跃度变化，跳过（左栏排序靠快照/对账，不追实时）
+    if (ev.type === "project.updated") {
+      const pid = String((ev.properties as { id?: unknown }).id ?? "")
+      if (pid && !this.projects.some((p) => p.id === pid)) void this.syncWorktrees()
+      return
+    }
+    if (ev.type === "worktree.ready" || ev.type === "worktree.failed" || ev.type === "worktree.updated") {
+      // v1：信封 project 字段门控（ready 时精确重拉）。v2 信封无 project 字段
+      // （worktree.updated 的 data.projectID 除外）——统一走 reconcile：重拉项目
+      // 全集 diff（左栏即时多一行/消失行；v2 哲学：显式对账而非事件门控）。
+      // v1 的 reDiscoverInstanceCatalog（instance dispose + 命令重发现）是 v1 实例
+      // 缓存专属，v2 无对应概念（M5 随 worktree 域清理）
+      const projectId = ev.type === "worktree.updated"
+        ? String((ev.properties as { projectID?: unknown }).projectID ?? "")
+        : (meta?.project ?? "")
+      if (projectId && !this.openedProjects.some((p) => p.id === projectId)) return
+      void this.syncWorktrees()
       return
     }
     // 前置闸门（design-sse-global-event §4.2）：单流收到 server 全部目录的事件，
     // 仅打开项目的目录全集（worktree ∪ sandboxes）放行——关闭项目 = 事件忽略。
     // 此前 message.*/session.created 等依赖"订阅集合即打开集合"隐式隔离，单流后必须显式过滤
     if (!this.isOpenedDirectory(directory)) return
+    // ---- v2 细粒度会话事件翻译层（M3a）：见 applyV2SessionEvent ----
+    if (this.applyV2SessionEvent(directory, ev, meta?.created ?? Date.now())) return
     switch (ev.type) {
       case "session.created":
       case "session.updated": {
         const info = ev.properties.info as Session
         if (!info || info.directory !== directory) return
-        let map = this.sessionsByProject.get(info.projectID)
-        if (!map) {
-          map = new Map()
-          this.sessionsByProject.set(info.projectID, map)
-        }
-        map.set(info.id, info)
-        // 同步更新已打开 chat Tab 的 title（会话重命名后 Tab 名跟随刷新）
-        const tab = this.tabs.find((t) => t.kind === "chat" && t.key === `chat:${info.id}`)
-        if (tab) tab.title = info.title || info.slug || ""
-        // 实时收敛（§17 修订二，2026-09-02）：他端归档 → 立即关 Tab（跨作用域，
-        // 同 session.deleted 处置——Tab 集 = 未归档会话投影；archive:false 纯本地
-        // 移除，归档已由他端完成；激活回退/草稿清理/记忆收缩走 closeTab 既有路径）。
-        // 本端关 Tab=归档流程（closeChatTab）在途时抑制——其"先 PATCH 后
-        // closeTab(pushClosed 入关闭栈)"的 SSE 回环可能先到，抢先关会丢
-        // Ctrl+Shift+T 关闭栈条目，交由本地路径收尾
-        if (info.time.archived) {
-          if (!this.closingChatSessions.has(info.id)) {
-            this.closeTab(`chat:${info.id}`, { archive: false })
-          }
-        }
-        // 实时补开（§17 修订，2026-09-02）：当前作用域未归档顶层会话无 Tab 即
-        // 末尾追加（不激活不抢焦点）。created = 他端/本端新建（含 fork：复制期间
-        // 消息经 message.* 流入，激活等 REST 响应权威收敛——标题关联已废弃，
-        // design-session-tab-context-menu 修订四）；updated = 他端取消归档（契约
-        // archived:0，实测 1.18.20，null 不生效）及 touch/重命名等（有 Tab 时
-        // 幂等跳过）。口径同 visibleSessions：subagent 子会话不开；非当前作用域
-        // 目录不开（经 §17 切入补开）。SSE 丢失的补偿路径不变
-        else if (!info.parentID && info.directory === this.scopeDirectory()) {
-          this.openChatTabPassive(info)
-        }
+        this.applySessionEvent(info, directory)
         break
       }
       case "session.deleted": {
@@ -2549,9 +2647,8 @@ export class AppStore {
   private snapshottedDirs = new Set<string>()
 
   async refreshSessionsForProject(project: Project) {
-    const client = this.client
     const clientV2 = this.clientV2
-    if (!client || !clientV2) return
+    if (!clientV2) return
     const dirs = [...new Set([project.worktree, ...(project.sandboxes ?? [])])]
     await runLimited(dirs, 3, async (dir) => {
       // v2：flat directory query + {data, cursor} envelope；limit 200 覆盖 v0.x 规模
@@ -2565,14 +2662,10 @@ export class AppStore {
       if (page === null) return
       const sessions = page.data.map(toInternalSession)
       this.applySessionsSnapshot(project.id, dir, sessions)
-      const statuses = await client.listSessionStatus(dir).catch(() => null)
-      // 闸门：在途快照落地时项目可能已关闭/目录可能已删——过期状态直接丢弃
-      const still = this.openedProjects.find((p) => p.id === project.id)
-      const stillHasDir =
-        still && (still.worktree === dir || (still.sandboxes ?? []).includes(dir))
-      if (stillHasDir) {
-        this.applyStatusSnapshot(dir, statuses)
-      }
+      // v2 状态快照退役（M3a）：/session/status 无对应端点，busy/idle/retry 改
+      // session.status 事件驱动（ephemeral——断线窗口内丢失的态转靠下一事件
+      // 或重连后交互收敛；stale busy 已知局限，M4 评估按 SessionInfo.time.idle
+      // /outcome 对账推导）
     })
   }
 
@@ -5623,11 +5716,8 @@ export class AppStore {
   mountReconciler() {
     this.reconciler = new Reconciler({
       client: () => this.client,
-      // 对账目录源 = 打开项目全集（与事件闸门同源；单全局流下无"订阅集"概念；
-      // global 分支 = 已打开目录 entry，见 openedDirectories）
+      // 对账目录源 = 打开项目全集（与事件闸门同源；单全局流下无"订阅集"概念）
       getOpenedDirectories: () => this.openedDirectories(),
-      // 状态快照目录集同源（全集内每个目录都有事件通道，stale busy 纠正覆盖全部）
-      getStatusDirectories: () => this.openedDirectories(),
       getActiveSessions: () =>
         this.tabs
           .filter((t) => t.kind === "chat")
@@ -5643,14 +5733,8 @@ export class AppStore {
         for (const [pid, list] of byProject) {
           this.applySessionsSnapshot(pid, dir, list)
         }
-        // 旧"无 Tab busy 重置"启发式移除：权威修正由下方 onStatusSnapshot 的
-        // 按目录覆盖合并承担（失败目录保留旧值，不再有 SS-1 式误清）
-      },
-      onStatusSnapshot: (dir, statuses) => {
-        // 闸门：对账在途时项目可能已关/工作区可能已删——过期状态丢弃，
-        // 防复活 closeProject/removeWorkspace 刚 purge 掉的条目（与 sessions 快照同规则）
-        if (!this.isOpenedDirectory(dir)) return
-        this.applyStatusSnapshot(dir, statuses)
+        // v2 状态快照阶段退役（M3a）：无 /session/status 端点——stale busy 由
+        // onMessagesSnapshot 的 finish 推断兜底 + 下一 session.status 事件收敛
       },
       onMessagesSnapshot: (sessionID, msgs) => {
         this.noteSyntheticInSnapshot(sessionID, msgs)

@@ -13,16 +13,8 @@ export interface ReconcilerDeps {
   /** 连接拆除后返回 null（reconcile 直接放弃，不再非空断言） */
   client: () => RestClient | null
   getOpenedDirectories: () => string[]
-  /**
-   * 状态快照目录集 = 打开项目全集（与 getOpenedDirectories 同源）。单全局流下
-   * 全集每个目录都有事件通道，但断线窗口内丢失的 status 变化（busy→idle 等）
-   * 仍需快照纠正——范围若小于会话快照，会出现"会话复活、状态卡 busy"的错位。
-   */
-  getStatusDirectories: () => string[]
   getActiveSessions: () => Array<{ sessionID: string; directory: string }>
   onSessionsSnapshot: (directory: string, sessions: Session[]) => void
-  /** 目录状态快照；fetch 失败时以 null 回调（调用方保留旧值，防 SS-1） */
-  onStatusSnapshot: (directory: string, statuses: Record<string, SessionStatusValue> | null) => void
   onMessagesSnapshot: (sessionID: string, messages: MessageWithParts[]) => void
   /**
    * 目录级 pending（授权/问题）回填。permissions/questions 为 null 表示该目录
@@ -108,13 +100,6 @@ export class Reconciler {
         this.d.onPendingSnapshot(dir, permissions, questions)
       }
     }
-    // 状态快照同规则：失败目录回传 null（保留旧值，防 SS-1）
-    const statusDirs = [...new Set(this.d.getStatusDirectories())]
-    await runLimited(statusDirs, 3, async (dir) => {
-      const statuses = await client.listSessionStatus(dir).catch(() => null)
-      if (stale()) return
-      this.d.onStatusSnapshot(dir, statuses)
-    })
     // 消息快照同样并发受限：全量开 Tab 后 N 可达几十，无界扇出会挤占空闲槽
     // 导致整批超时（一损俱损）。逐项容错同上两阶段：对账在途时会话可能已被
     // 删除（404），失败项跳过回调，不拖垮整轮

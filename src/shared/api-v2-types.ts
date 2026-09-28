@@ -74,6 +74,21 @@ export interface CursorPage<T> {
   cursor: { previous?: string; next?: string }
 }
 
+/**
+ * v2 SSE 事件信封（GET /api/event 单流，**volatile 契约**：断线丢事件、慢消费
+ * 断流——重连后必须全量对账）。`type` 在顶层、数据在 `data`；`location` 为
+ * PublicRef（只有 directory）——事件闸门键。server 以 15s comment 帧
+ * （`: heartbeat`）保活，非 data 帧。
+ */
+export interface V2Event<T = Record<string, unknown>> {
+  id: string
+  created: number
+  metadata?: Record<string, unknown>
+  location?: { directory: string }
+  type: string
+  data: T
+}
+
 /** GET /api/session query（flat 风格；与 location 组的 deepObject 风格并存，勿统一） */
 export interface ListSessionsInput {
   directory?: string

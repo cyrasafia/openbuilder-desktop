@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { SseSubscriber, type EventSourceLike, type SseEventMeta } from "./sse-subscriber"
-import type { OpencodeEvent } from "./api-types"
+import type { V2Event } from "./api-v2-types"
 
 /** 可控的 EventSource 替身：手动触发 open/error/message */
 class FakeEventSource implements EventSourceLike {
@@ -26,25 +26,28 @@ class FakeEventSource implements EventSourceLike {
   }
 }
 
-/** /global/event 信封帧（心跳用于 bump 看门狗） */
-function heartbeatFrame(): { payload: OpencodeEvent } {
-  return { payload: { id: "evt_hb", type: "server.heartbeat", properties: {} } }
+/** /api/event 信封帧（V2Event：type 顶层、数据在 data、location.directory 闸门键） */
+function heartbeatFrame(): V2Event {
+  return { id: "evt_hb", created: 1, type: "server.heartbeat", data: {} }
 }
 
-function sessionCreatedFrame(directory: string): { directory: string; payload: OpencodeEvent } {
+function sessionCreatedFrame(directory: string): V2Event {
   return {
-    directory,
-    payload: {
-      id: "evt_1",
-      type: "session.created",
-      properties: { sessionID: "ses_1", info: { id: "ses_1" } } as never,
-    },
+    id: "evt_1",
+    created: 1,
+    location: { directory },
+    type: "session.created",
+    data: { sessionID: "ses_1", info: { id: "ses_1" } },
   }
 }
 
 function makeSubscriber(opts: Partial<ConstructorParameters<typeof SseSubscriber>[0]> = {}) {
   const sources: FakeEventSource[] = []
-  const events: { directory: string; event: OpencodeEvent; meta?: SseEventMeta }[] = []
+  const events: {
+    directory: string
+    event: { type: string; properties: Record<string, unknown> }
+    meta?: SseEventMeta
+  }[] = []
   const statuses: string[] = []
   const reconnected = vi.fn()
   const sub = new SseSubscriber({
@@ -64,11 +67,11 @@ function makeSubscriber(opts: Partial<ConstructorParameters<typeof SseSubscriber
 }
 
 describe("SseSubscriber", () => {
-  it("连接 /global/event（无 directory 参数）", async () => {
+  it("连接 /api/event（无 query 单流）", async () => {
     const { sub, sources } = makeSubscriber()
     sub.start()
     await vi.waitFor(() => expect(sources[0]).toBeTruthy())
-    expect(sources[0].url).toBe("http://x/global/event")
+    expect(sources[0].url).toBe("http://x/api/event")
     sub.stop()
   })
 
@@ -84,59 +87,88 @@ describe("SseSubscriber", () => {
     sub.stop()
   })
 
-  it("无 directory 字段的帧（connected/heartbeat）缺省 global", async () => {
+  it("fetch 工厂：v2 comment 心跳帧（`: heartbeat`）转空 data 喂看门狗，data 帧正常派发", async () => {
+    const received: string[] = []
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const enc = new TextEncoder()
+        controller.enqueue(enc.encode(": heartbeat\n\n"))
+        controller.enqueue(enc.encode('data: {"id":"e1","created":1,"type":"server.connected","data":{}}\n\n'))
+        controller.close()
+      },
+    })
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } })),
+    )
+    const open = vi.fn()
+    let errored = false
+    const { defaultEventSourceFactory } = await import("./sse-subscriber")
+    const es = defaultEventSourceFactory("http://x/api/event", { headers: {} })
+    es.onopen = open
+    es.onerror = () => (errored = true)
+    es.onmessage = (ev) => received.push(ev.data)
+    await vi.waitFor(() => expect(errored).toBe(true)) // 流关闭 → onerror
+    expect(open).toHaveBeenCalled()
+    // comment 帧转空 data（喂心跳看门狗）+ data 帧内容原样
+    expect(received).toEqual(["", '{"id":"e1","created":1,"type":"server.connected","data":{}}'])
+    vi.unstubAllGlobals()
+  })
+
+  it("无 location 的帧（server.connected）缺省 global；comment 心跳帧喂看门狗不产事件", async () => {
     const { sub, sources, events } = makeSubscriber()
     sub.start()
     await vi.waitFor(() => expect(sources[0]).toBeTruthy())
     sources[0].open()
-    sources[0].send({ payload: { id: "evt_c", type: "server.connected", properties: {} } })
+    sources[0].send({ id: "evt_c", created: 1, type: "server.connected", data: {} })
     expect(events).toHaveLength(1)
     expect(events[0].directory).toBe("global")
+    // v2 保活：`: heartbeat` comment 帧——空 data 喂心跳看门狗，不进事件表
+    sources[0].sendRaw("")
+    expect(events).toHaveLength(1)
     sub.stop()
   })
 
-  it("信封 project/workspace 字段透传到 onEvent 的 meta（worktree.ready）", async () => {
+  it("metadata.project 透传到 onEvent 的 meta（v2 信封无 project 字段）", async () => {
     const { sub, sources, events } = makeSubscriber()
     sub.start()
     await vi.waitFor(() => expect(sources[0]).toBeTruthy())
     sources[0].open()
     sources[0].send({
-      directory: "/repo/.git/opencode-worktrees/new-wt",
-      project: "proj_abc",
-      workspace: "wrk_123",
-      payload: {
-        id: "evt_wt",
-        type: "worktree.ready",
-        properties: { name: "new-wt", branch: "main" },
-      },
+      id: "evt_wt",
+      created: 1,
+      metadata: { project: "proj_abc" },
+      location: { directory: "/repo/.git/opencode-worktrees/new-wt" },
+      type: "worktree.ready",
+      data: { name: "new-wt", branch: "main" },
     })
     expect(events).toHaveLength(1)
     expect(events[0].meta?.project).toBe("proj_abc")
-    expect(events[0].meta?.workspace).toBe("wrk_123")
     expect(events[0].directory).toBe("/repo/.git/opencode-worktrees/new-wt")
+    expect(events[0].event.type).toBe("worktree.ready")
+    expect(events[0].event.properties).toEqual({ name: "new-wt", branch: "main" })
     sub.stop()
   })
 
-  it("无 project/workspace 的帧 meta 为 undefined（不创建空对象）", async () => {
+  it("无 metadata.project 的帧：meta 只含 created（v2 信封恒有 created）", async () => {
     const { sub, sources, events } = makeSubscriber()
     sub.start()
     await vi.waitFor(() => expect(sources[0]).toBeTruthy())
     sources[0].open()
     sources[0].send(sessionCreatedFrame("/proj"))
     expect(events).toHaveLength(1)
-    expect(events[0].meta).toBeUndefined()
+    expect(events[0].meta).toEqual({ created: 1 })
     sub.stop()
   })
 
-  it("durable 事件的 sync 双发包装被丢弃", async () => {
+  it("畸形帧（无 type 字段）静默丢弃，不回调不抛错", async () => {
     const { sub, sources, events } = makeSubscriber()
     sub.start()
     await vi.waitFor(() => expect(sources[0]).toBeTruthy())
     sources[0].open()
-    sources[0].send({
-      directory: "/proj",
-      payload: { type: "sync", syncEvent: { type: "session.created.1", seq: 0 } },
-    })
+    // v1 的 sync 双发包装在 v2 单流已不存在；无 type 的载荷按畸形丢弃
+    sources[0].send({ directory: "/proj", payload: { syncEvent: { type: "session.created.1", seq: 0 } } })
+    sources[0].send({ id: "e2", created: 1, data: {} })
     expect(events).toHaveLength(0)
     sub.stop()
   })
