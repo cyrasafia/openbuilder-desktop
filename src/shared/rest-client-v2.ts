@@ -8,6 +8,7 @@ import type {
   CursorPage,
   ListSessionsInput,
   LocationInfo,
+  ModelRef,
   ProjectInfo,
   ServerInfo,
   SessionInfo,
@@ -186,5 +187,49 @@ export class RestClientV2 {
     if (input.cursor !== undefined) q.set("cursor", input.cursor)
     const suffix = q.toString()
     return this.fetchJson<CursorPage<SessionInfo>>(`/api/session${suffix ? `?${suffix}` : ""}`)
+  }
+
+  /**
+   * POST /api/session：创建会话（payload 为 location 对象，取代 v1 的
+   * directory query）。响应 `{data: SessionInfo}`；model 形状与 v1 ModelRef 同构。
+   */
+  async createSession(input: {
+    directory: string
+    title?: string
+    agent?: string
+    model?: ModelRef
+  }): Promise<SessionInfo> {
+    const page = await this.fetchJson<{ data: SessionInfo }>("/api/session", {
+      method: "POST",
+      body: JSON.stringify({
+        location: { directory: input.directory },
+        ...(input.title !== undefined ? { title: input.title } : {}),
+        ...(input.agent !== undefined ? { agent: input.agent } : {}),
+        ...(input.model !== undefined ? { model: input.model } : {}),
+      }),
+    })
+    return page.data
+  }
+
+  /**
+   * PATCH /api/session/:sessionID：改 title/**metadata**（**204 无返回体**——
+   * 调用方本地乐观落地）。v2 无 REST 归档字段（D1 私约：metadata.archivedAt，
+   * 服务端 REPLACE 语义须整包合并写入）。
+   */
+  async updateSession(
+    sessionID: string,
+    payload: { title?: string; metadata?: Record<string, unknown> },
+  ): Promise<void> {
+    await this.fetchResponse(`/api/session/${encodeURIComponent(sessionID)}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    })
+  }
+
+  /** DELETE /api/session/:sessionID（无 directory 参数；服务端连子会话级联删） */
+  async deleteSession(sessionID: string): Promise<void> {
+    await this.fetchResponse(`/api/session/${encodeURIComponent(sessionID)}`, {
+      method: "DELETE",
+    })
   }
 }

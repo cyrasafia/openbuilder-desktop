@@ -27,12 +27,15 @@ export function toInternalProject(p: ProjectInfo): Project {
 }
 
 /** v2 SessionInfo → 内部 Session：directory ← location.directory。
- *  metadata 透传（D1 归档私约 metadata.archivedAt 的识别数据源）。 */
+ *  metadata 透传（D1 归档私约 metadata.archivedAt 的识别数据源）；
+ *  agent/model 透传（创建回显/默认模型链路消费）。 */
 export function toInternalSession(s: SessionInfo): Session {
   return {
     id: s.id,
     parentID: s.parentID,
     projectID: s.projectID,
+    agent: s.agent,
+    model: s.model,
     directory: s.location.directory,
     title: s.title,
     time: {
@@ -53,6 +56,12 @@ export function toInternalSession(s: SessionInfo): Session {
  */
 export function isArchivedSession(s: Session): boolean {
   if (s.time.archived !== undefined) return true
+  return archivedAtOf(s) !== null
+}
+
+/** 归档时间戳（排序用）：time.archived ?? metadata.archivedAt；未归档 null */
+export function archivedAtOf(s: Session): number | null {
+  if (s.time.archived !== undefined) return s.time.archived
   const at = s.metadata?.archivedAt
-  return typeof at === "number" && at > 0
+  return typeof at === "number" && at > 0 ? at : null
 }

@@ -102,6 +102,65 @@ describe("listSessions（flat query + envelope）", () => {
   })
 })
 
+describe("会话域（M2）", () => {
+  it("createSession：POST /api/session，payload 为 location 对象 + 透传字段；响应取 data", async () => {
+    let seenUrl = ""
+    let seenBody = ""
+    const client = mkClient((_url, init) => {
+      seenUrl = _url
+      seenBody = String(init.body)
+      return new Response(
+        JSON.stringify({
+          data: { id: "ses_1", projectID: "p1", time: { created: 1, updated: 1 }, location: { directory: "/r" } },
+        }),
+      )
+    })
+    const s = await client.createSession({
+      directory: "/r",
+      title: "t",
+      agent: "agent",
+      model: { id: "m1", providerID: "prov" },
+    })
+    expect(s.id).toBe("ses_1")
+    expect(seenUrl).toBe("http://server/api/session")
+    expect(JSON.parse(seenBody)).toEqual({
+      location: { directory: "/r" },
+      title: "t",
+      agent: "agent",
+      model: { id: "m1", providerID: "prov" },
+    })
+  })
+
+  it("updateSession：PATCH /api/session/:id，body 透传；204 走 fetchResponse（无 JSON 解析）", async () => {
+    let seenUrl = ""
+    let seenBody = ""
+    let seenMethod = ""
+    const client = mkClient((_url, init) => {
+      seenUrl = _url
+      seenBody = String(init.body)
+      seenMethod = init.method ?? ""
+      return new Response(null, { status: 204 })
+    })
+    await client.updateSession("ses_1", { title: "x", metadata: { archivedAt: 9 } })
+    expect(seenUrl).toBe("http://server/api/session/ses_1")
+    expect(seenMethod).toBe("PATCH")
+    expect(JSON.parse(seenBody)).toEqual({ title: "x", metadata: { archivedAt: 9 } })
+  })
+
+  it("deleteSession：DELETE /api/session/:id（无 directory query），204 容忍空体", async () => {
+    let seenUrl = ""
+    let seenMethod = ""
+    const client = mkClient((_url, init) => {
+      seenUrl = _url
+      seenMethod = init.method ?? ""
+      return new Response(null, { status: 204 })
+    })
+    await client.deleteSession("ses_1")
+    expect(seenUrl).toBe("http://server/api/session/ses_1")
+    expect(seenMethod).toBe("DELETE")
+  })
+})
+
 describe("鉴权与错误分类", () => {
   it("Basic 头注入（用户名缺省 opencode）", async () => {
     let auth = ""

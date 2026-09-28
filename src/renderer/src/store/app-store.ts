@@ -4,7 +4,7 @@
  */
 import { RestClient, ApiError } from "@shared/rest-client"
 import { RestClientV2, ApiError as ApiErrorV2 } from "@shared/rest-client-v2"
-import { toInternalProject, toInternalSession } from "@shared/v2-adapter"
+import { archivedAtOf, isArchivedSession, toInternalProject, toInternalSession } from "@shared/v2-adapter"
 import { SseSubscriber, type SseStatus, type SseEventMeta } from "@shared/sse-subscriber"
 import { Reconciler } from "@shared/reconciler"
 import { mergeSessionsSnapshot } from "@shared/session-merge"
@@ -2648,9 +2648,7 @@ export class AppStore {
         }
       }
       await Promise.all(
-        sessionIds.map((id) =>
-          this.client!.deleteSession(id, directory).catch(() => {}),
-        ),
+        sessionIds.map((id) => this.clientV2!.deleteSession(id).catch(() => {})),
       )
       await this.client.removeWorktree(project.worktree, directory)
       // worktree 列表数据源是 Project.sandboxes，重拉项目列表同步（刷新全局 projects）
@@ -2876,10 +2874,11 @@ export class AppStore {
     return this.currentWorkspace?.directory ?? this.currentProject?.worktree ?? ""
   }
 
-  /** 指定目录的未归档 + 非 subagent 会话（updated 降序）——左栏指示器数据源 */
+  /** 指定目录的未归档 + 非 subagent 会话（updated 降序）——左栏指示器数据源。
+   *  归档判定 D1 双源（time.archived 存量 + metadata.archivedAt 私约） */
   sessionsInDirectory(projectId: string, directory: string): Session[] {
     return [...(this.sessionsByProject.get(projectId)?.values() ?? [])]
-      .filter((s) => !s.time.archived && !s.parentID && s.directory === directory)
+      .filter((s) => !isArchivedSession(s) && !s.parentID && s.directory === directory)
       .sort((a, b) => b.time.updated - a.time.updated)
   }
 
@@ -2890,17 +2889,15 @@ export class AppStore {
     return this.sessionsInDirectory(project.id, this.scopeDirectory())
   }
 
-  /** 当前作用域的已归档 + 非 subagent 会话（存档时间降序——引导页列表排序依据） */
+  /** 当前作用域的已归档 + 非 subagent 会话（存档时间降序——引导页列表排序依据）。
+   *  D1 双源：存档时间取 archivedAtOf（time.archived ?? metadata.archivedAt ?? updated） */
   get archivedSessions(): Session[] {
     const project = this.currentProject
     if (!project) return []
     const dir = this.scopeDirectory()
     return [...(this.sessionsByProject.get(project.id)?.values() ?? [])]
-      .filter((s) => !s.parentID && s.time.archived && s.directory === dir)
-      .sort(
-        (a, b) =>
-          (b.time.archived ?? b.time.updated) - (a.time.archived ?? a.time.updated),
-      )
+      .filter((s) => !s.parentID && isArchivedSession(s) && s.directory === dir)
+      .sort((a, b) => (archivedAtOf(b) ?? 0) - (archivedAtOf(a) ?? 0))
   }
 
   /**
@@ -2933,10 +2930,12 @@ export class AppStore {
         )
       : explicitModel
     try {
-      const session = await this.client.createSession(directory, undefined, undefined, {
+      const wire = await this.clientV2!.createSession({
+        directory,
         ...(agent ? { agent } : {}),
         ...(model ? { model } : {}),
       })
+      const session = toInternalSession(wire)
       const map = this.sessionsByProject.get(this.currentProject.id) ?? new Map()
       map.set(session.id, session)
       this.sessionsByProject.set(this.currentProject.id, map)
@@ -3106,20 +3105,29 @@ export class AppStore {
   }
 
   async unarchiveSession(sessionID: string): Promise<boolean> {
-    return this.patchSessionArchive(sessionID, 0)
+    return this.patchSessionArchive(sessionID, null)
   }
 
-  private async patchSessionArchive(sessionID: string, archived: number): Promise<boolean> {
-    if (!this.client) return false
+  /**
+   * 归档写路径（D1 私约，2026-09-28 裁定）：v2 无 REST 归档字段，写
+   * `metadata.archivedAt`（服务端 metadata REPLACE 语义——与既有字段整包合并）；
+   * PATCH 返回 204 无 body，**本地乐观落地**（重连快照/SSE 对账兜底）。
+   * 已知边界：v1 迁移存量会话的 `time.archived` 在 v2 无写入路径——取消归档
+   * 只清 metadata 时该类会话重连后仍归档（官方 unarchive 修复 PR #47848 未合），
+   * 识别层双源不受影响
+   */
+  private async patchSessionArchive(sessionID: string, archivedAt: number | null): Promise<boolean> {
+    const clientV2 = this.clientV2
+    if (!clientV2) return false
     const session = this.findSession(sessionID)
     if (!session) return false
+    const metadata = { ...(session.metadata ?? {}) }
+    if (archivedAt == null) delete metadata.archivedAt
+    else metadata.archivedAt = archivedAt
     try {
-      const updated = await this.client.updateSession(sessionID, session.directory, {
-        time: { archived },
-      })
-      if (!updated) return false
-      const map = this.sessionsByProject.get(updated.projectID)
-      map?.set(updated.id, updated)
+      await clientV2.updateSession(sessionID, { metadata })
+      const map = this.sessionsByProject.get(session.projectID)
+      map?.set(sessionID, { ...session, metadata })
       this.emit()
       return true
     } catch (e) {
@@ -3228,15 +3236,19 @@ export class AppStore {
   // 会话重命名（design-tab-drag-rename §2，v0.3 恢复入口：chat Tab 双击行内编辑；
   // 删除入口仍无）。他端重命名经 session.updated 事件同步 Tab 标题（既有路径）。
   async renameSession(sessionID: string, title: string): Promise<boolean> {
-    if (!this.client) return false
+    const clientV2 = this.clientV2
+    if (!clientV2) return false
     const session = this.findSession(sessionID)
     if (!session) return false
     try {
-      const updated = await this.client.updateSession(sessionID, session.directory, { title })
-      this.mergeSessionUpdate(updated)
+      // v2 PATCH 204 无返回体：本地乐观落地（title 必填回填 slug 语义由 server
+      // 收敛，重连快照对账兜底）
+      await clientV2.updateSession(sessionID, { title })
+      const map = this.sessionsByProject.get(session.projectID)
+      map?.set(sessionID, { ...session, title })
       // Tab 标题即时同步（SSE 回环亦可到达，此处消除本地等待）
       const tab = this.tabs.find((t) => t.key === `chat:${sessionID}`)
-      if (tab) tab.title = updated.title || updated.slug || ""
+      if (tab) tab.title = title
       this.emit()
       return true
     } catch (e) {
@@ -3998,9 +4010,9 @@ export class AppStore {
 
   // ============ Tab ============
 
-  /** 打开 chat Tab = 取消归档（与"关闭 Tab = 归档"对称） */
+  /** 打开 chat Tab = 取消归档（与"关闭 Tab = 归档"对称；D1 双源识别） */
   openChatTab(session: Session) {
-    if (session.time.archived) {
+    if (isArchivedSession(session)) {
       void this.unarchiveSession(session.id).then(() => {
         // 归档事件/响应到达后 Tab 标题等状态自然刷新
       })

@@ -43,6 +43,13 @@ export interface LocationInfo {
   project: { id: string; directory: string; canonical: string }
 }
 
+/** v2 会话创建/更新 payload 用的模型引用（与 v1 ModelRef 同构） */
+export interface ModelRef {
+  id: string
+  providerID: string
+  variant?: string
+}
+
 /**
  * v2 Session.Info 列表最小面（M1；M2/M4 按需补 cost/tokens/outcome/model 等）。
  * time.archived 在 wire 上**可读**（v1 数据迁移/import 透传），但 v2 无 REST 写入
@@ -52,6 +59,8 @@ export interface SessionInfo {
   id: string
   parentID?: string
   projectID: string
+  agent?: string
+  model?: ModelRef
   title?: string
   time: { created: number; updated: number; idle?: number; viewed?: number; archived?: number }
   location: LocationRef

@@ -115,6 +115,19 @@ beforeEach(() => {
         project: { id: "proj1", directory: directory ?? ROOT, canonical: directory ?? ROOT },
       }),
       serverInfo: async () => ({ version: "2.0.18", pid: 1, urls: [], paths: { tmp: "/tmp" } }),
+      // M2 会话域：create（wire 形状经 toInternalSession 收敛）、update（204
+      // 无返回体——本地乐观落地在 store 侧）、delete（级联删）
+      createSession: async (input: { directory: string; title?: string; agent?: string; model?: unknown }) => ({
+        id: `ses_${input.title ?? "new"}`,
+        projectID: "proj1",
+        agent: input.agent,
+        model: input.model,
+        title: input.title,
+        time: { created: 1, updated: 1 },
+        location: { directory: input.directory },
+      }),
+      updateSession: async () => {},
+      deleteSession: async () => {},
     }
   store.projects = [project()]
   store.projectStates = {
@@ -1542,16 +1555,18 @@ describe("隐式默认模型（D-AM-4 修订）", () => {
   it("无显式默认且目录已加载 → 新会话应用列表首项", async () => {
     store.modelCatalogs.set(ROOT, catalog)
     let body: { agent?: string; model?: ModelRef } = {}
-    ;(store as unknown as { client: unknown }).client = {
-      createSession: async (
-        _d: string,
-        _w: unknown,
-        _t: unknown,
-        opts: { agent?: string; model?: ModelRef } = {},
-      ) => {
-        body = opts
-        return session("new1", ROOT, { created: 9, updated: 9 })
-      },
+    const cv2 = (store as unknown as { clientV2: Record<string, unknown> }).clientV2
+    cv2.createSession = async (input: { directory: string; agent?: string; model?: ModelRef }) => {
+      body = input
+      return {
+        id: "new1",
+        projectID: "proj1",
+        agent: input.agent,
+        model: input.model,
+        title: "new1",
+        time: { created: 9, updated: 9 },
+        location: { directory: input.directory },
+      }
     }
 
     await store.createSession()
@@ -1561,16 +1576,17 @@ describe("隐式默认模型（D-AM-4 修订）", () => {
   it("显式默认有效 → 新会话按原值应用；失效 variant 只丢 variant；失效模型回退首项", async () => {
     store.modelCatalogs.set(ROOT, catalog)
     const bodies: Array<{ agent?: string; model?: ModelRef }> = []
-    ;(store as unknown as { client: unknown }).client = {
-      createSession: async (
-        _d: string,
-        _w: unknown,
-        _t: unknown,
-        opts: { agent?: string; model?: ModelRef } = {},
-      ) => {
-        bodies.push(opts)
-        return session(`new${bodies.length}`, ROOT, { created: 9, updated: 9 })
-      },
+    const cv2 = (store as unknown as { clientV2: Record<string, unknown> }).clientV2
+    cv2.createSession = async (input: { directory: string; agent?: string; model?: ModelRef }) => {
+      bodies.push(input)
+      return {
+        id: `new${bodies.length}`,
+        projectID: "proj1",
+        agent: input.agent,
+        model: input.model,
+        time: { created: 9, updated: 9 },
+        location: { directory: input.directory },
+      }
     }
 
     store.defaults = {
@@ -1687,16 +1703,17 @@ describe("模型开关（design-model-list）", () => {
   it("createSession：显式默认被关闭 → 回退首个开启模型；首项被关 → 下一开启项；全部关闭 → 服务器默认", async () => {
     store.modelCatalogs.set(ROOT, { agents: [], models })
     const bodies: Array<{ agent?: string; model?: ModelRef }> = []
-    ;(store as unknown as { client: unknown }).client = {
-      createSession: async (
-        _d: string,
-        _w: unknown,
-        _t: unknown,
-        opts: { agent?: string; model?: ModelRef } = {},
-      ) => {
-        bodies.push(opts)
-        return session(`new${bodies.length}`, ROOT, { created: 9, updated: 9 })
-      },
+    const cv2 = (store as unknown as { clientV2: Record<string, unknown> }).clientV2
+    cv2.createSession = async (input: { directory: string; agent?: string; model?: ModelRef }) => {
+      bodies.push(input)
+      return {
+        id: `new${bodies.length}`,
+        projectID: "proj1",
+        agent: input.agent,
+        model: input.model,
+        time: { created: 9, updated: 9 },
+        location: { directory: input.directory },
+      }
     }
 
     store.defaults = { default: { model: { id: "glm-air", providerID: "zai" } } }
@@ -3122,6 +3139,62 @@ describe("快捷键支撑（design-keyboard-shortcuts）", () => {
     expect(store.closedTabs.length).toBe(0)
   })
 
+describe("D1 归档私约（M2：metadata.archivedAt，双源识别）", () => {
+  /** v2 双源归档可见性：visibleSessions 过滤 / archivedSessions 收录 */
+  function seed(s: Session) {
+    store.sessionsByProject = new Map([["proj1", sessionsOf(s)]])
+    store.projectStates = {
+      default: { opened: ["proj1"], currentProjectId: "proj1", currentWorkspaceId: null },
+    }
+  }
+
+  it("关 Tab = 归档：写 metadata.archivedAt；可见列表过滤、归档段收录（排序按 archivedAt）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    seed(s1)
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
+    store.activeTabKey = "chat:s1"
+
+    const ok = await store.closeChatTab("s1", { streaming: false })
+    expect(ok).toBe(true)
+    // 本地乐观落地：metadata.archivedAt 写入（v2 PATCH 204 无返回体）
+    expect(store.findSession("s1")?.metadata?.archivedAt).toEqual(expect.any(Number))
+    // M2 验收：列表过滤客户端生效（重连快照后同口径——v2 返回全部、双源过滤）
+    expect(store.visibleSessions.some((s) => s.id === "s1")).toBe(false)
+    expect(store.archivedSessions.map((s) => s.id)).toEqual(["s1"])
+  })
+
+  it("开 Tab = 取消归档：清 metadata.archivedAt，会话回可见列表", async () => {
+    const s1 = { ...session("s1", ROOT, { created: 1, updated: 1 }), metadata: { archivedAt: 99 } }
+    seed(s1)
+    store.openChatTab(s1)
+    // unarchive 为 fire-and-forget：等微任务落地
+    await new Promise((r) => setTimeout(r, 0))
+    expect(store.findSession("s1")?.metadata?.archivedAt).toBeUndefined()
+    expect(store.visibleSessions.some((s) => s.id === "s1")).toBe(true)
+    expect(store.archivedSessions).toHaveLength(0)
+  })
+
+  it("双源识别：存量 time.archived（v1 迁移）与 metadata.archivedAt 同口径收录；排序取较早者", () => {
+    const legacy = { ...session("legacy", ROOT, { created: 1, updated: 1 }), time: { created: 1, updated: 1, archived: 10 } }
+    const priv = { ...session("priv", ROOT, { created: 1, updated: 1 }), metadata: { archivedAt: 20 } }
+    seed(legacy)
+    store.sessionsByProject.get("proj1")!.set("priv", priv)
+    const ids = store.archivedSessions.map((s) => s.id)
+    expect(ids).toEqual(["priv", "legacy"]) // archivedAt 降序（20 > 10）
+    expect(store.visibleSessions).toHaveLength(0)
+  })
+
+  it("已知边界（记录在案）：存量 time.archived 的取消归档不可持久——v2 无写入路径，重连快照复活归档", async () => {
+    const s1 = { ...session("s1", ROOT, { created: 1, updated: 1 }), time: { created: 1, updated: 1, archived: 10 } }
+    seed(s1)
+    store.openChatTab(s1)
+    await new Promise((r) => setTimeout(r, 0))
+    // 本地乐观清了 metadata（本无），但 time.archived 保持——双源判定仍归档
+    expect(store.findSession("s1")?.time.archived).toBe(10)
+    expect(store.archivedSessions.map((s) => s.id)).toEqual(["s1"])
+  })
+})
+
   it("closeChatTab 成功入栈；恢复 = 重开（含取消归档路径）", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     withSessionClient([s1])
@@ -3552,12 +3625,9 @@ describe("实时补开与实时收敛（design-tab-memory §17 修订 2026-09-02
 
   it("本端关 Tab=归档流程在途：SSE 归档回环被抑制，本地路径收尾且关闭栈保留", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
-    let resolveArchive!: (v: Session) => void
-    ;(store as unknown as { client: unknown }).client = {
-      ...(store as unknown as { client: Record<string, unknown> }).client,
-      updateSession: () =>
-        new Promise<Session>((r) => (resolveArchive = r)),
-    }
+    let resolveArchive!: () => void
+    const cv2a = (store as unknown as { clientV2: Record<string, unknown> }).clientV2
+    cv2a.updateSession = () => new Promise<void>((r) => (resolveArchive = r))
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
     store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
     store.activeTabKey = "chat:s1"
@@ -3566,7 +3636,7 @@ describe("实时补开与实时收敛（design-tab-memory §17 修订 2026-09-02
     // PATCH 在途期间 SSE 归档回环先到：不关 Tab（保 pushClosed 关闭栈条目）
     fire({ ...s1, time: { created: 1, updated: 1, archived: 99 } }, "session.updated")
     expect(store.tabs.map((t) => t.key)).toEqual(["chat:s1"])
-    resolveArchive({ ...s1, time: { created: 1, updated: 1, archived: 99 } })
+    resolveArchive()
     await expect(p).resolves.toBe(true)
     expect(store.tabs).toHaveLength(0)
     expect(store.closedTabs.map((c) => c.key)).toEqual(["chat:s1"])
@@ -3627,6 +3697,10 @@ describe("Tab 拖拽重排与重命名（design-tab-drag-rename）", () => {
       updateSession: async () => {
         throw new Error("boom")
       },
+    }
+    const cv2r = (store as unknown as { clientV2: Record<string, unknown> }).clientV2
+    cv2r.updateSession = async () => {
+      throw new Error("boom")
     }
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
     store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
