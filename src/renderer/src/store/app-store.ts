@@ -3538,6 +3538,8 @@ export class AppStore {
    * 当前作用域被动补开（SSE 丢失的兜底，同一条路径，幂等）；失败置
    * connectionError（左栏状态行可见），无 toast 基建同文件菜单取舍。
    */
+  /** opts.directory 不参与请求（v2 fork 经 location middleware 取作用域）——
+   *  仅作僵尸 Tab 守卫：本地无源会话记录且未直传时不发起（M5 评审记录） */
   forkSession(sessionID: string, opts: { messageID?: string; directory?: string } = {}): void {
     const clientV2 = this.clientV2
     if (!clientV2) return
@@ -3651,7 +3653,7 @@ export class AppStore {
       return { ok: true }
     } catch (e) {
       const msg =
-        e instanceof ApiError && e.status === 409
+        e instanceof ApiErrorV2 && e.body?.name === "SessionBusyError"
           ? "会话仍在进行中，请稍后再回滚"
           : e instanceof Error
             ? e.message
@@ -3685,7 +3687,7 @@ export class AppStore {
       return { ok: true }
     } catch (e) {
       const msg =
-        e instanceof ApiError && e.status === 409
+        e instanceof ApiErrorV2 && e.body?.name === "SessionBusyError"
           ? "会话仍在进行中，请稍后再操作"
           : e instanceof Error
             ? e.message

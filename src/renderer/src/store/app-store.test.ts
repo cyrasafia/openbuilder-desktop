@@ -2135,15 +2135,25 @@ describe("回滚到指定消息（design-message-revert）", () => {
     expect(calls).toEqual(["interrupt", "revert"])
   })
 
-  it("revertToMessage 409：ok:false 且 connectionError 记录", async () => {
+  it("revertToMessage 409 SessionBusyError（M5 评审修复）：命中友好文案；普通 409 透传", async () => {
     seedSession()
-    const client = (store as unknown as { client: Record<string, unknown> }).client
+    // v2 typed error：409 + {name:"SessionBusyError"} → 「会话仍在进行中」
     clientV2Of().revertStage = async () => {
-      throw new ApiErrorV2(409, "unknown", "HTTP 409")
+      throw new ApiErrorV2(409, "unknown", "HTTP 409: session is busy", {
+        name: "SessionBusyError",
+        data: { sessionID: "s1", message: "session is busy" },
+      })
     }
     const res = await store.revertToMessage("s1", "msg_u1")
     expect(res.ok).toBe(false)
-    expect(store.connectionError).toBeTruthy()
+    expect(store.connectionError).toContain("会话仍在进行中")
+    // 非 SessionBusyError 的同状态错误：透传原始消息
+    clientV2Of().revertStage = async () => {
+      throw new ApiErrorV2(409, "unknown", "HTTP 409: other")
+    }
+    const res2 = await store.revertToMessage("s1", "msg_u1")
+    expect(res2.ok).toBe(false)
+    expect(store.connectionError).not.toContain("会话仍在进行中")
   })
 
   it("unrevertSession：合并返回 Session（revert 清空）+ 已回填会话空种子清空输入框", async () => {

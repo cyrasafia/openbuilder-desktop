@@ -442,7 +442,11 @@ function ProjectTree() {
               ? t.forceDeleteWorkspaceMsg
               : t.confirmDeleteWorkspaceMsg
           }
-          confirmLabel={t.confirm}
+          confirmLabel={
+            store.isForceDeleteConfirm(store.pendingWorktreeDelete.projectId, store.pendingWorktreeDelete.directory)
+              ? t.forceDeleteConfirm
+              : t.confirm
+          }
           cancelLabel={t.cancel}
           danger
           onConfirm={() => {
