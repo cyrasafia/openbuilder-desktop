@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AppStore, diffTabKey, FILE_WATCH_DEBOUNCE_MS } from "./app-store"
 import { ApiError, RestClient } from "@shared/rest-client"
+import { ApiError as ApiErrorV2, RestClientV2 } from "@shared/rest-client-v2"
 import { SseSubscriber } from "@shared/sse-subscriber"
 import { globalEntryKey } from "@shared/project-entries"
 import type { ModelCatalog } from "@shared/model-catalog"
@@ -21,6 +22,16 @@ vi.spyOn(SseSubscriber.prototype, "stop").mockImplementation(() => {})
 
 function project(): Project {
   return { id: "proj1", worktree: ROOT, time: { created: 0, updated: 0 }, sandboxes: [WT1, WT2] }
+}
+
+/** v1 形状 fixture → v2 wire 形状（ProjectInfo）：覆盖 clientV2.listProjects mock 时使用 */
+function wireProject(p: Project) {
+  return {
+    ...p,
+    canonical: p.worktree,
+    sandboxes: p.sandboxes ?? [],
+    time: { created: p.time.created, updated: p.time.updated, active: p.time.updated },
+  }
 }
 
 function session(id: string, directory: string, time: Session["time"]): Session {
@@ -47,6 +58,8 @@ function sessionsOf(...list: Session[]): Map<string, Session> {
 
 let store: AppStore
 let snapshots: Map<string, Promise<Session[]> | Session[]>
+/** 项目列表唯一数据源（v1 形状）：v1/v2 两个 fake client 共读（v2 侧归一 wire 形状） */
+let projectList: Project[]
 const browserCalls: string[] = []
 
 beforeEach(() => {
@@ -72,6 +85,7 @@ beforeEach(() => {
   }
   browserCalls.length = 0
   snapshots = new Map()
+  projectList = [project()]
   store = new AppStore()
   ;(store as unknown as { client: unknown }).client = {
     listSessions: async (dir: string) => {
@@ -79,10 +93,30 @@ beforeEach(() => {
       return v === undefined ? [] : await v
     },
     listSessionStatus: async () => ({}),
-    listProjects: async () => [project()],
+    listProjects: async () => projectList,
     listPendingPermissions: async () => [],
     listPendingQuestions: async () => [],
   }
+    // v2 client（plan-v2-protocol M1 换绑的路径）：listSessions 响应 {data, cursor}
+    // envelope，data 为 wire 形状（location.directory），适配层在 store 侧。
+    // listProjects 与 v1 fake 共享同一 v1 形状数据源（projectList），此处归一为
+    // v2 wire 形状（canonical ← worktree）——用例改数据源即两个 client 同步生效
+    ;(store as unknown as { clientV2: unknown }).clientV2 = {
+      listSessions: async (input: { directory?: string }) => {
+        const v = input.directory === undefined ? [] : snapshots.get(input.directory)
+        const list = v === undefined ? [] : await v
+        return {
+          data: list.map((s) => ({ ...s, location: { directory: s.directory } })),
+          cursor: {},
+        }
+      },
+      listProjects: async () => projectList.map(wireProject),
+      resolveLocation: async (directory?: string) => ({
+        directory: directory ?? ROOT,
+        project: { id: "proj1", directory: directory ?? ROOT, canonical: directory ?? ROOT },
+      }),
+      serverInfo: async () => ({ version: "2.0.18", pid: 1, urls: [], paths: { tmp: "/tmp" } }),
+    }
   store.projects = [project()]
   store.projectStates = {
     default: { opened: ["proj1"], currentProjectId: "proj1", currentWorkspaceId: null },
@@ -178,6 +212,14 @@ describe("先切换后加载：setCurrentWorkspace", () => {
       listPendingPermissions: async () => [],
       listPendingQuestions: async () => [],
     }
+    // v2 侧快照路径（M1 换绑 refreshSessionsForProject）：同口径记录
+    const cv2 = (store as unknown as { clientV2: Record<string, unknown> }).clientV2
+    cv2.listSessions = async (input: { directory?: string }) => {
+      listCalls.push(input.directory ?? "")
+      const v = input.directory === undefined ? [] : snapshots.get(input.directory)
+      const list = v === undefined ? [] : await v
+      return { data: list.map((s) => ({ ...s, location: { directory: s.directory } })), cursor: {} }
+    }
     snapshots.set(ROOT, [])
     snapshots.set(WT1, [])
     snapshots.set(WT2, [])
@@ -208,6 +250,15 @@ describe("先切换后加载：setCurrentWorkspace", () => {
       listPendingPermissions: async () => [],
       listPendingQuestions: async () => [],
     }
+    // v2 侧快照路径（M1 换绑）：同口径记录 + 数据源补 proj2
+    const cv2 = (store as unknown as { clientV2: Record<string, unknown> }).clientV2
+    cv2.listSessions = async (input: { directory?: string }) => {
+      listCalls.push(input.directory ?? "")
+      const v = input.directory === undefined ? [] : snapshots.get(input.directory)
+      const list = v === undefined ? [] : await v
+      return { data: list.map((s) => ({ ...s, location: { directory: s.directory } })), cursor: {} }
+    }
+    cv2.listProjects = async () => [wireProject(project()), wireProject(proj2)]
     store.projects = [project(), proj2]
     snapshots.set(ROOT, [])
     snapshots.set(WT1, [])
@@ -482,7 +533,7 @@ describe("非聊天 Tab 作用域化（design-tab-memory §18）", () => {
     let resolveRemove!: () => void
     client.removeWorktree = () => new Promise<void>((r) => (resolveRemove = r))
     client.deleteSession = async () => {}
-    client.listProjects = async () => [{ ...project(), sandboxes: [WT2] }]
+    projectList = [{ ...project(), sandboxes: [WT2] }]
     store.projectStates.default.currentWorkspaceId = WT1
 
     const pending = store.removeWorkspace(WT1)
@@ -639,8 +690,7 @@ describe("worktree.ready 后 skill 重新发现（实例缓存冻结防御）", 
   })
 
   it("syncWorktrees diff 出新增 sandbox（断连丢 ready 补偿）：补跑 dispose 链", async () => {
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.listProjects = async () => [{ ...project(), sandboxes: [WT1, WT2, WT3] }]
+    projectList = [{ ...project(), sandboxes: [WT1, WT2, WT3] }]
     await store.syncWorktrees()
     await vi.waitFor(() => expect(disposeCalls).toEqual([WT3]))
     dispatch(WT3, { type: "server.instance.disposed", properties: { directory: WT3 } })
@@ -2367,7 +2417,7 @@ describe("输入草稿（design-compose-draft）", () => {
             : null,
       storeSet: async () => {},
     }
-    const health = vi.spyOn(RestClient.prototype, "health").mockRejectedValue(new Error("offline"))
+    const health = vi.spyOn(RestClientV2.prototype, "serverInfo").mockRejectedValue(new Error("offline"))
     try {
       const s = new AppStore()
       await s.init() // 连接失败（health 拒绝）但播种发生在 teardown 之后、探针之前
@@ -4371,11 +4421,13 @@ describe("worktree 同步（design-worktree-sync）", () => {
     // 初始 sandboxes = [WT1, WT2]；他端创建 WT3，server 广播 worktree.ready
     const client = (store as unknown as { client: Record<string, unknown> }).client
     let listCalls = 0
-    client.listProjects = async () => {
+    projectList = [{ ...project(), sandboxes: [WT1, WT2] }]
+    const cv2 = (store as unknown as { clientV2: Record<string, unknown> }).clientV2
+    cv2.listProjects = async () => {
       listCalls++
       return listCalls === 1
-        ? [{ ...project(), sandboxes: [WT1, WT2, "/repo/.git/opencode-worktrees/wt3"] }]
-        : [project()]
+        ? [wireProject({ ...project(), sandboxes: [WT1, WT2, "/repo/.git/opencode-worktrees/wt3"] })]
+        : [wireProject(project())]
     }
     dispatch(
       "/repo/.git/opencode-worktrees/wt3",
@@ -4430,8 +4482,7 @@ describe("worktree 同步（design-worktree-sync）", () => {
     expect(store.tabs.some((t) => t.key === "chat:s2")).toBe(true)
 
     // 他端删除 WT1：listProjects 返回不含 WT1
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.listProjects = async () => [{ ...project(), sandboxes: [WT2] }]
+    projectList = [{ ...project(), sandboxes: [WT2] }]
 
     await store.syncWorktrees()
     // sandboxes 已更新
@@ -4452,9 +4503,8 @@ describe("worktree 同步（design-worktree-sync）", () => {
     snapshots.set(WT2, [])
     await store.setCurrentWorkspace(WT1)
 
-    const client = (store as unknown as { client: Record<string, unknown> }).client
     // listProjects 返回不变的 sandboxes
-    client.listProjects = async () => [project()]
+    projectList = [project()]
 
     await store.syncWorktrees()
     expect(store.workspacesOfProject("proj1")).toHaveLength(2)
@@ -4472,14 +4522,14 @@ describe("worktree 同步（design-worktree-sync）", () => {
     snapshots.set("/other", [])
     await store.setCurrentWorkspace(null)
 
-    const client = (store as unknown as { client: Record<string, unknown> }).client
     let listCalled = false
-    client.listProjects = async () => {
+    const cv2 = (store as unknown as { clientV2: Record<string, unknown> }).clientV2
+    cv2.listProjects = async () => {
       listCalled = true
       // proj1 的 WT1 被删，但 proj1 未打开
       return [
-        { ...project(), sandboxes: [WT2] },
-        { id: "proj2", worktree: "/other", time: { created: 0, updated: 0 }, sandboxes: [] },
+        wireProject({ ...project(), sandboxes: [WT2] }),
+        wireProject({ id: "proj2", worktree: "/other", time: { created: 0, updated: 0 }, sandboxes: [] }),
       ]
     }
 
@@ -4621,20 +4671,21 @@ describe("左栏 entry 顺序与拖拽（design-layout §3 打开序）——app
   })
 })
 
-describe("createProjectFromDirectory（design-new-project）", () => {
-  const clientOf = () => (store as unknown as { client: Record<string, unknown> }).client
+describe("createProjectFromDirectory（design-new-project，v2/A 语义）", () => {
+  /** v2 client 注入点：resolveLocation 返回 LocationInfo{directory, project{id,directory,canonical}} */
+  const clientV2Of = () => (store as unknown as { clientV2: Record<string, unknown> }).clientV2
 
-  it("git 文件夹：resolveProject 注册后刷新 projects 并直接 openProject", async () => {
+  it("git 文件夹：resolveLocation 解析后刷新 projects 并直接 openProject", async () => {
     const fresh: Project = { id: "newproj", worktree: "/fresh", time: { created: 9, updated: 9 }, sandboxes: [] }
     let resolvedDir = ""
-    clientOf().resolveProject = async (dir: string) => {
-      resolvedDir = dir
-      return fresh
+    clientV2Of().resolveLocation = async (dir?: string) => {
+      resolvedDir = dir ?? ""
+      return { directory: dir ?? "", project: { id: "newproj", directory: "/fresh", canonical: "/fresh" } }
     }
     let listCalls = 0
-    clientOf().listProjects = async () => {
+    clientV2Of().listProjects = async () => {
       listCalls++
-      return [project(), fresh]
+      return [wireProject(project()), wireProject(fresh)]
     }
     snapshots.set("/fresh", [])
 
@@ -4649,45 +4700,51 @@ describe("createProjectFromDirectory（design-new-project）", () => {
     expect(store.currentProject?.id).toBe("newproj")
   })
 
-  it("非 git 文件夹（解析为 global）：以 global 目录 entry 打开（D1，不动文件系统）", async () => {
-    const globalProj: Project = { id: "global", worktree: "/", time: { created: 0, updated: 0 }, sandboxes: [] }
-    clientOf().resolveProject = async () => globalProj
-    clientOf().listProjects = async () => [project(), globalProj]
+  it("非 git 文件夹（v2 无 global，用户裁定 A）：目录哈希伪项目行，统一 openProject", async () => {
+    const pseudo: Project = { id: "hash1", worktree: "/plain", time: { created: 0, updated: 0 }, sandboxes: [] }
+    clientV2Of().resolveLocation = async (dir?: string) => ({
+      directory: dir ?? "",
+      project: { id: "hash1", directory: "/plain", canonical: "/plain" },
+    })
+    clientV2Of().listProjects = async () => [wireProject(project()), wireProject(pseudo)]
     snapshots.set("/plain", [])
 
     await store.createProjectFromDirectory("/plain")
     const ps = store.projectStateFor()
-    expect(ps.opened).toContain(globalEntryKey("/plain"))
-    expect(ps.currentProjectId).toBe("global")
-    expect(store.currentWorkspace?.directory).toBe("/plain")
-    // 左栏出现该 global 目录行（零会话兜底行的 opened 闸门已放行）
-    expect(store.openedEntries.some((e) => e.key === globalEntryKey("/plain"))).toBe(true)
+    // 以普通项目行打开（v1 的 global\0 entry 语义退役）
+    expect(ps.opened).toContain("hash1")
+    expect(ps.currentProjectId).toBe("hash1")
+    expect(store.currentProject?.id).toBe("hash1")
+    expect(store.scopeQuery.directory).toBe("/plain")
+    expect(store.openedEntries.some((e) => e.key === "hash1")).toBe(true)
   })
 
-  it("非 git 新目录（global，零会话）：切换后激活不残留旧项目 Tab（引导页显示的前提）", async () => {
-    // 复现 2026-09-09：新 global 目录无会话 → globalKnownDirectories 不含它 →
-    // findProjectOwningDirectory 返回 null → restoreScopeTabs owner 闸门整段
-    // no-op，跨作用域激活清算不执行——中栏渲染旧项目 Tab 内容、引导页不显示
+  it("非 git 新目录（伪项目，零会话）：切换后激活不残留旧项目 Tab（引导页显示的前提）", async () => {
+    // v2/A 语义下复现原 2026-09-09 场景：新目录零会话 → openProject 切换同步
+    // 清算激活，快照落地后写空记忆哨兵（§3.3）
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
     store.activeTabKey = "chat:s1"
-    const globalProj: Project = { id: "global", worktree: "/", time: { created: 0, updated: 0 }, sandboxes: [] }
-    clientOf().resolveProject = async () => globalProj
-    clientOf().listProjects = async () => [project(), globalProj]
+    const pseudo: Project = { id: "hash2", worktree: "/plain", time: { created: 0, updated: 0 }, sandboxes: [] }
+    clientV2Of().resolveLocation = async (dir?: string) => ({
+      directory: dir ?? "",
+      project: { id: "hash2", directory: "/plain", canonical: "/plain" },
+    })
+    clientV2Of().listProjects = async () => [wireProject(project()), wireProject(pseudo)]
     snapshots.set("/plain", [])
 
     await store.createProjectFromDirectory("/plain")
     // 同步段即清算：切换跟手，不等快照
     expect(store.activeTabKey).toBeNull()
     // 快照落地后的完整恢复段维持引导页（空目录写空记忆哨兵，§3.3）
-    expect(store.tabMemory.default?.["/plain"]).toEqual({ projectId: "global", tabs: [], active: null })
+    expect(store.tabMemory.default?.["/plain"]).toEqual({ projectId: "hash2", tabs: [], active: null })
     // 旧项目 Tab 不关不归档（Tab 跨项目混排语义）
     expect(store.tabs.some((t) => t.key === "chat:s1")).toBe(true)
   })
 
   it("解析失败：异常上抛，打开状态不变（弹窗不关可重试的前提）", async () => {
-    clientOf().resolveProject = async () => {
+    clientV2Of().resolveLocation = async () => {
       throw new Error("目录不存在")
     }
     await expect(store.createProjectFromDirectory("/nope")).rejects.toThrow("目录不存在")
@@ -4696,16 +4753,16 @@ describe("createProjectFromDirectory（design-new-project）", () => {
     expect(ps.currentProjectId).toBe("proj1")
   })
 
-  it("在途闸门：注册期间断连（client 置 null）→ 抛错不打开（评审 R2：弹窗不按成功关闭）", async () => {
+  it("在途闸门：注册期间断连（clientV2 置 null）→ 抛错不打开（评审 R2：弹窗不按成功关闭）", async () => {
     const fresh: Project = { id: "newproj2", worktree: "/fresh2", time: { created: 9, updated: 9 }, sandboxes: [] }
-    clientOf().resolveProject = async () => {
-      ;(store as unknown as { client: unknown }).client = null
-      return fresh
+    clientV2Of().resolveLocation = async () => {
+      ;(store as unknown as { clientV2: unknown }).clientV2 = null
+      return { directory: "/fresh2", project: { id: "newproj2", directory: "/fresh2", canonical: "/fresh2" } }
     }
     let listCalled = false
-    clientOf().listProjects = async () => {
+    clientV2Of().listProjects = async () => {
       listCalled = true
-      return [project(), fresh]
+      return [wireProject(project()), wireProject(fresh)]
     }
 
     await expect(store.createProjectFromDirectory("/fresh2")).rejects.toThrow("连接已断开")
@@ -4714,10 +4771,12 @@ describe("createProjectFromDirectory（design-new-project）", () => {
   })
 
   it("listProjects 失败：异常上抛不打开（评审 R1：projects 不含新项目时打开 = 不一致态）", async () => {
-    const fresh: Project = { id: "newproj3", worktree: "/fresh3", time: { created: 9, updated: 9 }, sandboxes: [] }
-    clientOf().resolveProject = async () => fresh
-    clientOf().listProjects = async () => {
-      throw new ApiError(0, "network", "无法连接服务器")
+    clientV2Of().resolveLocation = async (dir?: string) => ({
+      directory: dir ?? "",
+      project: { id: "newproj3", directory: "/fresh3", canonical: "/fresh3" },
+    })
+    clientV2Of().listProjects = async () => {
+      throw new ApiErrorV2(0, "network", "无法连接服务器")
     }
 
     await expect(store.createProjectFromDirectory("/fresh3")).rejects.toThrow("无法连接服务器")
@@ -4727,12 +4786,14 @@ describe("createProjectFromDirectory（design-new-project）", () => {
   })
 
   it("signal 中止：resolve 完成后已取消 → 不刷新不打开（评审 R3：弹窗关闭即取消）", async () => {
-    const fresh: Project = { id: "newproj4", worktree: "/fresh4", time: { created: 9, updated: 9 }, sandboxes: [] }
-    clientOf().resolveProject = async () => fresh
+    clientV2Of().resolveLocation = async (dir?: string) => ({
+      directory: dir ?? "",
+      project: { id: "newproj4", directory: "/fresh4", canonical: "/fresh4" },
+    })
     let listCalled = false
-    clientOf().listProjects = async () => {
+    clientV2Of().listProjects = async () => {
       listCalled = true
-      return [project(), fresh]
+      return [wireProject(project()), wireProject({ id: "newproj4", worktree: "/fresh4", time: { created: 9, updated: 9 }, sandboxes: [] })]
     }
     const ac = new AbortController()
 
@@ -5451,7 +5512,7 @@ describe("applyManagedEvent disconnected 闸门（review 第三轮）", () => {
 // ============ 新增服务器直达项目选择器（design-guided-add-server 修订） ============
 
 describe("connect({openPickerAfter}) 一次性标记", () => {
-  /** attach profile + RestClient 原型级 mock（doConnect 内 new 出的实例同样命中） */
+  /** attach profile + RestClientV2 原型级 mock（doConnect 内 new 出的实例同样命中） */
   function attachProfileDesktop(projects: Project[] = []) {
     ;(window as unknown as { desktop: unknown }).desktop = {
       ...(window as unknown as { desktop: Record<string, unknown> }).desktop,
@@ -5459,9 +5520,9 @@ describe("connect({openPickerAfter}) 一次性标记", () => {
     }
     store.profiles = [{ id: "p1", name: "a", baseUrl: "http://127.0.0.1:1", mode: "attach" }]
     store.activeProfileId = "p1"
-    vi.spyOn(RestClient.prototype, "health").mockResolvedValue({ healthy: true, version: "1.0.66" })
-    vi.spyOn(RestClient.prototype, "listProjects").mockResolvedValue(projects)
-    vi.spyOn(RestClient.prototype, "listProjectSessions").mockResolvedValue([])
+    vi.spyOn(RestClientV2.prototype, "serverInfo").mockResolvedValue({ version: "2.0.18", pid: 1, urls: [], paths: { tmp: "/tmp" } })
+    vi.spyOn(RestClientV2.prototype, "listProjects").mockResolvedValue(projects.map(wireProject))
+    vi.spyOn(RestClientV2.prototype, "listSessions").mockResolvedValue({ data: [], cursor: {} })
   }
 
   it("带标记连接成功且无已打开项目 → 打开项目列表；标记消费即清", async () => {
@@ -5500,15 +5561,37 @@ describe("connect({openPickerAfter}) 一次性标记", () => {
 
   it("连接失败保留标记：下次成功连接仍直达（半途连接不丢入口）", async () => {
     attachProfileDesktop([project()])
-    // 第一次失败：health 抛错
-    vi.spyOn(RestClient.prototype, "health").mockRejectedValue(new Error("down"))
+    // 第一次失败：探活抛错
+    vi.spyOn(RestClientV2.prototype, "serverInfo").mockRejectedValue(new Error("down"))
     await store.connect({ openPickerAfter: true })
     expect(store.connectionState).toBe("disconnected")
     expect(store.pickerOpen).toBe(false)
     // 恢复后重连成功：标记仍在，直达
-    vi.spyOn(RestClient.prototype, "health").mockResolvedValue({ healthy: true, version: "1.0.66" })
+    vi.spyOn(RestClientV2.prototype, "serverInfo").mockResolvedValue({ version: "2.0.18", pid: 1, urls: [], paths: { tmp: "/tmp" } })
     await store.connect()
     expect(store.pickerOpen).toBe(true)
+  })
+
+  it("v1 server 探活（unsupported/not-found）：明确报错指引，不进入连接", async () => {
+    attachProfileDesktop([project()])
+    vi.spyOn(RestClientV2.prototype, "serverInfo").mockRejectedValue(
+      new ApiErrorV2(200, "unsupported", "响应不是 JSON"),
+    )
+    await store.connect()
+    expect(store.connectionState).toBe("disconnected")
+    expect(store.connectionError).toContain("仅支持 opencode v2")
+    // 404（v1 server 对未知 /api 路径的另一形态）同口径
+    vi.spyOn(RestClientV2.prototype, "serverInfo").mockRejectedValue(
+      new ApiErrorV2(404, "not-found", "HTTP 404"),
+    )
+    await store.connect()
+    expect(store.connectionError).toContain("仅支持 opencode v2")
+    // 401：认证指引（非版本问题）
+    vi.spyOn(RestClientV2.prototype, "serverInfo").mockRejectedValue(
+      new ApiErrorV2(401, "auth", "HTTP 401"),
+    )
+    await store.connect()
+    expect(store.connectionError).toContain("认证失败")
   })
 })
 

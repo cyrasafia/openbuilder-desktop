@@ -67,6 +67,8 @@ export interface Session {
   summary?: { additions: number; deletions: number; files: number }
   /** 父会话 ID（subagent 子会话非空，指向发起 task 工具的父会话） */
   parentID?: string
+  /** v2 迁移透传（D1）：归档私约 metadata.archivedAt 的识别数据源 */
+  metadata?: Record<string, unknown>
   [k: string]: unknown
 }
 

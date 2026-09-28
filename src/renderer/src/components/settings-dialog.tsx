@@ -3,7 +3,7 @@ import { ArrowLeft, ChevronDown, ChevronRight, LoaderCircle, Pencil, RefreshCw, 
 import { useI18n, useStore } from "../app"
 import type { BinaryCandidate, ConnectionProfile, ManagedNotice, ServerCandidate } from "@shared/ipc"
 import { MIN_SERVER_VERSION } from "@shared/semver"
-import { ApiError, RestClient } from "@shared/rest-client"
+import { RestClientV2 } from "@shared/rest-client-v2"
 import type { ModelInfo, ProviderCatalog, ProviderInfo } from "@shared/api-types"
 import { isModelDisabled } from "@shared/model-catalog"
 import { ConfirmDialog } from "./confirm-dialog"
@@ -662,11 +662,12 @@ export function ProfileFormView({
     setTesting(true)
     setTestResult(null)
     try {
-      const client = new RestClient({ baseUrl: draft.baseUrl, username: draft.username, password: draft.password })
-      const health = await client.health()
-      setTestResult(t.testOk.replace("{version}", health.version))
+      // v2 探活（plan-v2-protocol M1）：v1 server 会得到明确的「版本不支持」错误
+      const client = new RestClientV2({ baseUrl: draft.baseUrl, username: draft.username, password: draft.password })
+      const info = await client.serverInfo()
+      setTestResult(t.testOk.replace("{version}", info.version))
     } catch (e) {
-      const msg = e instanceof ApiError ? e.message : String(e)
+      const msg = e instanceof Error ? e.message : String(e)
       setTestResult(`${t.testFailed} (${msg})`)
     } finally {
       setTesting(false)

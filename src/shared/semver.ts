@@ -6,6 +6,9 @@
 /** 最低 server 版本（单全局事件流要求，design-sse-global-event） */
 export const MIN_SERVER_VERSION = "1.0.66"
 
+/** v2 最低 server 版本（plan-v2-protocol M1：v2 GA 线下限，仅提示不阻断） */
+export const MIN_SERVER_VERSION_V2 = "2.0.0"
+
 /** 解析数字三元组（容忍 v 前缀/预发布后缀/缺段补零）；无法解析 = null */
 function parseTriple(version: string): number[] | null {
   const m = /^\s*v?(\d+(?:\.\d+){0,2})/.exec(version)

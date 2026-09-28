@@ -3,6 +3,8 @@
  * 事件闸门、乐观消息、SSE 生命周期都在这里收敛。
  */
 import { RestClient, ApiError } from "@shared/rest-client"
+import { RestClientV2, ApiError as ApiErrorV2 } from "@shared/rest-client-v2"
+import { toInternalProject, toInternalSession } from "@shared/v2-adapter"
 import { SseSubscriber, type SseStatus, type SseEventMeta } from "@shared/sse-subscriber"
 import { Reconciler } from "@shared/reconciler"
 import { mergeSessionsSnapshot } from "@shared/session-merge"
@@ -69,7 +71,7 @@ import {
 } from "@shared/project-entries"
 import type { BrowserViewState, ConnectionProfile, ManagedNotice } from "@shared/ipc"
 import "@shared/ipc-global"
-import { belowMinServerVersion } from "@shared/semver"
+import { belowMinServerVersion, MIN_SERVER_VERSION_V2 } from "@shared/semver"
 import type { Attachment } from "@shared/attachment-pipeline"
 import {
   applyCommandFetch,
@@ -121,6 +123,20 @@ const PANEL_LIMITS = {
   left: { min: 200, max: 360, def: 260 },
   right: { min: 240, max: 480, def: 300 },
 } as const
+
+/**
+ * 连接探活失败归类（plan-v2-protocol M1，双兼容裁定的错误指引）：
+ * unsupported（200+HTML，v1 server SPA fallback）/ not-found（404）→
+ * 明确「仅支持 v2」指引；auth（401）→ 提示凭据；其余透传错误消息。
+ */
+function connectProbeError(e: unknown): string {
+  if (e instanceof ApiErrorV2) {
+    if (e.kind === "unsupported" || e.kind === "not-found")
+      return "服务器版本不支持：v0.5 起仅支持 opencode v2 server"
+    if (e.kind === "auth") return "认证失败：v2 server 需要密码（检查服务器的用户名/密码设置）"
+  }
+  return e instanceof Error ? e.message : String(e)
+}
 
 /** 宽度 clamp（读入持久化值/拖拽输入共用；非法数值回退默认宽） */
 function clampPanelWidth(side: "left" | "right", px: number): number {
@@ -591,6 +607,8 @@ export class AppStore {
 
   // ---- 内部 ----
   private client: RestClient | null = null
+  /** v2 client（plan-v2-protocol M1：探活/项目/会话列表已换绑；其余子系统逐里程碑迁移，M6 收敛后取代 v1 client） */
+  private clientV2: RestClientV2 | null = null
   private reconciler: Reconciler | null = null
   private listeners = new Set<Listener>()
   private snapshotHandlers: Array<() => void> = []
@@ -772,21 +790,23 @@ export class AppStore {
     }
 
     const client = new RestClient({ baseUrl, username, password })
+    const clientV2 = new RestClientV2({ baseUrl, username, password })
     let projects: Project[]
     try {
-      // 连通性探针（快照前的快速失败；版本信息仅设置弹窗"测试连接"时按需拉取）
-      const health = await client.health()
+      // v2 探活（GET /api/info，取代 v1 /global/health）：v1 server 对未知 /api 路径
+      // 返回 SPA fallback（200 HTML）或 404 → ApiError unsupported/not-found →
+      // 明确报错指引（双兼容裁定：v0.5 起仅支持 v2，不做协议分派）
+      const info = await clientV2.serverInfo()
       if (stale()) return
-      // 版本下限校验（design-managed-config §2）：低于 1.0.66（单全局 SSE 要求）
-      // 仅提示不阻断，attach/managed 同口径
-      this.serverVersionWarning = belowMinServerVersion(health.version)
-        ? { version: health.version }
+      // 版本下限校验：v2 以 GA（2.0.0）为下限，仅提示不阻断
+      this.serverVersionWarning = belowMinServerVersion(info.version, MIN_SERVER_VERSION_V2)
+        ? { version: info.version }
         : null
-      projects = await client.listProjects()
+      projects = (await clientV2.listProjects()).map(toInternalProject)
     } catch (e) {
       if (stale()) return
       this.connectionState = "disconnected"
-      this.connectionError = e instanceof Error ? e.message : String(e)
+      this.connectionError = connectProbeError(e)
       this.emit()
       return
     }
@@ -794,6 +814,7 @@ export class AppStore {
 
     // 全部快照成功后才暴露 client（失败路径不悬挂）
     this.client = client
+    this.clientV2 = clientV2
     this.projects = projects
     // 连接归属切片键落位（teardown 外科修剪用它定位；见 sessionProfileKey 注释）
     this.sessionProfileKey = this.profileKey()
@@ -806,9 +827,10 @@ export class AppStore {
     // 正是 restoreTabSession 即将读取的输入。恢复段收尾统一固化
     this.restoringTabs = true
     try {
-      // global 拆分发现快照：global 目录行数据源（连接时刷新保证行齐全）
-      await this.refreshGlobalSessions()
-      if (stale()) return
+      // v2 无 global 项目（用户裁定 2026-09-28，A 方案）：非 git 目录 = 目录哈希
+      // 伪项目行，项目列表本身即发现源——refreshGlobalSessions（v1 scope=project
+      // 发现快照）退役；新目录出现靠 60s syncWorktrees diff + M3 的 project.updated
+      // 事件接力。v1 global 特殊路径已惰化，M1b 整体删除。
 
       // 打开项目的快照 + 订阅
       await this.refreshAllOpenedProjects()
@@ -983,6 +1005,7 @@ export class AppStore {
     // openProjectPicker 的已开短路会吃掉新一次直达）
     this.pickerOpen = false
     this.client = null
+    this.clientV2 = null
     this.managedBaseUrl = null
     this.projects = []
     this.sessionsByProject.clear()
@@ -2041,22 +2064,24 @@ export class AppStore {
    * 不再打开（静默返回，弹窗已卸载无错误呈现方）。
    */
   async createProjectFromDirectory(directory: string, signal?: AbortSignal): Promise<void> {
-    const client = this.client
-    if (!client) throw new Error("未连接服务器")
-    const project = await client.resolveProject(directory)
+    const clientV2 = this.clientV2
+    if (!clientV2) throw new Error("未连接服务器")
+    // v2：GET /api/location?location[directory]= 让 server 解析（resolve → upsert：
+    // git 仓库 → 独立项目；非 git → 目录哈希伪项目行，用户裁定 A——统一走普通
+    // 项目行，v1 的 global 分支退役）
+    const location = await clientV2.resolveLocation(directory)
     if (signal?.aborted) return
     // 在途闸门：注册期间可能已断连/切 profile——不打开过期解析结果（抛错让选择器呈现，不静默）
-    if (this.client !== client) throw new Error("连接已断开，请重试")
+    if (this.clientV2 !== clientV2) throw new Error("连接已断开，请重试")
     // 失败必须上抛：projects 仍是旧列表（不含新项目）时继续打开会落进
     // "opened 指向不存在项目"的不一致态（currentProject 为 null、左栏无行，
     // 要等 60s syncWorktrees 才自愈）——评审 2026-08-30 R1
-    const fresh = await client.listProjects()
+    const fresh = (await clientV2.listProjects()).map(toInternalProject)
     if (signal?.aborted) return
     // projects 是左栏/打开流数据源，必须先含新项目再 openProject
     this.projects = fresh
     this.emit()
-    if (project.id === GLOBAL_PROJECT_ID) return this.openGlobalDirectory(directory)
-    return this.openProject(project.id)
+    return this.openProject(location.project.id)
   }
 
   /** 关闭单个 global 目录 entry（其余 global 目录不受影响） */
@@ -2796,14 +2821,23 @@ export class AppStore {
 
   async refreshSessionsForProject(project: Project) {
     const client = this.client
-    if (!client) return
+    const clientV2 = this.clientV2
+    if (!client || !clientV2) return
     const dirs =
       project.id === GLOBAL_PROJECT_ID
         ? [...new Set(this.openedGlobalDirectories)]
         : [...new Set([project.worktree, ...(project.sandboxes ?? [])])]
     await runLimited(dirs, 3, async (dir) => {
-      const sessions = await client.listSessions(dir).catch(() => null)
-      if (sessions === null) return
+      // v2：flat directory query + {data, cursor} envelope；limit 200 覆盖 v0.x 规模
+      // （>200 目录的分页是 M2 决策点）。**不过滤归档**：v1 快照同构含归档会话，
+      // Tab 收敛（死会话关闭）与 archivedSessions 展示段依赖其存在；展示层
+      // 过滤在 scopeSessions（!time.archived）——D1 双源过滤（metadata.archivedAt）
+      // 是 M2 归档写入落地时一并接线
+      const page = await clientV2
+        .listSessions({ directory: dir, limit: 200 })
+        .catch(() => null)
+      if (page === null) return
+      const sessions = page.data.map(toInternalSession)
       this.applySessionsSnapshot(project.id, dir, sessions)
       const statuses = await client.listSessionStatus(dir).catch(() => null)
       // 闸门：在途快照落地时项目可能已关闭/目录可能已删——过期状态直接丢弃
@@ -3040,13 +3074,16 @@ export class AppStore {
    * 幂等：无变化时只重拉 projects（同 refreshWorkspacesForProject，无害 emit）。
    */
   async syncWorktrees(): Promise<void> {
-    const client = this.client
-    if (!client) return
+    const clientV2 = this.clientV2
+    if (!clientV2) return
     const before = this.projects
-    const fresh = await client.listProjects().catch(() => null)
+    const fresh = await clientV2
+      .listProjects()
+      .then((ps) => ps.map(toInternalProject))
+      .catch(() => null)
     if (!fresh) return
     // 在途闸门：diff 期间 client 可能已拆（disconnect/切 profile）
-    if (this.client !== client) return
+    if (this.clientV2 !== clientV2) return
     // 比对每个打开项目（含未打开项目的 worktree 变化不影响左栏展示，跳过）
     const toUnload: Array<{ directory: string; projectId: string; isCurrent: boolean }> = []
     // 新增 sandbox：`worktree.ready` 只发一次不补发，断连窗口内他端创建的事件
@@ -3091,7 +3128,10 @@ export class AppStore {
 
   private async refreshWorkspacesForProject(project: Project) {
     // worktree 列表数据源是 Project.sandboxes（directory 数组，实测 /experimental/workspace 不可靠）
-    const fresh = await this.client?.listProjects().catch(() => null)
+    const fresh = await this.clientV2
+      ?.listProjects()
+      .then((ps) => ps.map(toInternalProject))
+      .catch(() => null)
     if (fresh) this.projects = fresh
     this.emit()
   }
