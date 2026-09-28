@@ -1267,6 +1267,7 @@ export class AppStore {
           sessionID?: string
           projectID?: string
           parentID?: string
+          slug?: string
           title?: string
           agent?: string
           model?: ModelRef
@@ -1280,6 +1281,7 @@ export class AppStore {
             parentID: p.parentID,
             projectID: p.projectID,
             directory,
+            slug: p.slug,
             title: p.title,
             agent: p.agent,
             model: p.model,
