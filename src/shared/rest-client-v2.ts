@@ -232,4 +232,18 @@ export class RestClientV2 {
       method: "DELETE",
     })
   }
+
+  /**
+   * DELETE /api/worktree（payload `{projectID, directory, force}`，**force 必填**；
+   * 60s 超时——git worktree remove 大目录可慢，对齐 v1 语义）。脏 worktree 且
+   * force=false 时返回 WorktreeError（400，`forceRequired: true`）——forceRequired
+   * 重试 UX 是 plan-v2-worktree（M5）决策点，先按 false 保平价。
+   */
+  async deleteWorktree(projectID: string, directory: string, opts: { force?: boolean } = {}): Promise<void> {
+    await this.fetchResponse("/api/worktree", {
+      method: "DELETE",
+      body: JSON.stringify({ projectID, directory, force: opts.force ?? false }),
+      timeoutMs: 60000,
+    })
+  }
 }

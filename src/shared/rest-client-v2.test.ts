@@ -159,6 +159,19 @@ describe("会话域（M2）", () => {
     expect(seenUrl).toBe("http://server/api/session/ses_1")
     expect(seenMethod).toBe("DELETE")
   })
+
+  it("deleteWorktree：DELETE /api/worktree，payload 含必填 force（缺省 false）", async () => {
+    let seenBody = ""
+    const client = mkClient((_url, init) => {
+      seenBody = String(init.body)
+      return new Response(null, { status: 204 })
+    })
+    await client.deleteWorktree("p1", "/repo/.wt")
+    expect(seenBody).toBe(JSON.stringify({ projectID: "p1", directory: "/repo/.wt", force: false }))
+    // forceRequired 错误（脏 worktree）透传为 ApiError
+    const dirty = mkClient(() => new Response(JSON.stringify({ name: "WorktreeError", data: { forceRequired: true } }), { status: 400 }))
+    await expect(dirty.deleteWorktree("p1", "/repo/.wt")).rejects.toMatchObject({ status: 400 })
+  })
 })
 
 describe("鉴权与错误分类", () => {

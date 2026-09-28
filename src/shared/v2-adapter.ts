@@ -55,13 +55,15 @@ export function toInternalSession(s: SessionInfo): Session {
  * M2 会话域的决策点，本层不做。
  */
 export function isArchivedSession(s: Session): boolean {
-  if (s.time.archived !== undefined) return true
+  if (s.time.archived) return true
   return archivedAtOf(s) !== null
 }
 
-/** 归档时间戳（排序用）：time.archived ?? metadata.archivedAt；未归档 null */
+/** 归档时间戳（排序用）：time.archived ?? metadata.archivedAt；未归档 null。
+ *  time.archived 判定用 truthy——v1 以 archived:0 为取消归档标记（v1 展示层
+ *  全部 falsy 判定），v2 wire 侧 fromRow 同口径归一（0 → undefined） */
 export function archivedAtOf(s: Session): number | null {
-  if (s.time.archived !== undefined) return s.time.archived
+  if (s.time.archived) return s.time.archived
   const at = s.metadata?.archivedAt
   return typeof at === "number" && at > 0 ? at : null
 }

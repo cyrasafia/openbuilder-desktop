@@ -2616,7 +2616,8 @@ export class AppStore {
     projectId: string = this.currentProject?.id ?? "",
   ): Promise<{ ok: boolean; error?: string }> {
     const project = this.projects.find((p) => p.id === projectId)
-    if (!this.client || !project) return { ok: false, error: "no project" }
+    const clientV2 = this.clientV2
+    if (!clientV2 || !project) return { ok: false, error: "no project" }
     const deleteKey = `${project.id}\u0000${directory}`
     // 重入防御：同行删除在途时再触发（UI 已禁用，兜底）
     if (this.deletingWorkspaces.has(deleteKey)) return { ok: false, error: "deleting" }
@@ -2637,9 +2638,11 @@ export class AppStore {
     }
     this.emit()
     try {
-      // 删除 worktree 前，先级联删除该目录全部会话（服务器 DELETE /experimental/worktree
-      // 不级联删会话，同名 worktree 重建后会继承旧会话——服务器以 directory 路径关联，
-      // 无 worktree 代次标识）。best-effort：单个删除失败不阻断 worktree 删除
+      // 删除 worktree 前，先级联删除该目录全部会话（D2 语义，照搬 v1：服务器删
+      // worktree 不级联会话，同名重建后会继承旧会话——服务器以 directory 路径
+      // 关联，无 worktree 代次标识）。best-effort：单个删除失败不阻断 worktree 删除。
+      // 链路必须整体 v2（评审 2026-09-28：v1 removeWorktree 在 v2 server 必失败，
+      // 会话已删而 worktree 残留 = 部分执行的破坏性操作）
       const sessionMap = this.sessionsByProject.get(project.id)
       const sessionIds: string[] = []
       if (sessionMap) {
@@ -2648,9 +2651,10 @@ export class AppStore {
         }
       }
       await Promise.all(
-        sessionIds.map((id) => this.clientV2!.deleteSession(id).catch(() => {})),
+        sessionIds.map((id) => clientV2.deleteSession(id).catch(() => {})),
       )
-      await this.client.removeWorktree(project.worktree, directory)
+      // force 缺省 false（脏 worktree 返回 forceRequired——重试 UX 是 M5 决策点）
+      await clientV2.deleteWorktree(project.id, directory)
       // worktree 列表数据源是 Project.sandboxes，重拉项目列表同步（刷新全局 projects）
       await this.refreshWorkspacesForProject(project)
       const restored = await this.unloadWorktreeDirectory(directory, project.id, isCurrent)
@@ -2905,7 +2909,7 @@ export class AppStore {
    * 发送成功才开 Tab（失败保留草稿，重试复用同一会话，不产生空 Tab）。
    */
   async createSession(opts: { openTab?: boolean } = {}): Promise<Session | null> {
-    if (!this.client || !this.currentProject) return null
+    if (!this.clientV2 || !this.currentProject) return null
     const { directory } = this.scopeQuery
     // 全局默认值（per-profile）应用到 POST /session body（D-AM-4）。
     // 有效性校验（AM-IMPL3-4）：POST /session 不校验 model（实测无效模型 200 落库，
@@ -2930,7 +2934,7 @@ export class AppStore {
         )
       : explicitModel
     try {
-      const wire = await this.clientV2!.createSession({
+      const wire = await this.clientV2.createSession({
         directory,
         ...(agent ? { agent } : {}),
         ...(model ? { model } : {}),
@@ -3240,15 +3244,19 @@ export class AppStore {
     if (!clientV2) return false
     const session = this.findSession(sessionID)
     if (!session) return false
+    // 空标题防御：v2 契约 title:"" 会触发 server 生成随机标题（非拒绝）——
+    // UI 已 trim+非空守卫，此处拦程序化调用方
+    const trimmed = title.trim()
+    if (!trimmed) return false
     try {
       // v2 PATCH 204 无返回体：本地乐观落地（title 必填回填 slug 语义由 server
       // 收敛，重连快照对账兜底）
-      await clientV2.updateSession(sessionID, { title })
+      await clientV2.updateSession(sessionID, { title: trimmed })
       const map = this.sessionsByProject.get(session.projectID)
-      map?.set(sessionID, { ...session, title })
+      map?.set(sessionID, { ...session, title: trimmed })
       // Tab 标题即时同步（SSE 回环亦可到达，此处消除本地等待）
       const tab = this.tabs.find((t) => t.key === `chat:${sessionID}`)
-      if (tab) tab.title = title
+      if (tab) tab.title = trimmed
       this.emit()
       return true
     } catch (e) {

@@ -128,6 +128,7 @@ beforeEach(() => {
       }),
       updateSession: async () => {},
       deleteSession: async () => {},
+      deleteWorktree: async () => {},
     }
   store.projects = [project()]
   store.projectStates = {
@@ -524,10 +525,9 @@ describe("非聊天 Tab 作用域化（design-tab-memory §18）", () => {
     snapshots.set(ROOT, [])
     snapshots.set(WT1, [s2])
     snapshots.set(WT2, [])
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.removeWorktree = async () => {}
-    client.deleteSession = async () => {}
-    client.listProjects = async () => [{ ...project(), sandboxes: [WT2] }]
+    const cv2 = (store as unknown as { clientV2: Record<string, unknown> }).clientV2
+    cv2.deleteWorktree = async () => {}
+    projectList = [{ ...project(), sandboxes: [WT2] }]
 
     await store.setCurrentWorkspace(WT1)
     store.openFileTab(WT1 + "/a.md")
@@ -543,8 +543,8 @@ describe("非聊天 Tab 作用域化（design-tab-memory §18）", () => {
     snapshots.set(ROOT, [])
     snapshots.set(WT2, [])
     let resolveRemove!: () => void
-    client.removeWorktree = () => new Promise<void>((r) => (resolveRemove = r))
-    client.deleteSession = async () => {}
+    ;(store as unknown as { clientV2: Record<string, unknown> }).clientV2.deleteWorktree =
+      () => new Promise<void>((r) => (resolveRemove = r))
     projectList = [{ ...project(), sandboxes: [WT2] }]
     store.projectStates.default.currentWorkspaceId = WT1
 
@@ -566,11 +566,10 @@ describe("非聊天 Tab 作用域化（design-tab-memory §18）", () => {
   })
 
   it("removeWorkspace 删除失败：删除态复位（行恢复可点），worktree 仍在列表", async () => {
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.removeWorktree = async () => {
+    const cv2f = (store as unknown as { clientV2: Record<string, unknown> }).clientV2
+    cv2f.deleteWorktree = async () => {
       throw new Error("git worktree remove failed")
     }
-    client.deleteSession = async () => {}
 
     const res = await store.removeWorkspace(WT1)
     expect(res.ok).toBe(false)
@@ -3096,7 +3095,8 @@ describe("布局状态（design-layout-collapse）", () => {
 })
 
 describe("快捷键支撑（design-keyboard-shortcuts）", () => {
-  /** 最小可跑 client：updateSession 返回带 archived 的会话副本 */
+  /** 最小可跑 client（v1 基础面；归档/重命名走 clientV2 挂具默认实现——
+   *  v2 PATCH 204 无返回体，本地乐观落地，见 D1 归档私约 describe） */
   function withSessionClient(sessions: Session[]) {
     ;(store as unknown as { client: unknown }).client = {
       listSessions: async () => [],
@@ -3104,10 +3104,6 @@ describe("快捷键支撑（design-keyboard-shortcuts）", () => {
       listProjects: async () => [project()],
       listPendingPermissions: async () => [],
       listPendingQuestions: async () => [],
-      updateSession: async (id: string, _dir: string, patch: { title?: string; time?: { archived?: number } }) => {
-        const s = sessions.find((x) => x.id === id)!
-        return { ...s, ...(patch.title != null ? { title: patch.title } : {}), time: { ...s.time, ...(patch.time ?? {}) } }
-      },
     }
     store.sessionsByProject = new Map([["proj1", sessionsOf(...sessions)]])
   }
