@@ -280,6 +280,8 @@ const zh = {
     "切换项目将关闭并归档当前所有打开的会话。继续？",
   confirmDeleteWorkspace: "删除工作区？",
   confirmDeleteWorkspaceMsg: "删除后不可恢复，该工作区下的会话、文件树与终端将一并清理。",
+  forceDeleteWorkspace: "强制删除工作区？",
+  forceDeleteWorkspaceMsg: "该工作区含未提交变更，普通删除被拒绝。强制删除将丢弃这些变更，且不可恢复。",
   deletingWorkspace: "正在清理…",
   // agent/模型/思考强度切换（design-agent-model-switch）
   model: "模型",
@@ -565,6 +567,8 @@ const en: typeof zh = {
   confirmSwitchProject: "Switching projects closes and archives all open sessions. Continue?",
   confirmDeleteWorkspace: "Delete worktree?",
   confirmDeleteWorkspaceMsg: "This cannot be undone. Sessions, file tree, and terminals under this worktree will be cleaned up.",
+  forceDeleteWorkspace: "Force delete worktree?",
+  forceDeleteWorkspaceMsg: "This worktree has uncommitted changes and normal deletion was refused. Force delete discards them and cannot be undone.",
   deletingWorkspace: "Cleaning up…",
   model: "Model",
   thinkingLabel: "Thinking",

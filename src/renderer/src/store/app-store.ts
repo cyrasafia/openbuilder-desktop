@@ -467,6 +467,10 @@ export class AppStore {
    * 取消/关闭清空。上提自 sidebar 本地状态——快捷键与按钮共用同一弹窗路径。
    */
   pendingWorktreeDelete: { directory: string; projectId: string } | null = null
+  /** force 二次确认态（M5）：deleteKey → 已确认强制。WorktreeError{forceRequired}
+   *  到达时复用 pendingWorktreeDelete 确认弹窗（文案切强制删除），确认即带 force
+   *  重试；取消/重开清位 */
+  forceDeleteRequests = new Set<string>()
   /**
    * 待确认关闭的 Tab（tab-actions closeTabInteractive 置位，Tab 栏 X 钮与
    * Ctrl+W 同入口）：非空 = ConfirmDialog 挂载中；chat 流式中 / 终端运行中
@@ -1097,8 +1101,6 @@ export class AppStore {
     // 在途 fetch 无法中断；迟到的结果由 refreshCommands 的 client 身份守卫丢弃
     this.commandsInFlight.clear()
     // dispose 等待全部兑现放弃（后续 client 身份守卫丢弃），防跨连接误等
-    for (const set of this.instanceDisposedWaiters.values()) for (const w of [...set]) w()
-    this.instanceDisposedWaiters.clear()
     if (this.catalogRefreshTimer != null) {
       clearTimeout(this.catalogRefreshTimer)
       this.catalogRefreshTimer = null
@@ -1526,15 +1528,6 @@ export class AppStore {
     ev: { type: string; properties: Record<string, unknown> },
     meta?: SseEventMeta,
   ) {
-    // ---- 实例销毁回执：基础设施事件，被销毁目录可能尚未/不再属于打开集合，
-    // 须在目录闸门之前放行（reDiscoverInstanceCatalog 的等待点）
-    if (ev.type === "server.instance.disposed") {
-      // 防御式解析（同 file.watcher.updated）：信封 directory 兜底
-      const dir = typeof ev.properties.directory === "string" ? ev.properties.directory : directory
-      const waiters = this.instanceDisposedWaiters.get(dir)
-      if (waiters) for (const w of [...waiters]) w()
-      return
-    }
     // ---- worktree 生命周期（design-worktree-sync）：目录闸门不适用——新 directory
     // 尚未进本地 sandboxes，按信封 project 字段（projectID）判断"该项目是否打开"。
     // ready → 重拉项目列表拿 sandboxes（左栏即时多一行）；failed 仅日志（createWorkspace
@@ -1833,80 +1826,6 @@ export class AppStore {
     return tab?.kind === "chat" ? (tab.directory ?? null) : null
   }
 
-  // ============ worktree.ready 后 skill 重新发现（实例缓存冻结防御） ============
-
-  /** 等待 server.instance.disposed 的挂起回调（键 = 目录），handleEvent 顶部兑现 */
-  private instanceDisposedWaiters = new Map<string, Set<() => void>>()
-
-  /**
-   * worktree.ready 后强制 server 重新发现该目录的 skill/命令注册表。
-   *
-   * 背景：server 的 skill 状态是实例级 ScopedCache——首次访问扫盘后冻结，
-   * 无任何失效钩子；worktree 创建是 `git worktree add --no-checkout` + 后台
-   * `git reset --hard` 两段式，ready 前任何触发首次 skill 发现的 instance 请求
-   * 都可能扫到空目录并把空结果冻结到 server 进程重启。ready 时点 reset 已完成
-   * （事件在 checkout 之后才发），本端创建场景无会话；多客户端下他端收到同一
-   * ready 后可能已开跑会话——dispose 会取消其运行中会话/重启 LSP/MCP，故先查
-   * 已知活跃会话（hasActiveSessionIn）。守卫是 best-effort 单次快照：他端新建
-   * 会话尚未经 SSE 同步到本端、以及本端 prompt 已发出但 busy 状态事件先于
-   * ready 到达被观察之前的在途窗口，同样不被覆盖（如 createWorkspace 自动切
-   * 作用域后立即发送的场景）——有则放弃（冻结自愈推迟，活跃会话本身不依赖
-   * skill 重新发现）。
-   *
-   * 流程：POST /instance/dispose → 等 SSE server.instance.disposed（teardown
-   * 在响应后异步执行，立即重拉会命中待销毁实例拿到冻结的旧缓存）→ 重拉命令
-   * 注册表。重拉仅当该目录是当前 chat 目录——"当前所见"口径同
-   * scheduleCatalogRefresh，避免他端/他项目 ready 抢占单槽命令缓存；其余场景
-   * 服务端已修好，用户输入 `/` 惰性拉取时自然是新实例。端点缺失（404）/SSE
-   * 丢帧（10s 超时兜底）均静默放弃，不阻塞 ready 主流程。
-   */
-  private async reDiscoverInstanceCatalog(directory: string) {
-    const client = this.client
-    if (!client) return
-    if (this.hasActiveSessionIn(directory)) return
-    try {
-      await client.disposeInstance(directory)
-    } catch {
-      return
-    }
-    if (this.client !== client) return
-    await this.waitInstanceDisposed(directory, 10_000)
-    if (this.client !== client) return
-    if (this.activeChatDirectory() === directory) void this.refreshCommands(directory)
-  }
-
-  /** 该目录是否存在已知活跃（busy/retry）会话（sessionStatus 由 SSE/状态快照驱动） */
-  private hasActiveSessionIn(directory: string): boolean {
-    for (const sessionID of this.sessionStatus.keys()) {
-      if (this.findSession(sessionID)?.directory === directory) return true
-    }
-    return false
-  }
-
-  /** 等待某目录的 server.instance.disposed（超时兜底：SSE 丢帧不永久阻塞） */
-  private waitInstanceDisposed(directory: string, timeoutMs: number): Promise<void> {
-    return new Promise((resolve) => {
-      let settled = false
-      const done = () => {
-        if (settled) return
-        settled = true
-        clearTimeout(timer)
-        const set = this.instanceDisposedWaiters.get(directory)
-        if (set) {
-          set.delete(done)
-          if (set.size === 0) this.instanceDisposedWaiters.delete(directory)
-        }
-        resolve()
-      }
-      const timer = setTimeout(done, timeoutMs)
-      let set = this.instanceDisposedWaiters.get(directory)
-      if (!set) {
-        set = new Set()
-        this.instanceDisposedWaiters.set(directory, set)
-      }
-      set.add(done)
-    })
-  }
 
   private pendingPartsMap = new Map<string, Map<string, Part[]>>()
 
@@ -2977,14 +2896,23 @@ export class AppStore {
       await Promise.all(
         sessionIds.map((id) => clientV2.deleteSession(id).catch(() => {})),
       )
-      // force 缺省 false（脏 worktree 返回 forceRequired——重试 UX 是 M5 决策点）
-      await clientV2.deleteWorktree(project.id, directory)
+      // force=false 首发：脏 worktree 返回 400 WorktreeError{forceRequired:true}
+      // （活体实测）→ 置二次确认态，用户确认后带 force 重试（M5 UX）
+      const force = this.forceDeleteRequests.has(deleteKey)
+      await clientV2.deleteWorktree(project.id, directory, { force })
       // worktree 列表数据源是 Project.sandboxes，重拉项目列表同步（刷新全局 projects）
       await this.refreshWorkspacesForProject(project)
       const restored = await this.unloadWorktreeDirectory(directory, project.id, isCurrent)
       if (restored) this.restoreScopeTabs(project.worktree, true)
       return { ok: true }
     } catch (e) {
+      // forceRequired：脏 worktree 的 server 拒绝（含未提交变更）——复用确认弹窗
+      // 二次确认（文案由 forceDelete 标记切换），非终态报错
+      if (e instanceof ApiErrorV2 && e.forceRequired) {
+        this.forceDeleteRequests.add(deleteKey)
+        this.pendingWorktreeDelete = { directory, projectId }
+        return { ok: false, error: "force-required" }
+      }
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     } finally {
       this.deletingWorkspaces.delete(deleteKey)
@@ -3009,13 +2937,22 @@ export class AppStore {
     // 非 git 项目（v2 伪项目行）无 worktree 概念（左栏不渲染子行，此处兜底）
     if (!project || !project.vcs) return
     if (this.isWorkspaceDeleting(projectId, directory)) return
+    // 新请求清 force 态（上轮 forceRequired 的二次确认不跨请求残留）
+    this.forceDeleteRequests.delete(`${projectId}\0${directory}`)
     this.pendingWorktreeDelete = { directory, projectId }
     this.emit()
+  }
+
+  /** 当前删除确认是否为强制删除（forceRequired 二次确认，弹窗文案切换依据） */
+  isForceDeleteConfirm(projectId: string, directory: string): boolean {
+    return this.forceDeleteRequests.has(`${projectId}\0${directory}`)
   }
 
   /** 取消删除确认（ConfirmDialog onClose / Esc，design-keyboard-shortcuts §4.1） */
   cancelWorktreeDelete() {
     if (!this.pendingWorktreeDelete) return
+    const { projectId, directory } = this.pendingWorktreeDelete
+    this.forceDeleteRequests.delete(`${projectId}\0${directory}`)
     this.pendingWorktreeDelete = null
     this.emit()
   }
@@ -3159,11 +3096,9 @@ export class AppStore {
         if (p) this.restoreScopeTabs(p.worktree, true)
       }
     }
-    // 与 ready 路径重复触发的无害性有限：busy 会话守卫挡住主要风险，正确性不受
-    // 影响；多客户端各自对同一 ready dispose，后到者的 POST 会销毁先到者触发
-    // 懒加载的新实例（多一轮 LSP/MCP 起停，冻结果不变）——正确性换简单性，接受。
-    // 正常链路 ready 到达即刷新 projects，此 diff 多数时候为空
-    for (const d of appeared) void this.reDiscoverInstanceCatalog(d)
+    // 正常链路 ready 到达即刷新 projects，此 diff 多数时候为空。
+    // v1 的 reDiscoverInstanceCatalog（instance dispose + 命令重发现）已随 v2
+    // 实例模型消亡删除——v2 命令缓存刷新走 scheduleCatalogRefresh 惰性路径
     this.emit()
   }
 
@@ -3604,13 +3539,14 @@ export class AppStore {
    * connectionError（左栏状态行可见），无 toast 基建同文件菜单取舍。
    */
   forkSession(sessionID: string, opts: { messageID?: string; directory?: string } = {}): void {
-    const client = this.client
-    if (!client) return
+    const clientV2 = this.clientV2
+    if (!clientV2) return
     const directory = opts.directory ?? this.findSession(sessionID)?.directory
     if (!directory) return
-    void client
-      .forkSession(sessionID, directory, opts)
-      .then((forked) => {
+    void clientV2
+      .forkSession(sessionID, opts)
+      .then((wire) => {
+        const forked = toInternalSession(wire)
         // 迟到快照不回卷（review #1）：REST 响应携带的是复制完成时刻的快照，
         // 复制窗口内对该会话的后续变更（关 Tab=归档、重命名）已先经
         // session.updated 到达本地——本地记录 time.updated 更晚时跳过合并与
@@ -3690,29 +3626,23 @@ export class AppStore {
     sessionID: string,
     messageID: string,
   ): Promise<{ ok: boolean; error?: string }> {
-    if (!this.client) return { ok: false, error: "not connected" }
+    const clientV2 = this.clientV2
+    if (!clientV2) return { ok: false, error: "not connected" }
     const session = this.findSession(sessionID)
     if (!session) return { ok: false, error: "session not found" }
-    // abort 端点等待 run 完全停止后才响应（源码核对：run-state.cancel await
-    // Fiber.interrupt + 置 Idle），随后 revert 不会撞 409 窗口；若仍 409，是
-    // abort 与他端新 prompt 的竞争，文案「会话仍在进行中」如实成立
+    // interrupt 等待 run 结算后才响应（v2 awaitSettlement），随后 stage 不会撞
+    // SessionBusyError 窗口；若仍 409，是 interrupt 与他端新 prompt 的竞争
     if (this.isSessionActive(sessionID)) await this.abortSession(sessionID)
     try {
-      const updated = await this.client.revertMessage(sessionID, session.directory, messageID)
-      if (updated) this.mergeSessionUpdate(updated)
-      if (!updated?.revert) {
-        // server 未写回滚点（消息已不存在，如他端先行删除/提交——源码：
-        // revert.ts `if (!rev) return session`）。不回填、显式失败呈现
-        const msg = "回滚未生效：消息不存在或已被删除"
-        this.connectionError = msg
-        this.emit()
-        return { ok: false, error: msg }
-      }
-      // 斜杠命令回显不回填（design-message-revert §3.3 修订）：subtask part 或本端
-      // 命令回显标记——展开文本非用户原文（参数已消费），回填是噪音
-      const seed = this.isCommandEcho(sessionID, updated.revert.messageID)
+      // v2 三段式第一段：stage（files:true 同步还原工作区，v1 行为）。
+      // 响应 `{data: Revert}`（无完整 Session）——revert 状态本地合成合并
+      const revert = await clientV2.revertStage(sessionID, messageID)
+      this.mergeSessionUpdate({ ...session, revert } as typeof session)
+      // 斜杠命令回显不回填（design-message-revert §3.3 修订）：展开文本非用户
+      // 原文（参数已消费），回填是噪音
+      const seed = this.isCommandEcho(sessionID, revert.messageID)
         ? null
-        : this.userMessageText(sessionID, updated.revert.messageID)
+        : this.userMessageText(sessionID, revert.messageID)
       if (seed) {
         this.revertDrafts.set(sessionID, seed)
         this.revertDraftVersion++
@@ -3734,12 +3664,14 @@ export class AppStore {
 
   /** 撤销回滚暂存：恢复文件、清 session.revert */
   async unrevertSession(sessionID: string): Promise<{ ok: boolean; error?: string }> {
-    if (!this.client) return { ok: false, error: "not connected" }
+    const clientV2 = this.clientV2
+    if (!clientV2) return { ok: false, error: "not connected" }
     const session = this.findSession(sessionID)
     if (!session) return { ok: false, error: "session not found" }
     try {
-      const updated = await this.client.unrevertSession(sessionID, session.directory)
-      if (updated) this.mergeSessionUpdate(updated)
+      // v2 三段式第二段：clear（204 无返回体——revert 状态本地清复合并）
+      await clientV2.revertClear(sessionID)
+      this.mergeSessionUpdate({ ...session, revert: null } as typeof session)
       // 撤销即清输入框：空种子 = 清空草稿（官方 restore→promptSession.reset 语义）。
       // 仅当输入框正承载本地回填文本（种子已消费）时清空——跨客户端回滚/无文本
       // 回滚不得误清用户自输内容

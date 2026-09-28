@@ -25,6 +25,10 @@ export interface RestClientV2Options {
 }
 
 export class ApiError extends Error {
+  /** 4xx/5xx 的结构化错误体（`{name, data}`，v2 typed error）——WorktreeError
+   *  的 forceRequired 等判别用；无体/解析失败为 undefined */
+  readonly body?: { name?: string; data?: Record<string, unknown> }
+
   constructor(
     public status: number,
     public kind:
@@ -36,8 +40,15 @@ export class ApiError extends Error {
       | "unsupported"
       | "unknown",
     message: string,
+    body?: { name?: string; data?: Record<string, unknown> },
   ) {
     super(message)
+    this.body = body
+  }
+
+  /** WorktreeError{forceRequired} 判别（M5）：脏 worktree 的 400 拒绝 */
+  get forceRequired(): boolean {
+    return this.body?.name === "WorktreeError" && this.body.data?.forceRequired === true
   }
 }
 
@@ -115,7 +126,16 @@ export class RestClientV2 {
             : res.status >= 500
               ? "server"
               : "unknown"
-      throw new ApiError(res.status, kind, `HTTP ${res.status}`)
+      // 结构化错误体尽力解析（v2 typed error `{name, data}`）；失败仅留状态码
+      let body: { name?: string; data?: Record<string, unknown> } | undefined
+      try {
+        const text = await res.text()
+        if (text) body = JSON.parse(text) as { name?: string; data?: Record<string, unknown> }
+      } catch {
+        // 非 JSON 错误体（代理页等）——无 body 判别
+      }
+      const detail = body?.data?.message
+      throw new ApiError(res.status, kind, detail ? `HTTP ${res.status}: ${String(detail)}` : `HTTP ${res.status}`, body)
     }
     return res
   }
@@ -304,5 +324,66 @@ export class RestClientV2 {
       // 中断在途执行需等待结算（server awaitSettlement）——放宽超时
       timeoutMs: 30000,
     })
+  }
+
+  // ============ worktree / revert / fork（M5） ============
+
+  /**
+   * POST /api/worktree：创建 worktree（payload {projectID, from?, branch?, name?}；
+   * v1 的 directory 父目录参数省略 = server 用项目 canonical 配置/默认数据目录）。
+   * 响应 `{data: {directory}}`（Worktree.Info）。
+   */
+  async createWorktree(projectID: string, opts: { name?: string } = {}): Promise<{ directory: string }> {
+    const res = await this.fetchJson<{ data: { directory: string } }>("/api/worktree", {
+      method: "POST",
+      body: JSON.stringify({ projectID, ...(opts.name !== undefined ? { name: opts.name } : {}) }),
+      timeoutMs: 60000,
+    })
+    return res.data
+  }
+
+  /**
+   * POST /api/session/:sessionID/revert/stage：暂存回滚（v1 revert 的 v2 三段式
+   * 第一段）。files 缺省 true = 同时还原工作区文件（v1 行为）。响应
+   * `{data: Session.Revert {messageID, snapshot?, files?}}`；busy 409（SessionBusyError）。
+   */
+  async revertStage(
+    sessionID: string,
+    messageID: string,
+    opts: { files?: boolean } = {},
+  ): Promise<{ messageID: string; partID?: string; snapshot?: string; files?: unknown[] }> {
+    const res = await this.fetchJson<{
+      data: { messageID: string; partID?: string; snapshot?: string; files?: unknown[] }
+    }>(`/api/session/${encodeURIComponent(sessionID)}/revert/stage`, {
+      method: "POST",
+      body: JSON.stringify({ messageID, files: opts.files ?? true }),
+    })
+    return res.data
+  }
+
+  /** DELETE /api/session/:sessionID/revert：撤销回滚暂存（v1 unrevert） */
+  async revertClear(sessionID: string): Promise<void> {
+    await this.fetchResponse(`/api/session/${encodeURIComponent(sessionID)}/revert`, {
+      method: "DELETE",
+    })
+  }
+
+  /**
+   * POST /api/session/:sessionID/fork：复制历史（同步长操作，timeoutMs: 0 沿袭
+   * v1——大会话实测 24s）。payload `before` 省略 = 全量；响应 `{data: SessionInfo}`。
+   */
+  async forkSession(
+    sessionID: string,
+    opts: { messageID?: string } = {},
+  ): Promise<SessionInfo> {
+    const res = await this.fetchJson<{ data: SessionInfo }>(
+      `/api/session/${encodeURIComponent(sessionID)}/fork`,
+      {
+        method: "POST",
+        body: JSON.stringify(opts.messageID !== undefined ? { before: opts.messageID } : {}),
+        timeoutMs: 0,
+      },
+    )
+    return res.data
   }
 }

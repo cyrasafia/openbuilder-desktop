@@ -432,8 +432,16 @@ function ProjectTree() {
 
       {store.pendingWorktreeDelete && (
         <ConfirmDialog
-          title={t.confirmDeleteWorkspace}
-          message={t.confirmDeleteWorkspaceMsg}
+          title={
+            store.isForceDeleteConfirm(store.pendingWorktreeDelete.projectId, store.pendingWorktreeDelete.directory)
+              ? t.forceDeleteWorkspace
+              : t.confirmDeleteWorkspace
+          }
+          message={
+            store.isForceDeleteConfirm(store.pendingWorktreeDelete.projectId, store.pendingWorktreeDelete.directory)
+              ? t.forceDeleteWorkspaceMsg
+              : t.confirmDeleteWorkspaceMsg
+          }
           confirmLabel={t.confirm}
           cancelLabel={t.cancel}
           danger

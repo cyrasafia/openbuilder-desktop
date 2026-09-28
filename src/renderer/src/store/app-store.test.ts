@@ -140,6 +140,17 @@ beforeEach(() => {
       ): Promise<{ entries: MessageWithParts[]; nextCursor: string | null }> => ({ entries: [], nextCursor: null }),
       prompt: async () => {},
       interrupt: async () => {},
+      createWorktree: async (_pid: string, _opts: { name?: string } = {}) => ({
+        directory: `/wt-${Math.random().toString(36).slice(2, 6)}`,
+      }),
+      revertStage: async (_sid: string, messageID: string) => ({ messageID }),
+      revertClear: async () => {},
+      forkSession: async (sid: string) => ({
+        id: sid === "s1" ? "s2" : "s3",
+        projectID: "proj1",
+        time: { created: 1, updated: 1 },
+        location: { directory: ROOT },
+      }),
     }
   store.projects = [project()]
   store.projectStates = {
@@ -1994,10 +2005,7 @@ describe("回滚到指定消息（design-message-revert）", () => {
     seedSession()
     seedUserMessage("帮我写个函数")
     const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.revertMessage = async () => ({
-      ...session("s1", ROOT, { created: 1, updated: 2 }),
-      revert: { messageID: "msg_u1" },
-    })
+    clientV2Of().revertStage = async () => ({ messageID: "msg_u1" })
 
     const res = await store.revertToMessage("s1", "msg_u1")
     expect(res.ok).toBe(true)
@@ -2024,10 +2032,7 @@ describe("回滚到指定消息（design-message-revert）", () => {
       ]),
     )
     const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.revertMessage = async () => ({
-      ...session("s1", ROOT, { created: 1, updated: 2 }),
-      revert: { messageID: "msg_u1" },
-    })
+    clientV2Of().revertStage = async () => ({ messageID: "msg_u1" })
 
     const res = await store.revertToMessage("s1", "msg_u1")
     expect(res.ok).toBe(true)
@@ -2072,10 +2077,7 @@ describe("回滚到指定消息（design-message-revert）", () => {
       },
     ])
 
-    client.revertMessage = async () => ({
-      ...session("s1", ROOT, { created: 1, updated: 2 }),
-      revert: { messageID: "msg_u1" },
-    })
+    clientV2Of().revertStage = async () => ({ messageID: "msg_u1" })
     const res = await store.revertToMessage("s1", "msg_u1")
     expect(res.ok).toBe(true)
     expect(store.takeRevertDraft("s1")).toBeNull()
@@ -2106,10 +2108,7 @@ describe("回滚到指定消息（design-message-revert）", () => {
         parts: [{ id: "prt_1", sessionID: "s1", messageID: "msg_u1", type: "text", text: "手输的普通消息" }],
       },
     })
-    client.revertMessage = async () => ({
-      ...session("s1", ROOT, { created: 1, updated: 2 }),
-      revert: { messageID: "msg_u1" },
-    })
+    clientV2Of().revertStage = async () => ({ messageID: "msg_u1" })
     await store.revertToMessage("s1", "msg_u1")
     expect(store.takeRevertDraft("s1")).toBe("手输的普通消息")
   })
@@ -2121,9 +2120,9 @@ describe("回滚到指定消息（design-message-revert）", () => {
     clientV2Of().interrupt = async () => {
       calls.push("interrupt")
     }
-    client.revertMessage = async () => {
+    clientV2Of().revertStage = async () => {
       calls.push("revert")
-      return { ...session("s1", ROOT, { created: 1, updated: 2 }), revert: { messageID: "msg_u1" } }
+      return { messageID: "msg_u1" }
     }
     // 经真实事件路径置 busy
     ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, {
@@ -2139,8 +2138,8 @@ describe("回滚到指定消息（design-message-revert）", () => {
   it("revertToMessage 409：ok:false 且 connectionError 记录", async () => {
     seedSession()
     const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.revertMessage = async () => {
-      throw new ApiError(409, "unknown", "HTTP 409")
+    clientV2Of().revertStage = async () => {
+      throw new ApiErrorV2(409, "unknown", "HTTP 409")
     }
     const res = await store.revertToMessage("s1", "msg_u1")
     expect(res.ok).toBe(false)
@@ -2154,10 +2153,7 @@ describe("回滚到指定消息（design-message-revert）", () => {
     ;(store as unknown as { revertDrafts: Map<string, string> }).revertDrafts.set("s1", "回滚回填的草稿")
     expect(store.takeRevertDraft("s1")).toBe("回滚回填的草稿")
     const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.unrevertSession = async () => ({
-      ...session("s1", ROOT, { created: 1, updated: 3 }),
-      revert: null,
-    })
+    clientV2Of().revertClear = async () => {}
 
     const res = await store.unrevertSession("s1")
     expect(res.ok).toBe(true)
@@ -2170,10 +2166,7 @@ describe("回滚到指定消息（design-message-revert）", () => {
     const s1 = seedSession()
     store.sessionsByProject.set("proj1", sessionsOf({ ...s1, revert: { messageID: "msg_u1" } }))
     const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.unrevertSession = async () => ({
-      ...session("s1", ROOT, { created: 1, updated: 3 }),
-      revert: null,
-    })
+    clientV2Of().revertClear = async () => {}
 
     const res = await store.unrevertSession("s1")
     expect(res.ok).toBe(true)
@@ -2187,10 +2180,7 @@ describe("回滚到指定消息（design-message-revert）", () => {
     store.seedChatDraft("s1", "/review --help")
     expect(store.takeRevertDraft("s1")).toBe("/review --help")
     const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.unrevertSession = async () => ({
-      ...session("s1", ROOT, { created: 1, updated: 3 }),
-      revert: null,
-    })
+    clientV2Of().revertClear = async () => {}
 
     const res = await store.unrevertSession("s1")
     expect(res.ok).toBe(true)
@@ -2208,12 +2198,12 @@ describe("回滚到指定消息（design-message-revert）", () => {
     expect(store.takeRevertDraft("s1")).toBeNull()
   })
 
-  it("revertToMessage server 未暂存（消息已不存在）：ok:false 且不回填", async () => {
+  it("revertToMessage 消息不存在（v2：stage 404 MessageNotFoundError）：ok:false 且不回填", async () => {
     seedSession()
     seedUserMessage("帮我写个函数")
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    // server 侧消息不存在 → revert.ts no-op，返回无 revert 字段的原会话
-    client.revertMessage = async () => session("s1", ROOT, { created: 1, updated: 1 })
+    clientV2Of().revertStage = async () => {
+      throw new ApiErrorV2(404, "not-found", "HTTP 404")
+    }
 
     const res = await store.revertToMessage("s1", "msg_u1")
     expect(res.ok).toBe(false)
@@ -3680,14 +3670,9 @@ describe("Tab 拖拽重排与重命名（design-tab-drag-rename）", () => {
 
   it("forkSession fire-and-forget：REST 完成合并快照 + 当前作用域被动补开（不激活）", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
-    const forked = session("s9", ROOT, { created: 9, updated: 9 })
-    let calledDir = ""
-    ;(store as unknown as { client: unknown }).client = {
-      forkSession: async (id: string, dir: string) => {
-        expect(id).toBe("s1")
-        calledDir = dir
-        return forked
-      },
+    clientV2Of().forkSession = async (id: string) => {
+      expect(id).toBe("s1")
+      return { id: "s9", projectID: "proj1", time: { created: 9, updated: 9 }, location: { directory: ROOT } }
     }
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
     store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
@@ -3695,7 +3680,7 @@ describe("Tab 拖拽重排与重命名（design-tab-drag-rename）", () => {
 
     store.forkSession("s1")
     await new Promise((r) => setTimeout(r, 0))
-    expect(calledDir).toBe(ROOT)
+    // v2 fork 无 directory 参数（location 作用域经 middleware）——原 calledDir 断言删除
     expect(store.findSession("s9")?.id).toBe("s9")
     // 被动补开（REST 兜底同 SSE 路径）：末尾追加、不激活不抢焦点
     expect(store.tabs.map((t) => t.key)).toEqual(["chat:s1", "chat:s9"])
@@ -3703,19 +3688,16 @@ describe("Tab 拖拽重排与重命名（design-tab-drag-rename）", () => {
   })
 
   it("forkSession：directory 直传优先——本地无源会话记录（僵尸 Tab）也能发起", async () => {
-    const forked = session("s9", WT1, { created: 9, updated: 9 })
-    let calledDir = ""
-    ;(store as unknown as { client: unknown }).client = {
-      forkSession: async (_id: string, dir: string) => {
-        calledDir = dir
-        return forked
-      },
-    }
+    clientV2Of().forkSession = async () => ({
+      id: "s9",
+      projectID: "proj1",
+      time: { created: 9, updated: 9 },
+      location: { directory: WT1 },
+    })
     // sessionsByProject 无 s1（快照间隙/他端已删本地未同步）
     store.sessionsByProject = new Map([["proj1", sessionsOf()]])
     store.forkSession("s1", { directory: WT1 })
     await new Promise((r) => setTimeout(r, 0))
-    expect(calledDir).toBe(WT1)
     // WT1 非当前作用域（scope=ROOT）：合并快照但不开 Tab（切回时 §17 补开）
     expect(store.findSession("s9")?.id).toBe("s9")
     expect(store.tabs).toHaveLength(0)
@@ -3724,10 +3706,11 @@ describe("Tab 拖拽重排与重命名（design-tab-drag-rename）", () => {
   it("forkSession：SSE session.created 先到即被动开（不激活），REST 完成幂等不重复", async () => {
     const s1 = session("s1", WT1, { created: 1, updated: 1 })
     const forked = session("s9", WT1, { created: 9, updated: 9 })
-    let resolveRest!: (v: Session) => void
-    ;(store as unknown as { client: unknown }).client = {
-      forkSession: () => new Promise<Session>((r) => (resolveRest = r)),
-    }
+    let resolveRest!: (v: { id: string; projectID: string; time: { created: number; updated: number }; location: { directory: string } }) => void
+    clientV2Of().forkSession = () =>
+      new Promise((r) =>
+        (resolveRest = r),
+      )
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
     store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: WT1 }]
     store.activeTabKey = "chat:s1"
@@ -3742,7 +3725,7 @@ describe("Tab 拖拽重排与重命名（design-tab-drag-rename）", () => {
     expect(store.tabs.map((t) => t.key)).toEqual(["chat:s1", "chat:s9"])
     expect(store.activeTabKey).toBe("chat:s1")
 
-    resolveRest(forked)
+    resolveRest({ id: "s9", projectID: "proj1", time: { created: 9, updated: 9 }, location: { directory: WT1 } })
     await new Promise((r) => setTimeout(r, 0))
     // 幂等收敛：不重复开 Tab、激活不被顶替
     expect(store.tabs.map((t) => t.key)).toEqual(["chat:s1", "chat:s9"])
@@ -3753,10 +3736,12 @@ describe("Tab 拖拽重排与重命名（design-tab-drag-rename）", () => {
   it("forkSession 迟到快照不回卷：REST 响应前的归档/重命名不被旧快照覆盖、不复活已关 Tab", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     // REST 响应 = 复制完成时刻（updated 9）；此后用户关 Tab=归档（updated 99 已先经事件到达本地）
-    const staleFork = session("s9", ROOT, { created: 9, updated: 9 })
-    ;(store as unknown as { client: unknown }).client = {
-      forkSession: async () => staleFork,
-    }
+    clientV2Of().forkSession = async () => ({
+      id: "s9",
+      projectID: "proj1",
+      time: { created: 9, updated: 9 },
+      location: { directory: ROOT },
+    })
     store.sessionsByProject = new Map([
       ["proj1", sessionsOf(s1, { ...session("s9", ROOT, { created: 9, updated: 99 }), time: { created: 9, updated: 99, archived: 88 }, title: "已重命名" } as Session)],
     ])
@@ -3773,10 +3758,8 @@ describe("Tab 拖拽重排与重命名（design-tab-drag-rename）", () => {
 
   it("forkSession 失败：connectionError 可见、不开 Tab", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
-    ;(store as unknown as { client: unknown }).client = {
-      forkSession: async () => {
-        throw new Error("fork failed")
-      },
+    clientV2Of().forkSession = async () => {
+      throw new Error("fork failed")
     }
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
     store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
@@ -3788,11 +3771,9 @@ describe("Tab 拖拽重排与重命名（design-tab-drag-rename）", () => {
 
   it("forkSession：directory 与本地会话记录双双缺失时不发请求", async () => {
     let called = 0
-    ;(store as unknown as { client: unknown }).client = {
-      forkSession: async () => {
-        called++
-        return session("s9", ROOT, { created: 9, updated: 9 })
-      },
+    clientV2Of().forkSession = async () => {
+      called++
+      return { id: "s9", projectID: "proj1", time: { created: 9, updated: 9 }, location: { directory: ROOT } }
     }
     store.sessionsByProject = new Map([["proj1", sessionsOf()]])
     store.forkSession("ghost")
