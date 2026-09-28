@@ -311,6 +311,9 @@ const zh = {
   scTermCopy: "终端复制",
   scTermPaste: "终端粘贴",
   scDismiss: "关闭弹窗/菜单；确认弹窗内 = 取消",
+  // 待处理卡片快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增）
+  scPermCard: "授权卡：拒绝 / 总是允许 / 允许一次",
+  scQuestionCard: "问题卡：选选项 / 拒绝 / 下一步（提交）",
   // subagent 工作状态（design-subagent-status）
   subagentRunning: "运行中",
   subagentCompleted: "已完成",
@@ -591,6 +594,9 @@ const en: typeof zh = {
   scTermCopy: "Copy in terminal",
   scTermPaste: "Paste in terminal",
   scDismiss: "Dismiss dialogs and menus; cancel in confirm dialogs",
+  // Pending card shortcuts (design-keyboard-shortcuts §1.1b, 2026-09-28)
+  scPermCard: "Permission card: reject / always allow / allow once",
+  scQuestionCard: "Question card: pick option / reject / next (submit)",
   subagentRunning: "Running",
   subagentCompleted: "Done",
   subagentError: "Error",

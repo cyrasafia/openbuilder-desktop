@@ -317,6 +317,9 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { keys: "Ctrl+Shift+C", macKeys: "⌘C", action: "scTermCopy" },
       { keys: "Ctrl+Shift+V", macKeys: "⌘V", action: "scTermPaste" },
       { keys: "Esc", action: "scDismiss" },
+      // 待处理卡片（design-keyboard-shortcuts §1.1b，2026-09-28 增，仅会话页卡存活期）
+      { keys: "Ctrl+N / Ctrl+A / Ctrl+Y", macKeys: "⌘N / ⌘A / ⌘Y", action: "scPermCard" },
+      { keys: "Ctrl+1–9 / Ctrl+0 / Ctrl+Enter", macKeys: "⌘1–9 / ⌘0 / ⌘↵", action: "scQuestionCard" },
     ],
   },
 ]

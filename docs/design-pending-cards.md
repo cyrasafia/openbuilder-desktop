@@ -59,6 +59,7 @@ v0.1 此前只有事件占位（spec 范围外），用户在桌面端无法应�
 - **授权卡**（primary 系配色）：盾牌图标 + "授权请求" + 类型标题（bash→执行命令 / external_directory→访问外部目录 / 兜底 type 原文，同移动端 permissionTitle 映射）+ mono 详情行（metadata.command > patterns > 派生路径）；按钮 拒绝 / 总是允许 / 允许一次；可折叠
 - **问题卡**（tertiary 系配色）：图标 + 当前子问题 header + 步进 `i/N` + 队列计数；正文问题文本 + 选项列表（radio/checkbox 视觉，label + description）；多子问逐题步进（下一步/提交）；**当前步未选不得前进**（review-question-cards Q-7）；拒绝常驻；可折叠
 - 回复中全按钮禁用；失败在卡内右侧内联红字（桌面无 SnackBar）
+- **卡片快捷键（2026-09-28 增）**：授权卡 Ctrl+N/A/Y = 拒绝/总是允许/允许一次；问题卡 Ctrl+1..9 切换选项、Ctrl+0 拒绝、Ctrl+Enter 下一步/提交；Ctrl 按住期间按钮/选项显键位角标——键位守卫与冲突核查见 [design-keyboard-shortcuts §1.1b](./design-keyboard-shortcuts.md)
 
 ### 指示器 waiting 态（三处联动）
 
