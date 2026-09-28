@@ -541,10 +541,12 @@ function ProjectPicker({ onClose }: { onClose: () => void }) {
   const createAbortRef = useRef<AbortController | null>(null)
   useEffect(() => () => createAbortRef.current?.abort(), [])
 
-  // 打开即刷新 global 发现快照：新 global 目录的首个会话事件被事件闸门丢弃
-  // （entry 未打开），只能靠 scope=project 全量快照发现（openbuilder 同源结论）
+  // 打开即刷新发现源（M1a v2/A 语义）：v1 时代此处刷 global 发现快照
+  // （scope=project 全量，新目录首个会话被闸门丢弃只能靠快照发现）；v2 下
+  // 发现源 = 项目列表本身（非 git 目录 = 伪项目行），refresh 对应换成
+  // syncWorktrees（重拉 listProjects——他端新目录即刻可见，不等 60s 定时器）
   useEffect(() => {
-    void store.refreshGlobalSessions()
+    void store.syncWorktrees()
     searchRef.current?.focus()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
