@@ -83,8 +83,11 @@ describe("PdfFrameView 页面内搜索", () => {
   it("懒建视图 + 导航；唤起查找条输入发起 findInPage（viewId 复用注册表）；Esc 关闭 stop", async () => {
     render(<PdfFrameView tabKey="file:/repo/doc.pdf" absolutePath="/repo/doc.pdf" />)
     await waitFor(() => expect(desktop.browserNavigate).toHaveBeenCalledWith(5, expect.stringContaining("doc.pdf")))
-    // 注册表键 = file Tab key
-    expect(registerFindRequester).toHaveBeenCalledWith("file:/repo/doc.pdf", expect.any(Function))
+    // 注册表键 = file Tab key（注册在 setViewId 重渲染后的 find effect 里，
+    // 落后 navigate 一次 commit——须 waitFor，同步断言并发负载下偶发抢跑）
+    await waitFor(() =>
+      expect(registerFindRequester).toHaveBeenCalledWith("file:/repo/doc.pdf", expect.any(Function)),
+    )
     const open = registerFindRequester.mock.calls[0][1] as () => void
     act(() => open())
     const input = document.querySelector(".find-bar input") as HTMLInputElement
