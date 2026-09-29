@@ -62,16 +62,19 @@ function makeQuestion(overrides: Partial<PendingQuestion> = {}): PendingQuestion
     id: "que_1",
     sessionID: "s1",
     directory: "/repo/a",
-    questions: [
+    title: "确认",
+    fields: [
       {
+        key: "f1",
         question: "继续吗？",
-        header: "确认",
+        description: "",
+        kind: "select",
         options: [
-          { label: "是", description: "" },
-          { label: "否", description: "" },
+          { value: "yes", label: "是", description: "" },
+          { value: "no", label: "否", description: "" },
         ],
-        multiple: false,
-        custom: false,
+        placeholder: "",
+        required: false,
       },
     ],
     ...overrides,
@@ -268,16 +271,18 @@ describe("问题卡快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增
 
   it("checkbox 多选：Ctrl+1/2 增选，再按 Ctrl+1 删选", () => {
     const q = makeQuestion({
-      questions: [
+      fields: [
         {
+          key: "f1",
           question: "选哪些？",
-          header: "多选",
+          description: "",
+          kind: "multiselect",
           options: [
-            { label: "是", description: "" },
-            { label: "否", description: "" },
+            { value: "yes", label: "是", description: "" },
+            { value: "no", label: "否", description: "" },
           ],
-          multiple: true,
-          custom: false,
+          placeholder: "",
+          required: false,
         },
       ],
     })
@@ -294,7 +299,9 @@ describe("问题卡快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增
     press({ key: "1", code: "Digit1", ctrlKey: true })
     const ev = press({ key: "Enter", ctrlKey: true })
     expect(ev.defaultPrevented).toBe(true)
-    expect(storeStub.replyQuestion).toHaveBeenCalledWith("que_1", [["是"]])
+    expect(storeStub.replyQuestion).toHaveBeenCalledWith("que_1", {
+      0: { selected: ["yes"], text: "" },
+    })
   })
 
   it("未选时 Ctrl+Enter 不动作不消费（同按钮禁用态）", () => {
@@ -304,38 +311,45 @@ describe("问题卡快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增
     expect(storeStub.replyQuestion).not.toHaveBeenCalled()
   })
 
-  it("多子问：Ctrl+Enter 步进，末步提交全部答案", () => {
+  it("多字段：Ctrl+Enter 步进，末步提交全部答案", () => {
     const q = makeQuestion({
-      questions: [
+      fields: [
         {
+          key: "f1",
           question: "1?",
-          header: "A",
+          description: "",
+          kind: "select",
           options: [
-            { label: "是", description: "" },
-            { label: "否", description: "" },
+            { value: "yes", label: "是", description: "" },
+            { value: "no", label: "否", description: "" },
           ],
-          multiple: false,
-          custom: false,
+          placeholder: "",
+          required: false,
         },
         {
+          key: "f2",
           question: "2?",
-          header: "B",
+          description: "",
+          kind: "select",
           options: [
-            { label: "好", description: "" },
-            { label: "差", description: "" },
+            { value: "good", label: "好", description: "" },
+            { value: "bad", label: "差", description: "" },
           ],
-          multiple: false,
-          custom: false,
+          placeholder: "",
+          required: false,
         },
       ],
     })
     render(<QuestionCard question={q} queueTotal={1} />)
     press({ key: "1", code: "Digit1", ctrlKey: true })
     press({ key: "Enter", ctrlKey: true })
-    expect(document.querySelector(".pending-card-title")?.textContent).toBe("B")
+    expect(document.querySelector(".pending-card-title")?.textContent).toBe("确认")
     press({ key: "2", code: "Digit2", ctrlKey: true })
     press({ key: "Enter", ctrlKey: true })
-    expect(storeStub.replyQuestion).toHaveBeenCalledWith("que_1", [["是"], ["差"]])
+    expect(storeStub.replyQuestion).toHaveBeenCalledWith("que_1", {
+      0: { selected: ["yes"], text: "" },
+      1: { selected: ["bad"], text: "" },
+    })
   })
 
   it("Ctrl+0 拒绝（preventDefault）", () => {
@@ -354,13 +368,19 @@ describe("问题卡快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增
 
   it("选项超过 9 个：仅前 9 项有快捷键角标", () => {
     const q = makeQuestion({
-      questions: [
+      fields: [
         {
+          key: "f1",
           question: "?",
-          header: "多选项",
-          options: Array.from({ length: 10 }, (_, i) => ({ label: `选项${i + 1}`, description: "" })),
-          multiple: false,
-          custom: false,
+          description: "",
+          kind: "select",
+          options: Array.from({ length: 10 }, (_, i) => ({
+            value: `opt${i + 1}`,
+            label: `选项${i + 1}`,
+            description: "",
+          })),
+          placeholder: "",
+          required: false,
         },
       ],
     })
