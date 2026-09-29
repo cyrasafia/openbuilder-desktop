@@ -20,8 +20,10 @@ import type {
   V2PermissionDecision,
 } from "./api-v2-types"
 import { toInternalMessages, type V2MessageEntry } from "./v2-adapter"
+import { normalizeForm, type PendingQuestion } from "./pending-requests"
 import type {
   AgentInfo,
+  CommandInfo,
   FileContentData,
   FileDiff,
   FileNode,
@@ -681,5 +683,74 @@ export class RestClientV2 {
       { method: "POST", headers: { "x-opencode-ticket": "1" } },
     )
     return res.data
+  }
+
+  // ============ 命令面板（M6c：/api/command + /api/skill 合并） ============
+
+  /**
+   * 命令目录 = `GET /api/command` ∪ `GET /api/skill`（v2 注册制不再合并外部
+   * skill，移动端同源合并——skill 以斜杠触发，source 标记供 UI 分流）。
+   * 单源失败保留该源空缺（不拖垮另一源）。
+   */
+  async listCommands(directory: string): Promise<CommandInfo[]> {
+    const [commands, skills] = await Promise.all([
+      this.fetchJson<{ data: CommandInfo[] }>(`/api/command${this.locationQuery(directory)}`)
+        .then((r) => r.data)
+        .catch(() => null),
+      this.fetchJson<{ data: Array<{ id: string; name?: string; description?: string }> }>(
+        `/api/skill${this.locationQuery(directory)}`,
+      )
+        .then((r) => r.data)
+        .catch(() => null),
+    ])
+    const out: CommandInfo[] = commands ?? []
+    if (skills) {
+      for (const s of skills) {
+        if (!s?.id) continue
+        out.push({ name: s.id, description: s.description ?? s.name, source: "skill" })
+      }
+    }
+    return out
+  }
+
+  /**
+   * POST /api/session/:sessionID/command：body `{name, text?, files?}`（files =
+   * v2 {uri, name}，同 prompt 契约）。同步执行，NoContent/200 即完成——
+   * **timeoutMs: 0 不设超时**（design-slash-command SC-4：命令跑超 15s 客户端
+   * 会误判失败撤乐观 + 回填草稿，而 server 继续执行不随断连取消；v1 同判）。
+   */
+  async sendCommand(
+    sessionID: string,
+    command: string,
+    arguments_?: string,
+    files?: Array<{ uri: string; name?: string }>,
+  ): Promise<void> {
+    await this.fetchResponse(`/api/session/${encodeURIComponent(sessionID)}/command`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: command,
+        ...(arguments_ ? { text: arguments_ } : {}),
+        ...(files?.length ? { files } : {}),
+      }),
+      timeoutMs: 0,
+    })
+  }
+
+  // ============ 待办回填（M6c：permission/form 快照） ============
+
+  /** GET /api/permission/request：目录级 pending 权限（Record[]，归一化在 pending-requests） */
+  async listPendingPermissionRequests(directory: string): Promise<Record<string, unknown>[]> {
+    const res = await this.fetchJson<{ data: Record<string, unknown>[] }>(
+      `/api/permission/request${this.locationQuery(directory)}`,
+    )
+    return res.data
+  }
+
+  /** GET /api/form：目录级 pending 表单（Form.Info[] → 归一化 PendingQuestion） */
+  async listPendingForms(directory: string): Promise<PendingQuestion[]> {
+    const res = await this.fetchJson<{ data: unknown[] }>(`/api/form${this.locationQuery(directory)}`)
+    return res.data
+      .map((f) => normalizeForm(f as Record<string, unknown>, directory))
+      .filter((q): q is PendingQuestion => q !== null)
   }
 }

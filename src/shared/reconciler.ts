@@ -3,12 +3,13 @@
  * 参考 openbuilder design-incremental-reconcile（窗口 K=100、互斥锁、
  * debounce）与 design-sse-reconnect-recovery（reconnecting→connected 触发）。
  */
-import type { Session, SessionStatusValue } from "./api-types"
+import type { Session } from "./api-types"
 import type { RestClient } from "./rest-client"
 import type { RestClientV2 } from "./rest-client-v2"
-import { toInternalMessages, toInternalSession as toInternalSessionForReconcile } from "./v2-adapter"
+import { toInternalSession as toInternalSessionForReconcile } from "./v2-adapter"
 import { mergeSnapshotIntoMessages } from "./message-merge"
 import type { MessageWithParts } from "./api-types"
+import type { PendingQuestion } from "./pending-requests"
 import { runLimited } from "./run-limited"
 
 export interface ReconcilerDeps {
@@ -21,15 +22,15 @@ export interface ReconcilerDeps {
   onSessionsSnapshot: (directory: string, sessions: Session[]) => void
   onMessagesSnapshot: (sessionID: string, messages: MessageWithParts[]) => void
   /**
-   * 目录级 pending（授权/问题）回填。permissions 为 null 表示该目录抓取
-   * 失败——调用方必须保留本地条目（review-permissions.md R-Perm-2 教训），
-   * 只把成功目录当权威。SSE 只在 asked 时推送一次，断线期间的请求全靠这里补齐。
-   * （M6a 起 questions 不再走本快照——v1 端点退役，form 回填 M6c 接
-   * `GET /api/form` 后以归一化形态单独回调。）
+   * 目录级 pending（授权/表单）回填。null 表示该目录该类别抓取失败——调用方
+   * 必须保留本地条目（review-permissions.md R-Perm-2 教训），只把成功目录当
+   * 权威。SSE 只在 asked/created 时推送一次，断线期间的请求全靠这里补齐。
+   * questions 已是归一化形态（client 层 normalizeForm，M6c）。
    */
   onPendingSnapshot?: (
     directory: string,
     permissions: Record<string, unknown>[] | null,
+    questions: PendingQuestion[] | null,
   ) => void
   onReconcileStateChange: (active: boolean) => void
   log?: (...args: unknown[]) => void
@@ -99,14 +100,14 @@ export class Reconciler {
       if (page !== null) this.d.onSessionsSnapshot(dir, page.data.map((s) => toInternalSessionForReconcile(s)))
     })
     if (this.d.onPendingSnapshot) {
-      // M6a：questions 回填（v1 端点）随 form 模型切换退役——快照仅剩 permissions；
-      // permissions 仍走 v1 端点（v2 server 上 404 → null 保留本地，无功能但
-      // 无阻塞）。两者统一换绑 v2 `GET /api/permission/request` + `GET /api/form`
-      // 在 M6c（plan-v2-protocol）
+      // M6c：pending 回填换绑 v2（GET /api/permission/request + GET /api/form，
+      // 均带 deepObject location）；clientV2 层完成 envelope 解包与 form 归一化
       for (const dir of dirs) {
-        const permissions = await client.listPendingPermissions(dir).catch(() => null)
+        const permissions = await clientV2.listPendingPermissionRequests(dir).catch(() => null)
         if (stale()) return
-        this.d.onPendingSnapshot(dir, permissions)
+        const questions = await clientV2.listPendingForms(dir).catch(() => null)
+        if (stale()) return
+        this.d.onPendingSnapshot(dir, permissions, questions)
       }
     }
     // 消息快照（M6：换绑 v2——typed union + cursor，与 loadSessionMessages 同管道）

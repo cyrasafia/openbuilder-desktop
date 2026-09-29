@@ -399,6 +399,83 @@ describe("pty（M6b，契约活体核对 V2D-2）", () => {
   })
 })
 
+describe("命令面板与 pending 回填（M6c）", () => {
+  it("listCommands：/api/command ∪ /api/skill 合并（skill 带 source 标记）；单源失败保留另一源", async () => {
+    const urls: string[] = []
+    const both = mkClient((url) => {
+      urls.push(url)
+      if (url.includes("/api/skill")) {
+        return new Response(
+          JSON.stringify({ data: [{ id: "report", name: "Report", description: "报告问题" }] }),
+        )
+      }
+      return new Response(JSON.stringify({ data: [{ name: "init", description: "setup" }] }))
+    })
+    const commands = await both.listCommands("/r")
+    expect(commands).toEqual([
+      { name: "init", description: "setup" },
+      { name: "report", description: "报告问题", source: "skill" },
+    ])
+    expect(urls).toEqual([
+      expect.stringContaining("/api/command?"),
+      expect.stringContaining("/api/skill?"),
+    ])
+    // skill 源 404 → 只剩 command 源（不拖垮）
+    const skillDead = mkClient((url) =>
+      url.includes("/api/skill")
+        ? new Response("{}", { status: 404 })
+        : new Response(JSON.stringify({ data: [{ name: "init" }] })),
+    )
+    expect(await skillDead.listCommands("/r")).toEqual([{ name: "init" }])
+  })
+
+  it("sendCommand：POST /api/session/:id/command，body {name, text?, files?}", async () => {
+    const seen: Array<{ url: string; body: unknown }> = []
+    const client = mkClient((url, init) => {
+      seen.push({ url, body: JSON.parse(String(init.body)) })
+      return new Response(null, { status: 204 })
+    })
+    await client.sendCommand("ses_1", "review", "--help")
+    await client.sendCommand("ses_1", "init", undefined, [{ uri: "file:///a.ts", name: "a.ts" }])
+    expect(seen[0]).toEqual({ url: "http://server/api/session/ses_1/command", body: { name: "review", text: "--help" } })
+    expect(seen[1]).toEqual({
+      url: "http://server/api/session/ses_1/command",
+      body: { name: "init", files: [{ uri: "file:///a.ts", name: "a.ts" }] },
+    })
+  })
+
+  it("listPendingPermissionRequests / listPendingForms：deepObject location + envelope 解包（form 归一化）", async () => {
+    const urls: string[] = []
+    const client = mkClient((url) => {
+      urls.push(url)
+      if (url.includes("/api/form")) {
+        return new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: "frm_1",
+                sessionID: "ses_1",
+                title: "t",
+                fields: [{ key: "k", type: "boolean" }],
+              },
+            ],
+          }),
+        )
+      }
+      return new Response(JSON.stringify({ data: [{ id: "per_1", sessionID: "ses_1", action: "bash", resources: [] }] }))
+    })
+    const perms = await client.listPendingPermissionRequests("/r")
+    expect(perms).toEqual([{ id: "per_1", sessionID: "ses_1", action: "bash", resources: [] }])
+    const forms = await client.listPendingForms("/r")
+    expect(forms).toHaveLength(1)
+    expect(forms[0]).toMatchObject({ id: "frm_1", sessionID: "ses_1", directory: "/r" })
+    expect(urls).toEqual([
+      "http://server/api/permission/request?location%5Bdirectory%5D=%2Fr",
+      "http://server/api/form?location%5Bdirectory%5D=%2Fr",
+    ])
+  })
+})
+
 describe("鉴权与错误分类", () => {
   it("Basic 头注入（用户名缺省 opencode）", async () => {
     let auth = ""

@@ -16,7 +16,7 @@ import {
 import { SseSubscriber, type SseStatus, type SseEventMeta } from "@shared/sse-subscriber"
 import { Reconciler } from "@shared/reconciler"
 import { mergeSessionsSnapshot } from "@shared/session-merge"
-import { inferFailedFromMessages, inferIdleFromMessages, mergeStatusSnapshot } from "@shared/session-status"
+import { inferFailedFromMessages, inferIdleFromMessages } from "@shared/session-status"
 import { runLimited } from "@shared/run-limited"
 import {
   buildFirstOpenMemory,
@@ -68,7 +68,6 @@ import {
   type PendingQuestion,
   type SessionDotState,
 } from "@shared/pending-requests"
-import { normalizeTodoList } from "@shared/session-todos"
 import { isLoopbackBaseUrl } from "@shared/loopback"
 import {
   migrateLegacyGlobalState,
@@ -104,7 +103,6 @@ import type {
   Session,
   SessionStatusValue,
   TextPart,
-  Todo,
   Workspace,
 } from "@shared/api-types"
 import { isSyntheticTextPart } from "@shared/api-types"
@@ -409,7 +407,7 @@ export class AppStore {
   /**
    * 会话状态（busy/idle/retry）——纯客户端内存映射，单一事实源：
    * Tab 状态点、左栏指示器、消息流 TypingSlot 都消费它（design-typing-indicator §4）。
-   * idle 不落 map（缺省即 idle）；来源见 setSessionStatus/applyStatusSnapshot。
+   * idle 不落 map（缺省即 idle）；来源见 setSessionStatus（事件驱动，M3a 起无快照阶段）。
    */
   sessionStatus = new Map<string, SessionStatusValue>()
   /** sessionID → 状态来源目录（REST 按目录覆盖合并的权威边界） */
@@ -447,7 +445,6 @@ export class AppStore {
    * 与 REST 快照均整表替换，无合并）。生命周期随会话运行时（关 Tab/删会话经
    * cleanupSessionState 卸载，teardown 全清）——重开 Tab 由激活回填补齐。
    */
-  sessionTodos = new Map<string, Todo[]>()
 
   // ---- UI 状态 ----
   tabs: TabEntity[] = []
@@ -1039,7 +1036,6 @@ export class AppStore {
     this.retryHold.clear()
     this.pendingPermissions.clear()
     this.pendingQuestions.clear()
-    this.sessionTodos.clear()
     this.revertDrafts.clear()
     this.revertDraftConsumed.clear()
     this.manualDraftSeeds.clear()
@@ -1103,10 +1099,6 @@ export class AppStore {
     // 在途 fetch 无法中断；迟到的结果由 refreshCommands 的 client 身份守卫丢弃
     this.commandsInFlight.clear()
     // dispose 等待全部兑现放弃（后续 client 身份守卫丢弃），防跨连接误等
-    if (this.catalogRefreshTimer != null) {
-      clearTimeout(this.catalogRefreshTimer)
-      this.catalogRefreshTimer = null
-    }
     this.clearFileWatchTimers()
     this.stopWorktreeSyncTimer()
     this.snapshottedDirs.clear()
@@ -1609,13 +1601,39 @@ export class AppStore {
         this.pendingQuestions.delete(String((ev.properties as { id?: unknown }).id ?? ""))
         break
       }
-      case "todo.updated": {
-        // 全量替换（design-task-list）：防御式归一化后整表 set；空表 = server 侧清空。
-        // 非数组 todos = 畸形载荷（openapi 必填），忽略保留本地——与 REST 失败路径
-        // 的「失败不清」对称（review 2026-08-28 #2），显式 [] 才是权威清空
-        const { sessionID, todos } = ev.properties as { sessionID?: string; todos?: unknown }
-        if (!sessionID || !Array.isArray(todos)) return
-        this.sessionTodos.set(sessionID, normalizeTodoList(todos))
+      // ---- v2 inbox：user 消息准入（M6c 接入，取代 v1 message.updated 的 user 分支）----
+      case "session.inbox.enqueued": {
+        const { sessionID, inboxID, item } = ev.properties as {
+          sessionID?: string
+          inboxID?: string
+          item?: { type?: string }
+        }
+        if (!sessionID || !inboxID) break
+        // inbox 含 user/synthetic/compaction/move 四类（移动端同过滤）——非 user
+        // 项不消费命令回显标记、不触发重取（auto-compaction 入队在长命令执行期
+        // 并不罕见，误消费标记会让回滚到回显消息时回填展开文本草稿）
+        if (item?.type != null && item.type !== "user") break
+        // 命令回显转记（design-message-revert §3.3）：sendCommand 在途标记消费，
+        // 回滚到该消息时不回填草稿（展开文本非用户原文）。inboxID 与消息条目
+        // 同 id 空间（^msg_，活体 + spec 双证）
+        if (this.commandEchoPending.delete(sessionID)) {
+          const ids = this.commandEchoMessages.get(sessionID)
+          if (ids) ids.add(inboxID)
+          else this.commandEchoMessages.set(sessionID, new Set([inboxID]))
+        }
+        // 他端消息实时落地：已加载的会话补一次首页重取（幂等合并；本端 prompt
+        // 的 enqueued 重取无害——回执驱动路径已覆盖）。未加载会话等打开时拉取
+        if (this.messagesBySession.has(sessionID)) void this.refreshConversationTail(sessionID)
+        break
+      }
+      case "session.inbox.delivered": {
+        // 投递/投影落地（M6c 评审 Y3 闭环）：busy 排队的补充消息在 enqueue 时
+        // 未投影（重取扑空、乐观保留），delivered 时已投影——再取一次清掉
+        // 悬挂乐观（否则双气泡并存到下一条 user 才自愈）
+        const { sessionID } = ev.properties as { sessionID?: string }
+        if (sessionID && this.messagesBySession.has(sessionID)) {
+          void this.refreshConversationTail(sessionID)
+        }
         break
       }
       case "session.status": {
@@ -1638,6 +1656,8 @@ export class AppStore {
         break
       }
       case "message.updated": {
+        // v2（M6c）：仅翻译层合成的 assistant 骨架走此路径（applyV2StreamEvent
+        // step.started）；v1 的 user 消息分支已由 session.inbox.enqueued 接管
         const { sessionID, info } = ev.properties as { sessionID: string; info: Message }
         this.ensureConversation(sessionID)
         const m = this.messagesBySession.get(sessionID)
@@ -1652,26 +1672,8 @@ export class AppStore {
             m.set(info.id, { info, parts: pending })
           }
         }
-        if (info.role === "user") {
-          // 斜杠命令回显标记（design-message-revert §3.3 修订）：sendCommand 发出后到达的
-          // 首条真实 user 消息 = 命令回显，记 id 供回滚跳过草稿回填（展开文本非用户原文）。
-          // 与乐观清除同一触发点、同一不精确界（他端并发消息会被误标，仅丢回填，无害）
-          if (this.commandEchoPending.delete(sessionID)) {
-            const ids = this.commandEchoMessages.get(sessionID)
-            if (ids) ids.add(info.id)
-            else this.commandEchoMessages.set(sessionID, new Set([info.id]))
-          }
-          this.clearOptimistic(sessionID)
-        }
         // busy/retry 不再从 message.completed 推断（中间步骤 tool-calls 完成会造成
         // dots 闪烁）：状态由 session.status/session.idle 事件权威驱动（design-typing-indicator §4）
-        break
-      }
-      case "message.removed": {
-        const { sessionID, messageID } = ev.properties as { sessionID: string; messageID: string }
-        this.messagesBySession.get(sessionID)?.delete(messageID)
-        this.commandEchoMessages.get(sessionID)?.delete(messageID)
-        this.syntheticDroppedBySession.get(sessionID)?.delete(messageID)
         break
       }
       case "message.part.updated": {
@@ -1733,32 +1735,6 @@ export class AppStore {
         }
         break
       }
-      case "message.part.removed": {
-        const { sessionID, messageID, partID } = ev.properties as {
-          sessionID: string
-          messageID: string
-          partID: string
-        }
-        const msg = this.messagesBySession.get(sessionID)?.get(messageID)
-        if (msg) {
-          msg.parts = msg.parts.filter((p) => p.id !== partID)
-        }
-        const pending = this.pendingParts(sessionID).get(messageID)
-        if (pending) {
-          this.pendingParts(sessionID).set(
-            messageID,
-            pending.filter((p) => p.id !== partID),
-          )
-        }
-        break
-      }
-      case "catalog.updated":
-      case "mcp.tools.changed": {
-        // 服务端命令/skill 目录或 MCP 工具变化 → 重拉注册表（不必等下次输入 `/`）。
-        // 事件在每条订阅流上都广播，多目录订阅会连发——去抖合并为一次刷新。
-        this.scheduleCatalogRefresh()
-        break
-      }
       case "session.next.agent.switched": {
         // 跨客户端 agent 切换（本端切换已有乐观写，此事件幂等；TUI/CLI 切换靠这里补丁）
         const { sessionID, agent } = ev.properties as { sessionID: string; agent: string }
@@ -1771,6 +1747,10 @@ export class AppStore {
         break
       }
       case "file.watcher.updated": {
+        // **v2 已知缺口（M6c 盘点）**：2.0.18 事件全集无 file.watcher.updated、
+        // 亦无 watch 端点——本 case 自 M3 起静默失效（文件 Tab/树不自动刷新，
+        // 重开/切作用域触发重拉兜底）。链路保留：上游恢复该事件即自动接通；
+        // spec-v0.5 修订时按功能降级记录（M6d）
         const { file, event } = ev.properties
         if (typeof file === "string" && typeof event === "string") {
           this.onFileWatcherEvent(directory, file, event)
@@ -1784,7 +1764,6 @@ export class AppStore {
     this.emit()
   }
 
-  private catalogRefreshTimer: ReturnType<typeof setTimeout> | null = null
 
   /**
    * worktree 删除检测定时器（design-worktree-sync §2）：删除无 SSE 事件，靠周期
@@ -1806,16 +1785,6 @@ export class AppStore {
       clearInterval(this.worktreeSyncTimer)
       this.worktreeSyncTimer = null
     }
-  }
-
-  private scheduleCatalogRefresh() {
-    if (this.catalogRefreshTimer != null) return
-    this.catalogRefreshTimer = setTimeout(() => {
-      this.catalogRefreshTimer = null
-      const dir = this.activeChatDirectory()
-      // 无激活 chat Tab 时跳过（无"当前所见"目录），下次输入 `/` 会触发
-      if (dir) void this.refreshCommands(dir)
-    }, 1500)
   }
 
   /** 激活 chat Tab 的 directory（命令刷新的"当前所见"目录） */
@@ -1903,6 +1872,46 @@ export class AppStore {
     else this.optimisticBySession.set(sessionID, next)
   }
 
+  // ---- inbox.enqueued 驱动的尾部重取（M6c：他端 user 消息实时落地）----
+  private conversationTailInflight = new Set<string>()
+  private conversationTailDirty = new Set<string>()
+
+  /**
+   * 首页重取合并进已加载会话（v2 无 message.updated user 事件——本端 prompt 走
+   * 回执驱动（refreshMessagesAfterPrompt），他端/命令的 user 消息靠
+   * session.inbox.enqueued 触发这里）。in-flight 去抖：在途时同会话连发只记
+   * dirty，完成后补一拉（防他端刷屏的请求风暴）。
+   * 重取发现**新增** user 消息 → 清除该会话全部乐观（v1 message.updated user
+   * 分支的对称语义：首条真实到达清全部，移动端同判——回执驱动的精确清除
+   * 优先生效，这里只是 SSE 兜底路径）。
+   */
+  private async refreshConversationTail(sessionID: string) {
+    if (this.conversationTailInflight.has(sessionID)) {
+      this.conversationTailDirty.add(sessionID)
+      return
+    }
+    const clientV2 = this.clientV2
+    if (!clientV2) return
+    this.conversationTailInflight.add(sessionID)
+    try {
+      const page = await clientV2.listMessagesPage(sessionID, { limit: 20 }).catch(() => null)
+      if (this.clientV2 === clientV2 && page) {
+        const knownUsers = new Set(
+          [...(this.messagesBySession.get(sessionID)?.values() ?? [])]
+            .filter((m) => m.info.role === "user")
+            .map((m) => m.info.id),
+        )
+        const hasNewUser = page.entries.some((m) => m.info.role === "user" && !knownUsers.has(m.info.id))
+        this.mergeMessagePage(sessionID, page.entries)
+        if (hasNewUser) this.clearOptimistic(sessionID)
+        this.emit()
+      }
+    } finally {
+      this.conversationTailInflight.delete(sessionID)
+      if (this.conversationTailDirty.delete(sessionID)) void this.refreshConversationTail(sessionID)
+    }
+  }
+
   private clearOptimistic(sessionID: string) {
     if (this.optimisticBySession.has(sessionID)) {
       this.optimisticBySession.delete(sessionID)
@@ -1932,38 +1941,6 @@ export class AppStore {
       if (status.type === "retry") this.retryHold.add(sessionID)
       this.sessionStatus.set(sessionID, status)
       if (directory) this.statusSources.set(sessionID, directory)
-    }
-  }
-
-  /**
-   * REST 状态快照按目录覆盖合并（冷启动/重连对账/项目打开）。
-   * 失败目录（null）保留旧值——严禁 clear()+addAll()（SS-1 回归）。
-   * retry 保持（design-error-message §3.6）双向维护：
-   * - 已持有时快照撞上在途尝试报 busy（server 内存态即 busy）→ 改写为本地 retry
-   *   再合并——直接丢弃会触发 merge 的 covered⇒idle 分支误清退避状态；
-   * - 未持有时快照报 retry（重连对账落在退避窗口内）→ **补建锁存**，否则下一轮
-   *   尝试起点的 busy 事件会覆写造成一次绿闪（SSE 路径 retry 事件建锁存，快照
-   *   路径此前缺这一半）；
-   * - 已非 retry（idle/缺席）的会话解除。
-   */
-  private applyStatusSnapshot(directory: string, fresh: Record<string, SessionStatusValue> | null) {
-    if (!fresh) return
-    const filtered: Record<string, SessionStatusValue> = {}
-    for (const [sid, st] of Object.entries(fresh)) {
-      filtered[sid] =
-        st?.type === "busy" && this.retryHold.has(sid)
-          ? (this.sessionStatus.get(sid) ?? st)
-          : st
-    }
-    const merged = mergeStatusSnapshot(this.sessionStatus, this.statusSources, directory, filtered)
-    this.sessionStatus = merged.status
-    this.statusSources = merged.sources
-    // 锁存生命周期跟随合并结果（对齐最终态，与来源无关）
-    for (const sid of this.retryHold) {
-      if (merged.status.get(sid)?.type !== "retry") this.retryHold.delete(sid)
-    }
-    for (const [sid, st] of merged.status) {
-      if (st.type === "retry") this.retryHold.add(sid)
     }
   }
 
@@ -2765,8 +2742,6 @@ export class AppStore {
     // 引用同随会话卸载（design-file-reference §2 清理挂点）
     this.fileRefs.delete(sessionID)
     this.attachments.delete(sessionID)
-    // 任务列表同随会话卸载（design-task-list：纯展示，重开 Tab 由激活回填补齐）
-    this.sessionTodos.delete(sessionID)
     // 消息流滚动位置同随会话卸载（design-tab-state-memory §3）
     this.chatScrollTops.delete(sessionID)
   }
@@ -3098,7 +3073,7 @@ export class AppStore {
     }
     // 正常链路 ready 到达即刷新 projects，此 diff 多数时候为空。
     // v1 的 reDiscoverInstanceCatalog（instance dispose + 命令重发现）已随 v2
-    // 实例模型消亡删除——v2 命令缓存刷新走 scheduleCatalogRefresh 惰性路径
+    // 实例模型消亡删除——v2 无 catalog 事件，命令缓存刷新走惰性路径（输入 `/` 时）
     this.emit()
   }
 
@@ -3765,7 +3740,7 @@ export class AppStore {
    */
 
   async refreshCommands(directory: string | null): Promise<void> {
-    const client = this.client
+    const client = this.clientV2
     if (!client || !directory) return
     const existing = this.commandsInFlight.get(directory)
     if (existing) return existing
@@ -3777,7 +3752,7 @@ export class AppStore {
       } catch {
         result = { ok: false as const }
       }
-      if (this.client !== client) return
+      if (this.clientV2 !== client) return
       this.commandCache = applyCommandFetch(this.commandCache, directory, result)
       this.emit()
     })().finally(() => {
@@ -3789,7 +3764,7 @@ export class AppStore {
   }
 
   /** 发送斜杠命令：乐观回显原始 `/cmd args`，真实 user 消息（subtask/展开文本）到达即清。
-   *  附件随 parts 携带（design-session-attachments §2，openapi command body 契约） */
+   *  附件随 files 携带（v2 {uri, name}，同 prompt 契约；design-session-attachments §2） */
   async sendCommand(
     sessionID: string,
     command: string,
@@ -3797,7 +3772,7 @@ export class AppStore {
     refs?: FileRef[],
     attachments?: Attachment[],
   ): Promise<{ ok: boolean; error?: string }> {
-    if (!this.client) return { ok: false, error: "not connected" }
+    if (!this.clientV2) return { ok: false, error: "not connected" }
     const session = this.findSession(sessionID)
     if (!session) return { ok: false, error: "session not found" }
     const text = arguments_ ? `/${command} ${arguments_}` : `/${command}`
@@ -3814,25 +3789,20 @@ export class AppStore {
       optimistic,
     ])
     this.emit()
-    // 回显标记：SSE 真实 user 消息到达时转记（正常路径在 POST await 期间消费）
+    // 回显标记：SSE inbox.enqueued 转记（正常路径在 POST await 期间消费，
+    // M6c：v2 事件源从 message.updated 换 inbox.enqueued）
     this.commandEchoPending.add(sessionID)
     try {
-      // 斜杠命令同样携带引用/附件 parts（openapi command body 契约，移动端 6R-C）
-      const fileParts: FilePartInput[] = [
-        ...(refs ?? []).map(fileRefToFilePart),
-        ...(attachments ?? []).map((a) => ({
-          type: "file" as const,
-          mime: a.mime,
-          url: a.dataUrl,
-          filename: a.filename,
-        })),
+      // 斜杠命令同样携带引用/附件（移动端 6R-C；v2 files 契约同 prompt）
+      const files: Array<{ uri: string; name?: string }> = [
+        ...(refs ?? []).map((r) => ({ uri: fileRefToFilePart(r).url, name: r.filename })),
+        ...(attachments ?? []).map((a) => ({ uri: a.dataUrl, name: a.filename })),
       ]
-      await this.client.sendCommand(
+      await this.clientV2.sendCommand(
         sessionID,
-        session.directory,
         command,
         arguments_,
-        fileParts.length > 0 ? fileParts : undefined,
+        files.length > 0 ? files : undefined,
       )
       this.clearFileRefs(sessionID)
       this.clearAttachments(sessionID)
@@ -3889,25 +3859,9 @@ export class AppStore {
     )
   }
 
-  /** 会话任务列表（design-task-list；空数组 = 无/已全完成） */
-  todosForSession(sessionID: string): Todo[] {
-    return this.sessionTodos.get(sessionID) ?? []
-  }
-
-  /**
-   * 会话任务快照（ChatView 激活时与 loadSessionMessages 同挂点调用，补 SSE
-   * 断线窗口）。全量替换：200（含空数组）权威覆盖本地；失败静默保留（下一次
-   * todo.updated 自愈）；client 同一性守卫丢弃跨 teardown 的迟到结果。
-   */
-  async loadSessionTodos(sessionID: string, directory: string) {
-    const client = this.client
-    if (!client) return
-    const todos = await client.listSessionTodos(sessionID, directory).catch(() => null)
-    if (this.client !== client) return
-    if (todos === null) return
-    this.sessionTodos.set(sessionID, normalizeTodoList(todos))
-    this.emit()
-  }
+  //（todo 体系 v2 移除：无端点、无事件（移动端基线「确认移除」）——
+  // sessionTodos/TodoCard/loadSessionTodos/todo.updated case 已删，
+  // design-task-list 的恢复等 server 侧概念回归后另行设计）
 
   /**
    * 会话状态点投影（design-agent-status-indicator + design-error-message §3/§3.4）：
@@ -3933,20 +3887,18 @@ export class AppStore {
    * onPendingSnapshot（同一合并函数）。
    */
   private async backfillPending() {
-    const client = this.client
+    const client = this.clientV2
     if (!client) return
     const dirs = this.openedDirectories()
     let changed = false
     await runLimited(dirs, 3, async (dir) => {
       // 两类别串行：每任务在途 ≤1 条，并发上限 3（预算克制，与 reconciler 的
       // 逐目录串行同答案——SSE 常驻 5 条后 REST 池仅 ~1 空闲）。
-      const permissions = await client.listPendingPermissions(dir).catch(() => null)
-      // questions 回填（v1 端点）已随 form 模型切换退役（M6a）——传 null =
-      // 保留本地（SSE form.created 驱动）；v2 `GET /api/form` 接回在 M6c
-      const questions = null
+      const permissions = await client.listPendingPermissionRequests(dir).catch(() => null)
+      const questions = await client.listPendingForms(dir).catch(() => null)
       // 在途闸门（同 applySessionsSnapshot）：disconnect/切 profile 后丢弃旧连接的
       // 迟到结果，防止写回已清空的 map；目录已出打开集合（关项目/删 worktree）同理
-      if (this.client !== client || !this.openedDirectories().includes(dir)) return
+      if (this.clientV2 !== client || !this.openedDirectories().includes(dir)) return
       // 各类别独立合并；null = 失败保留本地（同 reconcile 路径）
       changed =
         mergePendingSnapshot(
@@ -5924,12 +5876,12 @@ export class AppStore {
           this.setSessionStatus(sessionID, { type: "idle" })
         }
       },
-      onPendingSnapshot: (dir, permissions) => {
+      onPendingSnapshot: (dir, permissions, questions) => {
         // 在途闸门：连接已拆或目录已出打开集合（in-flight reconcile 跨越了 teardown/
         // 关项目）时丢弃，防止写回已清空的 map
-        if (!this.client || !this.openedDirectories().includes(dir)) return
+        if (!this.clientV2 || !this.openedDirectories().includes(dir)) return
         // 各类别独立合并；null = 该目录该类别抓取失败，保留本地
-        mergePendingSnapshot(this.pendingPermissions, this.pendingQuestions, dir, permissions, null)
+        mergePendingSnapshot(this.pendingPermissions, this.pendingQuestions, dir, permissions, questions)
       },
       onReconcileStateChange: (active) => {
         this.reconciling = active

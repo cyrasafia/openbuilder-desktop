@@ -108,8 +108,8 @@ export interface AssistantMessage {
 export type Message = UserMessage | AssistantMessage
 
 /**
- * 会话任务（`GET /session/{id}/todo` 与 SSE `todo.updated` 载荷；openapi Todo）。
- * 无 id 字段（additionalProperties:false）；status/priority 语义见 session-todos.ts。
+ * 会话任务（v1 `todo.updated` 载荷；v2 无对应端点/事件——**M6c 起死类型**，
+ * 待 M6d 随 v1 类型面整体删除）。
  */
 export interface Todo {
   content: string

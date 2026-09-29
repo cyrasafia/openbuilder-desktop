@@ -72,6 +72,12 @@ function sessionsOf(...list: Session[]): Map<string, Session> {
   return new Map(list.map((s) => [s.id, s]))
 }
 
+/** 直建会话消息容器（M6c：v2 下 user 骨架经 inbox 重取、assistant 经流式翻译
+ *  到达——小 fixture 直灌比走两条链路更聚焦用例目标） */
+function seedMessages(sid: string, ...msgs: MessageWithParts[]) {
+  store.messagesBySession.set(sid, new Map(msgs.map((m) => [m.info.id, m])))
+}
+
 let store: AppStore
 let snapshots: Map<string, Promise<Session[]> | Session[]>
 /** 项目列表唯一数据源（v1 形状）：v1/v2 两个 fake client 共读（v2 侧归一 wire 形状） */
@@ -110,8 +116,6 @@ beforeEach(() => {
     },
     listSessionStatus: async () => ({}),
     listProjects: async () => projectList,
-    listPendingPermissions: async () => [],
-    listPendingQuestions: async () => [],
   }
     // v2 client（plan-v2-protocol M1 换绑的路径）：listSessions 响应 {data, cursor}
     // envelope，data 为 wire 形状（location.directory），适配层在 store 侧。
@@ -170,6 +174,9 @@ beforeEach(() => {
       cancelForm: async () => {},
       switchAgent: async () => {},
       switchModel: async () => {},
+      // M6c pending 回填：默认无待办（permission/form 快照）
+      listPendingPermissionRequests: async () => [],
+      listPendingForms: async () => [],
       // M6b 文件/diff/pty/目录：默认空结果（失败用例按需挂 spy）
       listAgents: async () => [] as AgentInfo[],
       listModels: async () => [] as V2ModelInfo[],
@@ -739,24 +746,16 @@ describe("busy 补充发送（design-supplement-send）", () => {
   it("busy 中 sendPrompt：乐观补充追加不误清既有消息，状态保持 busy；真实 user 事件到达即清乐观", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    clientV2Of().prompt = async () => {}
-    // 会话 busy + 已有活跃流式 assistant（created 200，completed 空）
+    const clientV2 = clientV2Of()
+    clientV2.prompt = async () => {}
+    // 会话 busy + 既有消息（v1 事件 seed 改直建容器——v2 下 user/assistant 骨架
+    // 分别走 inbox 重取与流式翻译，本用例聚焦乐观语义不经这两条链路）
     setBusy()
-    dispatch({
-      type: "message.updated",
-      properties: {
-        sessionID: "s1",
-        info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 200 } },
-      },
-    })
-    dispatch({
-      type: "message.updated",
-      properties: {
-        sessionID: "s1",
-        info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
-      },
-    })
+    seedMessages(
+      "s1",
+      { info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } }, parts: [] },
+      { info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 200 } }, parts: [] },
+    )
 
     const res = await store.sendPrompt("s1", "补充：顺带统计词数")
     expect(res.ok).toBe(true)
@@ -769,27 +768,36 @@ describe("busy 补充发送（design-supplement-send）", () => {
       "opt",
     ])
 
-    // 真实补充 user 消息（created 晚于流式 assistant）经 SSE 到达：乐观清空、消息入列
-    dispatch({
-      type: "message.updated",
-      properties: {
-        sessionID: "s1",
-        info: { id: "msg_u2", sessionID: "s1", role: "user", time: { created: 300 } },
-      },
+    // 真实补充 user 消息（created 晚于流式 assistant）经 v2 inbox 链路到达
+    // （enqueued → 尾部重取合并）：乐观清空、消息入列
+    clientV2.listMessagesPage = async () => ({
+      entries: [
+        { info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } }, parts: [] },
+        { info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 200 } }, parts: [] },
+        { info: { id: "msg_u2", sessionID: "s1", role: "user", time: { created: 300 } }, parts: [] },
+      ],
+      nextCursor: null,
     })
-    const after = store.chatEntries("s1")
-    expect(after.map((e) => (e.kind === "message" ? e.data.info.id : e.kind))).toEqual([
-      "msg_u1",
-      "msg_a1",
-      "msg_u2",
-    ])
+    dispatch({
+      type: "session.inbox.enqueued",
+      properties: { sessionID: "s1", inboxID: "msg_u2" },
+    })
+    await vi.waitFor(() => {
+      const after = store.chatEntries("s1")
+      expect(after.map((e) => (e.kind === "message" ? e.data.info.id : e.kind))).toEqual([
+        "msg_u1",
+        "msg_a1",
+        "msg_u2",
+      ])
+    })
   })
 
   it("多条乐观并存：首条真实到达清全部（移动端同语义，短暂闪烁可接受）", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    clientV2Of().prompt = async () => {}
+    const clientV2 = clientV2Of()
+    clientV2.prompt = async () => {}
+    seedMessages("s1")
     setBusy()
 
     await store.sendPrompt("s1", "补充一")
@@ -800,14 +808,15 @@ describe("busy 补充发送（design-supplement-send）", () => {
       "补充二",
     ])
 
-    dispatch({
-      type: "message.updated",
-      properties: {
-        sessionID: "s1",
-        info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
-      },
+    clientV2.listMessagesPage = async () => ({
+      entries: [{ info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } }, parts: [] }],
+      nextCursor: null,
     })
-    expect(store.chatEntries("s1").every((e) => e.kind === "message")).toBe(true)
+    dispatch({
+      type: "session.inbox.enqueued",
+      properties: { sessionID: "s1", inboxID: "msg_u1" },
+    })
+    await vi.waitFor(() => expect(store.chatEntries("s1").every((e) => e.kind === "message")).toBe(true))
   })
 
   it("retry 中补充发送：乐观 busy 不覆写 retry（退避提示保持整个 backoff 窗口）", async () => {
@@ -991,75 +1000,6 @@ describe("合成 text part 过滤（design-file-reference §5，引用回显只�
   })
 })
 
-describe("会话任务列表（design-task-list）", () => {
-  function dispatch(dir: string, ev: { type: string; properties: unknown }) {
-    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(dir, ev)
-  }
-
-  it("todo.updated 全量替换（非合并）+ 空表 = server 侧清空", () => {
-    dispatch(ROOT, {
-      type: "todo.updated",
-      properties: { sessionID: "s1", todos: [{ content: "a", status: "in_progress", priority: "high" }] },
-    })
-    expect(store.todosForSession("s1")).toEqual([
-      { content: "a", status: "in_progress", priority: "high" },
-    ])
-    dispatch(ROOT, {
-      type: "todo.updated",
-      properties: { sessionID: "s1", todos: [{ content: "b", status: "pending", priority: "low" }] },
-    })
-    expect(store.todosForSession("s1")).toEqual([{ content: "b", status: "pending", priority: "low" }])
-    dispatch(ROOT, { type: "todo.updated", properties: { sessionID: "s1", todos: [] } })
-    expect(store.todosForSession("s1")).toEqual([])
-  })
-
-  it("畸形载荷（todos 缺失/非数组）忽略保留本地，显式 [] 才权威清空（review #2）", () => {
-    dispatch(ROOT, {
-      type: "todo.updated",
-      properties: { sessionID: "s1", todos: [{ content: "a", status: "pending", priority: "low" }] },
-    })
-    dispatch(ROOT, { type: "todo.updated", properties: { sessionID: "s1" } })
-    dispatch(ROOT, { type: "todo.updated", properties: { sessionID: "s1", todos: "oops" } })
-    expect(store.todosForSession("s1")).toEqual([{ content: "a", status: "pending", priority: "low" }])
-    dispatch(ROOT, { type: "todo.updated", properties: { sessionID: "s1", todos: [] } })
-    expect(store.todosForSession("s1")).toEqual([])
-  })
-
-  it("事件闸门：关闭项目目录的事件被丢弃", () => {
-    dispatch("/other", {
-      type: "todo.updated",
-      properties: { sessionID: "s1", todos: [{ content: "a", status: "pending", priority: "low" }] },
-    })
-    expect(store.sessionTodos.has("s1")).toBe(false)
-  })
-
-  it("loadSessionTodos：成功整表覆盖、失败保留本地、空数组权威清空", async () => {
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.listSessionTodos = async () => [{ content: "r", status: "pending", priority: "medium" }]
-    await store.loadSessionTodos("s1", ROOT)
-    expect(store.todosForSession("s1")).toEqual([{ content: "r", status: "pending", priority: "medium" }])
-    client.listSessionTodos = async () => {
-      throw new Error("boom")
-    }
-    await store.loadSessionTodos("s1", ROOT)
-    expect(store.todosForSession("s1")).toEqual([{ content: "r", status: "pending", priority: "medium" }])
-    client.listSessionTodos = async () => []
-    await store.loadSessionTodos("s1", ROOT)
-    expect(store.todosForSession("s1")).toEqual([])
-  })
-
-  it("会话删除事件清理任务列表（cleanupSessionState 挂点）", () => {
-    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
-    store.sessionsByProject.set("proj1", sessionsOf(s1))
-    dispatch(ROOT, {
-      type: "todo.updated",
-      properties: { sessionID: "s1", todos: [{ content: "a", status: "pending", priority: "low" }] },
-    })
-    dispatch(ROOT, { type: "session.deleted", properties: { sessionID: "s1", info: s1 } })
-    expect(store.sessionTodos.has("s1")).toBe(false)
-  })
-})
-
 describe("斜杠命令发送（design-slash-command SC-4：同步端点无限等待）", () => {
   function dispatch(ev: { type: string; properties: unknown }) {
     ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, ev)
@@ -1068,10 +1008,11 @@ describe("斜杠命令发送（design-slash-command SC-4：同步端点无限等
   it("长时执行在途：乐观保留不误判失败，完成后 ok:true；真实 user 事件到达即清乐观", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
-    const client = (store as unknown as { client: Record<string, unknown> }).client
+    seedMessages("s1")
+    const clientV2 = clientV2Of()
     const run = deferred<void>()
     const sent: unknown[] = []
-    client.sendCommand = (...args: unknown[]) => {
+    clientV2.sendCommand = (...args: unknown[]) => {
       sent.push(...args)
       return run.promise
     }
@@ -1086,26 +1027,31 @@ describe("斜杠命令发送（design-slash-command SC-4：同步端点无限等
     run.resolve()
     const res = await p
     expect(res.ok).toBe(true)
-    // 第 5 参 = 引用 file parts（无引用时 undefined，design-file-reference §4）
-    expect(sent).toEqual(["s1", ROOT, "review", "--help", undefined])
+    // 第 4 参 = 引用 files（v2 {uri,name}；无引用时 undefined，design-file-reference §4）
+    expect(sent).toEqual(["s1", "review", "--help", undefined])
 
-    dispatch({
-      type: "message.updated",
-      properties: {
-        sessionID: "s1",
-        info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
-        parts: [{ id: "prt_1", type: "subtask", command: "review", prompt: "展开正文" }],
-      },
+    // 回显经 v2 inbox 链路落地（展开为 subtask part 的消息形态由重取页携带）
+    clientV2.listMessagesPage = async () => ({
+      entries: [
+        {
+          info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
+          parts: [{ id: "prt_1", type: "subtask", command: "review", prompt: "展开正文" }],
+        },
+      ],
+      nextCursor: null,
     })
-    expect(store.chatEntries("s1").every((e) => e.kind === "message")).toBe(true)
+    dispatch({
+      type: "session.inbox.enqueued",
+      properties: { sessionID: "s1", inboxID: "msg_u1" },
+    })
+    await vi.waitFor(() => expect(store.chatEntries("s1").every((e) => e.kind === "message")).toBe(true))
   })
 
   it("真实失败（秒回的 400 类错误）：撤回乐观 + ok:false，由调用方回填草稿", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.sendCommand = async () => {
-      throw new ApiError(400, "unknown", "HTTP 400")
+    clientV2Of().sendCommand = async () => {
+      throw new ApiErrorV2(400, "unknown", "HTTP 400")
     }
 
     const res = await store.sendCommand("s1", "no-such", "")
@@ -2072,29 +2018,31 @@ describe("回滚到指定消息（design-message-revert）", () => {
 
   it("revertToMessage text 展开型命令回显（sendCommand 标记）：不回填草稿", async () => {
     seedSession()
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    // 同步端点：回显（SSE message.updated）在 POST await 期间到达
+    seedMessages("s1")
+    const clientV2 = clientV2Of()
+    // 同步端点：回显（v2 inbox.enqueued → 尾部重取）在 POST await 期间到达
     const run = deferred<void>()
-    client.sendCommand = () => run.promise
+    clientV2.sendCommand = () => run.promise
 
     const p = store.sendCommand("s1", "init", "--foo")
-    // part 先于 message.info 到达（pendingParts 回放路径，同真实 SSE 顺序）
-    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, {
-      type: "message.part.updated",
-      properties: {
-        sessionID: "s1",
-        part: { id: "prt_1", sessionID: "s1", messageID: "msg_u1", type: "text", text: "展开的模板全文" },
-      },
+    // 展开为 text part 的命令回显消息（skill/非 subtask；展开模板非用户原文）
+    // 经 inbox 链路重取落地
+    clientV2.listMessagesPage = async () => ({
+      entries: [
+        {
+          info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
+          parts: [{ id: "prt_1", sessionID: "s1", messageID: "msg_u1", type: "text", text: "展开的模板全文" }],
+        },
+      ],
+      nextCursor: null,
     })
     ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, {
-      type: "message.updated",
-      properties: {
-        sessionID: "s1",
-        info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
-        // skill/非 subtask 命令展开为 text part（展开模板，非用户原文）
-        parts: [{ id: "prt_1", sessionID: "s1", messageID: "msg_u1", type: "text", text: "展开的模板全文" }],
-      },
+      type: "session.inbox.enqueued",
+      properties: { sessionID: "s1", inboxID: "msg_u1" },
     })
+    await vi.waitFor(() =>
+      expect(store.chatEntries("s1").some((e) => e.kind === "message" && e.data.info.id === "msg_u1")).toBe(true),
+    )
     run.resolve()
     expect(await p).toEqual({ ok: true })
     // 回显已加载且有 text（排除「消息未加载导致空回填」的假阳性）
@@ -2116,30 +2064,32 @@ describe("回滚到指定消息（design-message-revert）", () => {
 
   it("sendCommand 失败：回显标记清除，后续普通消息回滚仍回填", async () => {
     seedSession()
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.sendCommand = async () => {
-      throw new ApiError(400, "unknown", "HTTP 400")
+    seedMessages("s1")
+    const clientV2 = clientV2Of()
+    clientV2.sendCommand = async () => {
+      throw new ApiErrorV2(400, "unknown", "HTTP 400")
     }
     const res = await store.sendCommand("s1", "no-such", "")
     expect(res.ok).toBe(false)
 
-    // 失败后用户手输的普通消息不得被残留标记误判为命令回显
-    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, {
-      type: "message.part.updated",
-      properties: {
-        sessionID: "s1",
-        part: { id: "prt_1", sessionID: "s1", messageID: "msg_u1", type: "text", text: "手输的普通消息" },
-      },
+    // 失败后用户手输的普通消息（inbox 链路落地）不得被残留标记误判为命令回显
+    clientV2.listMessagesPage = async () => ({
+      entries: [
+        {
+          info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
+          parts: [{ id: "prt_1", sessionID: "s1", messageID: "msg_u1", type: "text", text: "手输的普通消息" }],
+        },
+      ],
+      nextCursor: null,
     })
     ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, {
-      type: "message.updated",
-      properties: {
-        sessionID: "s1",
-        info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
-        parts: [{ id: "prt_1", sessionID: "s1", messageID: "msg_u1", type: "text", text: "手输的普通消息" }],
-      },
+      type: "session.inbox.enqueued",
+      properties: { sessionID: "s1", inboxID: "msg_u1" },
     })
-    clientV2Of().revertStage = async () => ({ messageID: "msg_u1" })
+    await vi.waitFor(() =>
+      expect(store.chatEntries("s1").some((e) => e.kind === "message" && e.data.info.id === "msg_u1")).toBe(true),
+    )
+    clientV2.revertStage = async () => ({ messageID: "msg_u1" })
     await store.revertToMessage("s1", "msg_u1")
     expect(store.takeRevertDraft("s1")).toBe("手输的普通消息")
   })
@@ -2781,52 +2731,6 @@ describe("报错消息与重试状态（design-error-message）", () => {
       properties: { sessionID: "s1", status: { type: "busy" } },
     })
     expect(store.dotStateFor("s1")).toBe("running")
-  })
-
-  it("REST 状态快照撞上保持：busy 改写为本地 retry（不触发 covered⇒idle 误清）；idle/缺席解除", () => {
-    seedSession()
-    const apply = (fresh: Record<string, { type: string }>) =>
-      (store as unknown as { applyStatusSnapshot: (dir: string, f: Record<string, { type: string }>) => void }).applyStatusSnapshot(
-        ROOT,
-        fresh,
-      )
-    dispatch({
-      type: "session.status",
-      properties: { sessionID: "s1", status: { type: "retry", attempt: 1, message: "rate limited" } },
-    })
-    // 快照在在途尝试窗口抓到 busy——保持 retry
-    apply({ s1: { type: "busy" } })
-    expect(store.statusOf("s1").type).toBe("retry")
-    // 快照报 idle（server 已完成）——解除保持
-    apply({ s1: { type: "idle" } })
-    expect(store.statusOf("s1").type).toBe("idle")
-    expect(store.dotStateFor("s1")).toBe("idle")
-    // 再入 retry 后，快照缺席（covered⇒idle 删除）——同样解除
-    dispatch({
-      type: "session.status",
-      properties: { sessionID: "s1", status: { type: "retry", attempt: 1, message: "rate limited" } },
-    })
-    apply({})
-    expect(store.statusOf("s1").type).toBe("idle")
-  })
-
-  it("快照发现的 retry 补建锁存：重连对账落在退避窗口内，后续 busy 事件不闪绿", () => {
-    seedSession()
-    const apply = (fresh: Record<string, { type: string }>) =>
-      (store as unknown as { applyStatusSnapshot: (dir: string, f: Record<string, { type: string }>) => void }).applyStatusSnapshot(
-        ROOT,
-        fresh,
-      )
-    // 重连对账：快照报 retry（本地此前无任何状态——SSE 断线期间进入退避）
-    apply({ s1: { type: "retry" } })
-    expect(store.statusOf("s1").type).toBe("retry")
-    // server 下一轮尝试起点的 busy——锁存已由快照路径补建，不覆写
-    dispatch({
-      type: "session.status",
-      properties: { sessionID: "s1", status: { type: "busy" } },
-    })
-    expect(store.statusOf("s1").type).toBe("retry")
-    expect(store.dotStateFor("s1")).toBe("error")
   })
 
   it("报错终局（§3.4）：末条 assistant 非中止错误 → failed 静态红；中止与新 run 不算", () => {
@@ -3942,26 +3846,23 @@ describe("文件引用（design-file-reference）", () => {
     expect(store.optimisticBySession.get("s1")?.length ?? 0).toBe(0)
   })
 
-  it("sendCommand 携带引用 parts；成功清引用", async () => {
+  it("sendCommand 携带引用 files（v2 {uri,name}）；成功清引用", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
-    let cmdBody: { parts?: unknown[] } = {}
-    ;(store as unknown as { client: unknown }).client = {
-      sendCommand: async (
-        _id: string,
-        _dir: string,
-        _cmd: string,
-        _args: string,
-        parts?: unknown[],
-      ) => {
-        cmdBody = { parts }
-      },
+    let cmdBody: { files?: unknown[] } = {}
+    clientV2Of().sendCommand = async (
+      _id: string,
+      _cmd: string,
+      _args: string | undefined,
+      files?: Array<{ uri: string; name?: string }>,
+    ) => {
+      cmdBody = { files }
     }
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
     store.addFileRef("s1", ref("a.ts", `${ROOT}/a.ts`))
     const refs = store.fileRefsFor("s1")
     const res = await store.sendCommand("s1", "init", "", refs)
     expect(res.ok).toBe(true)
-    expect(cmdBody.parts?.length).toBe(1)
+    expect(cmdBody.files?.length).toBe(1)
     expect(store.fileRefsFor("s1").length).toBe(0)
   })
 
@@ -6058,5 +5959,141 @@ describe("待处理回复动作（M6a：v2 换绑）", () => {
     expect(res.ok).toBe(false)
     expect(res.error).toContain("500")
     expect(store.pendingPermissions.has("s1")).toBe(true)
+  })
+})
+
+describe("inbox.enqueued 链路（M6c：他端 user 消息实时落地）", () => {
+  function dispatch(ev: { type: string; properties: unknown }) {
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, ev)
+  }
+
+  it("已加载会话：enqueued → 尾部重取合并 + 新增 user 清乐观（v1 user 分支对称语义）", async () => {
+    seedMessages("s1", {
+      info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 100 } },
+      parts: [],
+    })
+    clientV2Of().prompt = async () => {}
+    ;(store as unknown as { optimisticBySession: Map<string, unknown[]> }).optimisticBySession.set(
+      "s1",
+      [{ optimistic: true, localId: "opt_1", text: "在途", createdAt: 1 }],
+    )
+    clientV2Of().listMessagesPage = async () => ({
+      entries: [
+        { info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 200 } }, parts: [] },
+        { info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 100 } }, parts: [] },
+      ],
+      nextCursor: null,
+    })
+    dispatch({ type: "session.inbox.enqueued", properties: { sessionID: "s1", inboxID: "msg_u1" } })
+    await vi.waitFor(() => {
+      expect(store.chatEntries("s1").map((e) => (e.kind === "message" ? e.data.info.id : e.kind))).toEqual([
+        "msg_a1",
+        "msg_u1",
+      ])
+    })
+    // 新增 user 到达 → 乐观全清（回执驱动的精确清除优先，此处是 SSE 兜底）
+    expect(store.chatEntries("s1").every((e) => e.kind === "message")).toBe(true)
+  })
+
+  it("无新增 user（重复 enqueued/仅 assistant）不清乐观", async () => {
+    seedMessages("s1", {
+      info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
+      parts: [],
+    })
+    ;(store as unknown as { optimisticBySession: Map<string, unknown[]> }).optimisticBySession.set(
+      "s1",
+      [{ optimistic: true, localId: "opt_1", text: "在途", createdAt: 1 }],
+    )
+    clientV2Of().listMessagesPage = async () => ({
+      entries: [{ info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } }, parts: [] }],
+      nextCursor: null,
+    })
+    dispatch({ type: "session.inbox.enqueued", properties: { sessionID: "s1", inboxID: "msg_u1" } })
+    await vi.waitFor(() => expect(store.chatEntries("s1").some((e) => e.kind === "message")).toBe(true))
+    expect(store.chatEntries("s1").some((e) => e.kind === "optimistic")).toBe(true)
+  })
+
+  it("未加载会话的 enqueued 不触发重取（打开时 REST 快照兜底）", async () => {
+    let calls = 0
+    clientV2Of().listMessagesPage = async () => {
+      calls++
+      return { entries: [], nextCursor: null }
+    }
+    dispatch({ type: "session.inbox.enqueued", properties: { sessionID: "unknown", inboxID: "msg_x" } })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(calls).toBe(0)
+  })
+
+  it("非 user 项（auto-compaction）不消费命令回显标记、不触发重取", async () => {
+    let calls = 0
+    clientV2Of().listMessagesPage = async () => {
+      calls++
+      return { entries: [], nextCursor: null }
+    }
+    ;(store as unknown as { commandEchoPending: Set<string> }).commandEchoPending.add("s1")
+    seedMessages("s1")
+    dispatch({
+      type: "session.inbox.enqueued",
+      properties: { sessionID: "s1", inboxID: "msg_c1", item: { type: "compaction" } },
+    })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(calls).toBe(0)
+    // 标记保留——真正的 user 回显仍可消费
+    expect((store as unknown as { commandEchoPending: Set<string> }).commandEchoPending.has("s1")).toBe(true)
+  })
+
+  it("inbox.delivered 触发尾部重取：排队补充消息投影落地后清悬挂乐观（M6c 评审 Y3）", async () => {
+    seedMessages("s1", {
+      info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 100 } },
+      parts: [],
+    })
+    // busy 排队的补充：enqueued 时重取扑空（未投影），乐观保留
+    ;(store as unknown as { optimisticBySession: Map<string, unknown[]> }).optimisticBySession.set(
+      "s1",
+      [{ optimistic: true, localId: "opt_1", text: "排队的补充", createdAt: 1 }],
+    )
+    const clientV2 = clientV2Of()
+    clientV2.listMessagesPage = async () => ({ entries: [], nextCursor: null })
+    dispatch({ type: "session.inbox.enqueued", properties: { sessionID: "s1", inboxID: "msg_u2" } })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(store.chatEntries("s1").some((e) => e.kind === "optimistic")).toBe(true)
+    // 投影落地（delivered）：重取返回新 user → 乐观清除
+    clientV2.listMessagesPage = async () => ({
+      entries: [
+        { info: { id: "msg_u2", sessionID: "s1", role: "user", time: { created: 300 } }, parts: [] },
+        { info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 100 } }, parts: [] },
+      ],
+      nextCursor: null,
+    })
+    dispatch({ type: "session.inbox.delivered", properties: { sessionID: "s1", inboxID: "msg_u2" } })
+    await vi.waitFor(() => expect(store.chatEntries("s1").every((e) => e.kind === "message")).toBe(true))
+  })
+
+  it("sendCommand 在途标记经 enqueued 转记：回滚到回显消息不回填草稿（design-message-revert §3.3）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    seedMessages("s1")
+    const clientV2 = clientV2Of()
+    const run = deferred<void>()
+    clientV2.sendCommand = () => run.promise
+    clientV2.listMessagesPage = async () => ({
+      entries: [
+        {
+          info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
+          parts: [{ id: "prt_1", sessionID: "s1", messageID: "msg_u1", type: "text", text: "展开的模板全文" }],
+        },
+      ],
+      nextCursor: null,
+    })
+    const p = store.sendCommand("s1", "init", "--foo")
+    dispatch({ type: "session.inbox.enqueued", properties: { sessionID: "s1", inboxID: "msg_u1" } })
+    await vi.waitFor(() =>
+      expect(store.chatEntries("s1").some((e) => e.kind === "message" && e.data.info.id === "msg_u1")).toBe(true),
+    )
+    run.resolve()
+    expect(await p).toEqual({ ok: true })
+    clientV2.revertStage = async () => ({ messageID: "msg_u1" })
+    await store.revertToMessage("s1", "msg_u1")
+    expect(store.takeRevertDraft("s1")).toBeNull()
   })
 })

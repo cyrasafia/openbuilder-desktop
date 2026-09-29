@@ -82,6 +82,10 @@
 - `backfillPending`（listPendingPermissions/listPendingQuestions）→ v2 `GET /api/permission/request` + form 待办，或删（reconciler 的 pending 阶段 v2 下恒 null）；
 - 死代码清理：`commandEchoPending`、`applyStatusSnapshot`、v1 死 case（message.updated user 分支/message.removed/message.part.removed/todo.updated/catalog.updated）、reconciler 死 import（SessionStatusValue/toInternalMessages）。
 
+**已落地（2026-09-29）**：命令域换绑 `/api/command` + `/api/skill` 合并（skill 斜杠触发，source 标记——对齐移动端 listCommands，命令集不缩小）；sendCommand body 换 `{name, text, files}`（timeoutMs: 0 保 SC-4 不设超时，评审 R1）。todo 体系全链删除（事件 case/`sessionTodos`/TodoCard/`session-todos.ts` 模块/i18n 键/todo 样式，server 侧概念消失；api-types 的 Todo 死类型留 M6d 随 v1 面删）。pending 回填换绑 v2 两端点（reconciler 与 backfillPending 同步，questions 以归一化形态回调）。死代码按清单清理（`applyStatusSnapshot`/`mergeStatusSnapshot`（含 session-status 侧函数与用例）/scheduleCatalogRefresh/two status-snapshot 用例；`commandEchoPending` 改挂 `session.inbox.enqueued` 而非删除——见下）。
+
+**盘点发现（活体 SSE probe）**：① v2 user 消息经 `session.inbox.enqueued|delivered` 落地（`session.message.content.updated` 实测未发）——M4 漏了「他端消息实时落地」，本批补 `refreshConversationTail`（enqueued → 已加载会话首页重取合并，新增 user 清乐观 = v1 user 分支对称语义，in-flight 去抖；**非 user 项（compaction 等）过滤**，评审 Y1）；`session.inbox.delivered` 同挂重取，闭合 busy 排队补充的「悬挂乐观→双气泡」缺口（评审 Y3）；`message.updated`/`message.part.updated` case 保留（翻译层 step.started/streamPartUpsert 合成使用），仅删 user 分支与 `message.removed`/`message.part.removed`/`todo.updated`/`catalog.updated` 死 case。② **file.watcher 缺口**：2.0.18 事件全集无 `file.watcher.updated`、无 watch 端点——文件监听自 M3 起静默失效（重开/切作用域重拉兜底），case 与链路保留待上游恢复，spec-v0.5 记功能降级。
+
 #### M6d 收敛发版
 
 - 删除 v1 面（rest-client.ts/api-types.ts 及 v1 测试）、`rest-client-v2.ts` 更名 `rest-client.ts`（或 import 统一改指），全局 grep `/session?`（根路径）/`/project`（非 /api 前缀）/`/global/event` 等无残留；
