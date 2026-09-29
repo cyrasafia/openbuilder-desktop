@@ -755,9 +755,12 @@ export class RestClient {
   ): Promise<void> {
     await this.fetchResponse(`/api/session/${encodeURIComponent(sessionID)}/command`, {
       method: "POST",
+      // text 是 v2 必填字段（required: ["name","text"]）：无参命令传 ""，
+      // 省略整个键会被 server 400 "Missing key [text]" 拒绝——2026-09-29
+      // 实测修复；files 才是"空则省略"（同移动端 command() 契约）
       body: JSON.stringify({
         name: command,
-        ...(arguments_ ? { text: arguments_ } : {}),
+        text: arguments_ ?? "",
         ...(files?.length ? { files } : {}),
       }),
       timeoutMs: 0,

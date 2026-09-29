@@ -478,19 +478,23 @@ describe("命令面板与 pending 回填（M6c）", () => {
     expect(await skillDead.listCommands("/r")).toEqual([{ name: "init" }])
   })
 
-  it("sendCommand：POST /api/session/:id/command，body {name, text?, files?}", async () => {
+  it("sendCommand：POST /api/session/:id/command，text 恒携带（v2 必填）、files 空则省略", async () => {
     const seen: Array<{ url: string; body: unknown }> = []
     const client = mkClient((url, init) => {
       seen.push({ url, body: JSON.parse(String(init.body)) })
       return new Response(null, { status: 204 })
     })
     await client.sendCommand("ses_1", "review", "--help")
-    await client.sendCommand("ses_1", "init", undefined, [{ uri: "file:///a.ts", name: "a.ts" }])
+    // 无参命令：text 必须是 ""（省略整个键 = server 400 Missing key ["text"]，
+    // 2026-09-29 实测）；undefined（旧签名）同归一为 ""
+    await client.sendCommand("ses_1", "init", "", [{ uri: "file:///a.ts", name: "a.ts" }])
+    await client.sendCommand("ses_1", "init", undefined)
     expect(seen[0]).toEqual({ url: "http://server/api/session/ses_1/command", body: { name: "review", text: "--help" } })
     expect(seen[1]).toEqual({
       url: "http://server/api/session/ses_1/command",
-      body: { name: "init", files: [{ uri: "file:///a.ts", name: "a.ts" }] },
+      body: { name: "init", text: "", files: [{ uri: "file:///a.ts", name: "a.ts" }] },
     })
+    expect(seen[2]).toEqual({ url: "http://server/api/session/ses_1/command", body: { name: "init", text: "" } })
   })
 
   it("listPendingPermissionRequests / listPendingForms：deepObject location + envelope 解包（form 归一化）", async () => {
