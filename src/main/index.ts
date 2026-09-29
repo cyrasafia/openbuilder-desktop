@@ -112,11 +112,15 @@ app.whenReady().then(() => {
   // 校验 Origin allowlist（localhost/127.0.0.1/官方 scheme），浏览器 WS 必发
   // Origin——打包形态 renderer 是 file://，dev 是 localhost:5173。删头后 server
   // 视同无 Origin 放行（实测 101）；dev 的 localhost Origin 本就在 allowlist 内，
-  // 删除无副作用。锚定 /pty/ 路径（host 随用户配置不可枚举）——未来引入第三方
-  // WS 不受影响。版本前提：webRequest 拦截 WS 握手需较新 Electron（旧版不拦，
+  // 删除无副作用。锚定 pty 路径（host 随用户配置不可枚举）——未来引入第三方
+  // WS 不受影响。**v1/v2 双路径锚定（2026-09-29 修）**：v2 WS 路径是 /api/pty/
+  // （M6b 换绑），Chromium URL 模式 path 段从开头匹配——原 /pty/* 过滤器失配、
+  // Origin 不再剥离，打包形态 connect-token/WS 握手被 server 403（实测），终端
+  // 无限退避重连；dev 的 localhost Origin 在 allowlist 内不受影响（M6b 活体核对
+  // 因此漏过）。版本前提：webRequest 拦截 WS 握手需较新 Electron（旧版不拦，
   // electron#20710），本仓库 ^43 实测有效
   session.defaultSession.webRequest.onBeforeSendHeaders(
-    { urls: ["ws://*/pty/*", "wss://*/pty/*"] },
+    { urls: ["ws://*/pty/*", "wss://*/pty/*", "ws://*/api/pty/*", "wss://*/api/pty/*"] },
     (details, callback) => {
       delete details.requestHeaders.Origin
       callback({ requestHeaders: details.requestHeaders })
