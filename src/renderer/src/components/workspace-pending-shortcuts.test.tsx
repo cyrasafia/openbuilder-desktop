@@ -1,8 +1,9 @@
 /**
  * 会话页待处理卡片快捷键测试（design-keyboard-shortcuts §1.1b，2026-09-28 增；
  * 同日授权卡改字母键）：授权卡 Ctrl+N/A/Y = 拒绝/总是允许/允许一次（Ctrl+A/Y
- * 文本域聚焦让行 全选/redo）；问题卡 Ctrl+1..9 切换选项、Ctrl+0 拒绝、Ctrl+Enter
- * 下一步/末步提交（未选不动作，同按钮禁用态）。
+ * 文本域聚焦让行 全选/redo）；问题卡 Ctrl+1..9 切换选项（v2 form 输入步无选项
+ * 可切，放行）、Ctrl+0 拒绝、Ctrl+Enter 下一步/末步提交（当前步未答不动作，
+ * 同按钮禁用态）。
  * 守卫：Shift/Alt/repeat/IME/已消费/回复中/收起/overlay 不动作；Ctrl 按住期间
  * 按钮/选项显示键位角标（禁用不显，Enter 显示 "↵"，选项超 9 项截断）；
  * 卸载后不再监听。角标跟踪是模块级单例（ctrl-held.ts）——afterEach 归零防
@@ -343,7 +344,8 @@ describe("问题卡快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增
     render(<QuestionCard question={q} queueTotal={1} />)
     press({ key: "1", code: "Digit1", ctrlKey: true })
     press({ key: "Enter", ctrlKey: true })
-    expect(document.querySelector(".pending-card-title")?.textContent).toBe("确认")
+    // v2 卡标题恒为 form 级（不随步进变化），步进证据改看 .pending-queue 指示器
+    expect(document.querySelector(".pending-queue")?.textContent).toBe("2/2")
     press({ key: "2", code: "Digit2", ctrlKey: true })
     press({ key: "Enter", ctrlKey: true })
     expect(storeStub.replyQuestion).toHaveBeenCalledWith("que_1", {
@@ -364,6 +366,29 @@ describe("问题卡快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增
     const ev = press({ key: "5", code: "Digit5", ctrlKey: true })
     expect(ev.defaultPrevented).toBe(false)
     expect(optionActive()).toEqual([false, false])
+  })
+
+  it("text 输入步 Ctrl+数字放行（无选项可切，不消费不动作）", () => {
+    // v2 form 输入步（text/number）没有选项，Ctrl+1..9 语义为空——
+    // 放行（同"未映射数字"语义，不 preventDefault 不 toggle）
+    const q = makeQuestion({
+      fields: [
+        {
+          key: "f1",
+          question: "理由？",
+          description: "",
+          kind: "text",
+          options: [],
+          placeholder: "",
+          required: false,
+        },
+      ],
+    })
+    render(<QuestionCard question={q} queueTotal={1} />)
+    const ev = press({ key: "1", code: "Digit1", ctrlKey: true })
+    expect(ev.defaultPrevented).toBe(false)
+    expect(storeStub.replyQuestion).not.toHaveBeenCalled()
+    expect(document.querySelector(".pending-option")).toBeNull()
   })
 
   it("选项超过 9 个：仅前 9 项有快捷键角标", () => {
