@@ -1,5 +1,8 @@
 # 文件引用（@ / 右键 / 拖拽）— 设计文档
 
+> **v2 迁移注记（2026-09-29，M6b）**：搜索端点换 `GET /api/fs/find`（deepObject location，返回相对路径数组）；引用随 prompt 发送的 `files` 为 v2 `{uri, name}` 形态。`file://` 绝对 url 契约延续。
+
+
 > 对应 spec-v0.3 #4。把当前作用域的文件/目录**引用**进消息（`FilePartInput.source`，零字节、server 注入内容）。三入口：输入框 `@` 搜索浮层、文件树右键、文件树拖拽进输入框。
 >
 > 参考来源（按 AGENTS.md 约定先行检索）：`../openbuilder/docs/design-file-reference.md`——引用协议（FilePartInput + FileSource）与全部实测契约（absolute url 必需、mime 占位、source.text 留空、二进制回灌重写、目录注入 entries、发送守卫三处扩展、斜杠命令 parts 同样携带）均移植自该文档，本设计按桌面交互重组并注明差异。检索结论：移动端明确**不做** `@` 文本触发 picker（手机键盘场景），桌面端为用户明确需求——`@` 浮层为桌面新增设计。

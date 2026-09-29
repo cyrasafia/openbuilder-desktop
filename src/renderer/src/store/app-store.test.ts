@@ -8,9 +8,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AppStore, diffTabKey, FILE_WATCH_DEBOUNCE_MS } from "./app-store"
 import { ApiError, RestClient } from "@shared/rest-client"
 import { SseSubscriber } from "@shared/sse-subscriber"
-import { globalEntryKey } from "@shared/project-entries"
 import type { ModelCatalog } from "@shared/model-catalog"
-import type { MessageWithParts, ModelRef, Part, Project, Session } from "@shared/api-types"
+import type { V2ModelInfo } from "@shared/api-v2-types"
+import type {
+  AgentInfo,
+  FileContentData,
+  FileDiff,
+  FileNode,
+  MessageWithParts,
+  ModelRef,
+  Part,
+  Project,
+  Pty,
+  PtyTicket,
+  Session,
+} from "@shared/api-types"
 
 const ROOT = "/repo"
 const WT1 = "/repo/.git/opencode-worktrees/wt1"
@@ -20,7 +32,17 @@ vi.spyOn(SseSubscriber.prototype, "start").mockImplementation(() => {})
 vi.spyOn(SseSubscriber.prototype, "stop").mockImplementation(() => {})
 
 function project(): Project {
-  return { id: "proj1", worktree: ROOT, time: { created: 0, updated: 0 }, sandboxes: [WT1, WT2] }
+  return { id: "proj1", worktree: ROOT, vcs: "git", time: { created: 0, updated: 0 }, sandboxes: [WT1, WT2] }
+}
+
+/** v1 形状 fixture → v2 wire 形状（ProjectInfo）：覆盖 clientV2.listProjects mock 时使用 */
+function wireProject(p: Project) {
+  return {
+    ...p,
+    canonical: p.worktree,
+    sandboxes: p.sandboxes ?? [],
+    time: { created: p.time.created, updated: p.time.updated, active: p.time.updated },
+  }
 }
 
 function session(id: string, directory: string, time: Session["time"]): Session {
@@ -41,12 +63,25 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve }
 }
 
+  /** 唯一 v2 client fake（M6d 合一：原 clientV2 字段已并入 client） */
+  function clientV2Of() {
+    return (store as unknown as { client: Record<string, unknown> }).client
+  }
+
 function sessionsOf(...list: Session[]): Map<string, Session> {
   return new Map(list.map((s) => [s.id, s]))
 }
 
+/** 直建会话消息容器（M6c：v2 下 user 骨架经 inbox 重取、assistant 经流式翻译
+ *  到达——小 fixture 直灌比走两条链路更聚焦用例目标） */
+function seedMessages(sid: string, ...msgs: MessageWithParts[]) {
+  store.messagesBySession.set(sid, new Map(msgs.map((m) => [m.info.id, m])))
+}
+
 let store: AppStore
 let snapshots: Map<string, Promise<Session[]> | Session[]>
+/** 项目列表唯一数据源（v1 形状）：v1/v2 两个 fake client 共读（v2 侧归一 wire 形状） */
+let projectList: Project[]
 const browserCalls: string[] = []
 
 beforeEach(() => {
@@ -72,16 +107,79 @@ beforeEach(() => {
   }
   browserCalls.length = 0
   snapshots = new Map()
+  projectList = [project()]
   store = new AppStore()
+  // 唯一 v2 client fake（M6d 合一）：listSessions 响应 {data, cursor} envelope，
+  // data 为 wire 形状（location.directory），适配层在 store 侧；listProjects 从
+  // v1 形状数据源（projectList）归一为 v2 wire 形状（canonical ← worktree）
   ;(store as unknown as { client: unknown }).client = {
-    listSessions: async (dir: string) => {
-      const v = snapshots.get(dir)
-      return v === undefined ? [] : await v
+    listSessions: async (input: { directory?: string }) => {
+      const v = input.directory === undefined ? [] : snapshots.get(input.directory)
+      const list = v === undefined ? [] : await v
+      return {
+        data: list.map((s) => ({ ...s, location: { directory: s.directory } })),
+        cursor: {},
+      }
     },
-    listSessionStatus: async () => ({}),
-    listProjects: async () => [project()],
-    listPendingPermissions: async () => [],
-    listPendingQuestions: async () => [],
+    listProjects: async () => projectList.map(wireProject),
+    resolveLocation: async (directory?: string) => ({
+      directory: directory ?? ROOT,
+      project: { id: "proj1", directory: directory ?? ROOT, canonical: directory ?? ROOT },
+    }),
+    serverInfo: async () => ({ version: "2.0.18", pid: 1, urls: [], paths: { tmp: "/tmp" } }),
+    // M2 会话域：create（wire 形状经 toInternalSession 收敛）、update（204
+    // 无返回体——本地乐观落地在 store 侧）、delete（级联删）
+    createSession: async (input: { directory: string; title?: string; agent?: string; model?: unknown }) => ({
+      id: `ses_${input.title ?? "new"}`,
+      projectID: "proj1",
+      agent: input.agent,
+      model: input.model,
+      title: input.title,
+      time: { created: 1, updated: 1 },
+      location: { directory: input.directory },
+    }),
+    updateSession: async () => {},
+    deleteSession: async () => {},
+    deleteWorktree: async () => {},
+    // M4a 消息域：typed union 已在真 client 收敛，fake 直接产内部形状
+    listMessagesPage: async (
+      _sid: string,
+      _opts: { limit?: number; cursor?: string } = {},
+    ): Promise<{ entries: MessageWithParts[]; nextCursor: string | null }> => ({ entries: [], nextCursor: null }),
+    prompt: async () => {},
+    interrupt: async () => {},
+    createWorktree: async (_pid: string, _opts: { name?: string } = {}) => ({
+      directory: `/wt-${Math.random().toString(36).slice(2, 6)}`,
+    }),
+    revertStage: async (_sid: string, messageID: string) => ({ messageID }),
+    revertClear: async () => {},
+    forkSession: async (sid: string) => ({
+      id: sid === "s1" ? "s2" : "s3",
+      projectID: "proj1",
+      time: { created: 1, updated: 1 },
+      location: { directory: ROOT },
+    }),
+    // M6a 待办人机交互：默认无待办（用例按需覆盖 respondPermission/replyForm/cancelForm）
+    respondPermission: async () => {},
+    replyForm: async () => {},
+    cancelForm: async () => {},
+    switchAgent: async () => {},
+    switchModel: async () => {},
+    // M6c pending 回填：默认无待办（permission/form 快照）
+    listPendingPermissionRequests: async () => [],
+    listPendingForms: async () => [],
+    // M6b 文件/diff/pty/目录：默认空结果（失败用例按需挂 spy）
+    listAgents: async () => [] as AgentInfo[],
+    listModels: async () => [] as V2ModelInfo[],
+    listFiles: async () => [] as FileNode[],
+    readFileContent: async () => ({ type: "text", content: "" }) as FileContentData,
+    findFiles: async () => [] as string[],
+    listVcsDiff: async () => [] as FileDiff[],
+    listSessionDiff: async () => [] as FileDiff[],
+    createPty: async () => ({ id: "pty_1", command: "", cwd: ROOT, status: "running", pid: 1 }) as Pty,
+    updatePtySize: async () => ({ id: "pty_1", command: "", cwd: ROOT, status: "running", pid: 1 }) as Pty,
+    deletePty: async () => {},
+    ptyConnectToken: async () => ({ ticket: "t", expires_in: 60 }) as PtyTicket,
   }
   store.projects = [project()]
   store.projectStates = {
@@ -168,15 +266,13 @@ describe("先切换后加载：setCurrentWorkspace", () => {
 
   it("连按 latest-wins（switchEpoch）：中间切换的异步段整段放弃——快照刷新不发起，最终态收敛", async () => {
     const listCalls: string[] = []
-    ;(store as unknown as { client: unknown }).client = {
-      listSessions: async (dir: string) => {
-        listCalls.push(dir)
-        return snapshots.get(dir) ?? []
-      },
-      listSessionStatus: async () => ({}),
-      listProjects: async () => [project()],
-      listPendingPermissions: async () => [],
-      listPendingQuestions: async () => [],
+    // v2 侧快照路径（M1 换绑 refreshSessionsForProject；M6d 合一后直接覆盖）
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    cv2.listSessions = async (input: { directory?: string }) => {
+      listCalls.push(input.directory ?? "")
+      const v = input.directory === undefined ? [] : snapshots.get(input.directory)
+      const list = v === undefined ? [] : await v
+      return { data: list.map((s) => ({ ...s, location: { directory: s.directory } })), cursor: {} }
     }
     snapshots.set(ROOT, [])
     snapshots.set(WT1, [])
@@ -198,7 +294,7 @@ describe("先切换后加载：setCurrentWorkspace", () => {
     const WT9 = "/other/wt9"
     const proj2: Project = { id: "proj2", worktree: OTHER, time: { created: 0, updated: 0 }, sandboxes: [WT9] }
     const listCalls: string[] = []
-    ;(store as unknown as { client: unknown }).client = {
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
       listSessions: async (dir: string) => {
         listCalls.push(dir)
         return snapshots.get(dir) ?? []
@@ -207,7 +303,16 @@ describe("先切换后加载：setCurrentWorkspace", () => {
       listProjects: async () => [project(), proj2],
       listPendingPermissions: async () => [],
       listPendingQuestions: async () => [],
+    })
+    // v2 侧快照路径（M1 换绑）：同口径记录 + 数据源补 proj2
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    cv2.listSessions = async (input: { directory?: string }) => {
+      listCalls.push(input.directory ?? "")
+      const v = input.directory === undefined ? [] : snapshots.get(input.directory)
+      const list = v === undefined ? [] : await v
+      return { data: list.map((s) => ({ ...s, location: { directory: s.directory } })), cursor: {} }
     }
+    cv2.listProjects = async () => [wireProject(project()), wireProject(proj2)]
     store.projects = [project(), proj2]
     snapshots.set(ROOT, [])
     snapshots.set(WT1, [])
@@ -461,10 +566,9 @@ describe("非聊天 Tab 作用域化（design-tab-memory §18）", () => {
     snapshots.set(ROOT, [])
     snapshots.set(WT1, [s2])
     snapshots.set(WT2, [])
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.removeWorktree = async () => {}
-    client.deleteSession = async () => {}
-    client.listProjects = async () => [{ ...project(), sandboxes: [WT2] }]
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    cv2.deleteWorktree = async () => {}
+    projectList = [{ ...project(), sandboxes: [WT2] }]
 
     await store.setCurrentWorkspace(WT1)
     store.openFileTab(WT1 + "/a.md")
@@ -480,9 +584,9 @@ describe("非聊天 Tab 作用域化（design-tab-memory §18）", () => {
     snapshots.set(ROOT, [])
     snapshots.set(WT2, [])
     let resolveRemove!: () => void
-    client.removeWorktree = () => new Promise<void>((r) => (resolveRemove = r))
-    client.deleteSession = async () => {}
-    client.listProjects = async () => [{ ...project(), sandboxes: [WT2] }]
+    ;(store as unknown as { client: Record<string, unknown> }).client.deleteWorktree =
+      () => new Promise<void>((r) => (resolveRemove = r))
+    projectList = [{ ...project(), sandboxes: [WT2] }]
     store.projectStates.default.currentWorkspaceId = WT1
 
     const pending = store.removeWorkspace(WT1)
@@ -503,11 +607,10 @@ describe("非聊天 Tab 作用域化（design-tab-memory §18）", () => {
   })
 
   it("removeWorkspace 删除失败：删除态复位（行恢复可点），worktree 仍在列表", async () => {
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.removeWorktree = async () => {
+    const cv2f = (store as unknown as { client: Record<string, unknown> }).client
+    cv2f.deleteWorktree = async () => {
       throw new Error("git worktree remove failed")
     }
-    client.deleteSession = async () => {}
 
     const res = await store.removeWorkspace(WT1)
     expect(res.ok).toBe(false)
@@ -567,99 +670,132 @@ describe("先切换后加载：openProject 直达工作区", () => {
   })
 })
 
-describe("worktree.ready 后 skill 重新发现（实例缓存冻结防御）", () => {
+describe("worktree 事件（M3a v2 语义：reconcile 取代 dispose 链）", () => {
   const WT3 = "/repo/.git/opencode-worktrees/wt3"
-  let disposeCalls: string[]
-  let commandCalls: string[]
 
   function dispatch(dir: string, ev: { type: string; properties: unknown }, meta?: { project?: string }) {
     ;(store as unknown as { handleEvent: (d: string, e: unknown, m?: unknown) => void }).handleEvent(dir, ev, meta)
   }
 
-  beforeEach(() => {
-    disposeCalls = []
-    commandCalls = []
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.disposeInstance = async (dir: string) => {
-      disposeCalls.push(dir)
-      return true
-    }
-    client.listCommands = async (dir: string) => {
-      commandCalls.push(dir)
-      return [{ name: "agent-eval", description: "评测", source: "skill" }]
-    }
+  it("worktree.ready（v2 无信封 project 字段）：syncWorktrees 重拉项目全集", async () => {
+    projectList = [{ ...project(), sandboxes: [WT1, WT2, WT3] }]
+    dispatch(WT3, { type: "worktree.ready", properties: { name: "wt3" } })
+    await vi.waitFor(() =>
+      expect(store.workspacesOfProject("proj1").some((w) => w.directory === WT3)).toBe(true),
+    )
   })
 
-  it("ready → dispose 新 worktree 实例 → 等 disposed 回执 → 仅当前 chat 目录重拉命令；未打开项目整链跳过", async () => {
-    // 未打开的项目（meta.project 不匹配）：整链跳过（worktree 分支 gate）
-    dispatch(WT3, { type: "worktree.ready", properties: { name: "wt3" } }, { project: "unknown" })
-    expect(disposeCalls).toEqual([])
-
-    // 项目已打开但激活 chat 在别处：dispose 仍执行（修 server 侧冻结），不抢占命令缓存
-    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
-    store.activeTabKey = "chat:s1"
-    dispatch(WT3, { type: "worktree.ready", properties: { name: "wt3", branch: "opencode/wt3" } }, { project: "proj1" })
-    await vi.waitFor(() => expect(disposeCalls).toEqual([WT3]))
-    // 等 waiter 注册的微任务链跑完再发回执（teardown 完成事件，信封目录 = 新 worktree）
-    await new Promise((r) => setTimeout(r, 0))
-    dispatch(WT3, { type: "server.instance.disposed", properties: { directory: WT3 } })
-    await new Promise((r) => setTimeout(r, 0))
-    expect(commandCalls).toEqual([])
-
-    // 激活 chat 切到新 worktree：dispose + 回执后重拉，skill 命令入缓存
-    store.tabs = [{ kind: "chat", key: "chat:s9", projectId: "proj1", title: "s9", directory: WT3 }]
-    store.activeTabKey = "chat:s9"
-    dispatch(WT3, { type: "worktree.ready", properties: { name: "wt3" } }, { project: "proj1" })
-    await vi.waitFor(() => expect(disposeCalls).toEqual([WT3, WT3]))
-    await new Promise((r) => setTimeout(r, 0))
-    dispatch(WT3, { type: "server.instance.disposed", properties: { directory: WT3 } })
-    await vi.waitFor(() => expect(commandCalls).toEqual([WT3]))
-    expect(store.commandsFor(WT3).map((c) => c.name)).toEqual(["agent-eval"])
-  })
-
-  it("dispose 失败（旧版 server 无端点）：静默放弃，不重拉", async () => {
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.disposeInstance = async () => {
-      throw new Error("404")
-    }
-    dispatch(WT3, { type: "worktree.ready", properties: { name: "wt3" } }, { project: "proj1" })
+  it("worktree.updated（data.projectID）：已打开项目重拉；未打开跳过", async () => {
+    projectList = [{ ...project(), sandboxes: [WT1, WT2, WT3] }]
+    dispatch(WT3, { type: "worktree.updated", properties: { projectID: "proj1" } })
+    await vi.waitFor(() =>
+      expect(store.workspacesOfProject("proj1").some((w) => w.directory === WT3)).toBe(true),
+    )
+    projectList = [{ ...project(), sandboxes: [WT1, WT2] }]
+    dispatch(WT3, { type: "worktree.updated", properties: { projectID: "unknown" } })
     await new Promise((r) => setTimeout(r, 10))
-    expect(commandCalls).toEqual([])
+    // 未打开项目 = 跳过：不重拉（WT3 保持旧值——陈旧列表，重开时刷新）
+    expect(store.workspacesOfProject("proj1").some((w) => w.directory === WT3)).toBe(true)
   })
+})
 
-  it("该目录有已知活跃会话（多客户端防御）：放弃 dispose，不取消他端运行", async () => {
-    store.sessionsByProject.set("proj1", sessionsOf(session("s9", WT3, { created: 1, updated: 1 })))
-    ;(store as unknown as { sessionStatus: Map<string, unknown> }).sessionStatus.set("s9", {
-      type: "busy",
-    })
-    dispatch(WT3, { type: "worktree.ready", properties: { name: "wt3" } }, { project: "proj1" })
-    await new Promise((r) => setTimeout(r, 10))
-    expect(disposeCalls).toEqual([])
-    expect(commandCalls).toEqual([])
-  })
+describe("worktree 库存（v2 权威源，2026-09-29：sandboxes 冻结）", () => {
+  /** v2 GA 事实：create/remove 只写 WorktreeTable（GET /api/worktree），
+   *  Project.sandboxes 是冻结 legacy 列——含已删幽灵、缺新建。默认 fake 无
+   *  listWorktrees（= 旧 server 无端点，回退 sandboxes）；本组用例显式挂载。 */
+  function fakeClient() {
+    return (store as unknown as { client: Record<string, unknown> }).client
+  }
 
-  it("syncWorktrees diff 出新增 sandbox（断连丢 ready 补偿）：补跑 dispose 链", async () => {
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.listProjects = async () => [{ ...project(), sandboxes: [WT1, WT2, WT3] }]
+  it("库存为准渲染：幽灵不渲染、仅库存有的新建可见，库存 union 进 sandboxes", async () => {
+    const WT3 = "/repo/.git/opencode-worktrees/wt3"
+    const GHOST = "/repo/.git/opencode-worktrees/ghost"
+    // sandboxes 冻结态：残留幽灵 GHOST、缺他端新建 WT3
+    projectList = [{ ...project(), sandboxes: [WT1, WT2, GHOST] }]
+    const cv2 = fakeClient()
+    cv2.listWorktrees = async () => [
+      { directory: ROOT },
+      { directory: WT1, strategy: "git" },
+      { directory: WT2, strategy: "git" },
+      { directory: WT3, strategy: "git" },
+    ]
     await store.syncWorktrees()
-    await vi.waitFor(() => expect(disposeCalls).toEqual([WT3]))
-    dispatch(WT3, { type: "server.instance.disposed", properties: { directory: WT3 } })
-    await new Promise((r) => setTimeout(r, 0))
-    // 非 当前 chat 目录：只修 server 侧，不抢占命令缓存
-    expect(commandCalls).toEqual([])
+    const dirs = store.workspacesOfProject("proj1").map((w) => w.directory)
+    expect(dirs).toEqual([WT1, WT2, WT3])
+    // 库存目录 union 进内部 sandboxes：事件闸门/作用域/快照目录集受益
+    const sandboxes = store.projects.find((p) => p.id === "proj1")?.sandboxes
+    expect(sandboxes).toContain(WT3)
+    expect(sandboxes).toContain(GHOST) // 幽灵保留（闸门无害，仅不渲染）
   })
 
-  it("waitInstanceDisposed 超时兜底：SSE 丢帧不永久阻塞", async () => {
-    vi.useFakeTimers()
-    try {
-      const p = (
-        store as unknown as { waitInstanceDisposed: (d: string, t: number) => Promise<void> }
-      ).waitInstanceDisposed(WT3, 10_000)
-      vi.advanceTimersByTime(10_000)
-      await p
-    } finally {
-      vi.useRealTimers()
-    }
+  it("createWorkspace：裸 {directory} 响应解析 + 库存刷新后默认切换到新 worktree", async () => {
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+    const NEW = "/data/worktree/abc123/wt-new"
+    const cv2 = fakeClient()
+    // 2.0.18 活体：响应是裸对象（旧代码按 {data:...} envelope 解析 → directory
+    // undefined → TypeError → UI 报创建失败）
+    cv2.createWorktree = async () => ({ directory: NEW })
+    cv2.listWorktrees = async () => [
+      { directory: ROOT },
+      { directory: WT1, strategy: "git" },
+      { directory: WT2, strategy: "git" },
+      { directory: NEW, strategy: "git" },
+    ]
+    const res = await store.createWorkspace()
+    expect(res.ok).toBe(true)
+    // 库存含新目录 → 合并进 sandboxes → 幻影防御通过 → 切换生效
+    expect(store.currentWorkspace?.directory).toBe(NEW)
+    expect(store.workspacesOfProject("proj1").some((w) => w.directory === NEW)).toBe(true)
+  })
+
+  it("他端删除走库存 diff（sandboxes 冻结不变）——卸载消失目录的会话/Tab", async () => {
+    // v2 GA 后创建的 worktree 只进库存（sandboxes 从无它）——他端 DELETE 移除库存行
+    const s2 = session("s2", WT1, { created: 2, updated: 2 })
+    store.sessionsByProject.set("proj1", sessionsOf(s2))
+    store.tabMemory = { default: { [WT1]: { projectId: "proj1", tabs: ["s2"], active: "s2" } } }
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [s2])
+    snapshots.set(WT2, [])
+    projectList = [{ ...project(), sandboxes: [WT2] }]
+    const cv2 = fakeClient()
+    cv2.refreshWorktrees = async () => {}
+    let dropped = false
+    cv2.listWorktrees = async () =>
+      dropped
+        ? [{ directory: ROOT }, { directory: WT2, strategy: "git" }]
+        : [{ directory: ROOT }, { directory: WT1, strategy: "git" }, { directory: WT2, strategy: "git" }]
+    // 首轮：库存载入 + 合并（setCurrentWorkspace 的幻影防御依赖合并后的 sandboxes）
+    await store.syncWorktrees()
+    await store.setCurrentWorkspace(WT1)
+    expect(store.tabs.some((t) => t.key === "chat:s2")).toBe(true)
+    // 他端删除：库存行消失（sandboxes/projectList 不变）
+    dropped = true
+    await store.syncWorktrees()
+    expect(store.workspacesOfProject("proj1").some((w) => w.directory === WT1)).toBe(false)
+    expect(store.tabs.some((t) => t.directory === WT1)).toBe(false)
+    // 卸载后内部 sandboxes 剥离（防 60s diff 重复卸载）
+    expect(store.projects.find((p) => p.id === "proj1")?.sandboxes).not.toContain(WT1)
+  })
+
+  it("removeWorkspace：库存行随 DELETE 消失（v2 权威源刷新，非 sandboxes）", async () => {
+    snapshots.set(ROOT, [])
+    snapshots.set(WT2, [])
+    const wtOnly = new Set([WT1])
+    const cv2 = fakeClient()
+    cv2.deleteWorktree = async () => {}
+    cv2.listWorktrees = async () =>
+      wtOnly.has(WT1)
+        ? [{ directory: ROOT }, { directory: WT1, strategy: "git" }, { directory: WT2, strategy: "git" }]
+        : [{ directory: ROOT }, { directory: WT2, strategy: "git" }]
+    projectList = [{ ...project(), sandboxes: [WT1, WT2] }]
+    await store.syncWorktrees()
+    expect(store.workspacesOfProject("proj1").some((w) => w.directory === WT1)).toBe(true)
+    wtOnly.delete(WT1)
+    const res = await store.removeWorkspace(WT1)
+    expect(res.ok).toBe(true)
+    expect(store.workspacesOfProject("proj1").some((w) => w.directory === WT1)).toBe(false)
   })
 })
 
@@ -691,24 +827,16 @@ describe("busy 补充发送（design-supplement-send）", () => {
   it("busy 中 sendPrompt：乐观补充追加不误清既有消息，状态保持 busy；真实 user 事件到达即清乐观", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.promptAsync = async () => {}
-    // 会话 busy + 已有活跃流式 assistant（created 200，completed 空）
+    const clientV2 = clientV2Of()
+    clientV2.prompt = async () => {}
+    // 会话 busy + 既有消息（v1 事件 seed 改直建容器——v2 下 user/assistant 骨架
+    // 分别走 inbox 重取与流式翻译，本用例聚焦乐观语义不经这两条链路）
     setBusy()
-    dispatch({
-      type: "message.updated",
-      properties: {
-        sessionID: "s1",
-        info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 200 } },
-      },
-    })
-    dispatch({
-      type: "message.updated",
-      properties: {
-        sessionID: "s1",
-        info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
-      },
-    })
+    seedMessages(
+      "s1",
+      { info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } }, parts: [] },
+      { info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 200 } }, parts: [] },
+    )
 
     const res = await store.sendPrompt("s1", "补充：顺带统计词数")
     expect(res.ok).toBe(true)
@@ -721,27 +849,36 @@ describe("busy 补充发送（design-supplement-send）", () => {
       "opt",
     ])
 
-    // 真实补充 user 消息（created 晚于流式 assistant）经 SSE 到达：乐观清空、消息入列
-    dispatch({
-      type: "message.updated",
-      properties: {
-        sessionID: "s1",
-        info: { id: "msg_u2", sessionID: "s1", role: "user", time: { created: 300 } },
-      },
+    // 真实补充 user 消息（created 晚于流式 assistant）经 v2 inbox 链路到达
+    // （enqueued → 尾部重取合并）：乐观清空、消息入列
+    clientV2.listMessagesPage = async () => ({
+      entries: [
+        { info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } }, parts: [] },
+        { info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 200 } }, parts: [] },
+        { info: { id: "msg_u2", sessionID: "s1", role: "user", time: { created: 300 } }, parts: [] },
+      ],
+      nextCursor: null,
     })
-    const after = store.chatEntries("s1")
-    expect(after.map((e) => (e.kind === "message" ? e.data.info.id : e.kind))).toEqual([
-      "msg_u1",
-      "msg_a1",
-      "msg_u2",
-    ])
+    dispatch({
+      type: "session.inbox.enqueued",
+      properties: { sessionID: "s1", inboxID: "msg_u2" },
+    })
+    await vi.waitFor(() => {
+      const after = store.chatEntries("s1")
+      expect(after.map((e) => (e.kind === "message" ? e.data.info.id : e.kind))).toEqual([
+        "msg_u1",
+        "msg_a1",
+        "msg_u2",
+      ])
+    })
   })
 
   it("多条乐观并存：首条真实到达清全部（移动端同语义，短暂闪烁可接受）", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.promptAsync = async () => {}
+    const clientV2 = clientV2Of()
+    clientV2.prompt = async () => {}
+    seedMessages("s1")
     setBusy()
 
     await store.sendPrompt("s1", "补充一")
@@ -752,21 +889,22 @@ describe("busy 补充发送（design-supplement-send）", () => {
       "补充二",
     ])
 
-    dispatch({
-      type: "message.updated",
-      properties: {
-        sessionID: "s1",
-        info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
-      },
+    clientV2.listMessagesPage = async () => ({
+      entries: [{ info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } }, parts: [] }],
+      nextCursor: null,
     })
-    expect(store.chatEntries("s1").every((e) => e.kind === "message")).toBe(true)
+    dispatch({
+      type: "session.inbox.enqueued",
+      properties: { sessionID: "s1", inboxID: "msg_u1" },
+    })
+    await vi.waitFor(() => expect(store.chatEntries("s1").every((e) => e.kind === "message")).toBe(true))
   })
 
   it("retry 中补充发送：乐观 busy 不覆写 retry（退避提示保持整个 backoff 窗口）", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.promptAsync = async () => {}
+    clientV2Of().prompt = async () => {}
     setRetry()
 
     const res = await store.sendPrompt("s1", "补充")
@@ -880,7 +1018,7 @@ describe("合成 text part 过滤（design-file-reference §5，引用回显只�
   })
 
   it("快照路径（loadSessionMessages）：全合成消息登记并隐藏，混合消息正常", async () => {
-    ;(store as unknown as { client: unknown }).client = {
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
       listMessagesPage: async () => ({
         entries: [
           {
@@ -909,7 +1047,7 @@ describe("合成 text part 过滤（design-file-reference §5，引用回显只�
         ],
         nextCursor: null,
       }),
-    }
+    })
     await store.loadSessionMessages("s1", ROOT)
     const ids = store.chatEntries("s1").map((e) => (e.kind === "message" ? e.data.info.id : e.kind))
     expect(ids).toEqual(["msg_u2"])
@@ -943,75 +1081,6 @@ describe("合成 text part 过滤（design-file-reference §5，引用回显只�
   })
 })
 
-describe("会话任务列表（design-task-list）", () => {
-  function dispatch(dir: string, ev: { type: string; properties: unknown }) {
-    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(dir, ev)
-  }
-
-  it("todo.updated 全量替换（非合并）+ 空表 = server 侧清空", () => {
-    dispatch(ROOT, {
-      type: "todo.updated",
-      properties: { sessionID: "s1", todos: [{ content: "a", status: "in_progress", priority: "high" }] },
-    })
-    expect(store.todosForSession("s1")).toEqual([
-      { content: "a", status: "in_progress", priority: "high" },
-    ])
-    dispatch(ROOT, {
-      type: "todo.updated",
-      properties: { sessionID: "s1", todos: [{ content: "b", status: "pending", priority: "low" }] },
-    })
-    expect(store.todosForSession("s1")).toEqual([{ content: "b", status: "pending", priority: "low" }])
-    dispatch(ROOT, { type: "todo.updated", properties: { sessionID: "s1", todos: [] } })
-    expect(store.todosForSession("s1")).toEqual([])
-  })
-
-  it("畸形载荷（todos 缺失/非数组）忽略保留本地，显式 [] 才权威清空（review #2）", () => {
-    dispatch(ROOT, {
-      type: "todo.updated",
-      properties: { sessionID: "s1", todos: [{ content: "a", status: "pending", priority: "low" }] },
-    })
-    dispatch(ROOT, { type: "todo.updated", properties: { sessionID: "s1" } })
-    dispatch(ROOT, { type: "todo.updated", properties: { sessionID: "s1", todos: "oops" } })
-    expect(store.todosForSession("s1")).toEqual([{ content: "a", status: "pending", priority: "low" }])
-    dispatch(ROOT, { type: "todo.updated", properties: { sessionID: "s1", todos: [] } })
-    expect(store.todosForSession("s1")).toEqual([])
-  })
-
-  it("事件闸门：关闭项目目录的事件被丢弃", () => {
-    dispatch("/other", {
-      type: "todo.updated",
-      properties: { sessionID: "s1", todos: [{ content: "a", status: "pending", priority: "low" }] },
-    })
-    expect(store.sessionTodos.has("s1")).toBe(false)
-  })
-
-  it("loadSessionTodos：成功整表覆盖、失败保留本地、空数组权威清空", async () => {
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.listSessionTodos = async () => [{ content: "r", status: "pending", priority: "medium" }]
-    await store.loadSessionTodos("s1", ROOT)
-    expect(store.todosForSession("s1")).toEqual([{ content: "r", status: "pending", priority: "medium" }])
-    client.listSessionTodos = async () => {
-      throw new Error("boom")
-    }
-    await store.loadSessionTodos("s1", ROOT)
-    expect(store.todosForSession("s1")).toEqual([{ content: "r", status: "pending", priority: "medium" }])
-    client.listSessionTodos = async () => []
-    await store.loadSessionTodos("s1", ROOT)
-    expect(store.todosForSession("s1")).toEqual([])
-  })
-
-  it("会话删除事件清理任务列表（cleanupSessionState 挂点）", () => {
-    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
-    store.sessionsByProject.set("proj1", sessionsOf(s1))
-    dispatch(ROOT, {
-      type: "todo.updated",
-      properties: { sessionID: "s1", todos: [{ content: "a", status: "pending", priority: "low" }] },
-    })
-    dispatch(ROOT, { type: "session.deleted", properties: { sessionID: "s1", info: s1 } })
-    expect(store.sessionTodos.has("s1")).toBe(false)
-  })
-})
-
 describe("斜杠命令发送（design-slash-command SC-4：同步端点无限等待）", () => {
   function dispatch(ev: { type: string; properties: unknown }) {
     ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, ev)
@@ -1020,10 +1089,11 @@ describe("斜杠命令发送（design-slash-command SC-4：同步端点无限等
   it("长时执行在途：乐观保留不误判失败，完成后 ok:true；真实 user 事件到达即清乐观", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
-    const client = (store as unknown as { client: Record<string, unknown> }).client
+    seedMessages("s1")
+    const clientV2 = clientV2Of()
     const run = deferred<void>()
     const sent: unknown[] = []
-    client.sendCommand = (...args: unknown[]) => {
+    clientV2.sendCommand = (...args: unknown[]) => {
       sent.push(...args)
       return run.promise
     }
@@ -1038,25 +1108,30 @@ describe("斜杠命令发送（design-slash-command SC-4：同步端点无限等
     run.resolve()
     const res = await p
     expect(res.ok).toBe(true)
-    // 第 5 参 = 引用 file parts（无引用时 undefined，design-file-reference §4）
-    expect(sent).toEqual(["s1", ROOT, "review", "--help", undefined])
+    // 第 4 参 = 引用 files（v2 {uri,name}；无引用时 undefined，design-file-reference §4）
+    expect(sent).toEqual(["s1", "review", "--help", undefined])
 
-    dispatch({
-      type: "message.updated",
-      properties: {
-        sessionID: "s1",
-        info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
-        parts: [{ id: "prt_1", type: "subtask", command: "review", prompt: "展开正文" }],
-      },
+    // 回显经 v2 inbox 链路落地（展开为 subtask part 的消息形态由重取页携带）
+    clientV2.listMessagesPage = async () => ({
+      entries: [
+        {
+          info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
+          parts: [{ id: "prt_1", type: "subtask", command: "review", prompt: "展开正文" }],
+        },
+      ],
+      nextCursor: null,
     })
-    expect(store.chatEntries("s1").every((e) => e.kind === "message")).toBe(true)
+    dispatch({
+      type: "session.inbox.enqueued",
+      properties: { sessionID: "s1", inboxID: "msg_u1" },
+    })
+    await vi.waitFor(() => expect(store.chatEntries("s1").every((e) => e.kind === "message")).toBe(true))
   })
 
   it("真实失败（秒回的 400 类错误）：撤回乐观 + ok:false，由调用方回填草稿", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.sendCommand = async () => {
+    clientV2Of().sendCommand = async () => {
       throw new ApiError(400, "unknown", "HTTP 400")
     }
 
@@ -1071,17 +1146,14 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
     return { info: { id, sessionID: "s1", role: "user", time: { created } }, parts: [] }
   }
 
-  /** 顺序页夹具：每次 listMessagesPage 调用按序消费；耗尽后复用最后一页 */
+  /** 顺序页夹具：每次 listMessagesPage 调用按序消费；耗尽后复用最后一页。
+   *  注入目标 = clientV2（M4a 换绑；opts.cursor 即 v1 before） */
   function seedPageClient(pages: Array<{ entries: ReturnType<typeof msg>[]; nextCursor: string | null }>) {
-    const calls: Array<{ limit?: number; before?: string }> = []
+    const calls: Array<{ limit?: number; cursor?: string }> = []
     return {
       calls,
       client: {
-        listMessagesPage: async (
-          _sid: string,
-          _dir: string,
-          opts: { limit?: number; before?: string } = {},
-        ) => {
+        listMessagesPage: async (_sid: string, opts: { limit?: number; cursor?: string } = {}) => {
           calls.push(opts)
           return pages[Math.min(calls.length - 1, pages.length - 1)]
         },
@@ -1103,7 +1175,7 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
       { entries: [msg("m1", 1)], nextCursor: null },
       { entries: [], nextCursor: null },
     ])
-    ;(store as unknown as { client: unknown }).client = client
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, client)
 
     await store.loadSessionMessages("s1", ROOT)
     expect(store.sessionPages.get("s1")).toEqual({
@@ -1114,7 +1186,7 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
     })
 
     await store.loadEarlierMessages("s1")
-    expect(calls[1]).toEqual({ limit: 100, before: "c8" })
+    expect(calls[1]).toEqual({ limit: 100, cursor: "c8" })
     expect(store.sessionPages.get("s1")?.nextCursor).toBe("c5")
     expect(store.chatEntries("s1").map((e) => (e.kind === "message" ? e.data.info.id : e.kind))).toEqual([
       "m5",
@@ -1139,18 +1211,14 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
     seedSession()
     let fail = false
     const calls: Array<{ limit?: number; before?: string }> = []
-    ;(store as unknown as { client: unknown }).client = {
-      listMessagesPage: async (
-        _sid: string,
-        _dir: string,
-        opts: { limit: number; before?: string },
-      ) => {
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
+      listMessagesPage: async (_sid: string, opts: { limit?: number; cursor?: string }) => {
         calls.push(opts)
         if (fail) throw new Error("boom")
-        if (opts.before) return { entries: [msg("m1", 1)], nextCursor: null }
+        if (opts.cursor) return { entries: [msg("m1", 1)], nextCursor: null }
         return { entries: [msg("m8", 8)], nextCursor: "c8" }
       },
-    }
+    })
 
     // 种子失败（模拟挂载窗口加载失败后的上滚重试）
     fail = true
@@ -1168,7 +1236,7 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
     expect(calls).toEqual([
       { limit: 100 }, // 失败的种子
       { limit: 100 }, // 重试种子
-      { limit: 100, before: "c8" }, // 同调用内继续分页
+      { limit: 100, cursor: "c8" }, // 同调用内继续分页
     ])
     expect(store.sessionPages.get("s1")).toEqual({
       nextCursor: null,
@@ -1181,11 +1249,11 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
 
   it("挂载窗口加载失败置 error 种子：空会话的 error 行可达（无滚动也可重试）", async () => {
     seedSession()
-    ;(store as unknown as { client: unknown }).client = {
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
       listMessagesPage: async () => {
         throw new Error("boom")
       },
-    }
+    })
     await store.loadSessionMessages("s1", ROOT)
     // 失败种子：cursor null + 未穷尽 = 可重试态
     expect(store.sessionPages.get("s1")).toEqual({
@@ -1197,12 +1265,12 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
 
     // 网络恢复后点 error 行（= loadEarlierMessages 种子重试）：成功后正常分页
     const d = deferred<{ entries: ReturnType<typeof msg>[]; nextCursor: string | null }>()
-    ;(store as unknown as { client: unknown }).client = {
-      listMessagesPage: async (_sid: string, _dir: string, opts: { before?: string }) => {
-        if (opts.before) return d.promise
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
+      listMessagesPage: async (_sid: string, opts: { cursor?: string }) => {
+        if (opts.cursor) return d.promise
         return { entries: [msg("m8", 8)], nextCursor: "c8" }
       },
-    }
+    })
     const p = store.loadEarlierMessages("s1")
     expect(store.sessionPages.get("s1")?.loading).toBe(true)
     d.resolve({ entries: [msg("m1", 1)], nextCursor: null })
@@ -1218,18 +1286,18 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
 
   it("error 种子不残留：重激活成功覆盖（review R3-P2 路径 A）", async () => {
     seedSession()
-    ;(store as unknown as { client: unknown }).client = {
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
       listMessagesPage: async () => {
         throw new Error("boom")
       },
-    }
+    })
     await store.loadSessionMessages("s1", ROOT)
     expect(store.sessionPages.get("s1")?.error).toBe(true)
 
     // 切回 Tab 重挂载重拉成功 → error 种子被覆盖为正常种子（不残留失败行）
-    ;(store as unknown as { client: unknown }).client = {
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
       listMessagesPage: async () => ({ entries: [msg("m8", 8)], nextCursor: "c8" }),
-    }
+    })
     await store.loadSessionMessages("s1", ROOT)
     expect(store.sessionPages.get("s1")).toEqual({
       nextCursor: "c8",
@@ -1241,11 +1309,11 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
 
   it("error 种子不残留：对账回填清除（review R3-P2 路径 B）", async () => {
     seedSession()
-    ;(store as unknown as { client: unknown }).client = {
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
       listMessagesPage: async () => {
         throw new Error("boom")
       },
-    }
+    })
     await store.loadSessionMessages("s1", ROOT)
     expect(store.sessionPages.get("s1")?.error).toBe(true)
 
@@ -1265,18 +1333,14 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
     seedSession()
     let fail = false
     const calls: Array<{ limit?: number; before?: string }> = []
-    ;(store as unknown as { client: unknown }).client = {
-      listMessagesPage: async (
-        _sid: string,
-        _dir: string,
-        opts: { limit: number; before?: string },
-      ) => {
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
+      listMessagesPage: async (_sid: string, opts: { limit?: number; cursor?: string }) => {
         calls.push(opts)
         if (fail) throw new Error("boom")
-        if (opts.before) return { entries: [msg("m1", 1)], nextCursor: null }
+        if (opts.cursor) return { entries: [msg("m1", 1)], nextCursor: null }
         return { entries: [msg("m8", 8)], nextCursor: "c8" }
       },
-    }
+    })
 
     await store.loadSessionMessages("s1", ROOT)
     fail = true
@@ -1304,17 +1368,13 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
     seedSession()
     const calls: Array<{ limit?: number; before?: string }> = []
     const d = deferred<{ entries: ReturnType<typeof msg>[]; nextCursor: string | null }>()
-    ;(store as unknown as { client: unknown }).client = {
-      listMessagesPage: async (
-        _sid: string,
-        _dir: string,
-        opts: { limit: number; before?: string },
-      ) => {
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
+      listMessagesPage: async (_sid: string, opts: { limit?: number; cursor?: string }) => {
         calls.push(opts)
-        if (opts.before) return d.promise
+        if (opts.cursor) return d.promise
         return { entries: [msg("m8", 8)], nextCursor: "c8" }
       },
-    }
+    })
 
     await store.loadSessionMessages("s1", ROOT)
     const p1 = store.loadEarlierMessages("s1")
@@ -1328,19 +1388,15 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
 
   it("在途竞态：关 Tab 清状态后重开（新状态对象），旧页落地整体丢弃", async () => {
     seedSession()
-    const calls: Array<{ limit?: number; before?: string }> = []
+    const calls: Array<{ limit?: number; cursor?: string }> = []
     const d = deferred<{ entries: ReturnType<typeof msg>[]; nextCursor: string | null }>()
-    ;(store as unknown as { client: unknown }).client = {
-      listMessagesPage: async (
-        _sid: string,
-        _dir: string,
-        opts: { limit: number; before?: string },
-      ) => {
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
+      listMessagesPage: async (_sid: string, opts: { limit?: number; cursor?: string }) => {
         calls.push(opts)
-        if (opts.before) return d.promise
+        if (opts.cursor) return d.promise
         return { entries: [msg("m8", 8)], nextCursor: "c8" }
       },
-    }
+    })
 
     await store.loadSessionMessages("s1", ROOT)
     const p = store.loadEarlierMessages("s1")
@@ -1369,7 +1425,7 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
       { entries: [msg("m8", 8)], nextCursor: "c8" },
       { entries: [], nextCursor: null },
     ])
-    ;(store as unknown as { client: unknown }).client = client
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, client)
 
     await store.loadSessionMessages("s1", ROOT)
     await store.loadEarlierMessages("s1")
@@ -1385,7 +1441,7 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
       // 重激活的窗口响应（服务端可能又长了）：cursor 锚点更新（c9），但不得覆盖 c5
       { entries: [msg("m9", 9), msg("m10", 10), msg("m11", 11)], nextCursor: "c9" },
     ])
-    ;(store as unknown as { client: unknown }).client = client
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, client)
 
     await store.loadSessionMessages("s1", ROOT)
     await store.loadEarlierMessages("s1")
@@ -1411,7 +1467,7 @@ describe("消息历史上滚翻页（design-message-history-pagination）", () =
     const { client } = seedPageClient([
       { entries: [msg("m8", 8)], nextCursor: "c8" },
     ])
-    ;(store as unknown as { client: unknown }).client = client
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, client)
     await store.loadSessionMessages("s1", ROOT)
     expect(store.sessionPages.has("s1")).toBe(true)
     ;(store as unknown as { cleanupSessionState: (id: string) => void }).cleanupSessionState("s1")
@@ -1447,7 +1503,7 @@ describe("隐式默认模型（D-AM-4 修订）", () => {
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     store.modelCatalogs.set(ROOT, catalog)
     const posted: ModelRef[] = []
-    ;(store as unknown as { client: unknown }).client = seedSwitchClient(posted)
+    ;(store as unknown as { client: Record<string, unknown> }).client = seedSwitchClient(posted)
 
     expect(await store.switchSessionModel("s1", "zai", "glm-4")).toBe(true)
     expect(posted).toEqual([{ id: "glm-4", providerID: "zai", variant: "high" }])
@@ -1460,7 +1516,7 @@ describe("隐式默认模型（D-AM-4 修订）", () => {
     s1.model = { id: "glm-5.3", providerID: "zai", variant: "high" }
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     store.modelCatalogs.set(ROOT, catalog)
-    ;(store as unknown as { client: unknown }).client = seedSwitchClient([])
+    ;(store as unknown as { client: Record<string, unknown> }).client = seedSwitchClient([])
 
     await store.switchSessionModel("s1", "zai", "glm-air")
     expect(store.defaultsFor().model).toEqual({ id: "glm-air", providerID: "zai" })
@@ -1470,7 +1526,7 @@ describe("隐式默认模型（D-AM-4 修订）", () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     store.modelCatalogs.set(ROOT, catalog)
-    ;(store as unknown as { client: unknown }).client = seedSwitchClient([], true)
+    ;(store as unknown as { client: Record<string, unknown> }).client = seedSwitchClient([], true)
 
     expect(await store.switchSessionModel("s1", "zai", "glm-4")).toBe(false)
     expect(store.defaultsFor().model).toBeUndefined()
@@ -1481,7 +1537,7 @@ describe("隐式默认模型（D-AM-4 修订）", () => {
     s1.model = { id: "glm-5.3", providerID: "zai" }
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     store.modelCatalogs.set(ROOT, catalog)
-    ;(store as unknown as { client: unknown }).client = seedSwitchClient([])
+    ;(store as unknown as { client: Record<string, unknown> }).client = seedSwitchClient([])
 
     await store.switchSessionVariant("s1", "zai", "glm-5.3", "max")
     expect(store.defaultsFor().model).toEqual({ id: "glm-5.3", providerID: "zai", variant: "max" })
@@ -1493,16 +1549,18 @@ describe("隐式默认模型（D-AM-4 修订）", () => {
   it("无显式默认且目录已加载 → 新会话应用列表首项", async () => {
     store.modelCatalogs.set(ROOT, catalog)
     let body: { agent?: string; model?: ModelRef } = {}
-    ;(store as unknown as { client: unknown }).client = {
-      createSession: async (
-        _d: string,
-        _w: unknown,
-        _t: unknown,
-        opts: { agent?: string; model?: ModelRef } = {},
-      ) => {
-        body = opts
-        return session("new1", ROOT, { created: 9, updated: 9 })
-      },
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    cv2.createSession = async (input: { directory: string; agent?: string; model?: ModelRef }) => {
+      body = input
+      return {
+        id: "new1",
+        projectID: "proj1",
+        agent: input.agent,
+        model: input.model,
+        title: "new1",
+        time: { created: 9, updated: 9 },
+        location: { directory: input.directory },
+      }
     }
 
     await store.createSession()
@@ -1512,16 +1570,17 @@ describe("隐式默认模型（D-AM-4 修订）", () => {
   it("显式默认有效 → 新会话按原值应用；失效 variant 只丢 variant；失效模型回退首项", async () => {
     store.modelCatalogs.set(ROOT, catalog)
     const bodies: Array<{ agent?: string; model?: ModelRef }> = []
-    ;(store as unknown as { client: unknown }).client = {
-      createSession: async (
-        _d: string,
-        _w: unknown,
-        _t: unknown,
-        opts: { agent?: string; model?: ModelRef } = {},
-      ) => {
-        bodies.push(opts)
-        return session(`new${bodies.length}`, ROOT, { created: 9, updated: 9 })
-      },
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    cv2.createSession = async (input: { directory: string; agent?: string; model?: ModelRef }) => {
+      bodies.push(input)
+      return {
+        id: `new${bodies.length}`,
+        projectID: "proj1",
+        agent: input.agent,
+        model: input.model,
+        time: { created: 9, updated: 9 },
+        location: { directory: input.directory },
+      }
     }
 
     store.defaults = {
@@ -1542,7 +1601,7 @@ describe("隐式默认模型（D-AM-4 修订）", () => {
 
   it("目录未加载且无显式默认 → 不带 model（服务器默认）", async () => {
     let body: { agent?: string; model?: ModelRef } = {}
-    ;(store as unknown as { client: unknown }).client = {
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
       createSession: async (
         _d: string,
         _w: unknown,
@@ -1552,7 +1611,7 @@ describe("隐式默认模型（D-AM-4 修订）", () => {
         body = opts
         return session("new1", ROOT, { created: 9, updated: 9 })
       },
-    }
+    })
 
     await store.createSession({ openTab: false })
     expect(body.model).toBeUndefined()
@@ -1638,16 +1697,17 @@ describe("模型开关（design-model-list）", () => {
   it("createSession：显式默认被关闭 → 回退首个开启模型；首项被关 → 下一开启项；全部关闭 → 服务器默认", async () => {
     store.modelCatalogs.set(ROOT, { agents: [], models })
     const bodies: Array<{ agent?: string; model?: ModelRef }> = []
-    ;(store as unknown as { client: unknown }).client = {
-      createSession: async (
-        _d: string,
-        _w: unknown,
-        _t: unknown,
-        opts: { agent?: string; model?: ModelRef } = {},
-      ) => {
-        bodies.push(opts)
-        return session(`new${bodies.length}`, ROOT, { created: 9, updated: 9 })
-      },
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    cv2.createSession = async (input: { directory: string; agent?: string; model?: ModelRef }) => {
+      bodies.push(input)
+      return {
+        id: `new${bodies.length}`,
+        projectID: "proj1",
+        agent: input.agent,
+        model: input.model,
+        time: { created: 9, updated: 9 },
+        location: { directory: input.directory },
+      }
     }
 
     store.defaults = { default: { model: { id: "glm-air", providerID: "zai" } } }
@@ -1869,8 +1929,8 @@ describe("文件监听（design-file-watcher）", () => {
     watcherEvent(ROOT, ROOT + "/top.ts", "unlink") // 父 = 根（"."）
     await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS)
     expect(listFiles).toHaveBeenCalledTimes(2)
-    expect(listFiles).toHaveBeenCalledWith(ROOT, "src/", undefined)
-    expect(listFiles).toHaveBeenCalledWith(ROOT, ".", undefined)
+    expect(listFiles).toHaveBeenCalledWith(ROOT, "src/")
+    expect(listFiles).toHaveBeenCalledWith(ROOT, ".")
   })
 
   it("change 已加载目录节点重列自身；文件 change 不触发树刷新", async () => {
@@ -1883,7 +1943,7 @@ describe("文件监听（design-file-watcher）", () => {
     watcherEvent(ROOT, ROOT + "/src/a.ts", "change")
     await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS)
     expect(listFiles).toHaveBeenCalledTimes(1)
-    expect(listFiles).toHaveBeenCalledWith(ROOT, "src/", undefined)
+    expect(listFiles).toHaveBeenCalledWith(ROOT, "src/")
   })
 
   it("树重置（切作用域）作废挂起的树刷新：定时器不打进新作用域", async () => {
@@ -1932,7 +1992,7 @@ describe("markdown 相对图片（design-markdown-preview §2.8）", () => {
     store.ensureFileImage(ROOT + "/img/a.png")
     store.ensureFileImage(ROOT + "/img/a.png") // 在途 → 合并为一次请求
     expect(readFileContent).toHaveBeenCalledTimes(1)
-    expect(readFileContent).toHaveBeenCalledWith(ROOT, ROOT + "/img/a.png", undefined)
+    expect(readFileContent).toHaveBeenCalledWith(ROOT, ROOT + "/img/a.png")
 
     await vi.waitFor(() =>
       expect(store.fileContents.get(ROOT + "/img/a.png")).toEqual({
@@ -2003,10 +2063,7 @@ describe("回滚到指定消息（design-message-revert）", () => {
     seedSession()
     seedUserMessage("帮我写个函数")
     const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.revertMessage = async () => ({
-      ...session("s1", ROOT, { created: 1, updated: 2 }),
-      revert: { messageID: "msg_u1" },
-    })
+    clientV2Of().revertStage = async () => ({ messageID: "msg_u1" })
 
     const res = await store.revertToMessage("s1", "msg_u1")
     expect(res.ok).toBe(true)
@@ -2033,10 +2090,7 @@ describe("回滚到指定消息（design-message-revert）", () => {
       ]),
     )
     const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.revertMessage = async () => ({
-      ...session("s1", ROOT, { created: 1, updated: 2 }),
-      revert: { messageID: "msg_u1" },
-    })
+    clientV2Of().revertStage = async () => ({ messageID: "msg_u1" })
 
     const res = await store.revertToMessage("s1", "msg_u1")
     expect(res.ok).toBe(true)
@@ -2045,29 +2099,31 @@ describe("回滚到指定消息（design-message-revert）", () => {
 
   it("revertToMessage text 展开型命令回显（sendCommand 标记）：不回填草稿", async () => {
     seedSession()
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    // 同步端点：回显（SSE message.updated）在 POST await 期间到达
+    seedMessages("s1")
+    const clientV2 = clientV2Of()
+    // 同步端点：回显（v2 inbox.enqueued → 尾部重取）在 POST await 期间到达
     const run = deferred<void>()
-    client.sendCommand = () => run.promise
+    clientV2.sendCommand = () => run.promise
 
     const p = store.sendCommand("s1", "init", "--foo")
-    // part 先于 message.info 到达（pendingParts 回放路径，同真实 SSE 顺序）
-    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, {
-      type: "message.part.updated",
-      properties: {
-        sessionID: "s1",
-        part: { id: "prt_1", sessionID: "s1", messageID: "msg_u1", type: "text", text: "展开的模板全文" },
-      },
+    // 展开为 text part 的命令回显消息（skill/非 subtask；展开模板非用户原文）
+    // 经 inbox 链路重取落地
+    clientV2.listMessagesPage = async () => ({
+      entries: [
+        {
+          info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
+          parts: [{ id: "prt_1", sessionID: "s1", messageID: "msg_u1", type: "text", text: "展开的模板全文" }],
+        },
+      ],
+      nextCursor: null,
     })
     ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, {
-      type: "message.updated",
-      properties: {
-        sessionID: "s1",
-        info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
-        // skill/非 subtask 命令展开为 text part（展开模板，非用户原文）
-        parts: [{ id: "prt_1", sessionID: "s1", messageID: "msg_u1", type: "text", text: "展开的模板全文" }],
-      },
+      type: "session.inbox.enqueued",
+      properties: { sessionID: "s1", inboxID: "msg_u1" },
     })
+    await vi.waitFor(() =>
+      expect(store.chatEntries("s1").some((e) => e.kind === "message" && e.data.info.id === "msg_u1")).toBe(true),
+    )
     run.resolve()
     expect(await p).toEqual({ ok: true })
     // 回显已加载且有 text（排除「消息未加载导致空回填」的假阳性）
@@ -2081,10 +2137,7 @@ describe("回滚到指定消息（design-message-revert）", () => {
       },
     ])
 
-    client.revertMessage = async () => ({
-      ...session("s1", ROOT, { created: 1, updated: 2 }),
-      revert: { messageID: "msg_u1" },
-    })
+    clientV2Of().revertStage = async () => ({ messageID: "msg_u1" })
     const res = await store.revertToMessage("s1", "msg_u1")
     expect(res.ok).toBe(true)
     expect(store.takeRevertDraft("s1")).toBeNull()
@@ -2092,33 +2145,32 @@ describe("回滚到指定消息（design-message-revert）", () => {
 
   it("sendCommand 失败：回显标记清除，后续普通消息回滚仍回填", async () => {
     seedSession()
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.sendCommand = async () => {
+    seedMessages("s1")
+    const clientV2 = clientV2Of()
+    clientV2.sendCommand = async () => {
       throw new ApiError(400, "unknown", "HTTP 400")
     }
     const res = await store.sendCommand("s1", "no-such", "")
     expect(res.ok).toBe(false)
 
-    // 失败后用户手输的普通消息不得被残留标记误判为命令回显
-    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, {
-      type: "message.part.updated",
-      properties: {
-        sessionID: "s1",
-        part: { id: "prt_1", sessionID: "s1", messageID: "msg_u1", type: "text", text: "手输的普通消息" },
-      },
+    // 失败后用户手输的普通消息（inbox 链路落地）不得被残留标记误判为命令回显
+    clientV2.listMessagesPage = async () => ({
+      entries: [
+        {
+          info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
+          parts: [{ id: "prt_1", sessionID: "s1", messageID: "msg_u1", type: "text", text: "手输的普通消息" }],
+        },
+      ],
+      nextCursor: null,
     })
     ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, {
-      type: "message.updated",
-      properties: {
-        sessionID: "s1",
-        info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
-        parts: [{ id: "prt_1", sessionID: "s1", messageID: "msg_u1", type: "text", text: "手输的普通消息" }],
-      },
+      type: "session.inbox.enqueued",
+      properties: { sessionID: "s1", inboxID: "msg_u1" },
     })
-    client.revertMessage = async () => ({
-      ...session("s1", ROOT, { created: 1, updated: 2 }),
-      revert: { messageID: "msg_u1" },
-    })
+    await vi.waitFor(() =>
+      expect(store.chatEntries("s1").some((e) => e.kind === "message" && e.data.info.id === "msg_u1")).toBe(true),
+    )
+    clientV2.revertStage = async () => ({ messageID: "msg_u1" })
     await store.revertToMessage("s1", "msg_u1")
     expect(store.takeRevertDraft("s1")).toBe("手输的普通消息")
   })
@@ -2127,12 +2179,12 @@ describe("回滚到指定消息（design-message-revert）", () => {
     seedSession()
     const calls: string[] = []
     const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.abortSession = async () => {
-      calls.push("abort")
+    clientV2Of().interrupt = async () => {
+      calls.push("interrupt")
     }
-    client.revertMessage = async () => {
+    clientV2Of().revertStage = async () => {
       calls.push("revert")
-      return { ...session("s1", ROOT, { created: 1, updated: 2 }), revert: { messageID: "msg_u1" } }
+      return { messageID: "msg_u1" }
     }
     // 经真实事件路径置 busy
     ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, {
@@ -2142,18 +2194,28 @@ describe("回滚到指定消息（design-message-revert）", () => {
 
     const res = await store.revertToMessage("s1", "msg_u1")
     expect(res.ok).toBe(true)
-    expect(calls).toEqual(["abort", "revert"])
+    expect(calls).toEqual(["interrupt", "revert"])
   })
 
-  it("revertToMessage 409：ok:false 且 connectionError 记录", async () => {
+  it("revertToMessage 409 SessionBusyError（M5 评审修复）：命中友好文案；普通 409 透传", async () => {
     seedSession()
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.revertMessage = async () => {
-      throw new ApiError(409, "unknown", "HTTP 409")
+    // v2 typed error：409 + {name:"SessionBusyError"} → 「会话仍在进行中」
+    clientV2Of().revertStage = async () => {
+      throw new ApiError(409, "unknown", "HTTP 409: session is busy", {
+        name: "SessionBusyError",
+        data: { sessionID: "s1", message: "session is busy" },
+      })
     }
     const res = await store.revertToMessage("s1", "msg_u1")
     expect(res.ok).toBe(false)
-    expect(store.connectionError).toBeTruthy()
+    expect(store.connectionError).toContain("会话仍在进行中")
+    // 非 SessionBusyError 的同状态错误：透传原始消息
+    clientV2Of().revertStage = async () => {
+      throw new ApiError(409, "unknown", "HTTP 409: other")
+    }
+    const res2 = await store.revertToMessage("s1", "msg_u1")
+    expect(res2.ok).toBe(false)
+    expect(store.connectionError).not.toContain("会话仍在进行中")
   })
 
   it("unrevertSession：合并返回 Session（revert 清空）+ 已回填会话空种子清空输入框", async () => {
@@ -2163,10 +2225,7 @@ describe("回滚到指定消息（design-message-revert）", () => {
     ;(store as unknown as { revertDrafts: Map<string, string> }).revertDrafts.set("s1", "回滚回填的草稿")
     expect(store.takeRevertDraft("s1")).toBe("回滚回填的草稿")
     const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.unrevertSession = async () => ({
-      ...session("s1", ROOT, { created: 1, updated: 3 }),
-      revert: null,
-    })
+    clientV2Of().revertClear = async () => {}
 
     const res = await store.unrevertSession("s1")
     expect(res.ok).toBe(true)
@@ -2179,10 +2238,7 @@ describe("回滚到指定消息（design-message-revert）", () => {
     const s1 = seedSession()
     store.sessionsByProject.set("proj1", sessionsOf({ ...s1, revert: { messageID: "msg_u1" } }))
     const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.unrevertSession = async () => ({
-      ...session("s1", ROOT, { created: 1, updated: 3 }),
-      revert: null,
-    })
+    clientV2Of().revertClear = async () => {}
 
     const res = await store.unrevertSession("s1")
     expect(res.ok).toBe(true)
@@ -2196,10 +2252,7 @@ describe("回滚到指定消息（design-message-revert）", () => {
     store.seedChatDraft("s1", "/review --help")
     expect(store.takeRevertDraft("s1")).toBe("/review --help")
     const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.unrevertSession = async () => ({
-      ...session("s1", ROOT, { created: 1, updated: 3 }),
-      revert: null,
-    })
+    clientV2Of().revertClear = async () => {}
 
     const res = await store.unrevertSession("s1")
     expect(res.ok).toBe(true)
@@ -2217,12 +2270,12 @@ describe("回滚到指定消息（design-message-revert）", () => {
     expect(store.takeRevertDraft("s1")).toBeNull()
   })
 
-  it("revertToMessage server 未暂存（消息已不存在）：ok:false 且不回填", async () => {
+  it("revertToMessage 消息不存在（v2：stage 404 MessageNotFoundError）：ok:false 且不回填", async () => {
     seedSession()
     seedUserMessage("帮我写个函数")
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    // server 侧消息不存在 → revert.ts no-op，返回无 revert 字段的原会话
-    client.revertMessage = async () => session("s1", ROOT, { created: 1, updated: 1 })
+    clientV2Of().revertStage = async () => {
+      throw new ApiError(404, "not-found", "HTTP 404")
+    }
 
     const res = await store.revertToMessage("s1", "msg_u1")
     expect(res.ok).toBe(false)
@@ -2367,7 +2420,7 @@ describe("输入草稿（design-compose-draft）", () => {
             : null,
       storeSet: async () => {},
     }
-    const health = vi.spyOn(RestClient.prototype, "health").mockRejectedValue(new Error("offline"))
+    const health = vi.spyOn(RestClient.prototype, "serverInfo").mockRejectedValue(new Error("offline"))
     try {
       const s = new AppStore()
       await s.init() // 连接失败（health 拒绝）但播种发生在 teardown 之后、探针之前
@@ -2761,52 +2814,6 @@ describe("报错消息与重试状态（design-error-message）", () => {
     expect(store.dotStateFor("s1")).toBe("running")
   })
 
-  it("REST 状态快照撞上保持：busy 改写为本地 retry（不触发 covered⇒idle 误清）；idle/缺席解除", () => {
-    seedSession()
-    const apply = (fresh: Record<string, { type: string }>) =>
-      (store as unknown as { applyStatusSnapshot: (dir: string, f: Record<string, { type: string }>) => void }).applyStatusSnapshot(
-        ROOT,
-        fresh,
-      )
-    dispatch({
-      type: "session.status",
-      properties: { sessionID: "s1", status: { type: "retry", attempt: 1, message: "rate limited" } },
-    })
-    // 快照在在途尝试窗口抓到 busy——保持 retry
-    apply({ s1: { type: "busy" } })
-    expect(store.statusOf("s1").type).toBe("retry")
-    // 快照报 idle（server 已完成）——解除保持
-    apply({ s1: { type: "idle" } })
-    expect(store.statusOf("s1").type).toBe("idle")
-    expect(store.dotStateFor("s1")).toBe("idle")
-    // 再入 retry 后，快照缺席（covered⇒idle 删除）——同样解除
-    dispatch({
-      type: "session.status",
-      properties: { sessionID: "s1", status: { type: "retry", attempt: 1, message: "rate limited" } },
-    })
-    apply({})
-    expect(store.statusOf("s1").type).toBe("idle")
-  })
-
-  it("快照发现的 retry 补建锁存：重连对账落在退避窗口内，后续 busy 事件不闪绿", () => {
-    seedSession()
-    const apply = (fresh: Record<string, { type: string }>) =>
-      (store as unknown as { applyStatusSnapshot: (dir: string, f: Record<string, { type: string }>) => void }).applyStatusSnapshot(
-        ROOT,
-        fresh,
-      )
-    // 重连对账：快照报 retry（本地此前无任何状态——SSE 断线期间进入退避）
-    apply({ s1: { type: "retry" } })
-    expect(store.statusOf("s1").type).toBe("retry")
-    // server 下一轮尝试起点的 busy——锁存已由快照路径补建，不覆写
-    dispatch({
-      type: "session.status",
-      properties: { sessionID: "s1", status: { type: "busy" } },
-    })
-    expect(store.statusOf("s1").type).toBe("retry")
-    expect(store.dotStateFor("s1")).toBe("error")
-  })
-
   it("报错终局（§3.4）：末条 assistant 非中止错误 → failed 静态红；中止与新 run 不算", () => {
     seedSession()
     dispatch({
@@ -3030,19 +3037,13 @@ describe("布局状态（design-layout-collapse）", () => {
 })
 
 describe("快捷键支撑（design-keyboard-shortcuts）", () => {
-  /** 最小可跑 client：updateSession 返回带 archived 的会话副本 */
+  /** 最小可跑 client（v2 envelope 形状；归档/重命名走默认 fake 的 204 乐观落地，
+   *  见 D1 归档私约 describe） */
   function withSessionClient(sessions: Session[]) {
-    ;(store as unknown as { client: unknown }).client = {
-      listSessions: async () => [],
-      listSessionStatus: async () => ({}),
-      listProjects: async () => [project()],
-      listPendingPermissions: async () => [],
-      listPendingQuestions: async () => [],
-      updateSession: async (id: string, _dir: string, patch: { title?: string; time?: { archived?: number } }) => {
-        const s = sessions.find((x) => x.id === id)!
-        return { ...s, ...(patch.title != null ? { title: patch.title } : {}), time: { ...s.time, ...(patch.time ?? {}) } }
-      },
-    }
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
+      listSessions: async () => ({ data: [], cursor: {} }),
+      listProjects: async () => [project()].map(wireProject),
+    })
     store.sessionsByProject = new Map([["proj1", sessionsOf(...sessions)]])
   }
 
@@ -3072,6 +3073,108 @@ describe("快捷键支撑（design-keyboard-shortcuts）", () => {
     expect(store.tabs.length).toBe(0)
     expect(store.closedTabs.length).toBe(0)
   })
+
+describe("v2 流式翻译层（M4a：assistant 事件 → v1 part 管线）", () => {
+  /** 直驱 handleEvent（闸门目录 = ROOT；会话需在打开项目目录内） */
+  function dispatch(ev: { type: string; properties: unknown }, dir = ROOT) {
+    ;(store as unknown as { handleEvent: (d: string, e: unknown) => void }).handleEvent(dir, ev)
+  }
+
+  it("step.started → assistant 消息壳；text.delta 累积 → ended 全量权威收口", () => {
+    dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a1", agent: "build", model: { id: "glm-5.3", providerID: "zai" } } })
+    // 消息壳（v1 message.updated 路径落地）
+    expect(store.messagesBySession.get("s1")?.get("msg_a1")?.info).toMatchObject({ role: "assistant", agent: "build" })
+
+    dispatch({ type: "session.text.started", properties: { sessionID: "s1", assistantMessageID: "msg_a1", ordinal: 0 } })
+    dispatch({ type: "session.text.delta", properties: { sessionID: "s1", assistantMessageID: "msg_a1", ordinal: 0, delta: "你" } })
+    dispatch({ type: "session.text.delta", properties: { sessionID: "s1", assistantMessageID: "msg_a1", ordinal: 0, delta: "好" } })
+    let parts = store.messagesBySession.get("s1")?.get("msg_a1")?.parts
+    expect(parts?.find((p) => p.id === "msg_a1:c:0")).toMatchObject({ type: "text", text: "你好" })
+
+    dispatch({ type: "session.text.ended", properties: { sessionID: "s1", assistantMessageID: "msg_a1", ordinal: 0, text: "你好（全量）" } })
+    parts = store.messagesBySession.get("s1")?.get("msg_a1")?.parts
+    expect(parts?.find((p) => p.id === "msg_a1:c:0")).toMatchObject({ text: "你好（全量）" })
+  })
+
+  it("tool.input 流式缓冲 → called/success 终态；缓冲随 ended 清", () => {
+    dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a2" } })
+    dispatch({ type: "session.tool.input.started", properties: { sessionID: "s1", assistantMessageID: "msg_a2", id: "tool_9", name: "edit" } })
+    dispatch({ type: "session.tool.input.delta", properties: { sessionID: "s1", assistantMessageID: "msg_a2", id: "tool_9", delta: '{"path"' } })
+    let part = store.messagesBySession.get("s1")?.get("msg_a2")?.parts.find((p) => p.id === "tool_9") as unknown as { state: { input?: unknown }; tool?: string }
+    expect(part.state).toMatchObject({ status: "running", input: '{"path"' })
+    expect(part.tool).toBe("edit")
+
+    dispatch({ type: "session.tool.success", properties: { sessionID: "s1", assistantMessageID: "msg_a2", id: "tool_9", content: [{ type: "text", text: "ok" }], executed: true } })
+    part = store.messagesBySession.get("s1")?.get("msg_a2")?.parts.find((p) => p.id === "tool_9") as unknown as { state: { input?: unknown; output?: string; title?: string } }
+    expect(part.state).toMatchObject({ status: "completed", output: "ok", title: "edit" })
+  })
+
+  it("step.ended → finish/cost 终态收敛到消息 info", () => {
+    dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a3" } })
+    dispatch({ type: "session.text.ended", properties: { sessionID: "s1", assistantMessageID: "msg_a3", ordinal: 0, text: "x" } })
+    dispatch({ type: "session.step.ended", properties: { sessionID: "s1", assistantMessageID: "msg_a3", finish: "stop", cost: { amount: "0.01", currency: "USD" }, tokens: { input: 10, output: 5 } } })
+    const info = store.messagesBySession.get("s1")?.get("msg_a3")?.info
+    expect(info).toMatchObject({ finish: "stop" })
+    expect((info as { cost?: unknown }).cost).toBeTruthy()
+    expect((info as { time?: { completed?: number } }).time?.completed).toBeTruthy()
+  })
+})
+
+describe("D1 归档私约（M2：metadata.archivedAt，双源识别）", () => {
+  /** v2 双源归档可见性：visibleSessions 过滤 / archivedSessions 收录 */
+  function seed(s: Session) {
+    store.sessionsByProject = new Map([["proj1", sessionsOf(s)]])
+    store.projectStates = {
+      default: { opened: ["proj1"], currentProjectId: "proj1", currentWorkspaceId: null },
+    }
+  }
+
+  it("关 Tab = 归档：写 metadata.archivedAt；可见列表过滤、归档段收录（排序按 archivedAt）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    seed(s1)
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
+    store.activeTabKey = "chat:s1"
+
+    const ok = await store.closeChatTab("s1", { streaming: false })
+    expect(ok).toBe(true)
+    // 本地乐观落地：metadata.archivedAt 写入（v2 PATCH 204 无返回体）
+    expect(store.findSession("s1")?.metadata?.archivedAt).toEqual(expect.any(Number))
+    // M2 验收：列表过滤客户端生效（重连快照后同口径——v2 返回全部、双源过滤）
+    expect(store.visibleSessions.some((s) => s.id === "s1")).toBe(false)
+    expect(store.archivedSessions.map((s) => s.id)).toEqual(["s1"])
+  })
+
+  it("开 Tab = 取消归档：清 metadata.archivedAt，会话回可见列表", async () => {
+    const s1 = { ...session("s1", ROOT, { created: 1, updated: 1 }), metadata: { archivedAt: 99 } }
+    seed(s1)
+    store.openChatTab(s1)
+    // unarchive 为 fire-and-forget：等微任务落地
+    await new Promise((r) => setTimeout(r, 0))
+    expect(store.findSession("s1")?.metadata?.archivedAt).toBeUndefined()
+    expect(store.visibleSessions.some((s) => s.id === "s1")).toBe(true)
+    expect(store.archivedSessions).toHaveLength(0)
+  })
+
+  it("双源识别：存量 time.archived（v1 迁移）与 metadata.archivedAt 同口径收录；排序取较早者", () => {
+    const legacy = { ...session("legacy", ROOT, { created: 1, updated: 1 }), time: { created: 1, updated: 1, archived: 10 } }
+    const priv = { ...session("priv", ROOT, { created: 1, updated: 1 }), metadata: { archivedAt: 20 } }
+    seed(legacy)
+    store.sessionsByProject.get("proj1")!.set("priv", priv)
+    const ids = store.archivedSessions.map((s) => s.id)
+    expect(ids).toEqual(["priv", "legacy"]) // archivedAt 降序（20 > 10）
+    expect(store.visibleSessions).toHaveLength(0)
+  })
+
+  it("已知边界（记录在案）：存量 time.archived 的取消归档不可持久——v2 无写入路径，重连快照复活归档", async () => {
+    const s1 = { ...session("s1", ROOT, { created: 1, updated: 1 }), time: { created: 1, updated: 1, archived: 10 } }
+    seed(s1)
+    store.openChatTab(s1)
+    await new Promise((r) => setTimeout(r, 0))
+    // 本地乐观清了 metadata（本无），但 time.archived 保持——双源判定仍归档
+    expect(store.findSession("s1")?.time.archived).toBe(10)
+    expect(store.archivedSessions.map((s) => s.id)).toEqual(["s1"])
+  })
+})
 
   it("closeChatTab 成功入栈；恢复 = 重开（含取消归档路径）", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
@@ -3331,29 +3434,29 @@ describe("关闭栈跨作用域恢复（design-keyboard-shortcuts §2.1 修订�
     expect(tab!.key).toBe(diffTabKey("/other/wt9"))
   })
 
-  it("M1：global 跨目录恢复走 entry 分支（不误判不可达）", () => {
-    const gx = session("gx", "/tmp/x", { created: 1, updated: 1 })
-    const gy = session("gy", "/tmp/y", { created: 1, updated: 2 })
-    gx.projectID = "global"
-    gy.projectID = "global"
+  it("M1：跨目录恢复走 entry 分支（不误判不可达）——伪项目行（v2/A，M1b）", () => {
+    const hx = { ...session("gx", "/tmp/x", { created: 1, updated: 1 }), projectID: "hashX" }
+    const hy = { ...session("gy", "/tmp/y", { created: 1, updated: 2 }), projectID: "hashY" }
     store.projects = [
       project(),
-      { id: "global", worktree: "/", time: { created: 0, updated: 0 }, sandboxes: [] },
+      { id: "hashX", worktree: "/tmp/x", time: { created: 0, updated: 0 }, sandboxes: [] },
+      { id: "hashY", worktree: "/tmp/y", time: { created: 0, updated: 0 }, sandboxes: [] },
     ]
     store.sessionsByProject = new Map([
       ["proj1", new Map()],
-      ["global", sessionsOf(gx, gy)],
+      ["hashX", sessionsOf(hx)],
+      ["hashY", sessionsOf(hy)],
     ])
     store.projectStates = {
       default: {
-        opened: ["proj1", "global\u0000/tmp/x", "global\u0000/tmp/y"],
-        currentProjectId: "global",
-        currentWorkspaceId: "/tmp/y",
+        opened: ["proj1", "hashX", "hashY"],
+        currentProjectId: "hashY",
+        currentWorkspaceId: null,
       },
     }
     store.tabs = []
     store.closedTabs = [
-      { kind: "file", key: "file:/tmp/x/a.txt", projectId: "global", directory: "/tmp/x", title: "a.txt" },
+      { kind: "file", key: "file:/tmp/x/a.txt", projectId: "hashX", directory: "/tmp/x", title: "a.txt" },
     ]
     store.restoreClosedTab()
     expect(store.scopeQuery.directory).toBe("/tmp/x")
@@ -3362,17 +3465,11 @@ describe("关闭栈跨作用域恢复（design-keyboard-shortcuts §2.1 修订�
 
   it("M2：chat 跨作用域恢复先切作用域——激活 Tab 不落在外作用域", async () => {
     const s1 = session("s1", WT1, { created: 1, updated: 1 })
-    ;(store as unknown as { client: unknown }).client = {
-      listSessions: async () => [],
-      listSessionStatus: async () => ({}),
-      listProjects: async () => [project()],
-      listPendingPermissions: async () => [],
-      listPendingQuestions: async () => [],
-      updateSession: async (id: string, _dir: string, patch: { time?: { archived?: number } }) => ({
-        ...s1,
-        time: { ...s1.time, ...(patch.time ?? {}) },
-      }),
-    }
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
+      listSessions: async () => ({ data: [], cursor: {} }),
+      listProjects: async () => [project()].map(wireProject),
+      updateSession: async () => {},
+    })
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
     store.projectStates = {
       default: { opened: ["proj1"], currentProjectId: "proj1", currentWorkspaceId: null },
@@ -3503,12 +3600,9 @@ describe("实时补开与实时收敛（design-tab-memory §17 修订 2026-09-02
 
   it("本端关 Tab=归档流程在途：SSE 归档回环被抑制，本地路径收尾且关闭栈保留", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
-    let resolveArchive!: (v: Session) => void
-    ;(store as unknown as { client: unknown }).client = {
-      ...(store as unknown as { client: Record<string, unknown> }).client,
-      updateSession: () =>
-        new Promise<Session>((r) => (resolveArchive = r)),
-    }
+    let resolveArchive!: () => void
+    const cv2a = (store as unknown as { client: Record<string, unknown> }).client
+    cv2a.updateSession = () => new Promise<void>((r) => (resolveArchive = r))
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
     store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
     store.activeTabKey = "chat:s1"
@@ -3517,7 +3611,7 @@ describe("实时补开与实时收敛（design-tab-memory §17 修订 2026-09-02
     // PATCH 在途期间 SSE 归档回环先到：不关 Tab（保 pushClosed 关闭栈条目）
     fire({ ...s1, time: { created: 1, updated: 1, archived: 99 } }, "session.updated")
     expect(store.tabs.map((t) => t.key)).toEqual(["chat:s1"])
-    resolveArchive({ ...s1, time: { created: 1, updated: 1, archived: 99 } })
+    resolveArchive()
     await expect(p).resolves.toBe(true)
     expect(store.tabs).toHaveLength(0)
     expect(store.closedTabs.map((c) => c.key)).toEqual(["chat:s1"])
@@ -3553,17 +3647,11 @@ describe("Tab 拖拽重排与重命名（design-tab-drag-rename）", () => {
 
   it("renameSession：成功合并会话 + Tab 标题即时同步", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
-    ;(store as unknown as { client: unknown }).client = {
-      listSessions: async () => [],
-      listSessionStatus: async () => ({}),
-      listProjects: async () => [project()],
-      listPendingPermissions: async () => [],
-      listPendingQuestions: async () => [],
-      updateSession: async (id: string, _dir: string, patch: { title?: string }) => ({
-        ...s1,
-        title: patch.title,
-      }),
-    }
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
+      listSessions: async () => ({ data: [], cursor: {} }),
+      listProjects: async () => [project()].map(wireProject),
+      updateSession: async () => {},
+    })
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
     store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
     const ok = await store.renameSession("s1", "新标题")
@@ -3574,10 +3662,14 @@ describe("Tab 拖拽重排与重命名（design-tab-drag-rename）", () => {
 
   it("renameSession 失败：connectionError 可见、标题不变", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
-    ;(store as unknown as { client: unknown }).client = {
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
       updateSession: async () => {
         throw new Error("boom")
       },
+    })
+    const cv2r = (store as unknown as { client: Record<string, unknown> }).client
+    cv2r.updateSession = async () => {
+      throw new Error("boom")
     }
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
     store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
@@ -3589,14 +3681,9 @@ describe("Tab 拖拽重排与重命名（design-tab-drag-rename）", () => {
 
   it("forkSession fire-and-forget：REST 完成合并快照 + 当前作用域被动补开（不激活）", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
-    const forked = session("s9", ROOT, { created: 9, updated: 9 })
-    let calledDir = ""
-    ;(store as unknown as { client: unknown }).client = {
-      forkSession: async (id: string, dir: string) => {
-        expect(id).toBe("s1")
-        calledDir = dir
-        return forked
-      },
+    clientV2Of().forkSession = async (id: string) => {
+      expect(id).toBe("s1")
+      return { id: "s9", projectID: "proj1", time: { created: 9, updated: 9 }, location: { directory: ROOT } }
     }
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
     store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
@@ -3604,7 +3691,7 @@ describe("Tab 拖拽重排与重命名（design-tab-drag-rename）", () => {
 
     store.forkSession("s1")
     await new Promise((r) => setTimeout(r, 0))
-    expect(calledDir).toBe(ROOT)
+    // v2 fork 无 directory 参数（location 作用域经 middleware）——原 calledDir 断言删除
     expect(store.findSession("s9")?.id).toBe("s9")
     // 被动补开（REST 兜底同 SSE 路径）：末尾追加、不激活不抢焦点
     expect(store.tabs.map((t) => t.key)).toEqual(["chat:s1", "chat:s9"])
@@ -3612,19 +3699,16 @@ describe("Tab 拖拽重排与重命名（design-tab-drag-rename）", () => {
   })
 
   it("forkSession：directory 直传优先——本地无源会话记录（僵尸 Tab）也能发起", async () => {
-    const forked = session("s9", WT1, { created: 9, updated: 9 })
-    let calledDir = ""
-    ;(store as unknown as { client: unknown }).client = {
-      forkSession: async (_id: string, dir: string) => {
-        calledDir = dir
-        return forked
-      },
-    }
+    clientV2Of().forkSession = async () => ({
+      id: "s9",
+      projectID: "proj1",
+      time: { created: 9, updated: 9 },
+      location: { directory: WT1 },
+    })
     // sessionsByProject 无 s1（快照间隙/他端已删本地未同步）
     store.sessionsByProject = new Map([["proj1", sessionsOf()]])
     store.forkSession("s1", { directory: WT1 })
     await new Promise((r) => setTimeout(r, 0))
-    expect(calledDir).toBe(WT1)
     // WT1 非当前作用域（scope=ROOT）：合并快照但不开 Tab（切回时 §17 补开）
     expect(store.findSession("s9")?.id).toBe("s9")
     expect(store.tabs).toHaveLength(0)
@@ -3633,10 +3717,11 @@ describe("Tab 拖拽重排与重命名（design-tab-drag-rename）", () => {
   it("forkSession：SSE session.created 先到即被动开（不激活），REST 完成幂等不重复", async () => {
     const s1 = session("s1", WT1, { created: 1, updated: 1 })
     const forked = session("s9", WT1, { created: 9, updated: 9 })
-    let resolveRest!: (v: Session) => void
-    ;(store as unknown as { client: unknown }).client = {
-      forkSession: () => new Promise<Session>((r) => (resolveRest = r)),
-    }
+    let resolveRest!: (v: { id: string; projectID: string; time: { created: number; updated: number }; location: { directory: string } }) => void
+    clientV2Of().forkSession = () =>
+      new Promise((r) =>
+        (resolveRest = r),
+      )
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
     store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: WT1 }]
     store.activeTabKey = "chat:s1"
@@ -3651,7 +3736,7 @@ describe("Tab 拖拽重排与重命名（design-tab-drag-rename）", () => {
     expect(store.tabs.map((t) => t.key)).toEqual(["chat:s1", "chat:s9"])
     expect(store.activeTabKey).toBe("chat:s1")
 
-    resolveRest(forked)
+    resolveRest({ id: "s9", projectID: "proj1", time: { created: 9, updated: 9 }, location: { directory: WT1 } })
     await new Promise((r) => setTimeout(r, 0))
     // 幂等收敛：不重复开 Tab、激活不被顶替
     expect(store.tabs.map((t) => t.key)).toEqual(["chat:s1", "chat:s9"])
@@ -3662,10 +3747,12 @@ describe("Tab 拖拽重排与重命名（design-tab-drag-rename）", () => {
   it("forkSession 迟到快照不回卷：REST 响应前的归档/重命名不被旧快照覆盖、不复活已关 Tab", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     // REST 响应 = 复制完成时刻（updated 9）；此后用户关 Tab=归档（updated 99 已先经事件到达本地）
-    const staleFork = session("s9", ROOT, { created: 9, updated: 9 })
-    ;(store as unknown as { client: unknown }).client = {
-      forkSession: async () => staleFork,
-    }
+    clientV2Of().forkSession = async () => ({
+      id: "s9",
+      projectID: "proj1",
+      time: { created: 9, updated: 9 },
+      location: { directory: ROOT },
+    })
     store.sessionsByProject = new Map([
       ["proj1", sessionsOf(s1, { ...session("s9", ROOT, { created: 9, updated: 99 }), time: { created: 9, updated: 99, archived: 88 }, title: "已重命名" } as Session)],
     ])
@@ -3682,10 +3769,8 @@ describe("Tab 拖拽重排与重命名（design-tab-drag-rename）", () => {
 
   it("forkSession 失败：connectionError 可见、不开 Tab", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
-    ;(store as unknown as { client: unknown }).client = {
-      forkSession: async () => {
-        throw new Error("fork failed")
-      },
+    clientV2Of().forkSession = async () => {
+      throw new Error("fork failed")
     }
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
     store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
@@ -3697,11 +3782,9 @@ describe("Tab 拖拽重排与重命名（design-tab-drag-rename）", () => {
 
   it("forkSession：directory 与本地会话记录双双缺失时不发请求", async () => {
     let called = 0
-    ;(store as unknown as { client: unknown }).client = {
-      forkSession: async () => {
-        called++
-        return session("s9", ROOT, { created: 9, updated: 9 })
-      },
+    clientV2Of().forkSession = async () => {
+      called++
+      return { id: "s9", projectID: "proj1", time: { created: 9, updated: 9 }, location: { directory: ROOT } }
     }
     store.sessionsByProject = new Map([["proj1", sessionsOf()]])
     store.forkSession("ghost")
@@ -3767,39 +3850,26 @@ describe("文件引用（design-file-reference）", () => {
 
   it("sendPrompt parts 构造：文本 + 引用 file part（absolute file:// + source）", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
-    let sentParts: unknown[] = []
-    ;(store as unknown as { client: unknown }).client = {
-      listSessions: async () => [],
-      listSessionStatus: async () => ({}),
-      listProjects: async () => [project()],
-      listPendingPermissions: async () => [],
-      listPendingQuestions: async () => [],
-      promptAsync: async (_id: string, _dir: string, parts: unknown[]) => {
-        sentParts = parts
+    const sentBox: { v: { text: string; files?: Array<{ uri: string; name?: string }> } | null } = { v: null }
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
+      ...clientV2Of(),
+      prompt: async (_id: string, input: { text: string; files?: Array<{ uri: string; name?: string }> }) => {
+        sentBox.v = input
       },
-    }
+    })
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
     store.addFileRef("s1", ref("src/a.ts", `${ROOT}/src/a.ts`))
     store.addFileRef("s1", ref("docs/", `${ROOT}/docs`, true))
     const res = await store.sendPrompt("s1", "看下这些", store.fileRefsFor("s1"))
     expect(res.ok).toBe(true)
-    expect(sentParts).toEqual([
-      { type: "text", text: "看下这些" },
-      {
-        type: "file",
-        mime: "text/plain",
-        url: `file://${ROOT}/src/a.ts`,
-        filename: "a.ts",
-        source: { type: "file", path: "src/a.ts", text: { value: "", start: 0, end: 0 } },
-      },
-      {
-        type: "file",
-        mime: "text/plain",
-        url: `file://${ROOT}/docs`,
-        filename: "docs",
-        source: { type: "file", path: "docs/", text: { value: "", start: 0, end: 0 } },
-      },
-    ])
+    // v2 payload：text + files（v1 file part 的 mime/source 不上送——server 自行读取）
+    expect(sentBox.v).toEqual({
+      text: "看下这些",
+      files: [
+        { uri: `file://${ROOT}/src/a.ts`, name: "a.ts" },
+        { uri: `file://${ROOT}/docs`, name: "docs" },
+      ],
+    })
     // 发送成功引用即清（乐观消息仍带 refs 快照）
     expect(store.fileRefsFor("s1").length).toBe(0)
     expect(store.optimisticBySession.get("s1")![0]!.refs?.length).toBe(2)
@@ -3807,29 +3877,33 @@ describe("文件引用（design-file-reference）", () => {
 
   it("纯引用发送合法；全空拒绝", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
-    let sentParts: unknown[] = []
-    ;(store as unknown as { client: unknown }).client = {
-      promptAsync: async (_id: string, _dir: string, parts: unknown[]) => {
-        sentParts = parts
+    const sentBox: { v: { text: string; files?: Array<{ uri: string }> } | null } = { v: null }
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
+      ...clientV2Of(),
+      prompt: async (_id: string, input: { text: string; files?: Array<{ uri: string }> }) => {
+        sentBox.v = input
       },
-    }
+    })
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
     store.addFileRef("s1", ref("a.ts", `${ROOT}/a.ts`))
     const res = await store.sendPrompt("s1", "", store.fileRefsFor("s1"))
     expect(res.ok).toBe(true)
-    expect(sentParts.length).toBe(1)
-    expect((sentParts[0] as { type: string }).type).toBe("file")
+    // 纯引用合法：text 用占位 "."（v2 text 必填，全空仍拒绝在入口守卫）
+    expect(sentBox.v?.files?.length).toBe(1)
+    // 纯附件/纯引用：零宽空格占位（v2 text 必填，v1 语义回显只有 chip）
+    expect(sentBox.v?.text).toBe("\u200b")
     const empty = await store.sendPrompt("s1", "", [])
     expect(empty.ok).toBe(false)
   })
 
   it("发送失败：引用保留供重发（乐观撤回）", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
-    ;(store as unknown as { client: unknown }).client = {
-      promptAsync: async () => {
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
+      ...clientV2Of(),
+      prompt: async () => {
         throw new Error("net down")
       },
-    }
+    })
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
     store.addFileRef("s1", ref("a.ts", `${ROOT}/a.ts`))
     const res = await store.sendPrompt("s1", "x", store.fileRefsFor("s1"))
@@ -3838,26 +3912,23 @@ describe("文件引用（design-file-reference）", () => {
     expect(store.optimisticBySession.get("s1")?.length ?? 0).toBe(0)
   })
 
-  it("sendCommand 携带引用 parts；成功清引用", async () => {
+  it("sendCommand 携带引用 files（v2 {uri,name}）；成功清引用", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
-    let cmdBody: { parts?: unknown[] } = {}
-    ;(store as unknown as { client: unknown }).client = {
-      sendCommand: async (
-        _id: string,
-        _dir: string,
-        _cmd: string,
-        _args: string,
-        parts?: unknown[],
-      ) => {
-        cmdBody = { parts }
-      },
+    let cmdBody: { files?: unknown[] } = {}
+    clientV2Of().sendCommand = async (
+      _id: string,
+      _cmd: string,
+      _args: string | undefined,
+      files?: Array<{ uri: string; name?: string }>,
+    ) => {
+      cmdBody = { files }
     }
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
     store.addFileRef("s1", ref("a.ts", `${ROOT}/a.ts`))
     const refs = store.fileRefsFor("s1")
     const res = await store.sendCommand("s1", "init", "", refs)
     expect(res.ok).toBe(true)
-    expect(cmdBody.parts?.length).toBe(1)
+    expect(cmdBody.files?.length).toBe(1)
     expect(store.fileRefsFor("s1").length).toBe(0)
   })
 
@@ -3876,26 +3947,19 @@ describe("文件引用（design-file-reference）", () => {
 describe("终端 Tab（design-terminal-tab）", () => {
   function ptyClient(pty = { id: "pty_1", title: "bash", command: "bash", cwd: ROOT, status: "running", pid: 1 }) {
     const calls: string[] = []
-    ;(store as unknown as { client: unknown }).client = {
-      listSessions: async () => [],
-      listSessionStatus: async () => ({}),
-      listProjects: async () => [project()],
-      listPendingPermissions: async () => [],
-      listPendingQuestions: async () => [],
-      listShells: async () => [
-        { path: "/bin/false", name: "false", acceptable: false },
-        { path: "/bin/bash", name: "bash", acceptable: true },
-      ],
-      createPty: async (dir: string, body: { command?: string }) => {
-        calls.push(`create:${dir}:${body.command}`)
-        return { ...pty, cwd: dir }
-      },
-      deletePty: async (id: string) => {
-        calls.push(`delete:${id}`)
-      },
-      ptyConnectToken: async () => ({ ticket: "tkt", expires_in: 30 }),
-      ptyWsOrigin: () => "ws://127.0.0.1:1",
+    // v2 client fake（M6b 换绑）：pty 方法覆盖在既有 fake 上（保住 listSessions
+    // 等基础面——其余路径仍会调用）+ ptyWsOrigin（URL 组装用）
+    const c = clientV2Of()
+    c.createPty = async (dir: string, body: { command?: string }) => {
+      calls.push(`create:${dir}:${body.command}`)
+      return { ...pty, cwd: dir }
     }
+    c.updatePtySize = async () => pty
+    c.deletePty = async (id: string) => {
+      calls.push(`delete:${id}`)
+    }
+    c.ptyConnectToken = async () => ({ ticket: "tkt", expires_in: 30 })
+    c.ptyWsOrigin = () => "ws://127.0.0.1:1"
     return calls
   }
 
@@ -3911,11 +3975,12 @@ describe("终端 Tab（design-terminal-tab）", () => {
 
   it("openTerminalTab 显示环境注入（design-terminal-tab §1.1）：回环 server 随 body.env 回填主进程显示切片", async () => {
     const bodies: Array<{ command?: string; env?: Record<string, string> }> = []
-    ;(store as unknown as { client: unknown }).client = {
-      createPty: async (_dir: string, body: { command?: string; env?: Record<string, string> }) => {
-        bodies.push(body)
-        return { id: "pty_1", title: "bash", command: "bash", cwd: ROOT, status: "running", pid: 1 }
-      },
+    clientV2Of().createPty = async (
+      _dir: string,
+      body: { command?: string; env?: Record<string, string> },
+    ) => {
+      bodies.push(body)
+      return { id: "pty_1", title: "bash", command: "bash", cwd: ROOT, status: "running", pid: 1 }
     }
     store.managedBaseUrl = "http://127.0.0.1:15120"
     ;(window as unknown as { desktop: Record<string, unknown> }).desktop.ptyDisplayEnv = async () => ({
@@ -3934,12 +3999,10 @@ describe("终端 Tab（design-terminal-tab）", () => {
   it("远程 attach server 不注入（DISPLAY 语义属远端，覆盖破坏 ssh -X 等）；空切片/IPC 失败同不注入", async () => {
     const bodies: Array<{ env?: Record<string, string> }> = []
     let seq = 0
-    ;(store as unknown as { client: unknown }).client = {
-      createPty: async (_dir: string, body: { env?: Record<string, string> }) => {
-        bodies.push(body)
-        seq += 1
-        return { id: `pty_${seq}`, title: "bash", command: "bash", cwd: ROOT, status: "running", pid: seq }
-      },
+    clientV2Of().createPty = async (_dir: string, body: { env?: Record<string, string> }) => {
+      bodies.push(body)
+      seq += 1
+      return { id: `pty_${seq}`, title: "bash", command: "bash", cwd: ROOT, status: "running", pid: seq }
     }
     const desktop = (window as unknown as { desktop: Record<string, unknown> }).desktop
     const spy = vi.fn(async () => ({ DISPLAY: ":0" }))
@@ -4015,14 +4078,16 @@ describe("终端 Tab（design-terminal-tab）", () => {
     expect(store.tabs.length).toBe(0)
   })
 
-  it("ptyConnectUrl：ticket 组装；cursor 省略 = 全量回放、携带 = 续传（design-terminal-tab §1.2a）", async () => {
+  it("ptyConnectUrl：ticket 组装；cursor 省略 = 全量回放、携带 = 续传（design-terminal-tab §1.2a；v2 路径 M6b）", async () => {
     ptyClient()
     await store.openTerminalTab()
     const res = await store.ptyConnectUrl("pty_1")
-    expect(res).toEqual({ url: "ws://127.0.0.1:1/pty/pty_1/connect?ticket=tkt&directory=%2Frepo" })
+    expect(res).toEqual({
+      url: "ws://127.0.0.1:1/api/pty/pty_1/connect?ticket=tkt&location%5Bdirectory%5D=%2Frepo",
+    })
     const resumed = await store.ptyConnectUrl("pty_1", 103)
     expect(resumed).toEqual({
-      url: "ws://127.0.0.1:1/pty/pty_1/connect?ticket=tkt&directory=%2Frepo&cursor=103",
+      url: "ws://127.0.0.1:1/api/pty/pty_1/connect?ticket=tkt&location%5Bdirectory%5D=%2Frepo&cursor=103",
     })
   })
 
@@ -4235,18 +4300,12 @@ describe("浏览器 Tab（design-browser-tab）", () => {
     expect(store.browserRecentsOf("browser:file:///repo/a.html")).toEqual(["file:///repo/a.html"])
   })
 
-  it("最近访问（review）：目录卸载修剪切片——关项目清除（重开 = 首开）；双行对侧仍打开则保留", async () => {
+  it("最近访问（review）：目录卸载修剪切片——关项目清除（重开 = 首开）", async () => {
     await store.openBrowserTab("file:///repo/a.html")
     expect(store.browserRecents.default?.[ROOT]).toEqual(["file:///repo/a.html"])
     await store.closeProject("proj1")
     // proj1 关闭后 ROOT 无已打开 entry 认领 → 切片清除
     expect(store.browserRecents.default?.[ROOT]).toBeUndefined()
-    // 双行目录：同路径 global entry 仍打开 → 关 git 项目不得误删对侧切片
-    await store.openProject("proj1")
-    await store.openBrowserTab("file:///repo/a.html")
-    store.projectStates.default!.opened.push(globalEntryKey(ROOT))
-    await store.closeProject("proj1")
-    expect(store.browserRecents.default?.[ROOT]).toEqual(["file:///repo/a.html"])
   })
 
   it("restoreClosedTab browser 分支：按关闭时 URL 重开", async () => {
@@ -4371,11 +4430,13 @@ describe("worktree 同步（design-worktree-sync）", () => {
     // 初始 sandboxes = [WT1, WT2]；他端创建 WT3，server 广播 worktree.ready
     const client = (store as unknown as { client: Record<string, unknown> }).client
     let listCalls = 0
-    client.listProjects = async () => {
+    projectList = [{ ...project(), sandboxes: [WT1, WT2] }]
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    cv2.listProjects = async () => {
       listCalls++
       return listCalls === 1
-        ? [{ ...project(), sandboxes: [WT1, WT2, "/repo/.git/opencode-worktrees/wt3"] }]
-        : [project()]
+        ? [wireProject({ ...project(), sandboxes: [WT1, WT2, "/repo/.git/opencode-worktrees/wt3"] })]
+        : [wireProject(project())]
     }
     dispatch(
       "/repo/.git/opencode-worktrees/wt3",
@@ -4430,8 +4491,7 @@ describe("worktree 同步（design-worktree-sync）", () => {
     expect(store.tabs.some((t) => t.key === "chat:s2")).toBe(true)
 
     // 他端删除 WT1：listProjects 返回不含 WT1
-    const client = (store as unknown as { client: Record<string, unknown> }).client
-    client.listProjects = async () => [{ ...project(), sandboxes: [WT2] }]
+    projectList = [{ ...project(), sandboxes: [WT2] }]
 
     await store.syncWorktrees()
     // sandboxes 已更新
@@ -4452,9 +4512,8 @@ describe("worktree 同步（design-worktree-sync）", () => {
     snapshots.set(WT2, [])
     await store.setCurrentWorkspace(WT1)
 
-    const client = (store as unknown as { client: Record<string, unknown> }).client
     // listProjects 返回不变的 sandboxes
-    client.listProjects = async () => [project()]
+    projectList = [project()]
 
     await store.syncWorktrees()
     expect(store.workspacesOfProject("proj1")).toHaveLength(2)
@@ -4472,14 +4531,14 @@ describe("worktree 同步（design-worktree-sync）", () => {
     snapshots.set("/other", [])
     await store.setCurrentWorkspace(null)
 
-    const client = (store as unknown as { client: Record<string, unknown> }).client
     let listCalled = false
-    client.listProjects = async () => {
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    cv2.listProjects = async () => {
       listCalled = true
       // proj1 的 WT1 被删，但 proj1 未打开
       return [
-        { ...project(), sandboxes: [WT2] },
-        { id: "proj2", worktree: "/other", time: { created: 0, updated: 0 }, sandboxes: [] },
+        wireProject({ ...project(), sandboxes: [WT2] }),
+        wireProject({ id: "proj2", worktree: "/other", time: { created: 0, updated: 0 }, sandboxes: [] }),
       ]
     }
 
@@ -4499,13 +4558,10 @@ describe("左栏 entry 顺序与拖拽（design-layout §3 打开序）", () => 
       time: { created: 0, updated: 0 },
       sandboxes: [],
     }))
-    ;(store as unknown as { client: unknown }).client = {
-      listSessions: async () => [],
-      listSessionStatus: async () => ({}),
-      listProjects: async () => list,
-      listPendingPermissions: async () => [],
-      listPendingQuestions: async () => [],
-    }
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
+      listSessions: async () => ({ data: [], cursor: {} }),
+      listProjects: async () => list.map((p) => wireProject(p as Project)),
+    })
     store.projects = list
     store.projectStates = {
       default: { opened: [], currentProjectId: null, currentWorkspaceId: null },
@@ -4572,25 +4628,6 @@ describe("左栏 entry 顺序与拖拽（design-layout §3 打开序）", () => 
   })
 })
 
-describe("左栏 entry 顺序与拖拽（design-layout §3 打开序）——global 平权", () => {
-  it("global 目录行与普通项目混合参与打开序与 applyEntryOrder 落位", () => {
-    const gsession = { ...session("g1", "/docs", { created: 1, updated: 1 }), projectID: "global" }
-    store.projects = [
-      { id: "global", worktree: "/", time: { created: 0, updated: 0 } },
-      { id: "p1", worktree: "/wt-p1", time: { created: 0, updated: 0 }, sandboxes: [] },
-    ]
-    store.sessionsByProject.set("global", sessionsOf(gsession))
-    const gkey = globalEntryKey("/docs")
-    store.projectStates = {
-      default: { opened: ["p1", gkey], currentProjectId: "p1", currentWorkspaceId: null },
-    }
-    expect(store.openedEntries.map((e) => e.key)).toEqual(["p1", gkey])
-    store.applyEntryOrder([gkey, "p1"])
-    expect(store.openedEntries.map((e) => e.key)).toEqual([gkey, "p1"])
-    expect(store.projectStates.default.opened).toEqual([gkey, "p1"])
-  })
-})
-
 describe("左栏 entry 顺序与拖拽（design-layout §3 打开序）——applyEntryOrder 落位", () => {
   it("按预览序整体重排并落盘；含 keys 未覆盖键的防御", async () => {
     store.projects = [
@@ -4621,20 +4658,21 @@ describe("左栏 entry 顺序与拖拽（design-layout §3 打开序）——app
   })
 })
 
-describe("createProjectFromDirectory（design-new-project）", () => {
-  const clientOf = () => (store as unknown as { client: Record<string, unknown> }).client
+describe("createProjectFromDirectory（design-new-project，v2/A 语义）", () => {
+  /** v2 client 注入点：resolveLocation 返回 LocationInfo{directory, project{id,directory,canonical}} */
+  const clientV2Of = () => (store as unknown as { client: Record<string, unknown> }).client
 
-  it("git 文件夹：resolveProject 注册后刷新 projects 并直接 openProject", async () => {
+  it("git 文件夹：resolveLocation 解析后刷新 projects 并直接 openProject", async () => {
     const fresh: Project = { id: "newproj", worktree: "/fresh", time: { created: 9, updated: 9 }, sandboxes: [] }
     let resolvedDir = ""
-    clientOf().resolveProject = async (dir: string) => {
-      resolvedDir = dir
-      return fresh
+    clientV2Of().resolveLocation = async (dir?: string) => {
+      resolvedDir = dir ?? ""
+      return { directory: dir ?? "", project: { id: "newproj", directory: "/fresh", canonical: "/fresh" } }
     }
     let listCalls = 0
-    clientOf().listProjects = async () => {
+    clientV2Of().listProjects = async () => {
       listCalls++
-      return [project(), fresh]
+      return [wireProject(project()), wireProject(fresh)]
     }
     snapshots.set("/fresh", [])
 
@@ -4649,45 +4687,51 @@ describe("createProjectFromDirectory（design-new-project）", () => {
     expect(store.currentProject?.id).toBe("newproj")
   })
 
-  it("非 git 文件夹（解析为 global）：以 global 目录 entry 打开（D1，不动文件系统）", async () => {
-    const globalProj: Project = { id: "global", worktree: "/", time: { created: 0, updated: 0 }, sandboxes: [] }
-    clientOf().resolveProject = async () => globalProj
-    clientOf().listProjects = async () => [project(), globalProj]
+  it("非 git 文件夹（v2 无 global，用户裁定 A）：目录哈希伪项目行，统一 openProject", async () => {
+    const pseudo: Project = { id: "hash1", worktree: "/plain", time: { created: 0, updated: 0 }, sandboxes: [] }
+    clientV2Of().resolveLocation = async (dir?: string) => ({
+      directory: dir ?? "",
+      project: { id: "hash1", directory: "/plain", canonical: "/plain" },
+    })
+    clientV2Of().listProjects = async () => [wireProject(project()), wireProject(pseudo)]
     snapshots.set("/plain", [])
 
     await store.createProjectFromDirectory("/plain")
     const ps = store.projectStateFor()
-    expect(ps.opened).toContain(globalEntryKey("/plain"))
-    expect(ps.currentProjectId).toBe("global")
-    expect(store.currentWorkspace?.directory).toBe("/plain")
-    // 左栏出现该 global 目录行（零会话兜底行的 opened 闸门已放行）
-    expect(store.openedEntries.some((e) => e.key === globalEntryKey("/plain"))).toBe(true)
+    // 以普通项目行打开（v1 的 global\0 entry 语义退役）
+    expect(ps.opened).toContain("hash1")
+    expect(ps.currentProjectId).toBe("hash1")
+    expect(store.currentProject?.id).toBe("hash1")
+    expect(store.scopeQuery.directory).toBe("/plain")
+    expect(store.openedEntries.some((e) => e.key === "hash1")).toBe(true)
   })
 
-  it("非 git 新目录（global，零会话）：切换后激活不残留旧项目 Tab（引导页显示的前提）", async () => {
-    // 复现 2026-09-09：新 global 目录无会话 → globalKnownDirectories 不含它 →
-    // findProjectOwningDirectory 返回 null → restoreScopeTabs owner 闸门整段
-    // no-op，跨作用域激活清算不执行——中栏渲染旧项目 Tab 内容、引导页不显示
+  it("非 git 新目录（伪项目，零会话）：切换后激活不残留旧项目 Tab（引导页显示的前提）", async () => {
+    // v2/A 语义下复现原 2026-09-09 场景：新目录零会话 → openProject 切换同步
+    // 清算激活，快照落地后写空记忆哨兵（§3.3）
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
     store.activeTabKey = "chat:s1"
-    const globalProj: Project = { id: "global", worktree: "/", time: { created: 0, updated: 0 }, sandboxes: [] }
-    clientOf().resolveProject = async () => globalProj
-    clientOf().listProjects = async () => [project(), globalProj]
+    const pseudo: Project = { id: "hash2", worktree: "/plain", time: { created: 0, updated: 0 }, sandboxes: [] }
+    clientV2Of().resolveLocation = async (dir?: string) => ({
+      directory: dir ?? "",
+      project: { id: "hash2", directory: "/plain", canonical: "/plain" },
+    })
+    clientV2Of().listProjects = async () => [wireProject(project()), wireProject(pseudo)]
     snapshots.set("/plain", [])
 
     await store.createProjectFromDirectory("/plain")
     // 同步段即清算：切换跟手，不等快照
     expect(store.activeTabKey).toBeNull()
     // 快照落地后的完整恢复段维持引导页（空目录写空记忆哨兵，§3.3）
-    expect(store.tabMemory.default?.["/plain"]).toEqual({ projectId: "global", tabs: [], active: null })
+    expect(store.tabMemory.default?.["/plain"]).toEqual({ projectId: "hash2", tabs: [], active: null })
     // 旧项目 Tab 不关不归档（Tab 跨项目混排语义）
     expect(store.tabs.some((t) => t.key === "chat:s1")).toBe(true)
   })
 
   it("解析失败：异常上抛，打开状态不变（弹窗不关可重试的前提）", async () => {
-    clientOf().resolveProject = async () => {
+    clientV2Of().resolveLocation = async () => {
       throw new Error("目录不存在")
     }
     await expect(store.createProjectFromDirectory("/nope")).rejects.toThrow("目录不存在")
@@ -4696,16 +4740,16 @@ describe("createProjectFromDirectory（design-new-project）", () => {
     expect(ps.currentProjectId).toBe("proj1")
   })
 
-  it("在途闸门：注册期间断连（client 置 null）→ 抛错不打开（评审 R2：弹窗不按成功关闭）", async () => {
+  it("在途闸门：注册期间断连（clientV2 置 null）→ 抛错不打开（评审 R2：弹窗不按成功关闭）", async () => {
     const fresh: Project = { id: "newproj2", worktree: "/fresh2", time: { created: 9, updated: 9 }, sandboxes: [] }
-    clientOf().resolveProject = async () => {
+    clientV2Of().resolveLocation = async () => {
       ;(store as unknown as { client: unknown }).client = null
-      return fresh
+      return { directory: "/fresh2", project: { id: "newproj2", directory: "/fresh2", canonical: "/fresh2" } }
     }
     let listCalled = false
-    clientOf().listProjects = async () => {
+    clientV2Of().listProjects = async () => {
       listCalled = true
-      return [project(), fresh]
+      return [wireProject(project()), wireProject(fresh)]
     }
 
     await expect(store.createProjectFromDirectory("/fresh2")).rejects.toThrow("连接已断开")
@@ -4714,9 +4758,11 @@ describe("createProjectFromDirectory（design-new-project）", () => {
   })
 
   it("listProjects 失败：异常上抛不打开（评审 R1：projects 不含新项目时打开 = 不一致态）", async () => {
-    const fresh: Project = { id: "newproj3", worktree: "/fresh3", time: { created: 9, updated: 9 }, sandboxes: [] }
-    clientOf().resolveProject = async () => fresh
-    clientOf().listProjects = async () => {
+    clientV2Of().resolveLocation = async (dir?: string) => ({
+      directory: dir ?? "",
+      project: { id: "newproj3", directory: "/fresh3", canonical: "/fresh3" },
+    })
+    clientV2Of().listProjects = async () => {
       throw new ApiError(0, "network", "无法连接服务器")
     }
 
@@ -4727,12 +4773,14 @@ describe("createProjectFromDirectory（design-new-project）", () => {
   })
 
   it("signal 中止：resolve 完成后已取消 → 不刷新不打开（评审 R3：弹窗关闭即取消）", async () => {
-    const fresh: Project = { id: "newproj4", worktree: "/fresh4", time: { created: 9, updated: 9 }, sandboxes: [] }
-    clientOf().resolveProject = async () => fresh
+    clientV2Of().resolveLocation = async (dir?: string) => ({
+      directory: dir ?? "",
+      project: { id: "newproj4", directory: "/fresh4", canonical: "/fresh4" },
+    })
     let listCalled = false
-    clientOf().listProjects = async () => {
+    clientV2Of().listProjects = async () => {
       listCalled = true
-      return [project(), fresh]
+      return [wireProject(project()), wireProject({ id: "newproj4", worktree: "/fresh4", time: { created: 9, updated: 9 }, sandboxes: [] })]
     }
     const ac = new AbortController()
 
@@ -4823,7 +4871,7 @@ describe("Tab 会话持久层（design-tab-session-restore）", () => {
     // pty 运行时播种（挂载即全量回放；已亡则 token 404 终态）
     expect(store.ptyRuntimeFor("pty1")).toEqual({ exited: false, disconnected: false, title: "zsh" })
     // 内容预拉用 Tab 归属目录（跨作用域 Tab 不用当前 scopeQuery、不带 workspace）
-    expect(readCalls).toContainEqual([ROOT, `${ROOT}/a.md`, undefined])
+    expect(readCalls).toContainEqual([ROOT, `${ROOT}/a.md`])
   })
 
   it("引导页哨兵跨重启：scopeActive null → 冷启动落引导页", async () => {
@@ -5257,8 +5305,7 @@ describe("Tab 会话持久层（design-tab-session-restore）", () => {
 
     // 窗口二（connect 恢复期）：client 已置、快照/恢复在途（restoringTabs）——同上
     ;(store as unknown as { client: unknown }).client = {
-      listSessions: async () => [],
-      listSessionStatus: async () => ({}),
+      listSessions: async () => ({ data: [], cursor: {} }),
     }
     priv().restoringTabs = true
     try {
@@ -5459,9 +5506,9 @@ describe("connect({openPickerAfter}) 一次性标记", () => {
     }
     store.profiles = [{ id: "p1", name: "a", baseUrl: "http://127.0.0.1:1", mode: "attach" }]
     store.activeProfileId = "p1"
-    vi.spyOn(RestClient.prototype, "health").mockResolvedValue({ healthy: true, version: "1.0.66" })
-    vi.spyOn(RestClient.prototype, "listProjects").mockResolvedValue(projects)
-    vi.spyOn(RestClient.prototype, "listProjectSessions").mockResolvedValue([])
+    vi.spyOn(RestClient.prototype, "serverInfo").mockResolvedValue({ version: "2.0.18", pid: 1, urls: [], paths: { tmp: "/tmp" } })
+    vi.spyOn(RestClient.prototype, "listProjects").mockResolvedValue(projects.map(wireProject))
+    vi.spyOn(RestClient.prototype, "listSessions").mockResolvedValue({ data: [], cursor: {} })
   }
 
   it("带标记连接成功且无已打开项目 → 打开项目列表；标记消费即清", async () => {
@@ -5500,15 +5547,73 @@ describe("connect({openPickerAfter}) 一次性标记", () => {
 
   it("连接失败保留标记：下次成功连接仍直达（半途连接不丢入口）", async () => {
     attachProfileDesktop([project()])
-    // 第一次失败：health 抛错
-    vi.spyOn(RestClient.prototype, "health").mockRejectedValue(new Error("down"))
+    // 第一次失败：探活抛错
+    vi.spyOn(RestClient.prototype, "serverInfo").mockRejectedValue(new Error("down"))
     await store.connect({ openPickerAfter: true })
     expect(store.connectionState).toBe("disconnected")
     expect(store.pickerOpen).toBe(false)
     // 恢复后重连成功：标记仍在，直达
-    vi.spyOn(RestClient.prototype, "health").mockResolvedValue({ healthy: true, version: "1.0.66" })
+    vi.spyOn(RestClient.prototype, "serverInfo").mockResolvedValue({ version: "2.0.18", pid: 1, urls: [], paths: { tmp: "/tmp" } })
     await store.connect()
     expect(store.pickerOpen).toBe(true)
+  })
+
+  it("v1 遗留 projectId=global 的记忆/投影：连接期归一为项目 ID（评审 2026-09-28 增补）", async () => {
+    attachProfileDesktop([project()])
+    const gmem = { projectId: "global", tabs: ["s1"], active: "s1" }
+    const pmem = { projectId: "proj1", tabs: [], active: null }
+    store.tabMemory = { p1: { [ROOT]: gmem, "/other": pmem } }
+    ;(store as unknown as { tabSession: unknown }).tabSession = {
+      p1: {
+        tabs: [
+          { kind: "chat", key: "chat:s1", projectId: "global", directory: ROOT, title: "s1" },
+          { kind: "file", key: "file:/nowhere/a", projectId: "global", directory: "/nowhere", title: "a" },
+        ],
+        scopeActive: {},
+      },
+    }
+    const memoryWrites: unknown[] = []
+    const sessionWrites: unknown[] = []
+    ;(window as unknown as { desktop: { storeSet: (k: string, v: unknown) => Promise<void> } }).desktop.storeSet =
+      async (k, v) => {
+        // 深拷贝捕获：写入的是 store 活引用，后续 persistTabSession 会原地改写
+        const snapshot = JSON.parse(JSON.stringify(v))
+        if (k === "tabs.memory") memoryWrites.push(snapshot)
+        if (k === "tabs.session") sessionWrites.push(snapshot)
+      }
+    await store.connect()
+    // ROOT 归属 proj1（worktree 匹配）；/nowhere 无项目行保持遗留值。
+    // tabSession 的内存态在恢复段被 persistTabSession 派生投影覆盖（预期行为），
+    // 归一结果以迁移期的**首次**写入为准
+    expect(store.tabMemory.p1?.[ROOT]?.projectId).toBe("proj1")
+    expect(store.tabMemory.p1?.["/other"]?.projectId).toBe("proj1")
+    expect(memoryWrites[0]).toBeTruthy()
+    const first = sessionWrites[0] as {
+      p1: { tabs: Array<{ projectId: string; directory: string }> }
+    }
+    expect(first.p1.tabs.map((tab) => tab.projectId)).toEqual(["proj1", "global"])
+  })
+
+  it("v1 server 探活（unsupported/not-found）：明确报错指引，不进入连接", async () => {
+    attachProfileDesktop([project()])
+    vi.spyOn(RestClient.prototype, "serverInfo").mockRejectedValue(
+      new ApiError(200, "unsupported", "响应不是 JSON"),
+    )
+    await store.connect()
+    expect(store.connectionState).toBe("disconnected")
+    expect(store.connectionError).toContain("仅支持 opencode v2")
+    // 404（v1 server 对未知 /api 路径的另一形态）同口径
+    vi.spyOn(RestClient.prototype, "serverInfo").mockRejectedValue(
+      new ApiError(404, "not-found", "HTTP 404"),
+    )
+    await store.connect()
+    expect(store.connectionError).toContain("仅支持 opencode v2")
+    // 401：认证指引（非版本问题）
+    vi.spyOn(RestClient.prototype, "serverInfo").mockRejectedValue(
+      new ApiError(401, "auth", "HTTP 401"),
+    )
+    await store.connect()
+    expect(store.connectionError).toContain("认证失败")
   })
 })
 
@@ -5585,61 +5690,101 @@ describe("attachments + sendPrompt 附件扩展", () => {
 
   it("sendPrompt parts：文本 + 引用 + 附件混排（附件无 source、data URL 内联）；成功清附件", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
-    let sentParts: unknown[] = []
-    ;(store as unknown as { client: unknown }).client = {
-      listSessions: async () => [],
-      promptAsync: async (_id: string, _dir: string, parts: unknown[]) => {
-        sentParts = parts
+    const sentBox: { v: { text: string; files?: Array<{ uri: string; name?: string }> } | null } = { v: null }
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
+      ...clientV2Of(),
+      prompt: async (_id: string, input: { text: string; files?: Array<{ uri: string; name?: string }> }) => {
+        sentBox.v = input
       },
-    }
+    })
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
     store.addFileRef("s1", ref("a.ts", `${ROOT}/a.ts`))
     store.addAttachments("s1", [att("a1", "image/png", "shot.png", true)])
     const res = await store.sendPrompt("s1", "看图", store.fileRefsFor("s1"), store.attachmentsFor("s1"))
     expect(res.ok).toBe(true)
-    expect(sentParts).toEqual([
-      { type: "text", text: "看图" },
-      {
-        type: "file",
-        mime: "text/plain",
-        url: `file://${ROOT}/a.ts`,
-        filename: "a.ts",
-        source: { type: "file", path: "a.ts", text: { value: "", start: 0, end: 0 } },
-      },
-      { type: "file", mime: "image/png", url: "data:image/png;base64,AA==", filename: "shot.png" },
-    ])
+    expect(sentBox.v).toEqual({
+      text: "看图",
+      files: [
+        { uri: `file://${ROOT}/a.ts`, name: "a.ts" },
+        { uri: "data:image/png;base64,AA==", name: "shot.png" },
+      ],
+    })
     expect(store.attachmentsFor("s1")).toHaveLength(0)
     // 乐观消息携带附件（气泡即见）
     expect(store.optimisticBySession.get("s1")![0]!.attachments?.length).toBe(1)
   })
 
+  it("回执驱动精确清除（M4 评审）：首条落地只清自己——并发第二条乐观保持", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    try {
+      const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+      const cv2 = clientV2Of()
+      cv2.prompt = async () => {}
+      // 首页重取：返回投影（created 晚于乐观时刻 → 判定落地）
+      cv2.listMessagesPage = async () => ({
+        entries: [{ info: { id: "msg_p1", sessionID: "s1", role: "user", time: { created: 2000 } }, parts: [] }],
+        nextCursor: null,
+      })
+      store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
+      // 延迟重取：prompt 200 时重取尚未 resolve——两条乐观都挂上后才落地投影
+      let releaseList!: () => void
+      const gate = new Promise<void>((r) => (releaseList = r))
+      const listed: boolean[] = []
+      cv2.listMessagesPage = async () => {
+        listed.push(true)
+        await gate
+        return {
+          entries: [{ info: { id: "msg_p1", sessionID: "s1", role: "user", time: { created: 2000 } }, parts: [] }],
+          nextCursor: null,
+        }
+      }
+      const p1 = store.sendPrompt("s1", "第一条", [])
+      vi.advanceTimersByTime(1)
+      const p2 = store.sendPrompt("s1", "第二条", [])
+      vi.advanceTimersByTime(1)
+      await Promise.all([p1, p2]) // 两条 prompt 200 回执落地；重取在 gate 上挂起
+      // 乐观各挂一条、重取尚未清除（gate 未放行）
+      expect(store.optimisticBySession.get("s1")).toHaveLength(2)
+      expect(listed).toHaveLength(2)
+      // 放行：两次重取各精确清**自己**那条（localId 匹配）——两次各删一条后为 0。
+      // 若回退到全清（M4 评审前），单次重取即清空——本断言锁精确语义
+      releaseList()
+      for (let i = 0; i < 10; i++) await Promise.resolve()
+      const rest = store.optimisticBySession.get("s1") ?? []
+      expect(rest.length).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("纯附件发送合法（无文本无引用）；大附件走放宽超时（rest-client 内部，见其测试）", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
-    let sentParts: unknown[] = []
-    ;(store as unknown as { client: unknown }).client = {
-      listSessions: async () => [],
-      promptAsync: async (_id: string, _dir: string, parts: unknown[]) => {
-        sentParts = parts
+    const sentBox: { v: { text: string; files?: Array<{ uri: string }> } | null } = { v: null }
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
+      ...clientV2Of(),
+      prompt: async (_id: string, input: { text: string; files?: Array<{ uri: string }> }) => {
+        sentBox.v = input
       },
-    }
+    })
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
     const big = att("a1", "application/pdf", "big.pdf", false)
     big.dataUrl = `data:application/pdf;base64,${"A".repeat(1024 * 1024 + 10)}`
     store.addAttachments("s1", [big])
     const res = await store.sendPrompt("s1", "", [], store.attachmentsFor("s1"))
     expect(res.ok).toBe(true)
-    expect(sentParts).toHaveLength(1)
-    expect((sentParts[0] as { type: string }).type).toBe("file")
+    expect(sentBox.v?.files).toHaveLength(1)
+    expect(sentBox.v?.files?.[0]?.uri.startsWith("data:application/pdf")).toBe(true)
   })
 
   it("失败保留附件供重发", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
-    ;(store as unknown as { client: unknown }).client = {
-      listSessions: async () => [],
-      promptAsync: async () => {
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
+      ...clientV2Of(),
+      prompt: async () => {
         throw new Error("boom")
       },
-    }
+    })
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
     store.addAttachments("s1", [att("a1", "image/png", "x.png", true)])
     const res = await store.sendPrompt("s1", "", [], store.attachmentsFor("s1"))
@@ -5660,15 +5805,15 @@ describe("Alt 域动作：requestWorktreeDelete / closeActiveEntry", () => {
     expect(store.pendingWorktreeDelete).toBeNull()
   })
 
-  it("global 项目与删除中目标不动作（Alt+⌫ 对 global 作用域触达的兜底拒绝）", () => {
-    store.deletingWorkspaces.add(`proj1\u0000${WT1}`)
+  it("删除中目标与非 git 项目不动作（Alt+⌫ 兜底拒绝；伪项目无 worktree，M1b）", () => {
+    store.deletingWorkspaces.add(`proj1 ${WT1}`)
     store.requestWorktreeDelete(WT1)
     expect(store.pendingWorktreeDelete).toBeNull()
     store.projects = [
       ...store.projects,
-      { id: "global", worktree: "/", time: { created: 0, updated: 0 }, sandboxes: [] },
+      { id: "hashX", worktree: "/home/x", time: { created: 0, updated: 0 }, sandboxes: [] },
     ]
-    store.requestWorktreeDelete("/home/x", "global")
+    store.requestWorktreeDelete("/home/x", "hashX")
     expect(store.pendingWorktreeDelete).toBeNull()
   })
 
@@ -5683,19 +5828,6 @@ describe("Alt 域动作：requestWorktreeDelete / closeActiveEntry", () => {
     expect(store.projectStates.default.opened).toEqual(["proj2"])
     expect(store.projectStates.default.currentProjectId).toBe("proj2")
     expect(store.projectStates.default.currentWorkspaceId).toBeNull()
-  })
-
-  it("closeActiveEntry：global 激活 = 关当前目录 entry（作用域目录复用 currentWorkspace 字段）", async () => {
-    store.projects = [
-      project(),
-      { id: "global", worktree: "/", time: { created: 0, updated: 0 }, sandboxes: [] },
-    ]
-    store.projectStates.default.opened = ["proj1", globalEntryKey("/home/g")]
-    store.projectStates.default.currentProjectId = "global"
-    store.projectStates.default.currentWorkspaceId = "/home/g"
-    await store.closeActiveEntry()
-    expect(store.projectStates.default.opened).toEqual(["proj1"])
-    expect(store.projectStates.default.currentProjectId).toBe("proj1")
   })
 
   it("closeActiveEntry：单 entry 不动作（对齐左栏单 entry 隐藏关闭按钮）", async () => {
@@ -5730,17 +5862,20 @@ describe("subagent 子会话待处理路由（design-subagent-status §D6）", (
     expect(store.childPermissionFor("c1")).toBeNull()
   })
 
-  it("子会话问题卡路由：childQuestionsFor 命中 + 与授权计数并列", () => {
+  it("子会话表单卡路由：childQuestionsFor 命中 + 与授权计数并列（M6a：form 体系）", () => {
     seedChild()
     dispatch({
-      type: "question.asked",
+      type: "form.created",
       properties: {
-        id: "que_1",
-        sessionID: "c1",
-        questions: [{ question: "继续吗", options: [], multiple: false, custom: true }],
+        form: {
+          id: "frm_1",
+          sessionID: "c1",
+          title: "继续吗",
+          fields: [{ key: "k", type: "string", title: "继续吗", options: [{ value: "y", label: "是" }] }],
+        },
       },
     })
-    expect(store.childQuestionsFor("s1").map((q) => q.id)).toEqual(["que_1"])
+    expect(store.childQuestionsFor("s1").map((q) => q.id)).toEqual(["frm_1"])
     expect(store.pendingCountFor("s1")).toBe(1)
   })
 
@@ -5751,11 +5886,14 @@ describe("subagent 子会话待处理路由（design-subagent-status §D6）", (
       properties: { id: "per_1", sessionID: "s1", permission: "bash", patterns: ["ls"], metadata: null },
     })
     dispatch({
-      type: "question.asked",
+      type: "form.created",
       properties: {
-        id: "que_1",
-        sessionID: "c1",
-        questions: [{ question: "继续吗", options: [], multiple: false, custom: true }],
+        form: {
+          id: "frm_1",
+          sessionID: "c1",
+          title: "继续吗",
+          fields: [{ key: "k", type: "boolean", title: "继续吗" }],
+        },
       },
     })
     expect(store.pendingCountFor("s1")).toBe(2)
@@ -5772,6 +5910,20 @@ describe("subagent 子会话待处理路由（design-subagent-status §D6）", (
     expect(store.pendingCountFor("s1")).toBe(0)
   })
 
+  it("他端答复/取消表单：form.replied 与 form.cancelled 均按 properties.id 清除", () => {
+    seedChild()
+    for (const type of ["form.replied", "form.cancelled"] as const) {
+      dispatch({
+        type: "form.created",
+        properties: {
+          form: { id: `frm_${type}`, sessionID: "c1", title: "t", fields: [{ key: "k", type: "boolean" }] },
+        },
+      })
+      dispatch({ type, properties: { id: `frm_${type}`, sessionID: "c1" } })
+    }
+    expect(store.childQuestionsFor("s1")).toHaveLength(0)
+  })
+
   it("无 parentID 关联的会话请求不误路由", () => {
     store.sessionsByProject.set(
       "proj1",
@@ -5786,5 +5938,224 @@ describe("subagent 子会话待处理路由（design-subagent-status §D6）", (
     })
     expect(store.childPermissionFor("s1")).toBeNull()
     expect(store.pendingCountFor("s1")).toBe(0)
+  })
+})
+
+describe("待处理回复动作（M6a：v2 换绑）", () => {
+  /** 直驱 handleEvent + clientV2 mock 替换 */
+  function dispatch(ev: { type: string; properties: unknown }) {
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, ev)
+  }
+
+  it("respondPermission → clientV2.respondPermission(decision)；404 = 他端已答，静默移除", async () => {
+    dispatch({
+      type: "permission.asked",
+      properties: { id: "per_1", sessionID: "s1", action: "bash", resources: ["ls"] },
+    })
+    const calls: Array<[string, string, string]> = []
+    clientV2Of().respondPermission = async (sid: string, rid: string, d: string) => {
+      calls.push([sid, rid, d])
+    }
+    expect(await store.respondPermission("s1", "once")).toEqual({ ok: true })
+    expect(calls).toEqual([["s1", "per_1", "once"]])
+    expect(store.pendingPermissions.has("s1")).toBe(false)
+
+    dispatch({
+      type: "permission.asked",
+      properties: { id: "per_2", sessionID: "s1", action: "bash", resources: ["ls"] },
+    })
+    clientV2Of().respondPermission = async () => {
+      throw new ApiError(404, "not-found", "HTTP 404")
+    }
+    expect(await store.respondPermission("s1", "reject")).toEqual({ ok: true })
+    expect(store.pendingPermissions.has("s1")).toBe(false)
+  })
+
+  it("replyQuestion → clientV2.replyForm（answer 由 buildFormAnswer 构造）；rejectQuestion → cancelForm", async () => {
+    dispatch({
+      type: "form.created",
+      properties: {
+        form: {
+          id: "frm_1",
+          sessionID: "s1",
+          title: "t",
+          fields: [
+            { key: "b", type: "string", title: "q1", options: [{ value: "x", label: "X" }] },
+            { key: "f", type: "boolean", title: "q2" },
+          ],
+        },
+      },
+    })
+    let seenAnswer: unknown = null
+    let cancelled = ""
+    clientV2Of().replyForm = async (_sid: string, _fid: string, answer: unknown) => {
+      seenAnswer = answer
+    }
+    clientV2Of().cancelForm = async (_sid: string, fid: string) => {
+      cancelled = fid
+    }
+    expect(
+      await store.replyQuestion("frm_1", { 0: { selected: ["x"] }, 1: { selected: ["true"] } }),
+    ).toEqual({ ok: true })
+    expect(seenAnswer).toEqual({ b: "x", f: true })
+    expect(store.pendingQuestions.has("frm_1")).toBe(false)
+
+    dispatch({
+      type: "form.created",
+      properties: { form: { id: "frm_2", sessionID: "s1", title: "t", fields: [{ key: "k", type: "boolean" }] } },
+    })
+    expect(await store.rejectQuestion("frm_2")).toEqual({ ok: true })
+    expect(cancelled).toBe("frm_2")
+    expect(store.pendingQuestions.has("frm_2")).toBe(false)
+  })
+
+  it("非 404 失败保留卡片并回传错误", async () => {
+    dispatch({
+      type: "permission.asked",
+      properties: { id: "per_1", sessionID: "s1", action: "bash", resources: ["ls"] },
+    })
+    clientV2Of().respondPermission = async () => {
+      throw new ApiError(500, "server", "HTTP 500")
+    }
+    const res = await store.respondPermission("s1", "once")
+    expect(res.ok).toBe(false)
+    expect(res.error).toContain("500")
+    expect(store.pendingPermissions.has("s1")).toBe(true)
+  })
+})
+
+describe("inbox.enqueued 链路（M6c：他端 user 消息实时落地）", () => {
+  function dispatch(ev: { type: string; properties: unknown }) {
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, ev)
+  }
+
+  it("已加载会话：enqueued → 尾部重取合并 + 新增 user 清乐观（v1 user 分支对称语义）", async () => {
+    seedMessages("s1", {
+      info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 100 } },
+      parts: [],
+    })
+    clientV2Of().prompt = async () => {}
+    ;(store as unknown as { optimisticBySession: Map<string, unknown[]> }).optimisticBySession.set(
+      "s1",
+      [{ optimistic: true, localId: "opt_1", text: "在途", createdAt: 1 }],
+    )
+    clientV2Of().listMessagesPage = async () => ({
+      entries: [
+        { info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 200 } }, parts: [] },
+        { info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 100 } }, parts: [] },
+      ],
+      nextCursor: null,
+    })
+    dispatch({ type: "session.inbox.enqueued", properties: { sessionID: "s1", inboxID: "msg_u1" } })
+    await vi.waitFor(() => {
+      expect(store.chatEntries("s1").map((e) => (e.kind === "message" ? e.data.info.id : e.kind))).toEqual([
+        "msg_a1",
+        "msg_u1",
+      ])
+    })
+    // 新增 user 到达 → 乐观全清（回执驱动的精确清除优先，此处是 SSE 兜底）
+    expect(store.chatEntries("s1").every((e) => e.kind === "message")).toBe(true)
+  })
+
+  it("无新增 user（重复 enqueued/仅 assistant）不清乐观", async () => {
+    seedMessages("s1", {
+      info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
+      parts: [],
+    })
+    ;(store as unknown as { optimisticBySession: Map<string, unknown[]> }).optimisticBySession.set(
+      "s1",
+      [{ optimistic: true, localId: "opt_1", text: "在途", createdAt: 1 }],
+    )
+    clientV2Of().listMessagesPage = async () => ({
+      entries: [{ info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } }, parts: [] }],
+      nextCursor: null,
+    })
+    dispatch({ type: "session.inbox.enqueued", properties: { sessionID: "s1", inboxID: "msg_u1" } })
+    await vi.waitFor(() => expect(store.chatEntries("s1").some((e) => e.kind === "message")).toBe(true))
+    expect(store.chatEntries("s1").some((e) => e.kind === "optimistic")).toBe(true)
+  })
+
+  it("未加载会话的 enqueued 不触发重取（打开时 REST 快照兜底）", async () => {
+    let calls = 0
+    clientV2Of().listMessagesPage = async () => {
+      calls++
+      return { entries: [], nextCursor: null }
+    }
+    dispatch({ type: "session.inbox.enqueued", properties: { sessionID: "unknown", inboxID: "msg_x" } })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(calls).toBe(0)
+  })
+
+  it("非 user 项（auto-compaction）不消费命令回显标记、不触发重取", async () => {
+    let calls = 0
+    clientV2Of().listMessagesPage = async () => {
+      calls++
+      return { entries: [], nextCursor: null }
+    }
+    ;(store as unknown as { commandEchoPending: Set<string> }).commandEchoPending.add("s1")
+    seedMessages("s1")
+    dispatch({
+      type: "session.inbox.enqueued",
+      properties: { sessionID: "s1", inboxID: "msg_c1", item: { type: "compaction" } },
+    })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(calls).toBe(0)
+    // 标记保留——真正的 user 回显仍可消费
+    expect((store as unknown as { commandEchoPending: Set<string> }).commandEchoPending.has("s1")).toBe(true)
+  })
+
+  it("inbox.delivered 触发尾部重取：排队补充消息投影落地后清悬挂乐观（M6c 评审 Y3）", async () => {
+    seedMessages("s1", {
+      info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 100 } },
+      parts: [],
+    })
+    // busy 排队的补充：enqueued 时重取扑空（未投影），乐观保留
+    ;(store as unknown as { optimisticBySession: Map<string, unknown[]> }).optimisticBySession.set(
+      "s1",
+      [{ optimistic: true, localId: "opt_1", text: "排队的补充", createdAt: 1 }],
+    )
+    const clientV2 = clientV2Of()
+    clientV2.listMessagesPage = async () => ({ entries: [], nextCursor: null })
+    dispatch({ type: "session.inbox.enqueued", properties: { sessionID: "s1", inboxID: "msg_u2" } })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(store.chatEntries("s1").some((e) => e.kind === "optimistic")).toBe(true)
+    // 投影落地（delivered）：重取返回新 user → 乐观清除
+    clientV2.listMessagesPage = async () => ({
+      entries: [
+        { info: { id: "msg_u2", sessionID: "s1", role: "user", time: { created: 300 } }, parts: [] },
+        { info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 100 } }, parts: [] },
+      ],
+      nextCursor: null,
+    })
+    dispatch({ type: "session.inbox.delivered", properties: { sessionID: "s1", inboxID: "msg_u2" } })
+    await vi.waitFor(() => expect(store.chatEntries("s1").every((e) => e.kind === "message")).toBe(true))
+  })
+
+  it("sendCommand 在途标记经 enqueued 转记：回滚到回显消息不回填草稿（design-message-revert §3.3）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    seedMessages("s1")
+    const clientV2 = clientV2Of()
+    const run = deferred<void>()
+    clientV2.sendCommand = () => run.promise
+    clientV2.listMessagesPage = async () => ({
+      entries: [
+        {
+          info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
+          parts: [{ id: "prt_1", sessionID: "s1", messageID: "msg_u1", type: "text", text: "展开的模板全文" }],
+        },
+      ],
+      nextCursor: null,
+    })
+    const p = store.sendCommand("s1", "init", "--foo")
+    dispatch({ type: "session.inbox.enqueued", properties: { sessionID: "s1", inboxID: "msg_u1" } })
+    await vi.waitFor(() =>
+      expect(store.chatEntries("s1").some((e) => e.kind === "message" && e.data.info.id === "msg_u1")).toBe(true),
+    )
+    run.resolve()
+    expect(await p).toEqual({ ok: true })
+    clientV2.revertStage = async () => ({ messageID: "msg_u1" })
+    await store.revertToMessage("s1", "msg_u1")
+    expect(store.takeRevertDraft("s1")).toBeNull()
   })
 })

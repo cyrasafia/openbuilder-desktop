@@ -1,5 +1,8 @@
 # 会话 Tab 斜杠命令查询与发送 — 设计文档
 
+> **v2 迁移注记（2026-09-29，M6c）**：命令目录 = `GET /api/command` ∪ `GET /api/skill` 合并（skill 斜杠触发保留）；发送换 `POST /api/session/:id/command`（body `{name,text,files}`，timeoutMs: 0）；命令回显经 `session.inbox.enqueued` 转记。详见 plan-v2-protocol M6c 落地记录。
+
+
 > 参考移动端同类设计：`../openbuilder/docs/design-slash-command-refresh.md`（列表缓存与空响应防护）、
 > `../openbuilder/docs/design-slash-command-echo.md`（回显 part 契约与渲染）。
 > 本文落地桌面端，交互按桌面习惯调整（键盘导航菜单替代移动端点选列表）。

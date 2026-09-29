@@ -28,17 +28,23 @@ function findFreePort(): Promise<number> {
   })
 }
 
-/** 健康等待：/global/health 受 Authorization 中间件保护（密码注入后裸 fetch 恒
- *  401），必须带凭据——授权头由控制器按本次 spawn 密码构造传入 */
+/** 健康等待：v2 `GET /api/info`（v0.5 起唯一支持面）。受 Authorization 中间件
+ *  保护（密码注入后裸 fetch 恒 401），必须带凭据——授权头由控制器按本次
+ *  spawn 密码构造传入。v1 /global/health 已随 v2 server 消亡（404/HTML） */
 async function waitHealthy(baseUrl: string, timeoutMs: number, authorization: string): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(`${baseUrl}/global/health`, {
+      const res = await fetch(`${baseUrl}/api/info`, {
         signal: AbortSignal.timeout(2000),
         headers: { authorization },
       })
-      if (res.ok) return
+      // JSON + v2 版本校验（fail-fast：v1 二进制 + SPA fallback 的 200 HTML
+      // 在此淘汰，错误不延迟到 renderer 连接期——与 scan 同口径）
+      if (res.ok) {
+        const info = (await res.json()) as { version?: unknown }
+        if (typeof info.version === "string" && info.version.startsWith("2.")) return
+      }
     } catch {
       // 尚未就绪
     }

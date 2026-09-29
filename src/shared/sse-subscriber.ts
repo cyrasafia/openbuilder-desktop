@@ -1,11 +1,13 @@
 /**
- * SSE 订阅器（/global/event 单全局流，design-sse-global-event.md）。
- * 一条连接覆盖全部 directory；信封 {directory, payload} 按目录回调，
- * payload.type === "sync"（durable 事件重复包装）在此丢弃。
+ * SSE 订阅器（v2：GET /api/event 单全局流，V2Event 信封——type 顶层、数据在
+ * data、location.directory 为闸门键；**volatile 契约**：断线丢事件、慢消费者
+ * 被断流，重连（reconnecting→connected）必触发全量对账——onReconnected 即此信号）。
+ * server 以 15s comment 帧（`: heartbeat`）保活：comment 帧以空 data 回调喂
+ * 心跳看门狗（帧到达即连接活着，与 data 帧无关）。
  * 重连策略来源：openbuilder design-sse-reconnect-recovery（退避 1→2→4→8→16→30s、
  * 60s 心跳超时、15s 建连总超时、kick 无条件重置退避、health probe 门控）。
  */
-import type { GlobalEventEnvelope, OpencodeEvent } from "./api-types"
+import type { V2Event } from "./api-v2-types"
 
 export type SseStatus = "connecting" | "connected" | "reconnecting" | "stopped"
 
@@ -15,17 +17,23 @@ export type SseStatus = "connecting" | "connected" | "reconnecting" | "stopped"
  * 信封的 project 字段（projectID）判断"该项目是否打开"。其余事件不读此参数。
  */
 export interface SseEventMeta {
-  /** 信封 project 字段（projectID）；worktree.ready/failed 携带 */
+  /** v2：metadata.project（信封无独立 project 字段）；worktree.updated 携带 */
   project?: string
-  /** 信封 workspace 字段（wrk id 体系，实测对 worktree 无意义，仅透传） */
-  workspace?: string
+  /** v2：信封 created（事件时间戳，session.created 骨架播种用） */
+  created?: number
 }
 
 export interface SseSubscriberOptions {
   baseUrl: string
   username?: string
   password?: string
-  onEvent: (directory: string, event: OpencodeEvent, meta?: SseEventMeta) => void
+  /** 事件以宽松 {type, properties} 形态回调（v2 事件名不在 v1 联合内）；
+   *  v1→v2 语义收敛在 app-store handleEvent（M3a 翻译层） */
+  onEvent: (
+    directory: string,
+    event: { type: string; properties: Record<string, unknown> },
+    meta?: SseEventMeta,
+  ) => void
   /** connecting->connected 或 reconnecting->connected 转换时触发（对账信号） */
   onReconnected?: () => void
   onStatus?: (status: SseStatus) => void
@@ -174,7 +182,7 @@ export class SseSubscriber {
         resolve(v)
       }
 
-      const url = this.opts.baseUrl + "/global/event"
+      const url = this.opts.baseUrl + "/api/event"
       const headers: Record<string, string> = { Accept: "text/event-stream" }
       if (this.opts.username || this.opts.password) {
         headers.Authorization =
@@ -221,17 +229,26 @@ export class SseSubscriber {
         this.bumpHeartbeat()
         if (!ev.data.trim()) return
         try {
-          const envelope = JSON.parse(ev.data) as GlobalEventEnvelope
-          // server.connected/heartbeat 帧无 directory（缺省 global）
-          const directory = envelope?.directory || "global"
-          const payload = envelope?.payload as OpencodeEvent | undefined
-          // durable 事件双发的 sync 包装，丢弃（实测契约）
-          if (payload && typeof payload.type === "string" && payload.type !== "sync") {
+          const wire = JSON.parse(ev.data) as V2Event
+          // v1 信封 {directory, payload} 的双发 sync 包装已不存在（v2 单流）；
+          // 事件闸门键 = location.directory（无 location 的全局事件缺省 global，
+          // 由 handleEvent 的目录闸门丢弃）
+          if (wire && typeof wire.type === "string") {
+            const directory = wire.location?.directory || "global"
             const meta: SseEventMeta | undefined =
-              envelope.project != null || envelope.workspace != null
-                ? { project: envelope.project, workspace: envelope.workspace }
+              wire.metadata?.project != null || wire.created != null
+                ? {
+                    ...(wire.metadata?.project != null
+                      ? { project: String(wire.metadata.project) }
+                      : {}),
+                    ...(wire.created != null ? { created: wire.created } : {}),
+                  }
                 : undefined
-            this.opts.onEvent(directory, payload, meta)
+            this.opts.onEvent(
+              directory,
+              { type: wire.type, properties: (wire.data ?? {}) as never },
+              meta,
+            )
           }
         } catch {
           this.opts.log?.("sse parse error", ev.data.slice(0, 100))
@@ -260,8 +277,9 @@ export class SseSubscriber {
   }
 }
 
-/** 带自定义 header 的 EventSource（原生 EventSource 不支持 header，用 fetch 流实现） */
-function defaultEventSourceFactory(url: string, init: { headers: Record<string, string> }): EventSourceLike {
+/** 带自定义 header 的 EventSource（原生 EventSource 不支持 header，用 fetch 流实现）。
+ *  v2 保活：comment 帧（`: heartbeat`）转空 data 回调喂心跳看门狗。测试导出。 */
+export function defaultEventSourceFactory(url: string, init: { headers: Record<string, string> }): EventSourceLike {
   const controller = new AbortController()
   const shim: EventSourceLike = {
     onopen: null,
@@ -292,10 +310,17 @@ function defaultEventSourceFactory(url: string, init: { headers: Record<string, 
         while ((idx = buf.indexOf("\n\n")) >= 0) {
           const frame = buf.slice(0, idx)
           buf = buf.slice(idx + 2)
+          // v2 保活：comment 帧（`: heartbeat`，15s）非 data 帧——以空 data 回调
+          // 喂心跳看门狗（onmessage 首行 bumpHeartbeat，空 data 早退）
+          let sawData = false
           for (const line of frame.split("\n")) {
             if (line.startsWith("data:")) {
+              sawData = true
               shim.onmessage?.({ data: line.slice(5).trimStart() })
             }
+          }
+          if (!sawData && frame.trim().startsWith(":")) {
+            shim.onmessage?.({ data: "" })
           }
         }
       }

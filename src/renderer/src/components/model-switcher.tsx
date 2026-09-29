@@ -390,7 +390,7 @@ function AgentControl({
               title={a.description}
               onClick={() => onPick(a.name)}
             >
-              {a.name}
+              {a.label ?? a.name}
             </button>
           )
         })}
@@ -398,9 +398,13 @@ function AgentControl({
     )
   }
 
-  // ≤1 个 → 静态 pill（无可切换目标，仅显示当前值）
+  // ≤1 个 → 静态 pill（无可切换目标，仅显示当前值；label 回落 id）
   if (agents.length <= 1) {
-    return <div className="ms-pill ms-pill-static">{cleared ? "" : current}</div>
+    return (
+      <div className="ms-pill ms-pill-static">
+        {cleared ? "" : (agents.find((a) => a.name === current)?.label ?? current)}
+      </div>
+    )
   }
 
   // ≥3 → pill + popover（↑↓+Enter 导航，对齐 CommandHints）
@@ -412,7 +416,7 @@ function AgentControl({
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
       >
-        <span>{cleared ? "" : current}</span>
+        <span>{cleared ? "" : (agents.find((a) => a.name === current)?.label ?? current)}</span>
         <ChevronDown className="ms-chev" size={12} aria-hidden />
       </button>
       <Popover open={open} anchorRef={anchorRef} onClose={() => setOpen(false)}>
@@ -449,7 +453,7 @@ function AgentControl({
                 onPick(a.name)
               }}
             >
-              <span>{a.name}</span>
+              <span>{a.label ?? a.name}</span>
               {a.name === current && <Check className="ms-check" size={14} aria-hidden />}
             </button>
           ))}

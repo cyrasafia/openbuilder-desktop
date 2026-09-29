@@ -3121,6 +3121,34 @@
   color: var(--on-surface);
 }
 
+/* 表单字段描述（v2 form，M6a）：问题文本下的辅助说明 */
+.pending-question-desc {
+  font-size: var(--text-sm);
+  color: var(--on-surface-variant);
+  white-space: pre-wrap;
+}
+
+/* 表单自由输入框（text/number 字段，M6a）——视觉对齐 pending-option 行 */
+.pending-input {
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: var(--radius-chip);
+  background: var(--surface-container-high);
+  border: 1px solid var(--outline-variant);
+  color: var(--on-surface);
+  font-size: var(--text-md);
+  line-height: 1.5;
+}
+
+.pending-input:focus-visible {
+  outline: none;
+  border-color: var(--tertiary);
+}
+
+.pending-input:disabled {
+  opacity: 0.6;
+}
+
 .pending-options {
   display: flex;
   flex-direction: column;
@@ -3247,90 +3275,6 @@
   font-size: var(--text-sm);
   color: var(--status-error);
   text-align: right;
-}
-
-/* ---------- 任务卡（design-task-list）：中性 surface-container 系（区别于授权
-   primary / 问题 tertiary，移动端 surfaceContainerHighest 同判） ---------- */
-.pending-card.todo {
-  background: color-mix(in srgb, var(--surface-container-high) 55%, var(--surface));
-  border-color: var(--outline-variant);
-}
-
-.pending-card.todo .pending-card-icon {
-  color: var(--on-surface-variant);
-}
-
-.todo-progress {
-  height: 5px;
-  border-radius: 3px;
-  background: var(--surface-container-highest);
-  overflow: hidden;
-}
-
-.todo-progress-fill {
-  height: 100%;
-  border-radius: 3px;
-  background: var(--primary);
-  transition: width 150ms ease;
-}
-
-.todo-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.todo-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  min-width: 0;
-}
-
-.todo-row-icon {
-  flex-shrink: 0;
-  margin-top: 2px;
-  color: var(--outline);
-}
-
-.todo-row-icon svg {
-  display: block;
-}
-
-/* 进行中：primary 圆点呼吸（同 session-running 光晕语义，进度可感知） */
-.todo-row-icon .todo-active {
-  color: var(--primary);
-  animation: todo-pulse 1.6s ease-in-out infinite;
-}
-
-@keyframes todo-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.45;
-  }
-}
-
-.todo-row-text {
-  font-size: var(--text-md);
-  line-height: 1.5;
-  color: var(--on-surface);
-  overflow-wrap: anywhere;
-}
-
-/* 完成/取消行：弱化 + 删除线 */
-.todo-row.done .todo-row-text {
-  color: var(--outline);
-  text-decoration: line-through;
-}
-
-.todo-row.done .todo-row-icon {
-  color: var(--outline);
 }
 
 /* ---------- 弹窗 ---------- */
@@ -3816,51 +3760,6 @@
 /* 模式一句话说明：紧跟段控件，弱化为辅助文字 */
 .profile-mode-desc {
   margin: -4px 0 8px;
-}
-
-/* ---------- Provider 页签（design-provider-config，2026-09-23 修订：搜索/手动刷新移除） ---------- */
-
-.provider-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-top: 8px;
-}
-
-.provider-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
-  border-radius: var(--radius-chip);
-  min-height: 30px;
-}
-
-.provider-row:hover {
-  background: var(--surface-container-high);
-}
-
-.provider-row button {
-  margin-left: auto;
-}
-
-.provider-row button + button {
-  margin-left: 0;
-}
-
-.provider-key-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.provider-key-dot.on {
-  background: var(--primary);
-}
-
-.provider-key-dot.off {
-  background: var(--outline-variant);
 }
 
 /* ---------- 模型页签（design-model-list） ---------- */

@@ -6,13 +6,11 @@
  * 原视图零成本），成功关弹窗、失败恢复显示 + 错误内联。
  * manual 表单按模式分化（design-managed-config §1）：模式段置顶（segment），
  * managed 隐藏 URL/凭据、显示二进制路径（2026-09-07 起手动页无扫描候选）；attach 字段齐全。
- * Provider 页签（design-provider-config，2026-09-23 修订：搜索/手动刷新移除）：
  * 已配置列表（key 非空/connected/自定义 source）/设删 key（ops 注入）。
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { ProviderKeyForm, ModelsSettings, ProviderSettings, SettingsDialog, type ProviderOps } from "./settings-dialog"
-import type { ProviderCatalog, ProviderInfo } from "@shared/api-types"
+import { ModelsSettings, SettingsDialog } from "./settings-dialog"
 import type { ModelCatalog } from "@shared/model-catalog"
 
 const scanBinaries = vi.fn(async () => [
@@ -32,7 +30,6 @@ vi.mock("../app", () => ({
     t: {
       settings: "设置",
       connectionTitle: "服务器连接",
-      providerTitle: "Provider",
       appearanceTitle: "外观",
       defaultsTitle: "默认",
       close: "关闭",
@@ -73,21 +70,9 @@ vi.mock("../app", () => ({
       serverLogTitle: "服务器日志",
       serverLogEmpty: "暂无日志",
       serverLogCopy: "复制日志",
-      providerNoneConnected: "尚无已配置的 provider",
-      providerModels: "模型 {count}",
-      providerKeySet: "设置 key",
-      providerKeyReplace: "更换 key",
-      providerKeyDelete: "删除",
-      providerKeyOn: "已配置 key",
-      providerKeyOff: "未配置",
-      providerKeyFor: "{name} 的 API key",
-      providerKeyDeleteConfirmTitle: "删除 {name} 的凭据",
-      providerKeyDeleteConfirmBody: "删除后该 provider 的模型将不可用。",
       connectFirst: "请先连接服务器",
-      providerNoProject: "打开项目后可在此配置 provider（列表按项目作用域查询）",
       noProjectMatch: "无匹配",
       shortcutsTitle: "快捷键",
-      providerReloading: "刷新中…",
       loading: "加载中…",
       modelLoadFailed: "加载失败，点击重试",
       modelsTitle: "模型",
@@ -621,7 +606,9 @@ describe("服务器列表切换", () => {
     expect(
       container.querySelector(".dialog-lg")?.closest(".dialog-mask")?.className,
     ).toContain("connecting-host-hidden")
-    expect((screen.getByText("Provider").closest("button") as HTMLButtonElement).disabled).toBe(true)
+    // 页签切换冻结（失败收尾后失败原因行渲染在页签上方，切走页签将不可见，
+    // review 2026-09-07；provider 页签 v2 移除后以 shortcuts 页签断言同语义）
+    expect((screen.getByText("快捷键").closest("button") as HTMLButtonElement).disabled).toBe(true)
     expect(storeState.current.closeSettings).not.toHaveBeenCalled()
     await waitFor(() => {
       const calls = (storeState.current.saveProfiles as ReturnType<typeof vi.fn>).mock.calls
@@ -655,136 +642,6 @@ describe("服务器列表切换", () => {
     expect(screen.queryByText("正在连接…")).toBeNull()
     expect(screen.getByText("切换")).toBeTruthy()
     expect(storeState.current.closeSettings).not.toHaveBeenCalled()
-  })
-})
-
-// ============ Provider 页签（design-provider-config） ============
-
-describe("ProviderSettings 组件", () => {
-  const onEditKey = vi.fn()
-  const cat: ProviderCatalog = {
-    all: [
-      { id: "deepseek", name: "DeepSeek", source: "api", env: [], key: "k1", models: { a: {}, b: {} } },
-      { id: "anthropic", name: "Anthropic", source: "env", env: [], models: { c: {} } },
-      { id: "opencode", name: "OpenCode", source: "custom", env: [], key: null, models: {} },
-    ],
-    default: { deepseek: "a" },
-    connected: ["deepseek"],
-  }
-  const mkOps = () => {
-    const list = vi.fn(async (): Promise<ProviderCatalog> => cat)
-    const setKey = vi.fn(async (): Promise<boolean> => true)
-    const removeKey = vi.fn(async (): Promise<boolean> => true)
-    return { ops: { list, setKey, removeKey } satisfies ProviderOps, list, setKey, removeKey }
-  }
-  const connectStore = () => {
-    storeState.current = {
-      ...storeState.current,
-      activeProfileId: "p1",
-      activeProfile: { id: "p1", name: "a", baseUrl: "http://x", mode: "attach" },
-      getActiveClient: () => ({}),
-      scopeQuery: { directory: "/repo" },
-    }
-  }
-
-  it("列表仅显示已配置项（key/自定义 source）；env 未配置隐藏；无搜索/刷新控件", async () => {
-    connectStore()
-    const { ops, list } = mkOps()
-    render(<ProviderSettings ops={ops} onEditKey={onEditKey} />)
-    await waitFor(() => expect(screen.getByText("DeepSeek")).toBeTruthy())
-    expect(screen.queryByText("Anthropic")).toBeNull()
-    expect(list).toHaveBeenCalledWith("/repo")
-    expect(screen.getByText("模型 2")).toBeTruthy()
-    expect(screen.getByText("更换 key")).toBeTruthy()
-    // 自定义 provider（无 key）也展示，行内是「设置 key」
-    expect(screen.getByText("OpenCode")).toBeTruthy()
-    expect(screen.getByText("设置 key")).toBeTruthy()
-    // 2026-09-23 修订：搜索框与手动刷新按钮移除
-    expect(screen.queryByPlaceholderText(/搜索 provider/)).toBeNull()
-    expect(screen.queryByText("刷新")).toBeNull()
-  })
-
-  it("设置 key：onEditKey 提升到弹窗层（ProviderSettings 不再自持编辑态）", async () => {
-    connectStore()
-    const { ops } = mkOps()
-    render(<ProviderSettings ops={ops} onEditKey={onEditKey} />)
-    await waitFor(() => expect(screen.getByText("DeepSeek")).toBeTruthy())
-    fireEvent.click(screen.getByText("设置 key"))
-    expect(onEditKey).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "opencode", name: "OpenCode" }),
-    )
-  })
-
-  it("ProviderKeyForm：输入 → 保存调用 setKey → onSaved；空 key 禁保存", async () => {
-    connectStore()
-    const { ops, setKey } = mkOps()
-    const onSaved = vi.fn()
-    const anthropic = cat.all[1]!
-    render(
-      <ProviderKeyForm provider={anthropic} ops={ops} onCancel={vi.fn()} onSaved={onSaved} />,
-    )
-    expect(screen.getByText("保存")).toBeTruthy()
-    fireEvent.click(screen.getByText("保存"))
-    expect(setKey).not.toHaveBeenCalled() // 空 key 禁用
-    fireEvent.change(screen.getByLabelText("Anthropic 的 API key"), {
-      target: { value: "sk-new" },
-    })
-    fireEvent.click(screen.getByText("保存"))
-    await waitFor(() => expect(setKey).toHaveBeenCalledWith("anthropic", "sk-new"))
-    await waitFor(() => expect(onSaved).toHaveBeenCalled())
-  })
-
-  it("删除 key：二次确认后调用并重拉", async () => {
-    connectStore()
-    const { ops, removeKey, list } = mkOps()
-    render(<ProviderSettings ops={ops} onEditKey={onEditKey} />)
-    await waitFor(() => expect(screen.getByText("DeepSeek")).toBeTruthy())
-    const callsBefore = list.mock.calls.length
-    fireEvent.click(screen.getByText("删除"))
-    await waitFor(() => expect(screen.getByText(/删除 DeepSeek 的凭据/)).toBeTruthy())
-    // 确认弹窗里的确认钮（danger）——行内也有「删除」，取 confirm 弹窗内那个
-    const confirmBtn = screen
-      .getAllByText("删除")
-      .find((b) => (b as HTMLButtonElement).className.includes("btn-primary"))
-    expect(confirmBtn).toBeTruthy()
-    fireEvent.click(confirmBtn!)
-    await waitFor(() => expect(removeKey).toHaveBeenCalledWith("deepseek"))
-    await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(callsBefore))
-  })
-
-  it("默认视图并入 connected 集（多 env provider key 合并为 undefined 仍可见）", async () => {
-    connectStore()
-    const cat2: ProviderCatalog = {
-      all: [
-        { id: "deepseek", name: "DeepSeek", source: "api", env: [], key: "k1", models: {} },
-        { id: "google", name: "Google", source: "env", env: [], key: undefined, models: {} },
-      ],
-      default: {},
-      connected: ["deepseek", "google"],
-    }
-    const list = vi.fn(async (): Promise<ProviderCatalog> => cat2)
-    render(<ProviderSettings ops={{ list, setKey: vi.fn(), removeKey: vi.fn() }} onEditKey={onEditKey} />)
-    await waitFor(() => expect(screen.getByText("Google")).toBeTruthy())
-    expect(screen.getAllByText("更换 key")).toHaveLength(2)
-  })
-
-  it("无连接：connectFirst 引导态", async () => {
-    const { ops, list } = mkOps()
-    render(<ProviderSettings ops={ops} onEditKey={onEditKey} />)
-    await waitFor(() => expect(screen.getByText("请先连接服务器")).toBeTruthy())
-    expect(list).not.toHaveBeenCalled()
-  })
-
-  it("已连接但无项目：providerNoProject 文案（与未连接区分）", async () => {
-    storeState.current = {
-      ...storeState.current,
-      getActiveClient: () => ({}),
-      scopeQuery: { directory: "" },
-    }
-    const { ops, list } = mkOps()
-    render(<ProviderSettings ops={ops} onEditKey={onEditKey} />)
-    await waitFor(() => expect(screen.getByText(/打开项目后/)).toBeTruthy())
-    expect(list).not.toHaveBeenCalled()
   })
 })
 

@@ -1,0 +1,9 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "external_directory": {
+      "~/projects/my-tools/openbuilder/*": "allow",
+      "~/projects/my-tools/opencode/*": "allow"
+    }
+  }
+}

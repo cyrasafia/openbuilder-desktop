@@ -10,8 +10,7 @@ import {
   isModelDisabled,
   normalizeModelRef,
   parseAgents,
-  parseCatalog,
-  parseModels,
+  parseModelsV2,
   parseVariants,
   sanitizeDisabledModels,
   setDefaults,
@@ -19,7 +18,8 @@ import {
   type DisabledModels,
   type ModelDefaults,
 } from "./model-catalog"
-import type { AgentInfo, ConfigProviders } from "./api-types"
+import type { AgentInfo } from "./api-types"
+import type { V2ModelInfo } from "./api-v2-types"
 
 const agent = (name: string, mode: string, hidden = false): AgentInfo => ({
   name,
@@ -74,93 +74,56 @@ describe("parseVariants", () => {
   })
 })
 
-describe("parseModels", () => {
-  const providers: ConfigProviders = {
-    providers: [
-      {
-        id: "zai",
-        name: "ZAI",
-        key: "sk-secret-must-not-leak",
-        models: {
-          "glm-5.3": { name: "GLM 5.3", status: "active", variants: { high: {}, max: {} } },
-          "glm-beta": { name: "GLM beta", status: "beta" },
-          "glm-dead": { name: "GLM dead", status: "deprecated" },
-          "glm-off": { name: "GLM off", status: "disabled" },
-          "no-status": { name: "No status" },
-        },
-      },
-      { id: "deepseek", name: "DeepSeek", models: { "deepseek-v4-flash": { status: "active" } } },
-    ],
-    default: { zai: "glm-5.3", deepseek: "deepseek-v4-flash" },
-  }
+describe("parseModelsV2（v2 /api/model 平铺列表，M6b）", () => {
+  const raw: V2ModelInfo[] = [
+    {
+      id: "glm-5.3",
+      providerID: "zhipuai-coding-plan",
+      name: "GLM 5.3",
+      status: "active",
+      enabled: true,
+      variants: [{ id: "high" }, { id: "max" }],
+    },
+    { id: "glm-beta", providerID: "zai", name: "GLM beta", status: "beta" },
+    { id: "glm-dead", providerID: "zai", status: "deprecated" },
+    { id: "glm-off", providerID: "zai", status: "disabled" },
+    { id: "unconfigured", providerID: "zai", enabled: false },
+    { id: "no-name", providerID: "zai", status: "active" },
+    // wire 畸形条目（缺 id）：防御式丢弃——类型断言模拟越界输入
+    { name: "缺 id/providerID 丢弃", providerID: "zai" } as unknown as V2ModelInfo,
+  ]
 
-  it("拍平 providers.models，黑名单只挡 deprecated/disabled", () => {
-    const m = parseModels(providers)
-    const ids = m.map((x) => `${x.providerID}/${x.id}`).sort()
-    expect(ids).toEqual(
-      [
-        "zai/glm-5.3",
-        "zai/glm-beta",
-        "zai/no-status",
-        "deepseek/deepseek-v4-flash",
-      ].sort(),
+  it("黑名单（deprecated/disabled）+ enabled:false 过滤；name 缺省回退 id", () => {
+    const m = parseModelsV2(raw)
+    expect(m.map((x) => `${x.providerID}/${x.id}`).sort()).toEqual(
+      ["zhipuai-coding-plan/glm-5.3", "zai/glm-beta", "zai/no-name"].sort(),
     )
-    // deprecated/disabled 被排除
-    expect(m.find((x) => x.id === "glm-dead" || x.id === "glm-off")).toBeUndefined()
+    expect(m.find((x) => x.id === "no-name")!.name).toBe("no-name")
   })
 
-  it("variants 解析为 keys", () => {
-    const m = parseModels(providers)
-    const glm = m.find((x) => x.id === "glm-5.3")!
-    expect(glm.variants.sort()).toEqual(["high", "max"])
-    const ds = m.find((x) => x.id === "deepseek-v4-flash")!
-    expect(ds.variants).toEqual([])
+  it("variants 数组形态解析为 id 列表（活体形状 [{id:\"high\"}]）", () => {
+    const m = parseModelsV2(raw)
+    expect(m.find((x) => x.id === "glm-5.3")!.variants.sort()).toEqual(["high", "max"])
+    expect(m.find((x) => x.id === "glm-beta")!.variants).toEqual([])
   })
 
-  it("status 缺省保留（兜底放行）", () => {
-    const m = parseModels(providers)
-    expect(m.find((x) => x.id === "no-status")).toBeDefined()
-  })
-
-  it("name 缺省回退到 id", () => {
-    const m = parseModels({ providers: [{ id: "p", models: { "m1": { status: "active" } } }] })
-    expect(m[0].name).toBe("m1")
-  })
-
-  it("Provider.key 不进结果对象（LR-2）", () => {
-    const m = parseModels(providers)
-    expect(JSON.stringify(m)).not.toContain("sk-secret-must-not-leak")
+  it("enabled 缺省视为启用（对齐移动端：未配置层不算禁用）", () => {
+    const m = parseModelsV2([{ id: "m1", providerID: "p" }])
+    expect(m).toHaveLength(1)
   })
 
   it("空/缺省返回空数组", () => {
-    expect(parseModels(null)).toEqual([])
-    expect(parseModels(undefined)).toEqual([])
-    expect(parseModels({ providers: [] })).toEqual([])
-  })
-})
-
-describe("parseCatalog", () => {
-  it("组合 agent + model 解析", () => {
-    const c = parseCatalog(
-      [agent("build", "primary"), agent("explore", "subagent")],
-      { providers: [{ id: "p", models: { m: { status: "active" } } }] },
-    )
-    expect(c.agents.map((a) => a.name)).toEqual(["build"])
-    expect(c.models.map((m) => m.id)).toEqual(["m"])
-  })
-
-  it("空入参 = emptyCatalog 值相等（非同引用但内容空）", () => {
-    expect(parseCatalog(null, null)).toEqual(emptyCatalog)
+    expect(parseModelsV2(null)).toEqual([])
+    expect(parseModelsV2(undefined)).toEqual([])
+    expect(parseModelsV2([])).toEqual([])
   })
 })
 
 describe("findModel", () => {
-  const models = parseModels({
-    providers: [
-      { id: "deepseek", models: { "deepseek-v4-flash": { status: "active" } } },
-      { id: "ollama-cloud", models: { "deepseek-v4-flash": { status: "active" } } },
-    ],
-  })
+  const models = parseModelsV2([
+    { id: "deepseek-v4-flash", providerID: "deepseek" },
+    { id: "deepseek-v4-flash", providerID: "ollama-cloud" },
+  ])
 
   it("(providerID, id) 双字段匹配——跨 provider 重名不误选", () => {
     const m = findModel(models, "ollama-cloud", "deepseek-v4-flash")!
@@ -260,18 +223,12 @@ describe("defaults 读写", () => {
 })
 
 describe("effectiveDefaultModel（隐式默认：显式优先，未设/失效回退首项）", () => {
-  const models = parseModels({
-    providers: [
-      {
-        id: "zai",
-        models: {
-          "glm-5.3": { status: "active", variants: { low: {}, high: {}, max: {} } },
-          "glm-air": { status: "active" },
-        },
-      },
-      { id: "deepseek", models: { "deepseek-v4-flash": { status: "active" } } },
-    ],
-  })
+  const models = parseModelsV2([
+    { id: "glm-5.3", providerID: "zai", name: "GLM 5.3", variants: [{ id: "high" }, { id: "max" }] },
+    { id: "glm-4", providerID: "zai", name: "GLM 4", variants: [{ id: "low" }, { id: "high" }] },
+    { id: "glm-air", providerID: "zai", name: "GLM Air", variants: [] },
+    { id: "deepseek-v4-flash", providerID: "deepseek", name: "DS Flash", variants: [] },
+  ])
 
   it("显式默认有效 → 原样返回（含合法 variant）", () => {
     expect(effectiveDefaultModel({ id: "glm-5.3", providerID: "zai", variant: "high" }, models)).toEqual(
@@ -374,12 +331,11 @@ describe("模型开关读写（isModelDisabled / setDisabledModels）", () => {
 })
 
 describe("enabledModels 过滤", () => {
-  const models = parseModels({
-    providers: [
-      { id: "zai", models: { "glm-5.3": {}, "glm-air": {} } },
-      { id: "deepseek", models: { "deepseek-v4-flash": {} } },
-    ],
-  })
+  const models = parseModelsV2([
+    { id: "glm-5.3", providerID: "zai" },
+    { id: "glm-air", providerID: "zai" },
+    { id: "deepseek-v4-flash", providerID: "deepseek" },
+  ])
 
   it("关闭集空（null/{}/空对象）返回原引用；关闭项被滤除", () => {
     expect(enabledModels(models, null)).toBe(models)

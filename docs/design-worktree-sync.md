@@ -1,147 +1,153 @@
 # design-worktree-sync.md — 他端创建/删除 worktree 的同步
 
-> 日期：2026-08-28
+> 日期：2026-08-28；2026-09-29 修订（§0 数据源切换）
 > 状态：已实现，待评审
 
-## 1. 问题
+## 0. v2 GA 数据源修订（2026-09-29，取代 §2/§3 的 sandboxes 假设）
+
+**活体核实（2.0.18 + 官方源码 `081eef3b80` "make worktree APIs project-based"）推翻
+D2 时代的判断**：worktree 已迁至独立 WorktreeTable，`Project.sandboxes` 成为**冻结
+legacy 列**——server 侧唯一写点只剩 `upsertProject` 的 insert 空数组（onConflict 不
+更新），create/remove 均不再维护它。实况（openbuilder-desktop 项目）：
+
+- 新 API 创建的 worktree（如 `shiny-planet`，落 `worktree/<projectID 前 6 字符>/`）
+  只进库存，**sandboxes 永远没有它** → 客户端按 sandboxes 渲染 = 永不显示；
+- 旧机制时代的存量（如已删 `quick-cactus` 的 addSandbox 残留）**永不清理** → 幽灵行
+  常驻且删除必 400（目录不在磁盘，server `canonical()` 抛 DirectoryUnavailableError）；
+- 附带契约修正：`POST /api/worktree` 响应是**裸 `{directory}`**（无 `{data}` envelope，
+  全 client 唯一）——原按 envelope 解析 `res.data` 得 undefined，createWorkspace 抛
+  TypeError 报「创建失败」（server 实际已建成功）。
+
+**修订后机制**（官方 v2 app 同源：`withWorktreeInventory` 以库存覆盖 sandboxes）：
+
+| 端点/事件 | 用途 |
+|---|---|
+| `GET /api/worktree?projectID=` | 库存列表（裸数组 `[{directory, strategy?}]`，含主 checkout 行——渲染时排除项目 canonical） |
+| `POST /api/worktree/refresh` | server 端对账：跨已知 checkout 根发现外部 git worktree 增删、清理死行（**rm -rf 的库存残留只有此端点能清**） |
+| `worktree.updated` SSE | create/remove/refresh 有变更时发（`data.projectID`，**无 location**）；ready/failed 是旧 experimental 面事件，v2.0.18 不再发 |
+
+实现（app-store）：
+
+- `worktreeDirs: Map<projectId, string[]>` 库存缓存；`loadWorktreeInventory(id, {refresh?})`
+  载入 + `mergeWorktreeDirsIntoProjects()` **union 进内部 sandboxes**（只增不减——
+  闸门/作用域/快照/记忆全下游同构受益，无需逐处改）；
+- `workspacesOfProject` 渲染**库存优先**（幽灵不渲染、新建可见），未加载/端点失败回退
+  sandboxes（旧 server 兼容）；
+- 对账触发点：连接（refreshAllOpenedProjects）/打开项目/60s 定时/SSE 重连 → 每打开的
+  git 项目 `refresh + list`；本端 create/remove 后定向 list（server 状态已随 mutation
+  更新）；`worktree.updated` SSE → syncWorktrees（丢消息补偿）；
+- 卸载：库存 diff（消失目录 → `unloadWorktreeDirectory`，内含 sandboxes 剥离——防
+  union 残留导致 60s 重复卸载）。
+
+## 1. 问题（2026-08-28 原始记录）
 
 左栏 worktree 列表数据源是 `Project.sandboxes`（`listProjects()` 快照）。本端创建/删除
 （`createWorkspace`/`removeWorkspace`）会同步重拉，但他端操作时本端无感知——直到本端同
 项目新建 worktree 才重拉刷新。现象：通过 CLI/TUI/移动端创建或删除 worktree 后，桌面端
 左栏不更新。
 
-## 2. 调研
+## 2. 调研（历史结论，§0 已修订）
 
-### 2.1 server 事件契约（`../openbuilder/opencode_openapi.json` + opencode 源码核实）
+### 2.1 server 事件契约（v1 experimental 面，已随 v2 迁移作废）
 
 | 操作 | SSE 事件 | 说明 |
 |------|---------|------|
-| 创建（`POST /experimental/worktree`）| `worktree.ready` / `worktree.failed` | boot 流程结束发 `ready`（`packages/opencode/src/worktree/index.ts:268`）；boot 失败发 `failed`。信封带 `{directory, project, workspace, payload}`。官方 app 靠此事件收尾 busy 态（`packages/app/src/pages/layout.tsx:390`） |
-| 删除（`DELETE /experimental/worktree`）| **无任何事件** | `Worktree.remove`（`packages/opencode/src/worktree/index.ts:376`）全程不发 SSE，只返回 HTTP 成功 |
+| 创建（`POST /experimental/worktree`）| `worktree.ready` / `worktree.failed` | boot 流程结束发 `ready`；boot 失败发 `failed`。**v2.0.18 的 /api/worktree 不再发**（改发 `worktree.updated`，见 §0） |
+| 删除（`DELETE /experimental/worktree`）| **无任何事件** | 全程不发 SSE，只返回 HTTP 成功（v2 亦然——删除靠 `worktree.updated` 事件，它在 DELETE 成功后发） |
 
 ### 2.2 移动端现状（`../openbuilder`）
 
 - `design-worktree-remove-cleanup.md`：删除走本地定向清理（`ServerStore.removeWorktree`），他端删除靠 `server.connected` 触发的 `_scheduleReconcile`（800ms 延迟全量快照）兜底，非实时。
-- 创建：`_createWorktree`（`server_store.dart:270`）创建后 `refresh()`，靠 `worktree.ready` SSE？——实际 `_onEvent` 的 switch 未处理 `worktree.ready`（未实现），创建后靠 `refresh()` 全局拉取。
+- v2 迁移后：`_reconcileSandboxes` 对每项目 `GET /api/worktree` 后**过滤** sandboxes
+  幽灵（`_filterSandboxes`）；`worktree.resolved/updated/ready/failed` 事件统一
+  `_scheduleReconcile`（与本端 §0 修订同源共识：库存为准）。
 
 ### 2.3 结论
 
-- **创建**：可用 `worktree.ready` SSE 实时刷新（server 有事件）。
-- **删除**：只能靠 `listProjects()` diff 检测（server 无事件）。
-- **双重保证**：SSE 负责创建实时性，刷新负责删除检测 + SSE 丢消息补偿（`worktree.ready` 只发一次，断连期间丢失不补发，靠刷新兜底）。
+- **创建/删除**：`worktree.updated` SSE 实时刷新（v2 GA 起删除也有事件）。
+- **外部非 API 变更**（手动 `git worktree add`/`rm -rf`）：靠 refresh+list 对账。
+- **双重保证**：SSE 负责实时性，refresh+list 负责外部变更检测 + SSE 丢消息补偿。
 
-## 3. 设计
+## 3. 设计（§0 修订后的现行实现）
 
-### 3.1 SSE 监听创建（`worktree.ready`）
+### 3.1 SSE 监听（`worktree.updated`）
 
-**改动点**：
+`handleEvent` 在目录闸门**之前**处理 `worktree.ready/failed/updated`（事件的目录可能
+尚未进本地库存）：
 
-1. `api-types.ts`：`OpencodeEvent` 联合新增 `worktree.ready`/`worktree.failed`（payload
-   `{name, branch?}` / `{message}`）。
-2. `sse-subscriber.ts`：`onEvent` 签名扩展第三参 `meta?: SseEventMeta`（`{project?, workspace?}`，
-   取自信封 `envelope.project`/`envelope.workspace`）。无 project/workspace 字段时 meta 为
-   `undefined`（不创建空对象，避免高频事件无意义分配）。
-3. `app-store.ts` `handleEvent`：在目录闸门**之前**处理 `worktree.ready`/`failed`——新 directory
-   尚未进本地 `sandboxes`，`isOpenedDirectory` 会误杀，改按信封 `meta.project`（projectID）
-   判断"该项目是否打开"。
+- `worktree.updated`：`data.projectID` 判断项目是否打开（信封无 location/project 字段，
+  活体实测 2026-09-29），已打开 → `syncWorktrees()`（refresh + list + diff）。
+- `worktree.ready/failed`：v2.0.18 不再发（旧 experimental 面事件），保留分支兼容早期
+  v2：按 `meta.project` 门控走同一 reconcile。
 
-**闸门逻辑**：
-```
-projectId = meta?.project
-if (!projectId || !openedProjects.some(p => p.id === projectId)) return
-```
-
-**处理**：
-- `worktree.ready`：`void refreshWorkspacesForProject(project)`（重拉 `listProjects()`，
-  `sandboxes` 即时含新 directory，左栏多一行）。本端创建已 `await` 刷新，此事件对他端创建生效。
-  另触发 `void reDiscoverInstanceCatalog(directory)`（信封 directory = 新 worktree 路径）：
-  `POST /instance/dispose` → 等 SSE `server.instance.disposed` 回执 → 仅当该目录是当前
-  chat 目录时重拉命令注册表。背景：server 的 skill 状态是实例级 ScopedCache（首访扫盘后
-  冻结、无失效钩子），worktree 创建两段式（`--no-checkout` + 后台 `reset --hard`）下 ready
-  前的 instance 请求可能把空目录结果冻结到 server 重启。副作用防御：该目录有已知活跃会话
-  则放弃 dispose（多客户端下他端可能已开跑）；dispose 端点缺失（旧版 server 404）静默跳过。
-- `worktree.failed`：忽略（`createWorkspace` 是同步 `await`，无 busy UI 需复位，不崩溃即可）。
-
-**为什么不在 createWorkspace 内乐观更新 sandboxes？** SSE 事件到达即刷新更简单可靠；乐观
-更新需处理 failed 回滚。创建路径已有 `await refreshWorkspacesForProject`，重复刷新幂等。
-
-### 3.2 刷新检测删除（`syncWorktrees`）
-
-新增方法 `syncWorktrees()`：`listProjects()` diff，对消失的 directory 执行清理。
+### 3.2 对账检测（`syncWorktrees`）
 
 ```ts
 async syncWorktrees(): Promise<void> {
-  const fresh = await client.listProjects()
-  // diff 每个打开项目的 sandboxes（未打开项目不影响左栏展示，跳过）
-  for (const old of before) {
-    if (old.id === GLOBAL || !openedProjects.has(old.id)) continue
-    const next = fresh.find(p => p.id === old.id)
-    for (const d of old.sandboxes) {
-      if (!next.sandboxes.has(d)) toUnload.push({directory: d, projectId: old.id, isCurrent})
-    }
-    for (const d of next.sandboxes) {
-      if (!old.sandboxes.has(d)) appeared.push(d)  // ready 丢失的补偿入口
-    }
-  }
-  this.projects = fresh
-  for ({directory, projectId, isCurrent} of toUnload) {
-    const restored = await this.unloadWorktreeDirectory(directory, projectId, isCurrent)
-    if (restored) restoreScopeTabs(project.worktree, true)
-  }
-  for (const d of appeared) void this.reDiscoverInstanceCatalog(d)
+  // 每打开的 git 项目：refresh（server 对账）+ list（库存载入 + union 合并）
+  await runLimited(this.openedProjects.filter((p) => p.vcs), 3,
+    async (p) => { await this.loadWorktreeInventory(p.id, { refresh: true }) })
+  const fresh = await client.listProjects()   // canonical/name 等其余字段对账
+  this.projects = fresh; this.mergeWorktreeDirsIntoProjects()
+  // diff：before(worktree ∪ sandboxes) vs next(同构)——库存行消失即卸载信号
+  for (const d of oldDirs) if (!nextDirs.has(d)) toUnload.push(...)
+  for (...) await this.unloadWorktreeDirectory(...)  // 内含 sandboxes 剥离
 }
 ```
 
-**`unloadWorktreeDirectory`（重构自 `removeWorkspace`）**：卸载会话/Tab/记忆/状态/pty/浏览器
-视图/草稿，复位 `currentWorkspaceId`（当前项目删当前 worktree 时）。`removeWorkspace` 改调
-此方法，消除重复代码。
+**`unloadWorktreeDirectory`**：卸载会话/Tab/记忆/状态/pty/浏览器视图/草稿，复位
+`currentWorkspaceId`（当前项目删当前 worktree 时），并从内部 sandboxes 剥离该目录
+（union 残留防 60s 重复卸载）。
 
-**为什么只检测打开项目？** 未打开项目的 worktree 变化不影响左栏展示（项目行只在打开时展开
-worktree 列表），且 `unloadWorktreeDirectory` 对未打开项目无意义（无 Tab/会话/记忆在内存）。
+**为什么渲染库存优先而闸门用 union？** 幽灵目录（仅存于冻结 sandboxes）不渲染是产品
+诉求；闸门/作用域放宽到 union 是防御（死目录无会话/事件流量，多放行无害），且免改
+15+ 个 sandboxes 消费点。
 
 ### 3.3 触发时机
 
 | 时机 | 触发 | 说明 |
 |------|------|------|
-| 应用启动 | `connect()` 末尾 `startWorktreeSyncTimer()` | 启动定时器（启动时 `listProjects` 刚拉过，不额外调一次） |
-| 窗口 focus | `app.tsx` onFocus → `syncWorktrees()` | 切回应用即见最新态（删除主通道，用户主动行为） |
-| 定时 | 60s `setInterval` | 用户不操作时兜底（低频，兼顾 server 负载） |
-| SSE 重连 | `onReconnected` → `syncWorktrees()` | 补偿断连窗口内丢失的 `worktree.ready`（只发一次不补发）+ 删除检测 |
+| 应用启动 | `connect()` → `refreshAllOpenedProjects`（库存先行 + 会话快照） | 快照目录集 = worktree ∪ sandboxes（WT-1），库存必须先合并 |
+| 窗口 focus | `app.tsx` onFocus → `syncWorktrees()` | 切回应用即见最新态 |
+| 定时 | 60s `setInterval` → `syncWorktrees()` | 外部变更兜底（refresh 发现 + 死行清理） |
+| SSE 重连 | `onReconnected` → `syncWorktrees()` | 补偿断连窗口丢的 `worktree.updated` |
+| SSE 事件 | `worktree.updated` → `syncWorktrees()` | 他端 create/remove 实时（v2 GA 起删除也有事件） |
+| 本端操作 | `createWorkspace`/`removeWorkspace` → `refreshWorkspacesForProject`（定向 list） | server 状态已随 mutation 更新，无需 refresh |
 
-**为什么 60s？** worktree 增删是低频操作（分钟~小时级），60s 足够感知延迟且 server 负载可忽略。
-用户高频交互场景（focus/重连）已覆盖，定时仅兜底用。
-
-**连接拆除时停定时器**：`teardownConnection` 调 `stopWorktreeSyncTimer()`，防 disconnect 后
-空转（client 已 null，`syncWorktrees` 首行 return）。
+**连接拆除**：`teardownConnection` 清空 `worktreeDirs`（重连重载）并停定时器。
 
 ## 4. 边界与防御
 
 | 场景 | 行为 |
 |------|------|
-| SSE 丢 `worktree.ready`（断连窗口内他端创建） | 重连时 `syncWorktrees` 兜底：新增 sandbox diff 出即补跑 `reDiscoverInstanceCatalog`（skill 缓存冻结防御，ready 只发一次不补发）；左栏展示本身随 sandboxes 随 projects 更新自然出现 |
-| 冷启动窗口（应用未运行期间创建的 worktree） | 不在补偿范围内：`connect()` 首次拉取即含该 sandbox，`appeared` diff 恒空。若冻结已发生且无其他在线客户端治愈，持续到 server 重启（接受：本端无法区分"新建"与"既有"，对既有 worktree 全量 dispose 的代价大于收益） |
+| SSE 丢 `worktree.updated`（断连窗口内他端操作） | 重连时 `syncWorktrees` 兜底（refresh+list+diff） |
+| 冷启动窗口（应用未运行期间的增删） | `connect()` 首轮库存即最新态（diff 基线为空，无卸载误报） |
+| 外部 `rm -rf` worktree 目录 | 库存行残留 → refresh 清行 → 下轮 list 消失 → 卸载；删除按钮若先被点到，400 错误呈现 |
+| 旧 server 无 /api/worktree 端点 | `loadWorktreeInventory` 容错回退 sandboxes 渲染（行为同 v0.4，库存缺失仅失去新数据源收益） |
+| 幽灵目录（仅存冻结 sandboxes） | 不渲染、不可删（无库存行）；保留在内部 sandboxes 闸门放宽，卸载不触发（diff 双侧同含） |
 | `syncWorktrees` 在途时 disconnect | `client !== client` 闸门丢弃（同 reconciler 模式） |
-| 同一目录被 global 会话和 git worktree 共用 | `unloadWorktreeDirectory` 按 `projectId` 过滤 Tab（同 `removeWorkspace`），不误关 global entry 的 Tab |
+| 同一目录被多项目 sandboxes 共用 | `unloadWorktreeDirectory` 按 `projectId` 过滤，不误关他项目 Tab |
 | 删除当前 worktree（当前作用域） | `currentWorkspaceId` 复位 null + `restoreScopeTabs(project.worktree)`（同 `removeWorkspace`） |
-| `listProjects` 失败 | `syncWorktrees` 直接 return（不覆盖本地 projects，同 `refreshWorkspacesForProject`） |
+| `listProjects` 失败 | `syncWorktrees` 直接 return（不覆盖本地 projects；库存已载入则渲染不受影响） |
 
-## 5. 涉及文件
+## 5. 涉及文件（2026-09-29 修订）
 
 | 文件 | 改动 |
 |------|------|
-| `src/shared/api-types.ts` | `OpencodeEvent` 新增 `worktree.ready`/`worktree.failed` |
-| `src/shared/sse-subscriber.ts` | `onEvent` 签名 + `SseEventMeta` 类型；`onmessage` 透传 meta |
-| `src/renderer/src/store/app-store.ts` | `handleEvent` worktree.ready/failed 处理；`unloadWorktreeDirectory` 重构；`syncWorktrees`；`worktreeSyncTimer`；`onReconnected` 加 syncWorktrees；`teardownConnection` 停定时器 |
-| `src/renderer/src/app.tsx` | onFocus 加 `syncWorktrees()` |
+| `src/shared/api-v2-types.ts` | `WorktreeDirectory` wire 类型 |
+| `src/shared/rest-client.ts` | `createWorktree` 裸响应修正；新增 `listWorktrees`/`refreshWorktrees` |
+| `src/renderer/src/store/app-store.ts` | `worktreeDirs` 状态 + `loadWorktreeInventory`/`mergeWorktreeDirsIntoProjects`；`workspacesOfProject` 库存优先；`syncWorktrees` refresh+list+diff；`refreshAllOpenedProjects` 库存先行；`unloadWorktreeDirectory` sandboxes 剥离；teardown 清理 |
+| `src/shared/sse-subscriber.ts` | （不变；meta.project 透传沿用） |
 
 ## 6. 测试
 
-- `sse-subscriber.test.ts`：meta 透传（worktree.ready 携带 project/workspace；普通事件 meta undefined）——3 用例
-- `app-store.test.ts`：worktree.ready 重拉刷新、闸门（未打开项目忽略）、failed 忽略、syncWorktrees 删除检测/幂等/未打开项目跳过——6 用例
+- `rest-client.test.ts`：listWorktrees 裸数组/query、createWorktree 裸响应/name 透传、refreshWorktrees payload/204——3 用例
+- `app-store.test.ts`：库存为准渲染（幽灵不渲染/新建可见/union）、createWorkspace 裸响应+切换、他端删除库存 diff 卸载、removeWorkspace 库存刷新——4 用例；既有 worktree 用例（fake 缺省无库存端点 = 旧 server 回退路径）全数保留
 
 ## 7. 不做的事
 
-- **不接 `worktree.failed` 做 busy UI**：`createWorkspace` 同步 await，无 busy 态需复位。
-- **不向 server 提 issue 要求删除发 SSE**：可选的根治方向，不在本次范围（删除靠刷新已够用）。
-- **不做乐观展示**：他端创建的 worktree 出现在列表底部不突兀，刷新延迟可接受。
-- **不定时拉取会话快照**：worktree 同步只 diff sandboxes，会话靠现有 reconciler 对账（已覆盖断连恢复）。
+- **不接 `worktree.failed` 做 busy UI**：v2.0.18 不发此事件；`createWorkspace` 同步 await，无 busy 态需复位。
+- **不做乐观展示**：他端创建的 worktree 出现在列表底部不突兀，事件/对账延迟可接受。
+- **不清理 server 侧冻结 sandboxes 列**：无写 API（PATCH /api/project 不含该字段）；
+  客户端渲染已免疫，server 侧残留无消费者（官方 app 同样无视）。
+- **不渲染无 strategy 的 checkout 根**：库存含主 checkout 行（项目 canonical），渲染层排除（与旧 sandboxes 语义对齐）。

@@ -22,15 +22,15 @@ describe("compareVersions", () => {
   })
 })
 
-describe("belowMinServerVersion", () => {
-  it("低于 1.0.66 判 true", () => {
-    expect(belowMinServerVersion("1.0.65")).toBe(true)
-    expect(belowMinServerVersion("0.9.9")).toBe(true)
-    expect(belowMinServerVersion("1.0")).toBe(true)
+describe("belowMinServerVersion（v2 基线 2.0.0，M6d）", () => {
+  it("低于 2.0.0 判 true", () => {
+    expect(belowMinServerVersion("1.18.20")).toBe(true)
+    expect(belowMinServerVersion("1.0.66")).toBe(true)
+    expect(belowMinServerVersion("2.0.0-rc.1")).toBe(false) // 主段 2.0.0 达标（宽松口径，推荐位不较真）
   })
   it("达标与无法解析判 false", () => {
-    expect(belowMinServerVersion("1.0.66")).toBe(false)
-    expect(belowMinServerVersion("1.18.20")).toBe(false)
+    expect(belowMinServerVersion("2.0.0")).toBe(false)
+    expect(belowMinServerVersion("2.0.18")).toBe(false)
     expect(belowMinServerVersion("garbage")).toBe(false)
   })
   it("自定义下限", () => {

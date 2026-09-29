@@ -32,11 +32,11 @@ export interface DiffHunk {
 const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
 
 /**
- * 展示 context 收窄保留行数（对齐 VCS_DIFF_CONTEXT / git --unified=3）。
+ * 展示 context 收窄保留行数（对齐 git --unified=3；v2 已从请求侧传 context=3，
  * `/session/:id/diff` 的 patch 由 server 端 Snapshot.diffFull 以
  * context=Number.MAX_SAFE_INTEGER 预计算（恒整文件单 hunk），客户端在解析层
  * 统一收窄；/vcs/diff 的 patch 已是 -U3 形态，收窄是 no-op——幂等性前提
- * keep >= VCS_DIFF_CONTEXT（diff-parse.test.ts 有不变量测试钉住）。
+ * 本层为无害冗余兜底——v1 时代 server 省略 context 产整文件 patch 的坑已根治）。
  */
 export const HUNK_CONTEXT_KEEP = 3
 

@@ -3,10 +3,19 @@
  * 事件闸门、乐观消息、SSE 生命周期都在这里收敛。
  */
 import { RestClient, ApiError } from "@shared/rest-client"
+import type { V2ModelInfo } from "@shared/api-v2-types"
+import {
+  archivedAtOf,
+  contentText as contentTextOf,
+  errorMessage as errorMessageOf,
+  isArchivedSession,
+  toInternalProject,
+  toInternalSession,
+} from "@shared/v2-adapter"
 import { SseSubscriber, type SseStatus, type SseEventMeta } from "@shared/sse-subscriber"
 import { Reconciler } from "@shared/reconciler"
 import { mergeSessionsSnapshot } from "@shared/session-merge"
-import { inferFailedFromMessages, inferIdleFromMessages, mergeStatusSnapshot } from "@shared/session-status"
+import { inferFailedFromMessages, inferIdleFromMessages } from "@shared/session-status"
 import { runLimited } from "@shared/run-limited"
 import {
   buildFirstOpenMemory,
@@ -32,7 +41,7 @@ import {
   getDefaults,
   normalizeModelRef,
   parseAgents,
-  parseModels,
+  parseModelsV2,
   sanitizeDisabledModels,
   setDefaults,
   setDisabledModels,
@@ -48,28 +57,25 @@ import {
   type OptimisticMessage,
 } from "@shared/message-merge"
 import {
+  buildFormAnswer,
   mergePendingSnapshot,
+  normalizeForm,
   normalizePermission,
-  normalizeQuestion,
   sessionDotState,
+  type PendingFieldInput,
   type PendingPermission,
   type PendingQuestion,
   type SessionDotState,
 } from "@shared/pending-requests"
-import { normalizeTodoList } from "@shared/session-todos"
 import { isLoopbackBaseUrl } from "@shared/loopback"
 import {
-  GLOBAL_PROJECT_ID,
-  globalDirectoryName,
-  globalDirectoryOfKey,
-  globalDirectoryRows,
-  globalEntryKey,
-  migrateOpenedKeys,
-  type GlobalDirectoryRow,
+  migrateLegacyGlobalState,
+  migrateLegacyMemoryProjectIds,
+  migrateLegacyPersistedProjectIds,
 } from "@shared/project-entries"
 import type { BrowserViewState, ConnectionProfile, ManagedNotice } from "@shared/ipc"
 import "@shared/ipc-global"
-import { belowMinServerVersion } from "@shared/semver"
+import { belowMinServerVersion, MIN_SERVER_VERSION_V2 } from "@shared/semver"
 import type { Attachment } from "@shared/attachment-pipeline"
 import {
   applyCommandFetch,
@@ -79,7 +85,6 @@ import {
 import type {
   AgentInfo,
   CommandInfo,
-  ConfigProviders,
   FileContentData,
   FileDiff,
   FileNode,
@@ -97,7 +102,6 @@ import type {
   Session,
   SessionStatusValue,
   TextPart,
-  Todo,
   Workspace,
 } from "@shared/api-types"
 import { isSyntheticTextPart } from "@shared/api-types"
@@ -121,6 +125,20 @@ const PANEL_LIMITS = {
   left: { min: 200, max: 360, def: 260 },
   right: { min: 240, max: 480, def: 300 },
 } as const
+
+/**
+ * 连接探活失败归类（plan-v2-protocol M1，双兼容裁定的错误指引）：
+ * unsupported（200+HTML，v1 server SPA fallback）/ not-found（404）→
+ * 明确「仅支持 v2」指引；auth（401）→ 提示凭据；其余透传错误消息。
+ */
+function connectProbeError(e: unknown): string {
+  if (e instanceof ApiError) {
+    if (e.kind === "unsupported" || e.kind === "not-found")
+      return "服务器版本不支持：v0.5 起仅支持 opencode v2 server"
+    if (e.kind === "auth") return "认证失败：v2 server 需要密码（检查服务器的用户名/密码设置）"
+  }
+  return e instanceof Error ? e.message : String(e)
+}
 
 /** 宽度 clamp（读入持久化值/拖拽输入共用；非法数值回退默认宽） */
 function clampPanelWidth(side: "left" | "right", px: number): number {
@@ -257,21 +275,21 @@ export interface ClosedTabEntry {
 export type ConnectionState = "disconnected" | "connecting" | "streaming" | "degraded"
 
 export interface ProjectState {
-  /** 左栏 entry 键：普通项目 = project.id；global 目录 = `global\0<directory>` */
+  /** 左栏 entry 键 = project.id（v2 全项目统一；v1 的 `global\0<dir>` 键由
+   *  migrateLegacyGlobalState 在连接期收敛，见 project-entries） */
   opened: string[]
   currentProjectId: string | null
-  /** 当前作用域目录（普通项目 = worktree 路径；global = 会话目录；null = 项目根） */
+  /** 当前作用域目录（worktree 路径；null = 项目根） */
   currentWorkspaceId: string | null
 }
 
-/** 左栏「项目行」：普通项目 1 行（worktree）；global 项目按 directory 拆成 N 行 */
+/** 左栏「项目行」：每项目 1 行（含 v2 伪项目行——非 git 目录；M1b 后无 global 拆分） */
 export interface ProjectEntry {
   key: string
   project: Project
-  /** 作用域根目录（global = 会话 directory；普通 = worktree） */
+  /** 作用域根目录（= worktree/canonical） */
   directory: string
   name: string
-  isGlobal: boolean
 }
 
 /** 左栏可遍历行（design-keyboard-shortcuts §3 Alt 预览-提交）：entry 行按 key、
@@ -388,7 +406,7 @@ export class AppStore {
   /**
    * 会话状态（busy/idle/retry）——纯客户端内存映射，单一事实源：
    * Tab 状态点、左栏指示器、消息流 TypingSlot 都消费它（design-typing-indicator §4）。
-   * idle 不落 map（缺省即 idle）；来源见 setSessionStatus/applyStatusSnapshot。
+   * idle 不落 map（缺省即 idle）；来源见 setSessionStatus（事件驱动，M3a 起无快照阶段）。
    */
   sessionStatus = new Map<string, SessionStatusValue>()
   /** sessionID → 状态来源目录（REST 按目录覆盖合并的权威边界） */
@@ -421,13 +439,6 @@ export class AppStore {
    */
   pendingPermissions = new Map<string, PendingPermission>()
   pendingQuestions = new Map<string, PendingQuestion>()
-  /**
-   * 会话任务列表（design-task-list，纯展示）：sessionID → 全量列表（todo.updated
-   * 与 REST 快照均整表替换，无合并）。生命周期随会话运行时（关 Tab/删会话经
-   * cleanupSessionState 卸载，teardown 全清）——重开 Tab 由激活回填补齐。
-   */
-  sessionTodos = new Map<string, Todo[]>()
-
   // ---- UI 状态 ----
   tabs: TabEntity[] = []
   activeTabKey: string | null = null
@@ -448,6 +459,10 @@ export class AppStore {
    * 取消/关闭清空。上提自 sidebar 本地状态——快捷键与按钮共用同一弹窗路径。
    */
   pendingWorktreeDelete: { directory: string; projectId: string } | null = null
+  /** force 二次确认态（M5）：deleteKey → 已确认强制。WorktreeError{forceRequired}
+   *  到达时复用 pendingWorktreeDelete 确认弹窗（文案切强制删除），确认即带 force
+   *  重试；取消/重开清位 */
+  forceDeleteRequests = new Set<string>()
   /**
    * 待确认关闭的 Tab（tab-actions closeTabInteractive 置位，Tab 栏 X 钮与
    * Ctrl+W 同入口）：非空 = ConfirmDialog 挂载中；chat 流式中 / 终端运行中
@@ -590,7 +605,9 @@ export class AppStore {
   >()
 
   // ---- 内部 ----
+  /** 唯一 REST client（v2；连接成功置位、teardown 置 null——全 store 的连接哨兵） */
   private client: RestClient | null = null
+  /** 对账引擎（SSE 断连恢复后重拉快照，挂载于 connect；deps.client 即唯一 client） */
   private reconciler: Reconciler | null = null
   private listeners = new Set<Listener>()
   private snapshotHandlers: Array<() => void> = []
@@ -634,20 +651,10 @@ export class AppStore {
     }
     this.profiles = profileData.profiles
     this.activeProfileId = profileData.activeId
-    const ps = await window.desktop.storeGet("project.state")
-    if (ps) {
-      // global 拆分迁移：旧版裸 "global" → 根目录 entry（幂等；变更即时落盘）
-      let migrated = false
-      for (const key of Object.keys(ps)) {
-        const next = migrateOpenedKeys(ps[key].opened)
-        if (next.join("\u0001") !== ps[key].opened.join("\u0001")) {
-          ps[key].opened = next
-          migrated = true
-        }
-      }
-      this.projectStates = ps
-      if (migrated) void window.desktop.storeSet("project.state", ps).catch(() => {})
-    }
+    // v1→v2 global 键迁移统一在 doConnect（projects 落地后）执行（M1b）：此处
+    // projects 未知无法按 worktree 匹配；旧键在迁移前对 openedEntries 不可见（无
+    // 行渲染、无作用域恢复），无损
+    this.projectStates = (await window.desktop.storeGet("project.state")) ?? {}
     this.tabMemory = (await window.desktop.storeGet("tabs.memory")) ?? {}
     // 会话层逐切片校验（design-tab-session-restore §2）：坏切片/坏条目丢弃，等效无记录
     this.tabSession = sanitizeTabSessionMap(await window.desktop.storeGet("tabs.session"))
@@ -774,19 +781,20 @@ export class AppStore {
     const client = new RestClient({ baseUrl, username, password })
     let projects: Project[]
     try {
-      // 连通性探针（快照前的快速失败；版本信息仅设置弹窗"测试连接"时按需拉取）
-      const health = await client.health()
+      // v2 探活（GET /api/info，取代 v1 /global/health）：v1 server 对未知 /api 路径
+      // 返回 SPA fallback（200 HTML）或 404 → ApiError unsupported/not-found →
+      // 明确报错指引（双兼容裁定：v0.5 起仅支持 v2，不做协议分派）
+      const info = await client.serverInfo()
       if (stale()) return
-      // 版本下限校验（design-managed-config §2）：低于 1.0.66（单全局 SSE 要求）
-      // 仅提示不阻断，attach/managed 同口径
-      this.serverVersionWarning = belowMinServerVersion(health.version)
-        ? { version: health.version }
+      // 版本下限校验：v2 以 GA（2.0.0）为下限，仅提示不阻断
+      this.serverVersionWarning = belowMinServerVersion(info.version, MIN_SERVER_VERSION_V2)
+        ? { version: info.version }
         : null
-      projects = await client.listProjects()
+      projects = (await client.listProjects()).map(toInternalProject)
     } catch (e) {
       if (stale()) return
       this.connectionState = "disconnected"
-      this.connectionError = e instanceof Error ? e.message : String(e)
+      this.connectionError = connectProbeError(e)
       this.emit()
       return
     }
@@ -795,6 +803,27 @@ export class AppStore {
     // 全部快照成功后才暴露 client（失败路径不悬挂）
     this.client = client
     this.projects = projects
+    // v1→v2 持久化键迁移（M1b，连接期一次）：global\0<dir> entry 键与
+    // currentProjectId="global" 按 worktree 匹配转项目 ID（含伪项目行）；未匹配
+    // （零会话目录无项目行）的键丢弃——可经选择器重开。projectStates 已整体
+    // 载入内存，全部 profile 切片一并迁移。
+    // 评审 2026-09-28 增补：tabs.memory/tabs.session 的 projectId="global"
+    // 遗留同源归一（记忆匹配/forgetProjectMemory/sessionEntryOwned 均按
+    // projectId 精确比对，遗留值会退化为首次全量打开且清理不到）
+    {
+      let stateChanged = false
+      for (const key of Object.keys(this.projectStates)) {
+        if (migrateLegacyGlobalState(this.projectStates[key]!, projects)) stateChanged = true
+      }
+      const memoryChanged = migrateLegacyMemoryProjectIds(this.tabMemory, projects)
+      const sessionChanged = migrateLegacyPersistedProjectIds(this.tabSession, projects)
+      if (stateChanged)
+        void window.desktop.storeSet("project.state", this.projectStates).catch(() => {})
+      if (memoryChanged)
+        void window.desktop.storeSet("tabs.memory", this.tabMemory).catch(() => {})
+      if (sessionChanged)
+        void window.desktop.storeSet("tabs.session", this.tabSession).catch(() => {})
+    }
     // 连接归属切片键落位（teardown 外科修剪用它定位；见 sessionProfileKey 注释）
     this.sessionProfileKey = this.profileKey()
     // 生效凭据（managed 模式为主进程生成值）——后续 SSE 重建统一使用
@@ -806,9 +835,10 @@ export class AppStore {
     // 正是 restoreTabSession 即将读取的输入。恢复段收尾统一固化
     this.restoringTabs = true
     try {
-      // global 拆分发现快照：global 目录行数据源（连接时刷新保证行齐全）
-      await this.refreshGlobalSessions()
-      if (stale()) return
+      // v2 无 global 项目（用户裁定 2026-09-28，A 方案）：非 git 目录 = 目录哈希
+      // 伪项目行，项目列表本身即发现源——refreshGlobalSessions（v1 scope=project
+      // 发现快照）退役；新目录出现靠 60s syncWorktrees diff + M3 的 project.updated
+      // 事件接力。v1 global 特殊路径已惰化，M1b 整体删除。
 
       // 打开项目的快照 + 订阅
       await this.refreshAllOpenedProjects()
@@ -820,10 +850,7 @@ export class AppStore {
       {
         const slice = this.tabMemory[this.profileKey()] ?? {}
         for (const p of this.openedProjects) {
-          const dirs =
-            p.id === GLOBAL_PROJECT_ID
-              ? this.openedGlobalDirectories
-              : [...new Set([p.worktree, ...(p.sandboxes ?? [])])]
+          const dirs = [...new Set([p.worktree, ...(p.sandboxes ?? [])])]
           for (const dir of dirs) {
             if (slice[dir]) this.restoreScopeTabs(dir, false)
           }
@@ -985,6 +1012,9 @@ export class AppStore {
     this.client = null
     this.managedBaseUrl = null
     this.projects = []
+    // worktree 库存随连接拆除清空（v2 权威源；重连时 refreshAllOpenedProjects
+    // 重新 refresh+list 载入）
+    this.worktreeDirs.clear()
     this.sessionsByProject.clear()
     this.messagesBySession.clear()
     this.syntheticDroppedBySession.clear()
@@ -999,7 +1029,6 @@ export class AppStore {
     this.retryHold.clear()
     this.pendingPermissions.clear()
     this.pendingQuestions.clear()
-    this.sessionTodos.clear()
     this.revertDrafts.clear()
     this.revertDraftConsumed.clear()
     this.manualDraftSeeds.clear()
@@ -1063,12 +1092,6 @@ export class AppStore {
     // 在途 fetch 无法中断；迟到的结果由 refreshCommands 的 client 身份守卫丢弃
     this.commandsInFlight.clear()
     // dispose 等待全部兑现放弃（后续 client 身份守卫丢弃），防跨连接误等
-    for (const set of this.instanceDisposedWaiters.values()) for (const w of [...set]) w()
-    this.instanceDisposedWaiters.clear()
-    if (this.catalogRefreshTimer != null) {
-      clearTimeout(this.catalogRefreshTimer)
-      this.catalogRefreshTimer = null
-    }
     this.clearFileWatchTimers()
     this.stopWorktreeSyncTimer()
     this.snapshottedDirs.clear()
@@ -1080,8 +1103,17 @@ export class AppStore {
   }
 
   private async refreshAllOpenedProjects() {
-    // 嵌套限流的乘积才是总并发：外层 2 × 内层（refreshSessionsForProject 目录 3）
-    // = 6 ≈ 空闲槽（1 条 SSE 常驻后 5 槽 + 排队余量）——外层限值不可单独解读
+    // worktree 库存先行（v2 权威源，含 refresh 对账）：会话快照的目录集 =
+    // worktree ∪ sandboxes（WT-1：worktree 会话只有逐目录快照可达），库存合并
+    // 必须在快照拉取前完成。外层限 3 × 内层（快照目录 3）与单一 opened 并发，
+    // 嵌套乘积 ≤ 6 ≈ 空闲槽（1 条 SSE 常驻后 5 槽 + 排队余量）
+    await runLimited(
+      this.openedProjects.filter((p) => p.vcs),
+      3,
+      async (p) => {
+        await this.loadWorktreeInventory(p.id, { refresh: true })
+      },
+    )
     await runLimited(this.openedProjects, 2, (p) => this.refreshSessionsForProject(p))
   }
 
@@ -1089,19 +1121,11 @@ export class AppStore {
    * 将单目录会话快照合入项目 map（按 projectID 过滤后交 session-merge 分域合并）。
    * 闸门：在途快照落地时项目可能已关闭、目录可能已被删除（removeWorkspace）——
    * 过期快照直接丢弃，防止复活已卸载的 worktree 会话。
-   * global：目录闸门 = 已打开 entry ∪ 已知会话域（发现快照走 refreshGlobalSessions
-   * 直合并，不经此处）。
    */
   private applySessionsSnapshot(projectId: string, directory: string, sessions: Session[]) {
     const project = this.openedProjects.find((p) => p.id === projectId)
     if (!project) return
-    if (project.id === GLOBAL_PROJECT_ID) {
-      if (
-        !this.openedGlobalDirectories.includes(directory) &&
-        !this.globalKnownDirectories().has(directory)
-      )
-        return
-    } else if (directory !== project.worktree && !(project.sandboxes ?? []).includes(directory)) {
+    if (directory !== project.worktree && !(project.sandboxes ?? []).includes(directory)) {
       return
     }
     const filtered = sessions.filter((s) => s.projectID === projectId)
@@ -1157,20 +1181,14 @@ export class AppStore {
   }
 
   /**
-   * 打开项目目录全集（worktree ∪ sandboxes；global = 已打开目录 entry）——事件闸门、
-   * 对账、状态快照的统一目录源。单全局流（design-sse-global-event）下连接与打开集合
-   * 解耦：开关项目/切工作区不再触发任何连接操作，只影响此集合的过滤范围。
-   * global 无连接预算约束（单流覆盖全部目录），但未打开 global 目录的事件仍被
-   * 闸门丢弃——新目录发现靠 scope=project 快照（refreshGlobalSessions）。
+   * 打开项目目录全集（worktree ∪ sandboxes）——事件闸门、对账、状态快照的统一
+   * 目录源。单全局流（design-sse-global-event）下连接与打开集合解耦：开关项目/
+   * 切工作区不再触发任何连接操作，只影响此集合的过滤范围。未打开目录的事件被
+   * 闸门丢弃——新目录发现靠项目列表刷新（v2/A：伪项目行）。
    */
   private openedDirectories(): string[] {
     const dirs = new Set<string>()
     for (const p of this.openedProjects) {
-      // global：worktree 恒为 "/" 且 sandboxes 恒空，目录全集 = 已打开 entry 目录
-      if (p.id === GLOBAL_PROJECT_ID) {
-        for (const d of this.openedGlobalDirectories) dirs.add(d)
-        continue
-      }
       dirs.add(p.worktree)
       for (const d of p.sandboxes ?? []) dirs.add(d)
     }
@@ -1199,74 +1217,354 @@ export class AppStore {
 
   // ============ 事件处理（闸门 + 应用） ============
 
-  private handleEvent(directory: string, ev: OpencodeEvent, meta?: SseEventMeta) {
-    // ---- 实例销毁回执：基础设施事件，被销毁目录可能尚未/不再属于打开集合，
-    // 须在目录闸门之前放行（reDiscoverInstanceCatalog 的等待点）
-    if (ev.type === "server.instance.disposed") {
-      // 防御式解析（同 file.watcher.updated）：信封 directory 兜底
-      const dir = typeof ev.properties.directory === "string" ? ev.properties.directory : directory
-      const waiters = this.instanceDisposedWaiters.get(dir)
-      if (waiters) for (const w of [...waiters]) w()
+  /**
+   * 会话事件落地（v1 created/updated 与 v2 翻译层共用）：合并入 map、Tab 标题
+   * 同步、归档实时收敛（D1 双源）、当前作用域被动补开。归档判定 isArchivedSession
+   * （time.archived 存量 + metadata.archivedAt 私约）——v2 的他端归档经
+   * session.metadata.updated 翻译为合并后 info 到达此处的 else 分支。
+   */
+  private applySessionEvent(info: Session, directory: string) {
+    if (info.directory !== directory) return
+    let map = this.sessionsByProject.get(info.projectID)
+    if (!map) {
+      map = new Map()
+      this.sessionsByProject.set(info.projectID, map)
+    }
+    map.set(info.id, info)
+    // 同步更新已打开 chat Tab 的 title（会话重命名后 Tab 名跟随刷新）
+    const tab = this.tabs.find((t) => t.kind === "chat" && t.key === `chat:${info.id}`)
+    if (tab) tab.title = info.title || info.slug || ""
+    // 实时收敛（§17 修订二，2026-09-02）：他端归档 → 立即关 Tab（跨作用域，
+    // 同 session.deleted 处置——Tab 集 = 未归档会话投影；archive:false 纯本地
+    // 移除，归档已由他端完成；激活回退/草稿清理/记忆收缩走 closeTab 既有路径）。
+    // 本端关 Tab=归档流程（closeChatTab）在途时抑制——其"先 PATCH 后
+    // closeTab(pushClosed 入关闭栈)"的 SSE 回环可能先到，抢先关会丢
+    // Ctrl+Shift+T 关闭栈条目，交由本地路径收尾
+    if (isArchivedSession(info)) {
+      if (!this.closingChatSessions.has(info.id)) {
+        this.closeTab(`chat:${info.id}`, { archive: false })
+      }
+    }
+    // 实时补开（§17 修订，2026-09-02）：当前作用域未归档顶层会话无 Tab 即
+    // 末尾追加（不激活不抢焦点）。口径同 visibleSessions：subagent 子会话不开；
+    // 非当前作用域目录不开（经 §17 切入补开）。SSE 丢失的补偿路径不变（对账）
+    else if (!info.parentID && info.directory === this.scopeDirectory()) {
+      this.openChatTabPassive(info)
+    }
+  }
+
+  /**
+   * v2 assistant 流式事件 → v1 消息管线（M4a 翻译层）：
+   * - step.started → message.updated（assistant 消息壳：agent/model）
+   * - step.ended → message.updated（finish/cost/time.completed 终态）
+   * - text/reasoning started/delta/ended → message.part.updated（TextPart；
+   *   delta 为**片段**——按 messageID+ordinal 累积缓冲，ended 为全量权威值）
+   * - tool.input.started/delta/ended + tool.called/progress/success/failed →
+   *   message.part.updated（ToolPart 状态机：input 流式缓冲 → called running →
+   *   success/failed 终态）
+   * 部件 id 规则与 toInternalMessages 的 assistantContentToParts 一致
+   * （text/reasoning = `<messageID>:c:<n>` 递增序号、tool = tool id）——
+   * 流式与快照两条路径产出的部件可互相覆盖/合并。
+   */
+  private v2StreamBuffers = new Map<string, string>()
+
+  private streamPartUpsert(
+    directory: string,
+    sessionID: string,
+    part: { id: string; type: string; [k: string]: unknown },
+  ) {
+    this.handleEvent(directory, { type: "message.part.updated", properties: { sessionID, part } })
+  }
+
+  private applyV2StreamEvent(
+    directory: string,
+    ev: { type: string; properties: Record<string, unknown> },
+    eventTime: number,
+  ): boolean {
+    const p = ev.properties
+    const sessionID = String(p.sessionID ?? "")
+    const messageID = String(p.assistantMessageID ?? "")
+    if (!sessionID || !messageID) return false
+    switch (ev.type) {
+      case "session.step.started": {
+        this.handleEvent(directory, {
+          type: "message.updated",
+          properties: {
+            sessionID,
+            info: {
+              id: messageID,
+              sessionID,
+              role: "assistant",
+              time: { created: eventTime },
+              ...(p.agent != null ? { agent: p.agent } : {}),
+              ...(p.model != null ? { model: p.model } : {}),
+            },
+          },
+        })
+        return true
+      }
+      case "session.step.ended": {
+        // 终态收敛：finish/cost/tokens（time.completed 用事件时间近似——
+        // 精确 streamed/completed 由对账快照纠正）
+        const conv = this.messagesBySession.get(sessionID)
+        const msg = conv?.get(messageID)
+        if (msg) {
+          conv!.set(messageID, {
+            info: {
+              ...msg.info,
+              ...(p.finish != null ? { finish: p.finish } : {}),
+              ...(p.cost != null ? { cost: p.cost } : {}),
+              ...(p.tokens != null ? { tokens: p.tokens } : {}),
+              time: { ...msg.info.time, completed: eventTime },
+            } as typeof msg.info,
+            parts: msg.parts,
+          })
+        }
+        return true
+      }
+      case "session.text.started":
+      case "session.reasoning.started": {
+        const kind = ev.type.startsWith("session.reasoning") ? "reasoning" : "text"
+        this.v2StreamBuffers.set(`${sessionID}\0${messageID}\0${kind}\0${p.ordinal}`, "")
+        return true
+      }
+      case "session.text.delta":
+      case "session.reasoning.delta": {
+        const kind = ev.type.startsWith("session.reasoning") ? "reasoning" : "text"
+        const key = `${sessionID}\0${messageID}\0${kind}\0${p.ordinal}`
+        const acc = (this.v2StreamBuffers.get(key) ?? "") + String(p.delta ?? "")
+        this.v2StreamBuffers.set(key, acc)
+        this.streamPartUpsert(directory, sessionID, {
+          id: `${messageID}:c:${p.ordinal}`,
+          sessionID,
+          messageID,
+          type: kind,
+          text: acc,
+          time: { start: eventTime },
+        })
+        return true
+      }
+      case "session.text.ended":
+      case "session.reasoning.ended": {
+        const kind = ev.type.startsWith("session.reasoning") ? "reasoning" : "text"
+        const key = `${sessionID}\0${messageID}\0${kind}\0${p.ordinal}`
+        this.v2StreamBuffers.delete(key)
+        this.streamPartUpsert(directory, sessionID, {
+          id: `${messageID}:c:${p.ordinal}`,
+          sessionID,
+          messageID,
+          type: kind,
+          text: String(p.text ?? ""),
+          time: { start: eventTime, end: eventTime },
+        })
+        return true
+      }
+      case "session.tool.input.started": {
+        this.v2StreamBuffers.set(`${sessionID}\0${messageID}\0tool\0${p.id}`, "")
+        this.streamPartUpsert(directory, sessionID, {
+          id: String(p.id),
+          sessionID,
+          messageID,
+          type: "tool",
+          callID: String(p.id),
+          tool: String(p.name ?? ""),
+          state: { status: "running", input: "" },
+        })
+        return true
+      }
+      case "session.tool.input.delta":
+      case "session.tool.input.ended": {
+        const key = `${sessionID}\0${messageID}\0tool\0${p.id}`
+        const value =
+          ev.type === "session.tool.input.ended"
+            ? String(p.text ?? "")
+            : (this.v2StreamBuffers.get(key) ?? "") + String(p.delta ?? "")
+        if (ev.type === "session.tool.input.delta") this.v2StreamBuffers.set(key, value)
+        else this.v2StreamBuffers.delete(key)
+        // 工具名沿袭既有 part（input.started 建立后此流不再携带 name）
+        const conv = this.messagesBySession.get(sessionID)
+        const existingTool = (conv?.get(messageID)?.parts.find((x) => x.id === p.id) as { tool?: string } | undefined)?.tool ?? ""
+        this.streamPartUpsert(directory, sessionID, {
+          id: String(p.id),
+          sessionID,
+          messageID,
+          type: "tool",
+          callID: String(p.id),
+          tool: existingTool,
+          state: { status: "running", input: value },
+        })
+        return true
+      }
+      case "session.tool.called":
+      case "session.tool.progress":
+      case "session.tool.success":
+      case "session.tool.failed": {
+        // 状态机终态/进行中：复用 v2-adapter 的 ToolState 映射（content/error 归一）
+        const conv = this.messagesBySession.get(sessionID)
+        const existing = conv?.get(messageID)?.parts.find((x) => x.id === p.id)
+        const toolName =
+          (existing as { tool?: string } | undefined)?.tool ?? ""
+        const state =
+          ev.type === "session.tool.called"
+            ? { status: "running", input: p.input }
+            : ev.type === "session.tool.progress"
+              ? { status: "running", input: (existing as { state?: { input?: unknown } } | undefined)?.state?.input, metadata: p.metadata }
+              : ev.type === "session.tool.success"
+                ? {
+                    status: "completed",
+                    input: (existing as { state?: { input?: unknown } } | undefined)?.state?.input,
+                    output: contentTextOf(p.content),
+                    title: toolName,
+                    ...(p.metadata != null ? { metadata: p.metadata } : {}),
+                  }
+                : {
+                    status: "error",
+                    input: (existing as { state?: { input?: unknown } } | undefined)?.state?.input,
+                    error: errorMessageOf(p.error),
+                  }
+        this.streamPartUpsert(directory, sessionID, {
+          id: String(p.id),
+          sessionID,
+          messageID,
+          type: "tool",
+          callID: String(p.id),
+          tool: toolName,
+          state,
+          ...(p.executed != null ? { executed: p.executed } : {}),
+        })
+        return true
+      }
+      default:
+        return false
+    }
+  }
+
+  /**
+   * v2 会话事件 → 既有语义（M3a 翻译层）：v2 拆掉 session.updated（renamed/
+   * metadata.updated/permissions/viewed/...），payload 为增量字段而非完整
+   * info——与本地会话合并后走 applySessionEvent；created 构造骨架（事件字段
+   * 足够列表/Tab；time 以事件时间戳播种，对账纠正）；deleted payload 只有
+   * sessionID（本地反查 projectID）。返回 true = 已消费（跳过 v1 表）。
+   * session.moved 暂不翻译（重连对账兜底，M4 会话域收尾）。
+   */
+  private applyV2SessionEvent(
+    directory: string,
+    ev: { type: string; properties: Record<string, unknown> },
+    eventTime: number,
+  ): boolean {
+    switch (ev.type) {
+      case "session.created": {
+        const p = ev.properties as {
+          sessionID?: string
+          projectID?: string
+          parentID?: string
+          slug?: string
+          title?: string
+          agent?: string
+          model?: ModelRef
+          metadata?: Record<string, unknown>
+        }
+        // v1 形状（properties.info 而非 sessionID）不属 v2 事件——回落 v1 表
+        if (!p.sessionID || !p.projectID) return false
+        this.applySessionEvent(
+          {
+            id: p.sessionID,
+            parentID: p.parentID,
+            projectID: p.projectID,
+            directory,
+            slug: p.slug,
+            title: p.title,
+            agent: p.agent,
+            model: p.model,
+            metadata: p.metadata,
+            time: { created: eventTime, updated: eventTime },
+          },
+          directory,
+        )
+        return true
+      }
+      case "session.deleted": {
+        // v2 payload {sessionID}（无 v1 的 info）；本地反查 map 归属。
+        // v1 形状（properties.info）回落 v1 表
+        const sid = String(ev.properties.sessionID ?? "")
+        if (!sid) return false
+        const local = this.findSession(sid)
+        if (local) this.sessionsByProject.get(local.projectID)?.delete(sid)
+        this.closeTab(`chat:${sid}`, { archive: false })
+        this.cleanupSessionState(sid)
+        this.setSessionStatus(sid, { type: "idle" })
+        this.dropPendingForSession(sid)
+        return true
+      }
+      case "session.renamed":
+      case "session.metadata.updated":
+      case "session.viewed": {
+        // 增量合并到本地（未加载的会话跳过——重连对账兜底）
+        const sid = String(ev.properties.sessionID ?? "")
+        const local = sid ? this.findSession(sid) : null
+        if (!sid || !local) return true
+        let merged = local
+        if (ev.type === "session.renamed") {
+          merged = { ...local, title: String(ev.properties.title ?? local.title ?? "") }
+        } else if (ev.type === "session.metadata.updated") {
+          const meta = ev.properties.metadata as Record<string, unknown> | undefined
+          merged = { ...local, metadata: meta ?? local.metadata }
+        }
+        this.applySessionEvent(merged, directory)
+        return true
+      }
+      default:
+        return false
+    }
+  }
+
+  /** v1/v2 事件宽松入口（订阅器以 {type, properties} 回调；v2 翻译层在前） */
+  private handleEvent(
+    directory: string,
+    ev: { type: string; properties: Record<string, unknown> },
+    meta?: SseEventMeta,
+  ) {
+    // ---- worktree 生命周期（design-worktree-sync §3 修订）：目录闸门不适用——
+    // 事件的目录可能尚未进本地库存。v2 GA：create/remove/refresh 变更时发
+    // worktree.updated（data.projectID，**无 location**——信封 project 字段亦无，
+    // 活体实测 2026-09-29）；worktree.ready/failed 是旧 experimental 面事件，
+    // v2.0.18 已不发（保留分支兼容早期 v2）。统一走 syncWorktrees：
+    // refresh（server 对账）+ list（库存重载，左栏即时多一行/消失行）。
+    // ---- 新目录发现接力（M3，活体实测：首个会话解析出伪项目行时随发
+    // project.updated）：未知项目 id = 新行——重拉项目全集；已知项目仅
+    // time.active 活跃度变化，跳过（左栏排序靠快照/对账，不追实时）
+    if (ev.type === "project.updated") {
+      const pid = String((ev.properties as { id?: unknown }).id ?? "")
+      if (pid && !this.projects.some((p) => p.id === pid)) void this.syncWorktrees()
       return
     }
-    // ---- worktree 生命周期（design-worktree-sync）：目录闸门不适用——新 directory
-    // 尚未进本地 sandboxes，按信封 project 字段（projectID）判断"该项目是否打开"。
-    // ready → 重拉项目列表拿 sandboxes（左栏即时多一行）；failed 仅日志（createWorkspace
-    // 是同步 await，无 busy UI 需复位）。本端创建已 await refreshWorkspacesForProject，
-    // 他端创建靠此事件刷新。
-    if (ev.type === "worktree.ready" || ev.type === "worktree.failed") {
-      const projectId = meta?.project
-      if (!projectId || !this.openedProjects.some((p) => p.id === projectId)) return
-      if (ev.type === "worktree.ready") {
-        // 重拉项目列表（refreshWorkspacesForProject 全局拉取并覆盖 this.projects，
-        // project 参数仅为文档化作用域，不参与请求——见该函数注释）
-        const project = this.projects.find((p) => p.id === projectId)
-        if (project) void this.refreshWorkspacesForProject(project)
-        // skill 缓存冻结防御（directory 信封 = 新 worktree 路径）：dispose 该目录
-        // 实例并重拉命令注册表，见 reDiscoverInstanceCatalog
-        void this.reDiscoverInstanceCatalog(directory)
-      }
+    if (ev.type === "worktree.ready" || ev.type === "worktree.failed" || ev.type === "worktree.updated") {
+      // v1：信封 project 字段门控（ready 时精确重拉）。v2 信封无 project 字段
+      // （worktree.updated 的 data.projectID 除外）——统一走 reconcile：重拉项目
+      // 全集 diff（左栏即时多一行/消失行；v2 哲学：显式对账而非事件门控）。
+      // v1 的 reDiscoverInstanceCatalog（instance dispose + 命令重发现）是 v1 实例
+      // 缓存专属，v2 无对应概念（M5 随 worktree 域清理）
+      const projectId = ev.type === "worktree.updated"
+        ? String((ev.properties as { projectID?: unknown }).projectID ?? "")
+        : (meta?.project ?? "")
+      if (projectId && !this.openedProjects.some((p) => p.id === projectId)) return
+      void this.syncWorktrees()
       return
     }
     // 前置闸门（design-sse-global-event §4.2）：单流收到 server 全部目录的事件，
     // 仅打开项目的目录全集（worktree ∪ sandboxes）放行——关闭项目 = 事件忽略。
     // 此前 message.*/session.created 等依赖"订阅集合即打开集合"隐式隔离，单流后必须显式过滤
     if (!this.isOpenedDirectory(directory)) return
+    // ---- v2 流式翻译层（M4a）：assistant 流式事件 → v1 part 管线 ----
+    if (this.applyV2StreamEvent(directory, ev, meta?.created ?? Date.now())) return
+    // ---- v2 细粒度会话事件翻译层（M3a）：见 applyV2SessionEvent ----
+    if (this.applyV2SessionEvent(directory, ev, meta?.created ?? Date.now())) return
     switch (ev.type) {
       case "session.created":
       case "session.updated": {
         const info = ev.properties.info as Session
         if (!info || info.directory !== directory) return
-        let map = this.sessionsByProject.get(info.projectID)
-        if (!map) {
-          map = new Map()
-          this.sessionsByProject.set(info.projectID, map)
-        }
-        map.set(info.id, info)
-        // 同步更新已打开 chat Tab 的 title（会话重命名后 Tab 名跟随刷新）
-        const tab = this.tabs.find((t) => t.kind === "chat" && t.key === `chat:${info.id}`)
-        if (tab) tab.title = info.title || info.slug || ""
-        // 实时收敛（§17 修订二，2026-09-02）：他端归档 → 立即关 Tab（跨作用域，
-        // 同 session.deleted 处置——Tab 集 = 未归档会话投影；archive:false 纯本地
-        // 移除，归档已由他端完成；激活回退/草稿清理/记忆收缩走 closeTab 既有路径）。
-        // 本端关 Tab=归档流程（closeChatTab）在途时抑制——其"先 PATCH 后
-        // closeTab(pushClosed 入关闭栈)"的 SSE 回环可能先到，抢先关会丢
-        // Ctrl+Shift+T 关闭栈条目，交由本地路径收尾
-        if (info.time.archived) {
-          if (!this.closingChatSessions.has(info.id)) {
-            this.closeTab(`chat:${info.id}`, { archive: false })
-          }
-        }
-        // 实时补开（§17 修订，2026-09-02）：当前作用域未归档顶层会话无 Tab 即
-        // 末尾追加（不激活不抢焦点）。created = 他端/本端新建（含 fork：复制期间
-        // 消息经 message.* 流入，激活等 REST 响应权威收敛——标题关联已废弃，
-        // design-session-tab-context-menu 修订四）；updated = 他端取消归档（契约
-        // archived:0，实测 1.18.20，null 不生效）及 touch/重命名等（有 Tab 时
-        // 幂等跳过）。口径同 visibleSessions：subagent 子会话不开；非当前作用域
-        // 目录不开（经 §17 切入补开）。SSE 丢失的补偿路径不变
-        else if (!info.parentID && info.directory === this.scopeDirectory()) {
-          this.openChatTabPassive(info)
-        }
+        this.applySessionEvent(info, directory)
         break
       }
       case "session.deleted": {
@@ -1280,16 +1578,15 @@ export class AppStore {
         this.dropPendingForSession(info.id)
         break
       }
-      // ---- 待处理人机交互（v1/v2 事件 + permission.updated 兼容兜底，同移动端）----
+      // ---- 待处理人机交互（M6a：v2 事件族——permission.* 同名保留、
+      // question → form.created/replied/cancelled；properties 形态见移动端基线实测）----
       case "permission.asked":
-      case "permission.v2.asked":
       case "permission.updated": {
         const p = normalizePermission(ev.properties, directory)
         if (p) this.pendingPermissions.set(p.sessionID, p)
         break
       }
-      case "permission.replied":
-      case "permission.v2.replied": {
+      case "permission.replied": {
         // spec：id 在 requestID 字段（additionalProperties:false，无 permissionID）
         const pid = String((ev.properties as { requestID?: unknown }).requestID ?? "")
         for (const [sid, p] of [...this.pendingPermissions]) {
@@ -1297,26 +1594,49 @@ export class AppStore {
         }
         break
       }
-      case "question.asked":
-      case "question.v2.asked": {
-        const q = normalizeQuestion(ev.properties, directory)
+      case "form.created": {
+        const q = normalizeForm(ev.properties, directory)
         if (q) this.pendingQuestions.set(q.id, q)
         break
       }
-      case "question.replied":
-      case "question.v2.replied":
-      case "question.rejected":
-      case "question.v2.rejected": {
-        this.pendingQuestions.delete(String((ev.properties as { requestID?: unknown }).requestID ?? ""))
+      case "form.replied":
+      case "form.cancelled": {
+        this.pendingQuestions.delete(String((ev.properties as { id?: unknown }).id ?? ""))
         break
       }
-      case "todo.updated": {
-        // 全量替换（design-task-list）：防御式归一化后整表 set；空表 = server 侧清空。
-        // 非数组 todos = 畸形载荷（openapi 必填），忽略保留本地——与 REST 失败路径
-        // 的「失败不清」对称（review 2026-08-28 #2），显式 [] 才是权威清空
-        const { sessionID, todos } = ev.properties as { sessionID?: string; todos?: unknown }
-        if (!sessionID || !Array.isArray(todos)) return
-        this.sessionTodos.set(sessionID, normalizeTodoList(todos))
+      // ---- v2 inbox：user 消息准入（M6c 接入，取代 v1 message.updated 的 user 分支）----
+      case "session.inbox.enqueued": {
+        const { sessionID, inboxID, item } = ev.properties as {
+          sessionID?: string
+          inboxID?: string
+          item?: { type?: string }
+        }
+        if (!sessionID || !inboxID) break
+        // inbox 含 user/synthetic/compaction/move 四类（移动端同过滤）——非 user
+        // 项不消费命令回显标记、不触发重取（auto-compaction 入队在长命令执行期
+        // 并不罕见，误消费标记会让回滚到回显消息时回填展开文本草稿）
+        if (item?.type != null && item.type !== "user") break
+        // 命令回显转记（design-message-revert §3.3）：sendCommand 在途标记消费，
+        // 回滚到该消息时不回填草稿（展开文本非用户原文）。inboxID 与消息条目
+        // 同 id 空间（^msg_，活体 + spec 双证）
+        if (this.commandEchoPending.delete(sessionID)) {
+          const ids = this.commandEchoMessages.get(sessionID)
+          if (ids) ids.add(inboxID)
+          else this.commandEchoMessages.set(sessionID, new Set([inboxID]))
+        }
+        // 他端消息实时落地：已加载的会话补一次首页重取（幂等合并；本端 prompt
+        // 的 enqueued 重取无害——回执驱动路径已覆盖）。未加载会话等打开时拉取
+        if (this.messagesBySession.has(sessionID)) void this.refreshConversationTail(sessionID)
+        break
+      }
+      case "session.inbox.delivered": {
+        // 投递/投影落地（M6c 评审 Y3 闭环）：busy 排队的补充消息在 enqueue 时
+        // 未投影（重取扑空、乐观保留），delivered 时已投影——再取一次清掉
+        // 悬挂乐观（否则双气泡并存到下一条 user 才自愈）
+        const { sessionID } = ev.properties as { sessionID?: string }
+        if (sessionID && this.messagesBySession.has(sessionID)) {
+          void this.refreshConversationTail(sessionID)
+        }
         break
       }
       case "session.status": {
@@ -1339,6 +1659,8 @@ export class AppStore {
         break
       }
       case "message.updated": {
+        // v2（M6c）：仅翻译层合成的 assistant 骨架走此路径（applyV2StreamEvent
+        // step.started）；v1 的 user 消息分支已由 session.inbox.enqueued 接管
         const { sessionID, info } = ev.properties as { sessionID: string; info: Message }
         this.ensureConversation(sessionID)
         const m = this.messagesBySession.get(sessionID)
@@ -1353,26 +1675,8 @@ export class AppStore {
             m.set(info.id, { info, parts: pending })
           }
         }
-        if (info.role === "user") {
-          // 斜杠命令回显标记（design-message-revert §3.3 修订）：sendCommand 发出后到达的
-          // 首条真实 user 消息 = 命令回显，记 id 供回滚跳过草稿回填（展开文本非用户原文）。
-          // 与乐观清除同一触发点、同一不精确界（他端并发消息会被误标，仅丢回填，无害）
-          if (this.commandEchoPending.delete(sessionID)) {
-            const ids = this.commandEchoMessages.get(sessionID)
-            if (ids) ids.add(info.id)
-            else this.commandEchoMessages.set(sessionID, new Set([info.id]))
-          }
-          this.clearOptimistic(sessionID)
-        }
         // busy/retry 不再从 message.completed 推断（中间步骤 tool-calls 完成会造成
         // dots 闪烁）：状态由 session.status/session.idle 事件权威驱动（design-typing-indicator §4）
-        break
-      }
-      case "message.removed": {
-        const { sessionID, messageID } = ev.properties as { sessionID: string; messageID: string }
-        this.messagesBySession.get(sessionID)?.delete(messageID)
-        this.commandEchoMessages.get(sessionID)?.delete(messageID)
-        this.syntheticDroppedBySession.get(sessionID)?.delete(messageID)
         break
       }
       case "message.part.updated": {
@@ -1434,32 +1738,6 @@ export class AppStore {
         }
         break
       }
-      case "message.part.removed": {
-        const { sessionID, messageID, partID } = ev.properties as {
-          sessionID: string
-          messageID: string
-          partID: string
-        }
-        const msg = this.messagesBySession.get(sessionID)?.get(messageID)
-        if (msg) {
-          msg.parts = msg.parts.filter((p) => p.id !== partID)
-        }
-        const pending = this.pendingParts(sessionID).get(messageID)
-        if (pending) {
-          this.pendingParts(sessionID).set(
-            messageID,
-            pending.filter((p) => p.id !== partID),
-          )
-        }
-        break
-      }
-      case "catalog.updated":
-      case "mcp.tools.changed": {
-        // 服务端命令/skill 目录或 MCP 工具变化 → 重拉注册表（不必等下次输入 `/`）。
-        // 事件在每条订阅流上都广播，多目录订阅会连发——去抖合并为一次刷新。
-        this.scheduleCatalogRefresh()
-        break
-      }
       case "session.next.agent.switched": {
         // 跨客户端 agent 切换（本端切换已有乐观写，此事件幂等；TUI/CLI 切换靠这里补丁）
         const { sessionID, agent } = ev.properties as { sessionID: string; agent: string }
@@ -1472,6 +1750,10 @@ export class AppStore {
         break
       }
       case "file.watcher.updated": {
+        // **v2 已知缺口（M6c 盘点）**：2.0.18 事件全集无 file.watcher.updated、
+        // 亦无 watch 端点——本 case 自 M3 起静默失效（文件 Tab/树不自动刷新，
+        // 重开/切作用域触发重拉兜底）。链路保留：上游恢复该事件即自动接通；
+        // spec-v0.5 修订时按功能降级记录（M6d）
         const { file, event } = ev.properties
         if (typeof file === "string" && typeof event === "string") {
           this.onFileWatcherEvent(directory, file, event)
@@ -1485,7 +1767,6 @@ export class AppStore {
     this.emit()
   }
 
-  private catalogRefreshTimer: ReturnType<typeof setTimeout> | null = null
 
   /**
    * worktree 删除检测定时器（design-worktree-sync §2）：删除无 SSE 事件，靠周期
@@ -1509,96 +1790,12 @@ export class AppStore {
     }
   }
 
-  private scheduleCatalogRefresh() {
-    if (this.catalogRefreshTimer != null) return
-    this.catalogRefreshTimer = setTimeout(() => {
-      this.catalogRefreshTimer = null
-      const dir = this.activeChatDirectory()
-      // 无激活 chat Tab 时跳过（无"当前所见"目录），下次输入 `/` 会触发
-      if (dir) void this.refreshCommands(dir)
-    }, 1500)
-  }
-
   /** 激活 chat Tab 的 directory（命令刷新的"当前所见"目录） */
   private activeChatDirectory(): string | null {
     const tab = this.activeTab
     return tab?.kind === "chat" ? (tab.directory ?? null) : null
   }
 
-  // ============ worktree.ready 后 skill 重新发现（实例缓存冻结防御） ============
-
-  /** 等待 server.instance.disposed 的挂起回调（键 = 目录），handleEvent 顶部兑现 */
-  private instanceDisposedWaiters = new Map<string, Set<() => void>>()
-
-  /**
-   * worktree.ready 后强制 server 重新发现该目录的 skill/命令注册表。
-   *
-   * 背景：server 的 skill 状态是实例级 ScopedCache——首次访问扫盘后冻结，
-   * 无任何失效钩子；worktree 创建是 `git worktree add --no-checkout` + 后台
-   * `git reset --hard` 两段式，ready 前任何触发首次 skill 发现的 instance 请求
-   * 都可能扫到空目录并把空结果冻结到 server 进程重启。ready 时点 reset 已完成
-   * （事件在 checkout 之后才发），本端创建场景无会话；多客户端下他端收到同一
-   * ready 后可能已开跑会话——dispose 会取消其运行中会话/重启 LSP/MCP，故先查
-   * 已知活跃会话（hasActiveSessionIn）。守卫是 best-effort 单次快照：他端新建
-   * 会话尚未经 SSE 同步到本端、以及本端 prompt 已发出但 busy 状态事件先于
-   * ready 到达被观察之前的在途窗口，同样不被覆盖（如 createWorkspace 自动切
-   * 作用域后立即发送的场景）——有则放弃（冻结自愈推迟，活跃会话本身不依赖
-   * skill 重新发现）。
-   *
-   * 流程：POST /instance/dispose → 等 SSE server.instance.disposed（teardown
-   * 在响应后异步执行，立即重拉会命中待销毁实例拿到冻结的旧缓存）→ 重拉命令
-   * 注册表。重拉仅当该目录是当前 chat 目录——"当前所见"口径同
-   * scheduleCatalogRefresh，避免他端/他项目 ready 抢占单槽命令缓存；其余场景
-   * 服务端已修好，用户输入 `/` 惰性拉取时自然是新实例。端点缺失（404）/SSE
-   * 丢帧（10s 超时兜底）均静默放弃，不阻塞 ready 主流程。
-   */
-  private async reDiscoverInstanceCatalog(directory: string) {
-    const client = this.client
-    if (!client) return
-    if (this.hasActiveSessionIn(directory)) return
-    try {
-      await client.disposeInstance(directory)
-    } catch {
-      return
-    }
-    if (this.client !== client) return
-    await this.waitInstanceDisposed(directory, 10_000)
-    if (this.client !== client) return
-    if (this.activeChatDirectory() === directory) void this.refreshCommands(directory)
-  }
-
-  /** 该目录是否存在已知活跃（busy/retry）会话（sessionStatus 由 SSE/状态快照驱动） */
-  private hasActiveSessionIn(directory: string): boolean {
-    for (const sessionID of this.sessionStatus.keys()) {
-      if (this.findSession(sessionID)?.directory === directory) return true
-    }
-    return false
-  }
-
-  /** 等待某目录的 server.instance.disposed（超时兜底：SSE 丢帧不永久阻塞） */
-  private waitInstanceDisposed(directory: string, timeoutMs: number): Promise<void> {
-    return new Promise((resolve) => {
-      let settled = false
-      const done = () => {
-        if (settled) return
-        settled = true
-        clearTimeout(timer)
-        const set = this.instanceDisposedWaiters.get(directory)
-        if (set) {
-          set.delete(done)
-          if (set.size === 0) this.instanceDisposedWaiters.delete(directory)
-        }
-        resolve()
-      }
-      const timer = setTimeout(done, timeoutMs)
-      let set = this.instanceDisposedWaiters.get(directory)
-      if (!set) {
-        set = new Set()
-        this.instanceDisposedWaiters.set(directory, set)
-      }
-      set.add(done)
-    })
-  }
 
   private pendingPartsMap = new Map<string, Map<string, Part[]>>()
 
@@ -1644,6 +1841,80 @@ export class AppStore {
     this.messagesBySession.set(sessionID, new Map())
   }
 
+  /**
+   * POST /prompt 200 后的消息首页重取（回执驱动）：拾取投影 user 消息并清除
+   * 对应乐观项（v2 无 message.updated user 事件，SSE 只推 assistant 侧流式）。
+   * 容错：重取失败保留乐观（下次对账/翻页收敛）；精确清除按 localId 唯一
+   * 匹配（同毫秒并发的 createdAt 不可区分，评审 2026-09-28）。
+   */
+  private async refreshMessagesAfterPrompt(sessionID: string, optimisticLocalId: string, optimisticCreatedAt: number) {
+    const client = this.client
+    const session = this.findSession(sessionID)
+    if (!client || !session) return
+    const page = await client.listMessagesPage(sessionID, { limit: 20 }).catch(() => null)
+    if (this.client !== client || !page) return
+    this.mergeMessagePage(sessionID, page.entries)
+    // 投影 user 消息到达（created >= 乐观创建时刻）→ **精确**清除该条乐观
+    // （评审 2026-09-28：全清会在 busy 补充发送（design-supplement-send）下误清
+    // 并发在途的未确认乐观——第二条 prompt 的投影写入有延迟窗口，重取只证明
+    // 自己那条落地；按 localId 唯一匹配删一条，createdAt 仅作落地判定）
+    const projected = page.entries.some(
+      (m) => m.info.role === "user" && m.info.time.created >= optimisticCreatedAt,
+    )
+    if (projected) this.clearOptimisticAt(sessionID, optimisticLocalId)
+    this.emit()
+  }
+
+  /** 按 localId 精确清除单条乐观（回执驱动路径）；无匹配不动作 */
+  private clearOptimisticAt(sessionID: string, localId: string) {
+    const list = this.optimisticBySession.get(sessionID)
+    if (!list) return
+    const next = list.filter((o) => o.localId !== localId)
+    if (next.length === list.length) return
+    if (next.length === 0) this.optimisticBySession.delete(sessionID)
+    else this.optimisticBySession.set(sessionID, next)
+  }
+
+  // ---- inbox.enqueued 驱动的尾部重取（M6c：他端 user 消息实时落地）----
+  private conversationTailInflight = new Set<string>()
+  private conversationTailDirty = new Set<string>()
+
+  /**
+   * 首页重取合并进已加载会话（v2 无 message.updated user 事件——本端 prompt 走
+   * 回执驱动（refreshMessagesAfterPrompt），他端/命令的 user 消息靠
+   * session.inbox.enqueued 触发这里）。in-flight 去抖：在途时同会话连发只记
+   * dirty，完成后补一拉（防他端刷屏的请求风暴）。
+   * 重取发现**新增** user 消息 → 清除该会话全部乐观（v1 message.updated user
+   * 分支的对称语义：首条真实到达清全部，移动端同判——回执驱动的精确清除
+   * 优先生效，这里只是 SSE 兜底路径）。
+   */
+  private async refreshConversationTail(sessionID: string) {
+    if (this.conversationTailInflight.has(sessionID)) {
+      this.conversationTailDirty.add(sessionID)
+      return
+    }
+    const client = this.client
+    if (!client) return
+    this.conversationTailInflight.add(sessionID)
+    try {
+      const page = await client.listMessagesPage(sessionID, { limit: 20 }).catch(() => null)
+      if (this.client === client && page) {
+        const knownUsers = new Set(
+          [...(this.messagesBySession.get(sessionID)?.values() ?? [])]
+            .filter((m) => m.info.role === "user")
+            .map((m) => m.info.id),
+        )
+        const hasNewUser = page.entries.some((m) => m.info.role === "user" && !knownUsers.has(m.info.id))
+        this.mergeMessagePage(sessionID, page.entries)
+        if (hasNewUser) this.clearOptimistic(sessionID)
+        this.emit()
+      }
+    } finally {
+      this.conversationTailInflight.delete(sessionID)
+      if (this.conversationTailDirty.delete(sessionID)) void this.refreshConversationTail(sessionID)
+    }
+  }
+
   private clearOptimistic(sessionID: string) {
     if (this.optimisticBySession.has(sessionID)) {
       this.optimisticBySession.delete(sessionID)
@@ -1676,38 +1947,6 @@ export class AppStore {
     }
   }
 
-  /**
-   * REST 状态快照按目录覆盖合并（冷启动/重连对账/项目打开）。
-   * 失败目录（null）保留旧值——严禁 clear()+addAll()（SS-1 回归）。
-   * retry 保持（design-error-message §3.6）双向维护：
-   * - 已持有时快照撞上在途尝试报 busy（server 内存态即 busy）→ 改写为本地 retry
-   *   再合并——直接丢弃会触发 merge 的 covered⇒idle 分支误清退避状态；
-   * - 未持有时快照报 retry（重连对账落在退避窗口内）→ **补建锁存**，否则下一轮
-   *   尝试起点的 busy 事件会覆写造成一次绿闪（SSE 路径 retry 事件建锁存，快照
-   *   路径此前缺这一半）；
-   * - 已非 retry（idle/缺席）的会话解除。
-   */
-  private applyStatusSnapshot(directory: string, fresh: Record<string, SessionStatusValue> | null) {
-    if (!fresh) return
-    const filtered: Record<string, SessionStatusValue> = {}
-    for (const [sid, st] of Object.entries(fresh)) {
-      filtered[sid] =
-        st?.type === "busy" && this.retryHold.has(sid)
-          ? (this.sessionStatus.get(sid) ?? st)
-          : st
-    }
-    const merged = mergeStatusSnapshot(this.sessionStatus, this.statusSources, directory, filtered)
-    this.sessionStatus = merged.status
-    this.statusSources = merged.sources
-    // 锁存生命周期跟随合并结果（对齐最终态，与来源无关）
-    for (const sid of this.retryHold) {
-      if (merged.status.get(sid)?.type !== "retry") this.retryHold.delete(sid)
-    }
-    for (const [sid, st] of merged.status) {
-      if (st.type === "retry") this.retryHold.add(sid)
-    }
-  }
-
   /** 卸载目录级状态（关项目/删工作区：该目录来源的状态随会话状态一并卸载） */
   private purgeStatusForDirectories(dirs: string[]) {
     const set = new Set(dirs)
@@ -1720,121 +1959,55 @@ export class AppStore {
     }
   }
 
-  /** 目录是否仍属于某个打开项目（root 或其 worktree/global 目录）——在途状态快照的闸门 */
+  /** 目录是否仍属于某个打开项目（root 或其 worktree）——在途状态快照的闸门 */
   private isOpenedDirectory(dir: string): boolean {
-    return this.openedProjects.some((p) => {
-      if (p.id === GLOBAL_PROJECT_ID) return this.openedGlobalDirectories.includes(dir)
-      return p.worktree === dir || (p.sandboxes ?? []).includes(dir)
-    })
+    return this.openedProjects.some(
+      (p) => p.worktree === dir || (p.sandboxes ?? []).includes(dir),
+    )
   }
 
   // ============ 项目/工作区 ============
 
-  get globalProject(): Project | null {
-    return this.projects.find((p) => p.id === GLOBAL_PROJECT_ID) ?? null
-  }
-
-  /** 已打开的 global 目录（entry 键解析；顺序 = opened 追加序） */
-  get openedGlobalDirectories(): string[] {
-    const ps = this.projectStates[this.profileKey()]
-    if (!ps) return []
-    return ps.opened.map(globalDirectoryOfKey).filter((d): d is string => d != null)
-  }
-
-  /** global 项目已知会话目录集（发现快照/事件累积的域） */
-  private globalKnownDirectories(): Set<string> {
-    const set = new Set<string>()
-    for (const s of this.sessionsByProject.get(GLOBAL_PROJECT_ID)?.values() ?? []) {
-      if (s.directory) set.add(s.directory)
-    }
-    return set
-  }
-
   /**
-   * global 目录行（含零会话的已打开目录，updated=0 兜底——否则全部归档后
-   * 该行消失、无法导航/关闭）。排序 = 会话活跃度降序。
-   */
-  private globalDirectoryRowsAll(): GlobalDirectoryRow[] {
-    const rows = globalDirectoryRows([
-      ...(this.sessionsByProject.get(GLOBAL_PROJECT_ID)?.values() ?? []),
-    ])
-    const byDir = new Map(rows.map((r) => [r.directory, r]))
-    for (const dir of this.openedGlobalDirectories) {
-      if (!byDir.has(dir)) {
-        const row = { directory: dir, name: globalDirectoryName(dir), updated: 0 }
-        rows.push(row)
-        byDir.set(dir, row)
-      }
-    }
-    return rows.sort((a, b) => b.updated - a.updated)
-  }
-
-  /** global 目录候选（选择器数据源：全部已知目录，含已打开——由调用方过滤） */
-  globalDirectoryRows(): GlobalDirectoryRow[] {
-    return this.globalDirectoryRowsAll()
-  }
-
-  /**
-   * 左栏「项目行」（entry）：普通项目 1 行；global 按目录拆 N 行。
-   * 左栏/选择器唯一数据源——不直接消费 openedProjects。
+   * 左栏「项目行」（entry）：每项目 1 行（含 v2 伪项目行——非 git 目录，用户
+   * 裁定 A）。左栏/选择器唯一数据源——不直接消费 openedProjects。
    * 行序 = `ProjectState.opened` 打开序（2026-08-29 修订，原 server projects
-   * 快照序 = 创建序弃用）：新开 entry 追加末位（openProject/openGlobalDirectory
-   * push 语义），关闭移除键、重开落末位，拖拽重排整体覆盖该数组（applyEntryOrder）。
-   * 无法解析的键（项目快照未落地）跳过不占位。
+   * 快照序 = 创建序弃用）：新开 entry 追加末位（openProject push 语义），关闭
+   * 移除键、重开落末位，拖拽重排整体覆盖该数组（applyEntryOrder）。
+   * 无法解析的键（项目快照未落地/迁移后无项目行）跳过不占位。
    */
   get openedEntries(): ProjectEntry[] {
     const ps = this.projectStates[this.profileKey()]
     if (!ps) return []
     const out: ProjectEntry[] = []
-    const gp = this.globalProject
-    const rowsByDir = new Map(this.globalDirectoryRowsAll().map((r) => [r.directory, r]))
     for (const key of ps.opened) {
-      const dir = globalDirectoryOfKey(key)
-      if (dir != null) {
-        const row = rowsByDir.get(dir)
-        if (!gp || !row) continue
-        out.push({
-          key,
-          project: gp,
-          directory: row.directory,
-          name: row.name,
-          isGlobal: true,
-        })
-      } else {
-        const p = this.projects.find((x) => x.id === key)
-        if (!p || p.id === GLOBAL_PROJECT_ID) continue
-        out.push({
-          key: p.id,
-          project: p,
-          directory: p.worktree,
-          name: p.name || p.worktree.split("/").pop() || p.id,
-          isGlobal: false,
-        })
-      }
+      const p = this.projects.find((x) => x.id === key)
+      if (!p) continue
+      out.push({
+        key: p.id,
+        project: p,
+        directory: p.worktree,
+        name: p.name || p.worktree.split("/").pop() || p.id,
+      })
     }
     return out
   }
 
   /**
-   * entry 行是否为当前激活作用域——selectEntry 跳过条件与行高亮共用。
-   * 普通项目 = 当前项目**且主工作区态**（worktree 态点击项目行 = 回主工作区，
-   * 不得跳过）；global = 目录匹配。
+   * entry 行是否为当前激活作用域——selectEntry 跳过条件与行高亮共用：
+   * 当前项目**且主工作区态**（worktree 态点击项目行 = 回主工作区，不得跳过）。
    */
   isEntryActive(key: string): boolean {
     const p = this.currentProject
     if (!p) return false
-    if (p.id !== GLOBAL_PROJECT_ID) return key === p.id && this.currentWorkspace == null
-    const dir = globalDirectoryOfKey(key)
-    return dir != null && (this.currentWorkspace?.directory ?? p.worktree) === dir
+    return key === p.id && this.currentWorkspace == null
   }
 
   get openedProjects(): Project[] {
     const ps = this.projectStates[this.profileKey()]
     if (!ps) return []
     const ids = new Set(ps.opened)
-    // global 不再有整项目键——只要有任一目录 entry 打开即视为打开项目
-    const hasGlobal = this.openedGlobalDirectories.length > 0
-    return this.projects.filter((p) => ids.has(p.id) || (p.id === GLOBAL_PROJECT_ID && hasGlobal))
+    return this.projects.filter((p) => ids.has(p.id))
   }
 
   get currentProject(): Project | null {
@@ -1849,12 +2022,6 @@ export class AppStore {
     const p = this.projects.find((x) => x.id === ps.currentProjectId)
     const dir = ps.currentWorkspaceId
     if (!p) return null
-    if (p.id === GLOBAL_PROJECT_ID) {
-      // global：currentWorkspaceId = 当前 global 目录（entry 模型复用该字段）；
-      // 仅认可已打开 entry 的目录（防陈旧持久化值复活已关目录）
-      if (!this.openedGlobalDirectories.includes(dir)) return null
-      return { name: globalDirectoryName(dir), directory: dir }
-    }
     if (!p.sandboxes?.includes(dir)) return null
     return { name: dir.split("/").pop() ?? dir, directory: dir }
   }
@@ -1868,14 +2035,10 @@ export class AppStore {
     return { directory: this.currentWorkspace?.directory ?? this.currentProject?.worktree ?? "" }
   }
 
-  /** 当前作用域显示名（引导页 hero 等）：global = 目录末段（根目录显示 "global"） */
+  /** 当前作用域显示名（引导页 hero 等） */
   get scopeDisplayName(): string {
     const p = this.currentProject
     if (!p) return ""
-    if (p.id === GLOBAL_PROJECT_ID) {
-      const dir = this.currentWorkspace?.directory ?? p.worktree
-      return dir ? globalDirectoryName(dir) : GLOBAL_PROJECT_ID
-    }
     return this.currentWorkspace?.name ?? p.name ?? p.worktree.split("/").pop() ?? ""
   }
 
@@ -1953,20 +2116,16 @@ export class AppStore {
     this.restoreScopeTabs(expectedDir, true)
   }
 
-  /** 打开左栏 entry（普通项目 id 或 `global\0<directory>`）并切换作用域 */
+  /** 打开左栏 entry（项目 id）并切换作用域 */
   async openEntry(key: string) {
     this.cancelScopePreview() // 作用域操作介入：作废 Alt 预览（§3 修订）
-    const dir = globalDirectoryOfKey(key)
-    if (dir == null) return this.openProject(key)
-    return this.openGlobalDirectory(dir)
+    return this.openProject(key)
   }
 
-  /** 关闭左栏 entry（global 目录 = 关闭该目录作用域；普通项目走 closeProject） */
+  /** 关闭左栏 entry（走 closeProject） */
   async closeEntry(key: string) {
     this.cancelScopePreview() // 同 openEntry
-    const dir = globalDirectoryOfKey(key)
-    if (dir == null) return this.closeProject(key)
-    return this.closeGlobalDirectory(dir)
+    return this.closeProject(key)
   }
 
   /**
@@ -2006,199 +2165,54 @@ export class AppStore {
    * 打开/切入 global 目录 entry：目录 = 根（`/`）时按"项目根"语义（workspace
    * 置 null，作用域经 worktree 兜底到 `/`），与普通项目主工作区行一致。
    */
-  private async openGlobalDirectory(directory: string) {
-    const epoch = ++this.switchEpoch
-    const key = globalEntryKey(directory)
-    const ps = this.projectStateFor()
-    if (!ps.opened.includes(key)) ps.opened.push(key)
-    ps.currentProjectId = GLOBAL_PROJECT_ID
-    const rootDir = this.globalProject?.worktree ?? "/"
-    ps.currentWorkspaceId = directory === rootDir ? null : directory
-    // 先切换后加载（同 openProject，7c43827）：同步段立即登记 + 渲染，
-    // 快照与 Tab 恢复转后台——切换跟手（latest-wins 见 switchEpoch）
-    this.projectStates[this.profileKey()] = ps
-    const expectedDir = this.scopeDirectory()
-    this.resetFileTree()
-    this.restoreScopeTabs(expectedDir, true, true)
-    this.emit()
-    await this.persistProjectState()
-    if (epoch !== this.switchEpoch) return
-    await this.refreshAllOpenedProjects()
-    if (epoch !== this.switchEpoch) return
-    if (this.scopeDirectory() !== expectedDir) return
-    this.restoreScopeTabs(expectedDir, true)
-    void this.backfillPending()
-  }
-
   /**
    * 新建项目（design-new-project）：系统目录选择器选中的文件夹 → `GET
-   * /project/current?directory=` 让 server 注册/解析（Project.fromDirectory upsert：
-   * git 仓库 → 独立项目；非 git → 归入 global），刷新项目全集后**直接打开**——
-   * git 项目走 openProject（独立项目行）；非 git 走 openGlobalDirectory（global
-   * 目录 entry，不动文件系统，D1）。失败向上抛（选择器内联呈现，弹窗不关可重试）。
-   * 重复创建幂等（server upsert + opened 已含 key 仅切换）。
+   * /api/location?location[directory]=` 让 server 解析（resolve → upsert：git
+   * 仓库 → 独立项目；非 git → 目录哈希伪项目行，用户裁定 A——统一走普通项目
+   * 行），刷新项目全集后**直接打开**。失败向上抛（选择器内联呈现，弹窗不关可
+   * 重试）。重复创建幂等（server upsert + opened 已含 key 仅切换）。
    * signal：选择器弹窗被关闭（Escape/遮罩）时中止——各 await 之间检查，中止后
    * 不再打开（静默返回，弹窗已卸载无错误呈现方）。
    */
   async createProjectFromDirectory(directory: string, signal?: AbortSignal): Promise<void> {
     const client = this.client
     if (!client) throw new Error("未连接服务器")
-    const project = await client.resolveProject(directory)
+    // v2：GET /api/location?location[directory]= 让 server 解析（resolve → upsert：
+    // git 仓库 → 独立项目；非 git → 目录哈希伪项目行，用户裁定 A——统一走普通
+    // 项目行，v1 的 global 分支退役）
+    const location = await client.resolveLocation(directory)
     if (signal?.aborted) return
     // 在途闸门：注册期间可能已断连/切 profile——不打开过期解析结果（抛错让选择器呈现，不静默）
     if (this.client !== client) throw new Error("连接已断开，请重试")
     // 失败必须上抛：projects 仍是旧列表（不含新项目）时继续打开会落进
     // "opened 指向不存在项目"的不一致态（currentProject 为 null、左栏无行，
     // 要等 60s syncWorktrees 才自愈）——评审 2026-08-30 R1
-    const fresh = await client.listProjects()
+    const fresh = (await client.listProjects()).map(toInternalProject)
     if (signal?.aborted) return
     // projects 是左栏/打开流数据源，必须先含新项目再 openProject
     this.projects = fresh
+    // 库存合并重放（listProjects 重映射丢失既有合并——见 mergeWorktreeDirsIntoProjects）
+    this.mergeWorktreeDirsIntoProjects()
     this.emit()
-    if (project.id === GLOBAL_PROJECT_ID) return this.openGlobalDirectory(directory)
-    return this.openProject(project.id)
+    return this.openProject(location.project.id)
   }
 
-  /** 关闭单个 global 目录 entry（其余 global 目录不受影响） */
-  private async closeGlobalDirectory(directory: string) {
-    const key = globalEntryKey(directory)
-    const rootDir = this.globalProject?.worktree ?? "/"
-    const ps = this.projectStateFor()
-    ps.opened = ps.opened.filter((k) => k !== key)
-    // 当前作用域在该目录 → 回退：其余已打开 global 目录中最活跃的，否则最近活跃普通项目
-    const wasCurrent =
-      ps.currentProjectId === GLOBAL_PROJECT_ID &&
-      (ps.currentWorkspaceId ?? rootDir) === directory
-    if (wasCurrent) {
-      const rest = this.globalDirectoryRowsAll().filter(
-        (r) => r.directory !== directory && this.openedGlobalDirectories.includes(r.directory),
-      )
-      if (rest[0]) {
-        ps.currentWorkspaceId = rest[0].directory === rootDir ? null : rest[0].directory
-      } else {
-        const remaining = this.projects
-          .filter((p) => ps.opened.includes(p.id) && p.id !== GLOBAL_PROJECT_ID)
-          .sort((a, b) => b.time.updated - a.time.updated)
-        ps.currentProjectId = remaining[0]?.id ?? null
-        ps.currentWorkspaceId = null
-      }
-    }
-    // 卸载该目录的会话域（关闭 = 不展示 + 不更新；重开时 REST 快照重建）
-    const map = this.sessionsByProject.get(GLOBAL_PROJECT_ID)
-    if (map) {
-      for (const [id, s] of map) {
-        if (s.directory === directory) map.delete(id)
-      }
-    }
-    this.purgeStatusForDirectories([directory])
-    // 目录卸载随清引导页草稿（目录失去订阅/展示，草稿同灭，design-compose-draft §3）
-    this.guideDrafts.delete(directory)
-    this.scheduleDraftPersist()
-    this.fileRefs.delete(directory)
-    this.attachments.delete(directory)
-    this.killPtyInDirectory(directory)
-    this.disposeBrowserViewsInDirectory(directory)
-    // 该目录的 file/diff Tab 与 global 会话的 chat Tab 随之关闭（仅关 Tab，不归档——
-    // 归档只发生在显式关闭 Tab；file Tab 作用域化后随目录卸载，2026-08-25 §18）。
-    // 双行目录（git 项目 + global 会话共存）下按
-    // projectId 过滤：git 项目的 Tab 归 closeProject 管，不随 global entry 关闭
-    for (const tab of [...this.tabs]) {
-      if (
-        (tab.kind === "diff" || tab.kind === "file" || tab.kind === "terminal" || tab.kind === "browser") &&
-        tab.directory === directory &&
-        tab.projectId === GLOBAL_PROJECT_ID
-      ) {
-        this.closeTab(tab.key)
-        continue
-      }
-      if (
-        tab.kind === "chat" &&
-        tab.directory === directory &&
-        tab.projectId === GLOBAL_PROJECT_ID
-      ) {
-        this.closeTab(tab.key)
-        this.cleanupSessionState(tab.key.slice(5))
-      }
-    }
-    // 最后激活记录随目录卸载（须在关 Tab 之后——关激活 Tab 的回退钩子会
-    // recordScopeActive 重建条目，先删会被写回 null 哨兵，重开误落引导页）
-    this.scopeActiveKeys.delete(directory)
-    // 该目录 Tab 记忆清除（须在关 Tab 之后——closeTab 的记忆同步会重建条目）。
-    // 仅删 global 侧记忆：双行目录的记忆经 findProjectOwningDirectory 归属
-    // git 项目（projectId ≠ global），关 global entry 不得误删
-    const memKey = this.profileKey()
-    if (this.tabMemory[memKey]?.[directory]?.projectId === GLOBAL_PROJECT_ID) {
-      delete this.tabMemory[memKey][directory]
-      void window.desktop.storeSet("tabs.memory", this.tabMemory).catch(() => {})
-    }
-    // 最近访问切片修剪（§1.5 review）：同 tabs.memory——双行目录 git 侧仍打开则保留
-    this.forgetBrowserRecents([directory])
-    // 会话层整体派生（design-tab-session-restore §5，同 closeProject：循环/删除之后修剪）
-    this.persistTabSession()
-    await this.persistProjectState()
-    await this.switchProjectContext()
-    this.emit()
-  }
 
-  /**
-   * global 全量发现快照（`GET /session?scope=project&directory=<worktree>`）：
-   * 一次返回 global 项目全部目录的未归档会话。连接时与项目选择器打开时调用——
-   * 新目录的首个会话事件无从订阅（不在订阅集），只能靠此快照发现。
-   * 按 directory 分域全量合并（权威快照，不经 applySessionsSnapshot 逐目录
-   * 闸门——新目录必须能进 map）。关目录后迟到的发现快照可能复活其会话域：
-   * 该目录 entry 已关、UI 不展示，重开时 refreshSessionsForProject 重新拉取覆盖。
-   */
-  async refreshGlobalSessions() {
-    const client = this.client
-    const gp = this.globalProject
-    if (!client || !gp) return
-    const sessions = await client.listProjectSessions(gp.worktree).catch(() => null)
-    if (!sessions || this.client !== client) return
-    const filtered = sessions.filter((s) => s.projectID === GLOBAL_PROJECT_ID)
-    const byDir = new Map<string, Session[]>()
-    for (const s of filtered) {
-      if (!s.directory) continue
-      const list = byDir.get(s.directory) ?? []
-      list.push(s)
-      byDir.set(s.directory, list)
-    }
-    for (const [dir, list] of byDir) {
-      const local = this.sessionsByProject.get(GLOBAL_PROJECT_ID) ?? new Map<string, Session>()
-      this.sessionsByProject.set(GLOBAL_PROJECT_ID, mergeSessionsSnapshot(local, dir, list))
-      // 与 refreshSessionsForProject 同规则标记可信快照（Tab 恢复/死 Tab 收敛
-      // 的 snapshottedDirs 闸门依赖；否则 global 目录只经发现快照落地时，
-      // restoreScopeTabs 会误判"快照未落地"拒绝恢复/收敛）
-      this.snapshottedDirs.add(dir)
-    }
-    this.emit()
-  }
 
   async closeProject(projectId: string) {
     this.cancelScopePreview() // 作用域操作介入：作废 Alt 预览（§3 修订）
     const ps = this.projectStateFor()
     ps.opened = ps.opened.filter((id) => id !== projectId)
     if (ps.currentProjectId === projectId) {
-      // 回退候选 = 剩余打开普通项目 + 已打开 global 目录，按最近活跃统一排序
-      //（entry 模型下两类平权；与 closeGlobalDirectory 的回退对称——原实现只查
-      // project id，global entry 键永不匹配，会绕过仍在左栏的 global 行直接空态）
-      const rootDir = this.globalProject?.worktree ?? "/"
-      const candidates: Array<
-        { kind: "project"; id: string; updated: number } | { kind: "global"; directory: string; updated: number }
-      > = [
-        ...this.projects
-          .filter((p) => ps.opened.includes(p.id) && p.id !== GLOBAL_PROJECT_ID)
-          .map((p) => ({ kind: "project" as const, id: p.id, updated: p.time.updated })),
-        ...this.globalDirectoryRowsAll()
-          .filter((r) => this.openedGlobalDirectories.includes(r.directory))
-          .map((r) => ({ kind: "global" as const, directory: r.directory, updated: r.updated })),
-      ].sort((a, b) => b.updated - a.updated)
+      // 回退候选 = 剩余打开项目（含伪项目行），按最近活跃排序
+      const candidates = this.projects
+        .filter((p) => ps.opened.includes(p.id))
+        .map((p) => ({ id: p.id, updated: p.time.updated }))
+        .sort((a, b) => b.updated - a.updated)
       const top = candidates[0]
-      if (top?.kind === "project") {
+      if (top) {
         ps.currentProjectId = top.id
         ps.currentWorkspaceId = null
-      } else if (top) {
-        ps.currentProjectId = GLOBAL_PROJECT_ID
-        ps.currentWorkspaceId = top.directory === rootDir ? null : top.directory
       } else {
         ps.currentProjectId = null
         ps.currentWorkspaceId = null
@@ -2228,9 +2242,7 @@ export class AppStore {
       this.dropPendingForDirectories(dirs)
     }
     // 该项目的 chat/file/diff Tab 随之关闭（仅关 Tab，不归档——归档只发生在显式
-    // 关闭 Tab；file/diff 按 projectId 归属，否则成永久不可见的孤儿，2026-08-25 §18）。
-    // 双行目录下按 projectId 过滤：global entry 的 Tab 归 closeGlobalDirectory 管，
-    // 不随 git 项目关闭（与 chat 分支一致）
+    // 关闭 Tab；file/diff 按 projectId 归属，否则成永久不可见的孤儿，2026-08-25 §18）
     for (const tab of [...this.tabs]) {
       if (tab.kind === "file" || tab.kind === "diff" || tab.kind === "terminal" || tab.kind === "browser") {
         if (tab.projectId === projectId) this.closeTab(tab.key)
@@ -2240,7 +2252,7 @@ export class AppStore {
       if (tab.projectId === projectId) {
         this.closeTab(tab.key)
         this.cleanupSessionState(tab.key.slice(5))
-      } else if (project && tab.directory === project.worktree && tab.projectId !== GLOBAL_PROJECT_ID) {
+      } else if (project && tab.directory === project.worktree) {
         this.closeTab(tab.key)
         this.cleanupSessionState(tab.key.slice(5))
       }
@@ -2278,17 +2290,9 @@ export class AppStore {
     const project = this.currentProject
     if (!project) return
     // 幻影 directory 防御（同 openProject）：不在 sandboxes 内的目录视为主工作区，
-    // 防把幻影 currentWorkspaceId 持久化（currentWorkspace getter 会拒认、下次启动才自愈）。
-    // global：currentWorkspaceId = global 目录（entry 模型复用该字段），有效性 =
-    // 已打开 entry（v0.1 路径 openGlobalDirectory 直写不经此处，此分支防未来调用）
+    // 防把幻影 currentWorkspaceId 持久化（currentWorkspace getter 会拒认、下次启动才自愈）
     const valid =
-      project.id === GLOBAL_PROJECT_ID
-        ? directory != null && this.openedGlobalDirectories.includes(directory)
-          ? directory
-          : null
-        : directory != null && (project.sandboxes ?? []).includes(directory)
-          ? directory
-          : null
+      directory != null && (project.sandboxes ?? []).includes(directory) ? directory : null
     const ps = this.projectStateFor()
     if (ps.currentWorkspaceId === valid) return
     const epoch = ++this.switchEpoch
@@ -2334,18 +2338,16 @@ export class AppStore {
     void window.desktop.storeSet("tabs.memory", this.tabMemory).catch(() => {})
   }
 
-  /** 目录是否仍有**已打开** entry 认领（§1.5 修剪判定）：已打开普通项目的
-   *  worktree/sandboxes 覆盖，或已打开 global 目录 entry 同路径——双行目录
-   *  对侧仍开着时最近访问切片须保留（findProjectOwningDirectory 按服务端
-   *  存在性解析，关项目后仍命中，不适用关闭/卸载路径） */
+  /** 目录是否仍有**已打开** entry 认领（§1.5 修剪判定）：已打开项目的
+   *  worktree/sandboxes 覆盖时最近访问切片须保留（findProjectOwningDirectory
+   *  按服务端存在性解析，关项目后仍命中，不适用关闭/卸载路径） */
   private directoryClaimedByOpenedEntry(directory: string): boolean {
     const ps = this.projectStateFor()
     for (const id of ps.opened) {
-      if (id === GLOBAL_PROJECT_ID) continue
       const p = this.projects.find((x) => x.id === id)
       if (p && (p.worktree === directory || (p.sandboxes ?? []).includes(directory))) return true
     }
-    return this.openedGlobalDirectories.includes(directory)
+    return false
   }
 
   /**
@@ -2373,32 +2375,15 @@ export class AppStore {
 
   /**
    * 目录 → 所属项目（Tab 记忆归属 / restoreScopeTabs 会话集解析）。
-   * 普通（git）项目精确匹配优先，global 只兜底无人认领的目录——双行目录
-   * （先建会话后 init git，global 会话与 git 项目共存）解析到 git 项目：
-   * worktree/sandboxes 定义上拥有该目录，global 的散点会话不构成所有权。
-   * global 在 projects 数组首位，若不区分顺序直接 find，双行目录永远命中
-   * global——P 的作用域会恢复 global 会话的 Tab、记忆错标 projectId。
+   * v2 下项目行含伪项目（非 git 目录 = worktree 精确匹配）；git 项目经
+   * worktree/sandboxes 认领。未命中返回 null。
    */
-  private findProjectOwningDirectory(directory: string): Project | null {    const normal = this.projects.find(
-      (p) =>
-        p.id !== GLOBAL_PROJECT_ID &&
-        (p.worktree === directory || (p.sandboxes ?? []).includes(directory)),
+  private findProjectOwningDirectory(directory: string): Project | null {
+    return (
+      this.projects.find(
+        (p) => p.worktree === directory || (p.sandboxes ?? []).includes(directory),
+      ) ?? null
     )
-    if (normal) return normal
-    // global 兜底 = 已知会话目录 ∪ **已打开 entry 目录**（口径同 applySessionsSnapshot
-    // 的 global 闸门）：后者覆盖「未 git、零会话」的新目录——首个会话建立前
-    // globalKnownDirectories 不含它，漏掉会使 restoreScopeTabs 的 owner 闸门整段
-    // no-op，跨作用域激活清算不执行（旧项目 Tab 残留中栏、引导页不显示，
-    // 2026-09-09 修复）。sessionEntryOwned 的 openedGlobalDirectories 兜底随之幂等
-    const gp = this.globalProject
-    if (
-      gp &&
-      (this.globalKnownDirectories().has(directory) ||
-        this.openedGlobalDirectories.includes(directory))
-    ) {
-      return gp
-    }
-    return null
   }
 
   /** live tabs → 记忆派生落盘（§5 挂点：openChatTab/closeTab/setActiveTab） */
@@ -2493,12 +2478,10 @@ export class AppStore {
     }
   }
 
-  /** 模板条目的作用域归属闸门：findProjectOwningDirectory 解析（git 优先，global 兜底）；
-   *  global 无会话目录（仅 file/diff 等实体）以已打开 entry 认领 */
+  /** 模板条目的作用域归属闸门：findProjectOwningDirectory 解析（worktree/sandboxes 认领） */
   private sessionEntryOwned(e: PersistedTab): boolean {
     const owner = this.findProjectOwningDirectory(e.directory)
-    if (owner) return owner.id === e.projectId
-    return e.projectId === GLOBAL_PROJECT_ID && this.openedGlobalDirectories.includes(e.directory)
+    return owner != null && owner.id === e.projectId
   }
 
   /** 单条非 chat 实体重建（§3 kind 分流）。返回 false = 不可恢复（browser 不可用等），跳过 */
@@ -2764,8 +2747,6 @@ export class AppStore {
     // 引用同随会话卸载（design-file-reference §2 清理挂点）
     this.fileRefs.delete(sessionID)
     this.attachments.delete(sessionID)
-    // 任务列表同随会话卸载（design-task-list：纯展示，重开 Tab 由激活回填补齐）
-    this.sessionTodos.delete(sessionID)
     // 消息流滚动位置同随会话卸载（design-tab-state-memory §3）
     this.chatScrollTops.delete(sessionID)
   }
@@ -2781,11 +2762,10 @@ export class AppStore {
   }
 
   /**
-   * 拉取项目会话快照：global = 已打开目录逐个拉取（发现走 refreshGlobalSessions）；
-   * 普通项目 = 项目根 + 各 worktree 目录**逐目录**拉取（实测
+   * 拉取项目会话快照：项目根 + 各 worktree 目录**逐目录**拉取（实测
    * /session?directory=X 精确匹配，项目根快照不含 worktree 会话，切进工作区/
    * 左栏指示器都依赖 worktree 目录有自己的快照）；合并按 directory 分域。
-   * 同一批目录附带拉会话状态快照（GET /session/status，冷启动/项目打开路径；
+   * 状态快照端点已随 v2 退役（M3a：状态事件驱动 + finish 推断兜底；
    * 重连对账由 Reconciler 负责）。
    * 成功落地的目录记入 snapshottedDirs（applySessionsSnapshot 统一维护，含对账
    * 路径）——restoreScopeTabs 以此区分"真实空目录"（可写空记忆哨兵）与
@@ -2797,25 +2777,23 @@ export class AppStore {
   async refreshSessionsForProject(project: Project) {
     const client = this.client
     if (!client) return
-    const dirs =
-      project.id === GLOBAL_PROJECT_ID
-        ? [...new Set(this.openedGlobalDirectories)]
-        : [...new Set([project.worktree, ...(project.sandboxes ?? [])])]
+    const dirs = [...new Set([project.worktree, ...(project.sandboxes ?? [])])]
     await runLimited(dirs, 3, async (dir) => {
-      const sessions = await client.listSessions(dir).catch(() => null)
-      if (sessions === null) return
+      // v2：flat directory query + {data, cursor} envelope；limit 200 覆盖 v0.x 规模
+      // （>200 目录的分页是 M2 决策点）。**不过滤归档**：v1 快照同构含归档会话，
+      // Tab 收敛（死会话关闭）与 archivedSessions 展示段依赖其存在；展示层
+      // 过滤在 scopeSessions（!time.archived）——D1 双源过滤（metadata.archivedAt）
+      // 是 M2 归档写入落地时一并接线
+      const page = await client
+        .listSessions({ directory: dir, limit: 200 })
+        .catch(() => null)
+      if (page === null) return
+      const sessions = page.data.map(toInternalSession)
       this.applySessionsSnapshot(project.id, dir, sessions)
-      const statuses = await client.listSessionStatus(dir).catch(() => null)
-      // 闸门：在途快照落地时项目可能已关闭/目录可能已删——过期状态直接丢弃
-      const still = this.openedProjects.find((p) => p.id === project.id)
-      const stillHasDir =
-        still &&
-        (still.id === GLOBAL_PROJECT_ID
-          ? this.openedGlobalDirectories.includes(dir)
-          : still.worktree === dir || (still.sandboxes ?? []).includes(dir))
-      if (stillHasDir) {
-        this.applyStatusSnapshot(dir, statuses)
-      }
+      // v2 状态快照退役（M3a）：/session/status 无对应端点，busy/idle/retry 改
+      // session.status 事件驱动（ephemeral——断线窗口内丢失的态转靠下一事件
+      // 或重连后交互收敛；stale busy 已知局限，M4 评估按 SessionInfo.time.idle
+      // /outcome 对账推导）
     })
   }
 
@@ -2825,15 +2803,20 @@ export class AppStore {
    *  新 worktree 随 SSE 事件到达，用户切过去时即见）。 */
   async createWorkspace(projectId: string = this.currentProject?.id ?? ""): Promise<{ ok: boolean; error?: string }> {
     const project = this.projects.find((p) => p.id === projectId)
-    if (!this.client || !project) return { ok: false, error: "no project" }
-    // global 非 git 项目：无 worktree 概念（左栏也不渲染该入口，此处兜底）
-    if (project.id === GLOBAL_PROJECT_ID) {
-      return { ok: false, error: "global project has no worktree" }
+    const client = this.client
+    if (!client || !project) return { ok: false, error: "no project" }
+    // 非 git 项目（v2 伪项目行）：无 worktree 概念（左栏也不渲染该入口，此处兜底）
+    if (!project.vcs) {
+      return { ok: false, error: "non-git project has no worktree" }
     }
     const isCurrent = project.id === this.currentProject?.id
     try {
-      const result = await this.client.createWorktree(project.worktree)
-      // worktree API 返回轻量对象，重拉列表拿完整 Workspace 记录（刷新全局 projects）
+      // v2：name 省略 = server 随机 slug；父目录省略 = 项目配置/默认数据目录
+      // （worktree/<projectID 前 6 字符>）。响应是裸 {directory}（无 envelope，
+      // rest-client 已收敛）。创建只写 WorktreeTable 库存 + 发 worktree.updated
+      const result = await client.createWorktree(project.id)
+      // 重拉 projects + 该项目库存（v2 权威源）；库存目录随即 union 进内部
+      // sandboxes——下方 includes 校验由此通过（幻影 currentWorkspaceId 防御）
       await this.refreshWorkspacesForProject(project)
       if (isCurrent && this.currentProject?.sandboxes?.includes(result.directory)) {
         // 默认切换到新 worktree；setCurrentWorkspace 内含会话快照/文件树重置/开作用域 Tab。
@@ -2859,7 +2842,8 @@ export class AppStore {
     projectId: string = this.currentProject?.id ?? "",
   ): Promise<{ ok: boolean; error?: string }> {
     const project = this.projects.find((p) => p.id === projectId)
-    if (!this.client || !project) return { ok: false, error: "no project" }
+    const client = this.client
+    if (!client || !project) return { ok: false, error: "no project" }
     const deleteKey = `${project.id}\u0000${directory}`
     // 重入防御：同行删除在途时再触发（UI 已禁用，兜底）
     if (this.deletingWorkspaces.has(deleteKey)) return { ok: false, error: "deleting" }
@@ -2880,9 +2864,11 @@ export class AppStore {
     }
     this.emit()
     try {
-      // 删除 worktree 前，先级联删除该目录全部会话（服务器 DELETE /experimental/worktree
-      // 不级联删会话，同名 worktree 重建后会继承旧会话——服务器以 directory 路径关联，
-      // 无 worktree 代次标识）。best-effort：单个删除失败不阻断 worktree 删除
+      // 删除 worktree 前，先级联删除该目录全部会话（D2 语义，照搬 v1：服务器删
+      // worktree 不级联会话，同名重建后会继承旧会话——服务器以 directory 路径
+      // 关联，无 worktree 代次标识）。best-effort：单个删除失败不阻断 worktree 删除。
+      // 链路必须整体 v2（评审 2026-09-28：v1 removeWorktree 在 v2 server 必失败，
+      // 会话已删而 worktree 残留 = 部分执行的破坏性操作）
       const sessionMap = this.sessionsByProject.get(project.id)
       const sessionIds: string[] = []
       if (sessionMap) {
@@ -2891,17 +2877,26 @@ export class AppStore {
         }
       }
       await Promise.all(
-        sessionIds.map((id) =>
-          this.client!.deleteSession(id, directory).catch(() => {}),
-        ),
+        sessionIds.map((id) => client.deleteSession(id).catch(() => {})),
       )
-      await this.client.removeWorktree(project.worktree, directory)
-      // worktree 列表数据源是 Project.sandboxes，重拉项目列表同步（刷新全局 projects）
+      // force=false 首发：脏 worktree 返回 400 WorktreeError{forceRequired:true}
+      // （活体实测）→ 置二次确认态，用户确认后带 force 重试（M5 UX）
+      const force = this.forceDeleteRequests.has(deleteKey)
+      await client.deleteWorktree(project.id, directory, { force })
+      // worktree 库存是 v2 权威源：DELETE 移除库存行，重拉库存即从左栏消失
+      // （refreshWorkspacesForProject 内含 projects + 库存定向刷新）
       await this.refreshWorkspacesForProject(project)
       const restored = await this.unloadWorktreeDirectory(directory, project.id, isCurrent)
       if (restored) this.restoreScopeTabs(project.worktree, true)
       return { ok: true }
     } catch (e) {
+      // forceRequired：脏 worktree 的 server 拒绝（含未提交变更）——复用确认弹窗
+      // 二次确认（文案由 forceDelete 标记切换），非终态报错
+      if (e instanceof ApiError && e.forceRequired) {
+        this.forceDeleteRequests.add(deleteKey)
+        this.pendingWorktreeDelete = { directory, projectId }
+        return { ok: false, error: "force-required" }
+      }
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     } finally {
       this.deletingWorkspaces.delete(deleteKey)
@@ -2923,35 +2918,40 @@ export class AppStore {
    */
   requestWorktreeDelete(directory: string, projectId: string = this.currentProject?.id ?? "") {
     const project = this.projects.find((p) => p.id === projectId)
-    if (!project || project.id === GLOBAL_PROJECT_ID) return
+    // 非 git 项目（v2 伪项目行）无 worktree 概念（左栏不渲染子行，此处兜底）
+    if (!project || !project.vcs) return
     if (this.isWorkspaceDeleting(projectId, directory)) return
+    // 新请求清 force 态（上轮 forceRequired 的二次确认不跨请求残留）
+    this.forceDeleteRequests.delete(`${projectId}\0${directory}`)
     this.pendingWorktreeDelete = { directory, projectId }
     this.emit()
+  }
+
+  /** 当前删除确认是否为强制删除（forceRequired 二次确认，弹窗文案切换依据） */
+  isForceDeleteConfirm(projectId: string, directory: string): boolean {
+    return this.forceDeleteRequests.has(`${projectId}\0${directory}`)
   }
 
   /** 取消删除确认（ConfirmDialog onClose / Esc，design-keyboard-shortcuts §4.1） */
   cancelWorktreeDelete() {
     if (!this.pendingWorktreeDelete) return
+    const { projectId, directory } = this.pendingWorktreeDelete
+    this.forceDeleteRequests.delete(`${projectId}\0${directory}`)
     this.pendingWorktreeDelete = null
     this.emit()
   }
 
   /**
-   * Alt+C 关闭当前激活 entry（design-keyboard-shortcuts §1.2）：普通项目 = 当前
-   * 项目 entry（worktree 态亦关整个项目——entry 是关闭的最小单位，与左栏行 X 钮
-   * 同语义）；global = 当前目录 entry（作用域目录复用 currentWorkspace 字段，
-   * 同 isEntryActive 推导）。单 entry 不动作——对齐左栏单 entry 隐藏关闭按钮的
-   * "最后一个不关"。无二次确认：纯客户端状态、无 server 副作用，可随时重开。
+   * Alt+C 关闭当前激活 entry（design-keyboard-shortcuts §1.2）：当前项目 entry
+   * （worktree 态亦关整个项目——entry 是关闭的最小单位，与左栏行 X 钮同语义）。
+   * 单 entry 不动作——对齐左栏单 entry 隐藏关闭按钮的"最后一个不关"。无二次
+   * 确认：纯客户端状态、无 server 副作用，可随时重开。
    */
   closeActiveEntry() {
     const cur = this.currentProject
     if (!cur) return
-    const key =
-      cur.id === GLOBAL_PROJECT_ID
-        ? globalEntryKey(this.currentWorkspace?.directory ?? cur.worktree)
-        : cur.id
     if (this.openedEntries.length <= 1) return
-    void this.closeEntry(key)
+    void this.closeEntry(cur.id)
   }
 
   /**
@@ -2966,6 +2966,12 @@ export class AppStore {
     isCurrent: boolean,
   ): Promise<boolean> {
     const project = this.projects.find((p) => p.id === projectId)
+    // 内部 sandboxes 剥离该目录（v2 库存合并的残留——union 只增不减，残留会让
+    // 60s diff 对已卸载目录重复触发；server 冻结 legacy 列的回归无害：diff 基线
+    // 双侧同含，不触发卸载，仅闸门放宽）
+    if (project?.sandboxes?.includes(directory)) {
+      project.sandboxes = project.sandboxes.filter((d) => d !== directory)
+    }
     // 卸载已删目录的会话与状态（目录已出 sandboxes，此后无快照/订阅通道覆盖它）
     const map = this.sessionsByProject.get(projectId)
     if (map) {
@@ -2984,9 +2990,7 @@ export class AppStore {
     this.disposeBrowserViewsInDirectory(directory)
     // 显式关闭该目录全部 live Tab：订阅即将拆除，chat 的 session.deleted 事件
     // 兜底存在窗口期（design-tab-memory §5）；file/diff 无事件兜底，随目录卸载
-    // （全 kind 作用域化，2026-08-25 §18）。双行目录（git worktree 与 global 会话
-    // 同路径）下按 projectId 过滤——与 closeGlobalDirectory 对称：global 会话 Tab
-    // 归 global entry 管，删 git worktree 不得误关
+    // （全 kind 作用域化，2026-08-25 §18），按 projectId 过滤
     for (const tab of [...this.tabs]) {
       if (
         (tab.kind === "file" || tab.kind === "diff" || tab.kind === "terminal" || tab.kind === "browser") &&
@@ -3004,15 +3008,14 @@ export class AppStore {
     // 最后激活记录随目录卸载（须在关 Tab 之后——关激活 Tab 的回退钩子会
     // recordScopeActive 重建条目，先删会被写回，重开误落引导页/错激活）
     this.scopeActiveKeys.delete(directory)
-    // 删除该目录记忆（目录已死；须在关 Tab 之后——closeTab 同步会重建条目）。
-    // 仅删该项目侧记忆：双行目录的记忆经 findProjectOwningDirectory 归属，
-    // global 侧记忆（projectId === global）不随 worktree 删除——与 closeGlobalDirectory 对称
+    // 删除该目录记忆（目录已死；须在关 Tab 之后——closeTab 同步会重建条目），
+    // 按 projectId 精确匹配
     const key = this.profileKey()
     if (this.tabMemory[key]?.[directory]?.projectId === projectId) {
       delete this.tabMemory[key][directory]
       void window.desktop.storeSet("tabs.memory", this.tabMemory).catch(() => {})
     }
-    // 最近访问切片修剪（§1.5 review）：目录已死；双行目录 global 侧仍打开则保留
+    // 最近访问切片修剪（§1.5 review）：目录已死，已打开 entry 认领则保留
     this.forgetBrowserRecents([directory])
     // 会话层整体派生（design-tab-session-restore §5，同 closeProject：循环/删除之后修剪）
     this.persistTabSession()
@@ -3032,34 +3035,47 @@ export class AppStore {
   }
 
   /**
-   * 刷新对账检测他端 worktree 增删（design-worktree-sync §2）：删除无 SSE 事件，
-   * 靠 listProjects() diff sandboxes 检测。新建由 worktree.ready SSE 实时刷新，
-   * 此方法是 SSE 丢消息/断连/未收事件的补偿兜底（启动/focus/定时/reconnect 触发）——
-   * 删除走 unloadWorktreeDirectory 清理，新增 sandbox 补跑 skill 缓存冻结防御
-   * （reDiscoverInstanceCatalog，ready 只发一次不补发）。
-   * 幂等：无变化时只重拉 projects（同 refreshWorkspacesForProject，无害 emit）。
+   * 刷新对账检测他端/外部 worktree 增删（design-worktree-sync §2 修订）：
+   * v2 权威源 = worktree 库存（WorktreeTable）。每打开的 git 项目先 refresh
+   * （server 端发现外部 git worktree 增删、清理死行——rm -rf 的库存残留只有
+   * 此端点能清）再 list；变更时 server 另发 worktree.updated SSE（本方法是其
+   * 丢消息/断连窗口的补偿兜底：启动/focus/定时/重连触发）。
+   * 删除检测 = 库存 diff（sandboxes 冻结不参与 diff 基线——它的变化只是 server
+   * 侧 legacy 列的惰性漂移）；消失目录走 unloadWorktreeDirectory 清理。
+   * 幂等：无变化时只重拉（同 refreshWorkspacesForProject，无害 emit）。
    */
   async syncWorktrees(): Promise<void> {
     const client = this.client
     if (!client) return
     const before = this.projects
-    const fresh = await client.listProjects().catch(() => null)
-    if (!fresh) return
+    // 打开的 git 项目逐个 refresh + list（限流 3 与会话快照内层一致）；
+    // loadWorktreeInventory 内含合并 + emit。未打开项目的库存不影响左栏展示，跳过。
+    await runLimited(
+      this.openedProjects.filter((p) => p.vcs),
+      3,
+      async (p) => {
+        await this.loadWorktreeInventory(p.id, { refresh: true })
+      },
+    )
     // 在途闸门：diff 期间 client 可能已拆（disconnect/切 profile）
     if (this.client !== client) return
-    // 比对每个打开项目（含未打开项目的 worktree 变化不影响左栏展示，跳过）
+    const fresh = await client
+      .listProjects()
+      .then((ps) => ps.map(toInternalProject))
+      .catch(() => null)
+    if (!fresh || this.client !== client) return
+    this.projects = fresh
+    this.mergeWorktreeDirsIntoProjects()
+    // diff 基线 = worktree ∪ sandboxes（before 的 sandboxes 已含上一轮库存合并），
+    // 对照 = fresh sandboxes ∪ 新库存——库存行消失（他端 DELETE / refresh 清理）
+    // 即卸载信号
     const toUnload: Array<{ directory: string; projectId: string; isCurrent: boolean }> = []
-    // 新增 sandbox：`worktree.ready` 只发一次不补发，断连窗口内他端创建的事件
-    // 丢失时，此 diff 是 skill 缓存冻结防御（reDiscoverInstanceCatalog）的唯一
-    // 补偿入口（左栏展示本身随 projects 更新自然出现，无需处理）
-    const appeared: string[] = []
     for (const old of before) {
-      if (old.id === GLOBAL_PROJECT_ID) continue
       const opened = this.openedProjects.some((p) => p.id === old.id)
       if (!opened) continue
-      const next = fresh.find((p) => p.id === old.id)
-      const oldDirs = new Set([...(old.sandboxes ?? [])])
-      const nextDirs = new Set([...(next?.sandboxes ?? [])])
+      const next = this.projects.find((p) => p.id === old.id)
+      const oldDirs = new Set([...(old.sandboxes ?? []), ...(this.worktreeDirs.get(old.id) ?? [])])
+      const nextDirs = new Set([...(next?.sandboxes ?? []), ...(this.worktreeDirs.get(old.id) ?? [])])
       for (const d of oldDirs) {
         if (!nextDirs.has(d)) {
           toUnload.push({
@@ -3069,11 +3085,7 @@ export class AppStore {
           })
         }
       }
-      for (const d of nextDirs) {
-        if (!oldDirs.has(d)) appeared.push(d)
-      }
     }
-    this.projects = fresh
     for (const { directory, projectId, isCurrent } of toUnload) {
       const restored = await this.unloadWorktreeDirectory(directory, projectId, isCurrent)
       if (restored) {
@@ -3081,28 +3093,101 @@ export class AppStore {
         if (p) this.restoreScopeTabs(p.worktree, true)
       }
     }
-    // 与 ready 路径重复触发的无害性有限：busy 会话守卫挡住主要风险，正确性不受
-    // 影响；多客户端各自对同一 ready dispose，后到者的 POST 会销毁先到者触发
-    // 懒加载的新实例（多一轮 LSP/MCP 起停，冻结果不变）——正确性换简单性，接受。
-    // 正常链路 ready 到达即刷新 projects，此 diff 多数时候为空
-    for (const d of appeared) void this.reDiscoverInstanceCatalog(d)
     this.emit()
+  }
+
+  // ============ worktree 库存（v2 权威源，design-worktree-sync §0 修订） ============
+
+  /**
+   * worktree 库存：projectId → GET /api/worktree 目录列表（含主 checkout 行）。
+   * v2 GA 起 worktree 增删只写 server 的 WorktreeTable，`Project.sandboxes` 是
+   * 冻结 legacy 列（含已删幽灵、缺新建）——库存经 loadWorktreeInventory 载入，
+   * 并 union 进内部 sandboxes（事件闸门/作用域/快照/记忆全下游同构受益）。
+   */
+  private worktreeDirs = new Map<string, string[]>()
+
+  /**
+   * 拉取项目 worktree 库存并合并进内部 sandboxes。
+   * opts.refresh：先 POST /api/worktree/refresh（server 端对账——发现外部
+   * git worktree 增删、清理死行；外部 rm -rf 的库存残留只有此端点能清）。
+   * 对账触发点：连接/打开项目/60s 定时/SSE 重连；本端 create/remove 后的
+   * 定向刷新不带 refresh（server 状态已随 mutation 更新）。
+   * 失败（含旧 server 无端点）返回 null 不落缓存——下游回退 sandboxes 语义。
+   */
+  private async loadWorktreeInventory(
+    projectId: string,
+    opts: { refresh?: boolean } = {},
+  ): Promise<string[] | null> {
+    const client = this.client
+    if (!client) return null
+    if (opts.refresh) {
+      try {
+        await client.refreshWorktrees(projectId)
+      } catch {
+        // best-effort：refresh 失败仍尝试 list（旧 server 无端点/瞬时失败）
+      }
+    }
+    let dirs: string[] | null = null
+    try {
+      dirs = (await client.listWorktrees(projectId)).map((w) => w.directory)
+    } catch {
+      dirs = null
+    }
+    // 在途闸门：拉取期间可能已断连/切 profile——不落过期库存
+    if (dirs === null || this.client !== client) return null
+    this.worktreeDirs.set(projectId, dirs)
+    this.mergeWorktreeDirsIntoProjects()
+    this.emit()
+    return dirs
+  }
+
+  /**
+   * 库存目录 union 进各内部项目的 sandboxes（只增不减——幽灵目录保留在
+   * sandboxes 对闸门无害且不渲染；projects 每次 listProjects 重映射后须重放）。
+   * toInternalProject 产新鲜对象，原位改写安全。
+   */
+  private mergeWorktreeDirsIntoProjects() {
+    for (const p of this.projects) {
+      const dirs = this.worktreeDirs.get(p.id)
+      if (!dirs) continue
+      const known = new Set(p.sandboxes ?? [])
+      let changed = false
+      for (const d of dirs) {
+        if (!known.has(d)) {
+          known.add(d)
+          changed = true
+        }
+      }
+      if (changed) p.sandboxes = [...known]
+    }
   }
 
   private async refreshWorkspacesForProject(project: Project) {
-    // worktree 列表数据源是 Project.sandboxes（directory 数组，实测 /experimental/workspace 不可靠）
-    const fresh = await this.client?.listProjects().catch(() => null)
-    if (fresh) this.projects = fresh
+    // 项目列表（canonical/name 等字段对账）+ 该项目 worktree 库存定向刷新
+    // （v2 权威源：create/remove 后库存已更新，sandboxes 不再随之变化）
+    const client = this.client
+    if (!client) return
+    const fresh = await client
+      .listProjects()
+      .then((ps) => ps.map(toInternalProject))
+      .catch(() => null)
+    if (fresh && this.client === client) {
+      this.projects = fresh
+      this.mergeWorktreeDirsIntoProjects()
+      await this.loadWorktreeInventory(project.id)
+    }
     this.emit()
   }
 
-  /** 当前项目的工作区列表（从 sandboxes 派生，name 取 directory 末段） */
-  /** 指定项目的工作区列表（从 sandboxes 派生，name 取 directory 末段） */
+  /** 指定项目的工作区列表（name 取 directory 末段）。v2 权威源 = worktree 库存
+   *  （design-worktree-sync §0 修订）：sandboxes 是冻结 legacy 列——已删目录
+   *  残留（幽灵行）、新建目录缺失。库存已加载时以它为准；未加载（连接初期
+   *  /端点失败）回退 sandboxes。主 checkout 行（项目 canonical）排除，防重复。 */
   workspacesOfProject(projectId: string): Array<{ name: string; directory: string }> {
     const p = this.projects.find((x) => x.id === projectId)
     if (!p) return []
-    // 防御：主工作区 = 项目行本身，sandboxes 若含项目根路径则排除（防重复展示）
-    return (p.sandboxes ?? [])
+    const dirs = this.worktreeDirs.get(projectId) ?? (p.sandboxes ?? [])
+    return dirs
       .filter((dir) => dir !== p.worktree)
       .map((dir) => ({
         name: dir.split("/").pop() ?? dir,
@@ -3121,10 +3206,11 @@ export class AppStore {
     return this.currentWorkspace?.directory ?? this.currentProject?.worktree ?? ""
   }
 
-  /** 指定目录的未归档 + 非 subagent 会话（updated 降序）——左栏指示器数据源 */
+  /** 指定目录的未归档 + 非 subagent 会话（updated 降序）——左栏指示器数据源。
+   *  归档判定 D1 双源（time.archived 存量 + metadata.archivedAt 私约） */
   sessionsInDirectory(projectId: string, directory: string): Session[] {
     return [...(this.sessionsByProject.get(projectId)?.values() ?? [])]
-      .filter((s) => !s.time.archived && !s.parentID && s.directory === directory)
+      .filter((s) => !isArchivedSession(s) && !s.parentID && s.directory === directory)
       .sort((a, b) => b.time.updated - a.time.updated)
   }
 
@@ -3135,17 +3221,15 @@ export class AppStore {
     return this.sessionsInDirectory(project.id, this.scopeDirectory())
   }
 
-  /** 当前作用域的已归档 + 非 subagent 会话（存档时间降序——引导页列表排序依据） */
+  /** 当前作用域的已归档 + 非 subagent 会话（存档时间降序——引导页列表排序依据）。
+   *  D1 双源：存档时间取 archivedAtOf（time.archived ?? metadata.archivedAt ?? updated） */
   get archivedSessions(): Session[] {
     const project = this.currentProject
     if (!project) return []
     const dir = this.scopeDirectory()
     return [...(this.sessionsByProject.get(project.id)?.values() ?? [])]
-      .filter((s) => !s.parentID && s.time.archived && s.directory === dir)
-      .sort(
-        (a, b) =>
-          (b.time.archived ?? b.time.updated) - (a.time.archived ?? a.time.updated),
-      )
+      .filter((s) => !s.parentID && isArchivedSession(s) && s.directory === dir)
+      .sort((a, b) => (archivedAtOf(b) ?? 0) - (archivedAtOf(a) ?? 0))
   }
 
   /**
@@ -3178,10 +3262,12 @@ export class AppStore {
         )
       : explicitModel
     try {
-      const session = await this.client.createSession(directory, undefined, undefined, {
+      const wire = await this.client.createSession({
+        directory,
         ...(agent ? { agent } : {}),
         ...(model ? { model } : {}),
       })
+      const session = toInternalSession(wire)
       const map = this.sessionsByProject.get(this.currentProject.id) ?? new Map()
       map.set(session.id, session)
       this.sessionsByProject.set(this.currentProject.id, map)
@@ -3221,9 +3307,7 @@ export class AppStore {
   async loadSessionMessages(sessionID: string, directory: string) {
     const client = this.client
     if (!client) return
-    const page = await client
-      .listMessagesPage(sessionID, directory, { limit: 100 })
-      .catch(() => null)
+    const page = await client.listMessagesPage(sessionID, { limit: 100 }).catch(() => null)
     // 世代守卫：await 期间断开/切 profile → 迟到响应不写新连接（同 loadEarlierMessages 模式）
     if (this.client !== client) return
     if (!page) {
@@ -3298,9 +3382,7 @@ export class AppStore {
       state = { nextCursor: null, exhausted: false, loading: true, error: false }
       this.sessionPages.set(sessionID, state)
       this.emit()
-      const seed = await client
-        .listMessagesPage(sessionID, session.directory, { limit: 100 })
-        .catch(() => null)
+      const seed = await client.listMessagesPage(sessionID, { limit: 100 }).catch(() => null)
       if (this.sessionPages.get(sessionID) !== state) return
       state.loading = false
       if (!seed) {
@@ -3321,10 +3403,7 @@ export class AppStore {
     state.error = false
     this.emit()
     try {
-      const page = await client.listMessagesPage(sessionID, session.directory, {
-        limit: 100,
-        before,
-      })
+      const page = await client.listMessagesPage(sessionID, { limit: 100, cursor: before })
       // 身份守卫：在途期间关 Tab 重开/断开重建了状态 → 旧页整体丢弃
       const cur = this.sessionPages.get(sessionID)
       if (cur !== state) return
@@ -3351,20 +3430,29 @@ export class AppStore {
   }
 
   async unarchiveSession(sessionID: string): Promise<boolean> {
-    return this.patchSessionArchive(sessionID, 0)
+    return this.patchSessionArchive(sessionID, null)
   }
 
-  private async patchSessionArchive(sessionID: string, archived: number): Promise<boolean> {
-    if (!this.client) return false
+  /**
+   * 归档写路径（D1 私约，2026-09-28 裁定）：v2 无 REST 归档字段，写
+   * `metadata.archivedAt`（服务端 metadata REPLACE 语义——与既有字段整包合并）；
+   * PATCH 返回 204 无 body，**本地乐观落地**（重连快照/SSE 对账兜底）。
+   * 已知边界：v1 迁移存量会话的 `time.archived` 在 v2 无写入路径——取消归档
+   * 只清 metadata 时该类会话重连后仍归档（官方 unarchive 修复 PR #47848 未合），
+   * 识别层双源不受影响
+   */
+  private async patchSessionArchive(sessionID: string, archivedAt: number | null): Promise<boolean> {
+    const client = this.client
+    if (!client) return false
     const session = this.findSession(sessionID)
     if (!session) return false
+    const metadata = { ...(session.metadata ?? {}) }
+    if (archivedAt == null) delete metadata.archivedAt
+    else metadata.archivedAt = archivedAt
     try {
-      const updated = await this.client.updateSession(sessionID, session.directory, {
-        time: { archived },
-      })
-      if (!updated) return false
-      const map = this.sessionsByProject.get(updated.projectID)
-      map?.set(updated.id, updated)
+      await client.updateSession(sessionID, { metadata })
+      const map = this.sessionsByProject.get(session.projectID)
+      map?.set(sessionID, { ...session, metadata })
       this.emit()
       return true
     } catch (e) {
@@ -3438,14 +3526,22 @@ export class AppStore {
     ])
     this.emit()
     try {
-      const parts: Array<{ type: "text"; text: string } | FilePartInput> = []
-      if (text) parts.push({ type: "text", text })
-      for (const ref of refs ?? []) parts.push(fileRefToFilePart(ref))
-      // 附件（design-session-attachments §2）：data URL 内联，无 source 字段
-      for (const a of attachments ?? []) {
-        parts.push({ type: "file", mime: a.mime, url: a.dataUrl, filename: a.filename })
+      const files: Array<{ uri: string; name?: string }> = []
+      for (const ref of refs ?? []) {
+        const p = fileRefToFilePart(ref)
+        if (p.type === "file") files.push({ uri: p.url, name: p.filename })
       }
-      await this.client.promptAsync(sessionID, session.directory, parts)
+      // 附件（design-session-attachments §2）：data URL 内联
+      for (const a of attachments ?? []) {
+        files.push({ uri: a.dataUrl, name: a.filename })
+      }
+      // v2 text 必填且原样落库（fromUserMessage 直接入投影）：纯附件/纯引用
+      // 发送以零宽空格占位——v1 语义是回显只有文件 chip，"." 会成为可见噪音
+      // （评审 2026-09-28）
+      await this.client!.prompt(sessionID, { text: text || "\u200b", files })
+      // 回执驱动（plan M4）：v2 无 user 消息 SSE 事件——POST 200 准入后首页
+      // 重取拾取投影 user 消息（真实 id），乐观清除挂在其到达
+      void this.refreshMessagesAfterPrompt(sessionID, optimistic.localId, optimistic.createdAt)
       // 发送成功引用/附件即清（失败保留供重发，design-file-reference §2）
       this.clearFileRefs(sessionID)
       this.clearAttachments(sessionID)
@@ -3473,15 +3569,23 @@ export class AppStore {
   // 会话重命名（design-tab-drag-rename §2，v0.3 恢复入口：chat Tab 双击行内编辑；
   // 删除入口仍无）。他端重命名经 session.updated 事件同步 Tab 标题（既有路径）。
   async renameSession(sessionID: string, title: string): Promise<boolean> {
-    if (!this.client) return false
+    const client = this.client
+    if (!client) return false
     const session = this.findSession(sessionID)
     if (!session) return false
+    // 空标题防御：v2 契约 title:"" 会触发 server 生成随机标题（非拒绝）——
+    // UI 已 trim+非空守卫，此处拦程序化调用方
+    const trimmed = title.trim()
+    if (!trimmed) return false
     try {
-      const updated = await this.client.updateSession(sessionID, session.directory, { title })
-      this.mergeSessionUpdate(updated)
+      // v2 PATCH 204 无返回体：本地乐观落地（title 必填回填 slug 语义由 server
+      // 收敛，重连快照对账兜底）
+      await client.updateSession(sessionID, { title: trimmed })
+      const map = this.sessionsByProject.get(session.projectID)
+      map?.set(sessionID, { ...session, title: trimmed })
       // Tab 标题即时同步（SSE 回环亦可到达，此处消除本地等待）
       const tab = this.tabs.find((t) => t.key === `chat:${sessionID}`)
-      if (tab) tab.title = updated.title || updated.slug || ""
+      if (tab) tab.title = trimmed
       this.emit()
       return true
     } catch (e) {
@@ -3503,14 +3607,17 @@ export class AppStore {
    * 当前作用域被动补开（SSE 丢失的兜底，同一条路径，幂等）；失败置
    * connectionError（左栏状态行可见），无 toast 基建同文件菜单取舍。
    */
+  /** opts.directory 不参与请求（v2 fork 经 location middleware 取作用域）——
+   *  仅作僵尸 Tab 守卫：本地无源会话记录且未直传时不发起（M5 评审记录） */
   forkSession(sessionID: string, opts: { messageID?: string; directory?: string } = {}): void {
     const client = this.client
     if (!client) return
     const directory = opts.directory ?? this.findSession(sessionID)?.directory
     if (!directory) return
     void client
-      .forkSession(sessionID, directory, opts)
-      .then((forked) => {
+      .forkSession(sessionID, opts)
+      .then((wire) => {
+        const forked = toInternalSession(wire)
         // 迟到快照不回卷（review #1）：REST 响应携带的是复制完成时刻的快照，
         // 复制窗口内对该会话的后续变更（关 Tab=归档、重命名）已先经
         // session.updated 到达本地——本地记录 time.updated 更晚时跳过合并与
@@ -3533,7 +3640,7 @@ export class AppStore {
     if (!this.client) return
     const session = this.findSession(sessionID)
     if (!session) return
-    await this.client.abortSession(sessionID, session.directory).catch(() => {})
+    await this.client?.interrupt(sessionID).catch(() => {})
   }
 
   // ============ 回滚（design-message-revert） ============
@@ -3590,29 +3697,23 @@ export class AppStore {
     sessionID: string,
     messageID: string,
   ): Promise<{ ok: boolean; error?: string }> {
-    if (!this.client) return { ok: false, error: "not connected" }
+    const client = this.client
+    if (!client) return { ok: false, error: "not connected" }
     const session = this.findSession(sessionID)
     if (!session) return { ok: false, error: "session not found" }
-    // abort 端点等待 run 完全停止后才响应（源码核对：run-state.cancel await
-    // Fiber.interrupt + 置 Idle），随后 revert 不会撞 409 窗口；若仍 409，是
-    // abort 与他端新 prompt 的竞争，文案「会话仍在进行中」如实成立
+    // interrupt 等待 run 结算后才响应（v2 awaitSettlement），随后 stage 不会撞
+    // SessionBusyError 窗口；若仍 409，是 interrupt 与他端新 prompt 的竞争
     if (this.isSessionActive(sessionID)) await this.abortSession(sessionID)
     try {
-      const updated = await this.client.revertMessage(sessionID, session.directory, messageID)
-      if (updated) this.mergeSessionUpdate(updated)
-      if (!updated?.revert) {
-        // server 未写回滚点（消息已不存在，如他端先行删除/提交——源码：
-        // revert.ts `if (!rev) return session`）。不回填、显式失败呈现
-        const msg = "回滚未生效：消息不存在或已被删除"
-        this.connectionError = msg
-        this.emit()
-        return { ok: false, error: msg }
-      }
-      // 斜杠命令回显不回填（design-message-revert §3.3 修订）：subtask part 或本端
-      // 命令回显标记——展开文本非用户原文（参数已消费），回填是噪音
-      const seed = this.isCommandEcho(sessionID, updated.revert.messageID)
+      // v2 三段式第一段：stage（files:true 同步还原工作区，v1 行为）。
+      // 响应 `{data: Revert}`（无完整 Session）——revert 状态本地合成合并
+      const revert = await client.revertStage(sessionID, messageID)
+      this.mergeSessionUpdate({ ...session, revert } as typeof session)
+      // 斜杠命令回显不回填（design-message-revert §3.3 修订）：展开文本非用户
+      // 原文（参数已消费），回填是噪音
+      const seed = this.isCommandEcho(sessionID, revert.messageID)
         ? null
-        : this.userMessageText(sessionID, updated.revert.messageID)
+        : this.userMessageText(sessionID, revert.messageID)
       if (seed) {
         this.revertDrafts.set(sessionID, seed)
         this.revertDraftVersion++
@@ -3621,7 +3722,7 @@ export class AppStore {
       return { ok: true }
     } catch (e) {
       const msg =
-        e instanceof ApiError && e.status === 409
+        e instanceof ApiError && e.body?.name === "SessionBusyError"
           ? "会话仍在进行中，请稍后再回滚"
           : e instanceof Error
             ? e.message
@@ -3634,12 +3735,14 @@ export class AppStore {
 
   /** 撤销回滚暂存：恢复文件、清 session.revert */
   async unrevertSession(sessionID: string): Promise<{ ok: boolean; error?: string }> {
-    if (!this.client) return { ok: false, error: "not connected" }
+    const client = this.client
+    if (!client) return { ok: false, error: "not connected" }
     const session = this.findSession(sessionID)
     if (!session) return { ok: false, error: "session not found" }
     try {
-      const updated = await this.client.unrevertSession(sessionID, session.directory)
-      if (updated) this.mergeSessionUpdate(updated)
+      // v2 三段式第二段：clear（204 无返回体——revert 状态本地清复合并）
+      await client.revertClear(sessionID)
+      this.mergeSessionUpdate({ ...session, revert: null } as typeof session)
       // 撤销即清输入框：空种子 = 清空草稿（官方 restore→promptSession.reset 语义）。
       // 仅当输入框正承载本地回填文本（种子已消费）时清空——跨客户端回滚/无文本
       // 回滚不得误清用户自输内容
@@ -3653,7 +3756,7 @@ export class AppStore {
       return { ok: true }
     } catch (e) {
       const msg =
-        e instanceof ApiError && e.status === 409
+        e instanceof ApiError && e.body?.name === "SessionBusyError"
           ? "会话仍在进行中，请稍后再操作"
           : e instanceof Error
             ? e.message
@@ -3755,7 +3858,7 @@ export class AppStore {
   }
 
   /** 发送斜杠命令：乐观回显原始 `/cmd args`，真实 user 消息（subtask/展开文本）到达即清。
-   *  附件随 parts 携带（design-session-attachments §2，openapi command body 契约） */
+   *  附件随 files 携带（v2 {uri, name}，同 prompt 契约；design-session-attachments §2） */
   async sendCommand(
     sessionID: string,
     command: string,
@@ -3780,25 +3883,20 @@ export class AppStore {
       optimistic,
     ])
     this.emit()
-    // 回显标记：SSE 真实 user 消息到达时转记（正常路径在 POST await 期间消费）
+    // 回显标记：SSE inbox.enqueued 转记（正常路径在 POST await 期间消费，
+    // M6c：v2 事件源从 message.updated 换 inbox.enqueued）
     this.commandEchoPending.add(sessionID)
     try {
-      // 斜杠命令同样携带引用/附件 parts（openapi command body 契约，移动端 6R-C）
-      const fileParts: FilePartInput[] = [
-        ...(refs ?? []).map(fileRefToFilePart),
-        ...(attachments ?? []).map((a) => ({
-          type: "file" as const,
-          mime: a.mime,
-          url: a.dataUrl,
-          filename: a.filename,
-        })),
+      // 斜杠命令同样携带引用/附件（移动端 6R-C；v2 files 契约同 prompt）
+      const files: Array<{ uri: string; name?: string }> = [
+        ...(refs ?? []).map((r) => ({ uri: fileRefToFilePart(r).url, name: r.filename })),
+        ...(attachments ?? []).map((a) => ({ uri: a.dataUrl, name: a.filename })),
       ]
       await this.client.sendCommand(
         sessionID,
-        session.directory,
         command,
         arguments_,
-        fileParts.length > 0 ? fileParts : undefined,
+        files.length > 0 ? files : undefined,
       )
       this.clearFileRefs(sessionID)
       this.clearAttachments(sessionID)
@@ -3855,26 +3953,6 @@ export class AppStore {
     )
   }
 
-  /** 会话任务列表（design-task-list；空数组 = 无/已全完成） */
-  todosForSession(sessionID: string): Todo[] {
-    return this.sessionTodos.get(sessionID) ?? []
-  }
-
-  /**
-   * 会话任务快照（ChatView 激活时与 loadSessionMessages 同挂点调用，补 SSE
-   * 断线窗口）。全量替换：200（含空数组）权威覆盖本地；失败静默保留（下一次
-   * todo.updated 自愈）；client 同一性守卫丢弃跨 teardown 的迟到结果。
-   */
-  async loadSessionTodos(sessionID: string, directory: string) {
-    const client = this.client
-    if (!client) return
-    const todos = await client.listSessionTodos(sessionID, directory).catch(() => null)
-    if (this.client !== client) return
-    if (todos === null) return
-    this.sessionTodos.set(sessionID, normalizeTodoList(todos))
-    this.emit()
-  }
-
   /**
    * 会话状态点投影（design-agent-status-indicator + design-error-message §3/§3.4）：
    * waiting > error（retry 退避，红呼吸）> running > failed（报错终局，红静态）> idle。
@@ -3905,9 +3983,9 @@ export class AppStore {
     let changed = false
     await runLimited(dirs, 3, async (dir) => {
       // 两类别串行：每任务在途 ≤1 条，并发上限 3（预算克制，与 reconciler 的
-      // 逐目录串行同答案——SSE 常驻 5 条后 REST 池仅 ~1 空闲）
-      const permissions = await client.listPendingPermissions(dir).catch(() => null)
-      const questions = await client.listPendingQuestions(dir).catch(() => null)
+      // 逐目录串行同答案——SSE 常驻 5 条后 REST 池仅 ~1 空闲）。
+      const permissions = await client.listPendingPermissionRequests(dir).catch(() => null)
+      const questions = await client.listPendingForms(dir).catch(() => null)
       // 在途闸门（同 applySessionsSnapshot）：disconnect/切 profile 后丢弃旧连接的
       // 迟到结果，防止写回已清空的 map；目录已出打开集合（关项目/删 worktree）同理
       if (this.client !== client || !this.openedDirectories().includes(dir)) return
@@ -3942,7 +4020,8 @@ export class AppStore {
   }
 
   /**
-   * 回复权限卡。200 = 成功；404 = 已被其他端处理（静默移除，同移动端决策 3）；
+   * 回复权限卡（v2：POST /api/session/:id/permission/:requestID/reply，M6a）。
+   * 200 = 成功；404 = 已被其他端处理（静默移除，同移动端决策 3）；
    * 其他错误保留卡片由 UI 提示。
    */
   async respondPermission(
@@ -3953,7 +4032,7 @@ export class AppStore {
     const p = this.pendingPermissions.get(sessionID)
     if (!client || !p) return { ok: false, error: "no pending permission" }
     try {
-      await client.respondPermission(sessionID, p.id, p.directory, response)
+      await client.respondPermission(sessionID, p.id, response)
       // 按 id 守卫移除（移动端 removeWhere(p.id == pid) 教训）：in-flight 期间他端
       // 应答 + agent 立即发出同会话新卡会落入同 key，无条件 delete 会误删新卡
       if (this.pendingPermissions.get(sessionID)?.id === p.id) {
@@ -3973,16 +4052,17 @@ export class AppStore {
     }
   }
 
-  /** 回答问题卡（answers 按子问题顺序，每项为选中 label 数组）；404 语义同上 */
+  /** 回答表单卡（v2：POST /api/session/:id/form/:formID/reply，M6a）。
+   *  input 按字段下标携带 UI 原始输入，answer 构造见 buildFormAnswer；404 语义同上 */
   async replyQuestion(
     questionID: string,
-    answers: string[][],
+    input: Record<number, PendingFieldInput>,
   ): Promise<{ ok: boolean; error?: string }> {
     const client = this.client
     const q = this.pendingQuestions.get(questionID)
     if (!client || !q) return { ok: false, error: "no pending question" }
     try {
-      await client.replyQuestion(questionID, q.directory, answers)
+      await client.replyForm(q.sessionID, q.id, buildFormAnswer(q, input))
       this.pendingQuestions.delete(questionID)
       this.emit()
       return { ok: true }
@@ -3996,13 +4076,13 @@ export class AppStore {
     }
   }
 
-  /** 拒绝问题卡；404 语义同上 */
+  /** 取消表单卡（v2：DELETE /api/session/:id/form/:formID，M6a）；404 语义同上 */
   async rejectQuestion(questionID: string): Promise<{ ok: boolean; error?: string }> {
     const client = this.client
     const q = this.pendingQuestions.get(questionID)
     if (!client || !q) return { ok: false, error: "no pending question" }
     try {
-      await client.rejectQuestion(questionID, q.directory)
+      await client.cancelForm(q.sessionID, q.id)
       this.pendingQuestions.delete(questionID)
       this.emit()
       return { ok: true }
@@ -4087,11 +4167,11 @@ export class AppStore {
     let p!: Promise<void>
     p = (async () => {
       let agents: AgentInfo[] | null = null
-      let providers: ConfigProviders | null = null
+      let models: V2ModelInfo[] | null = null
       try {
-        ;[agents, providers] = await Promise.all([
+        ;[agents, models] = await Promise.all([
           client.listAgents(directory).catch(() => null),
-          client.listConfigProviders(directory).catch(() => null),
+          client.listModels(directory).catch(() => null),
         ])
       } catch {
         // 两个请求均保留 null（失败即按失败处理）
@@ -4099,7 +4179,7 @@ export class AppStore {
       // client 身份守卫：迟到于 teardown 的旧 fetch 不写新连接
       if (this.client !== client) return
       const prev = this.modelCatalogs.get(directory)
-      if (agents === null && providers === null) {
+      if (agents === null && models === null) {
         // 失败保留好缓存（设计错误表"目录加载失败"）；
         // 完全失败且无缓存 → 记入失败态，工具条显示重试
         if (!prev) this.modelCatalogFailed.add(directory)
@@ -4108,7 +4188,7 @@ export class AppStore {
         // 按数据源分别保留：单源失败不覆盖该源的好缓存
         const catalog: ModelCatalog = {
           agents: agents !== null ? parseAgents(agents) : (prev?.agents ?? []),
-          models: providers !== null ? parseModels(providers) : (prev?.models ?? []),
+          models: models !== null ? parseModelsV2(models) : (prev?.models ?? []),
         }
         this.modelCatalogs.set(directory, catalog)
       }
@@ -4131,7 +4211,7 @@ export class AppStore {
     await this.refreshModelCatalog(directory)
   }
 
-  /** 切换会话 agent：POST 204 → 乐观写本地记录；失败不改本地。 */
+  /** 切换会话 agent（v2 client，M6a）：POST 204 → 乐观写本地记录；失败不改本地。 */
   async switchSessionAgent(sessionID: string, agent: string): Promise<boolean> {
     const client = this.client
     if (!client) return false
@@ -4147,7 +4227,7 @@ export class AppStore {
   }
 
   /**
-   * 切换会话 model：POST 204 → 乐观写本地记录。
+   * 切换会话 model（v2 client，M6a）：POST 204 → 乐观写本地记录。
    * variant 携带规则（carriedVariant）：切到另一模型时同名 variant 沿用，否则省略。
    * 隐式默认（D-AM-4 修订）：手动切换即最后一次选择 → 成功后同步写全局默认值。
    */
@@ -4243,9 +4323,9 @@ export class AppStore {
 
   // ============ Tab ============
 
-  /** 打开 chat Tab = 取消归档（与"关闭 Tab = 归档"对称） */
+  /** 打开 chat Tab = 取消归档（与"关闭 Tab = 归档"对称；D1 双源识别） */
   openChatTab(session: Session) {
-    if (session.time.archived) {
+    if (isArchivedSession(session)) {
       void this.unarchiveSession(session.id).then(() => {
         // 归档事件/响应到达后 Tab 标题等状态自然刷新
       })
@@ -4358,9 +4438,8 @@ export class AppStore {
    * 归作用域（directory 过滤通用）。失败经 connectionError 呈现（引导页按钮
    * 不额外提示）。
    *
-   * 不取 /pty/shells 首个 acceptable：那会取 /etc/shells 顺序首个（实测
-   * /bin/sh），反而覆盖 server 正确的 $SHELL 默认。/pty/shells 留待将来做
-   * shell 选择器。
+   * command 省略 = server 用默认 $SHELL（v2 无 /pty/shells 端点；
+   * shell 选择器留待将来按 /api/config/shell 另行设计）。
    */
   async openTerminalTab(): Promise<boolean> {
     if (!this.client || !this.scopeDirectory()) {
@@ -4428,14 +4507,16 @@ export class AppStore {
   }
 
   /**
-   * WS 连接 URL 组装（design-terminal-tab §1.2）：connect-token（POST + 专用头）→
-   * ws://…/pty/{id}/connect?ticket=&directory=[&cursor=]。cursor 省略 = 全量回放
-   * （重挂载全新 Terminal 的语义）；携带 = 断线重连增量续传（server 只回放
-   * cursor 之后的输出，0x00 控制帧回新锚点）。**必须带 directory**（实测）：
-   * pty 路由按 directory 实例路由，缺参落到 server cwd 实例 → pty NotFound 404。
+   * WS 连接 URL 组装（design-terminal-tab §1.2；v2 契约 M6b 活体核对）：
+   * connect-token（POST + 专用头）→
+   * ws://…/api/pty/{id}/connect?ticket=&location[directory]=&cursor=。cursor
+   * 省略 = 全量回放（重挂载全新 Terminal 的语义）；携带 = 断线重连增量续传
+   * （server 只回放 cursor 之后的输出，0x00 控制帧回新锚点 {cursor:N}——JSON）。
    * 返回三态：{url} 组装成功；{gone:true} = token 请求 404（pty 已不在
-   * server——退出被 legacy 路由回收 / server 重启内存态丢失，调用方应标终态
-   * 不再重试）；null = 瞬态失败（网络/未连接/无 Tab directory，可退避重试）。
+   * server——PtyNotFoundError，调用方应标终态不再重试）；null = 瞬态失败
+   * （网络/未连接/无 Tab directory，可退避重试）。
+   * close 分流（v2 实测）：1000 = live 内自然退出（exit/Ctrl+D）；4404
+   * "session exited" = 连接时 pty 已退出——terminal-view 的既有分流不变。
    */
   async ptyConnectUrl(
     ptyID: string,
@@ -4446,10 +4527,10 @@ export class AppStore {
     if (!directory) return null
     try {
       const ticket = await this.client.ptyConnectToken(ptyID, directory)
-      const qs = new URLSearchParams({ ticket: ticket.ticket, directory })
+      const qs = new URLSearchParams({ ticket: ticket.ticket, "location[directory]": directory })
       if (cursor !== undefined) qs.set("cursor", String(cursor))
       return {
-        url: `${this.client.ptyWsOrigin()}/pty/${encodeURIComponent(ptyID)}/connect?${qs.toString()}`,
+        url: `${this.client.ptyWsOrigin()}/api/pty/${encodeURIComponent(ptyID)}/connect?${qs.toString()}`,
       }
     } catch (e) {
       if (e instanceof ApiError && e.kind === "not-found") return { gone: true }
@@ -4467,7 +4548,7 @@ export class AppStore {
 
   /**
    * 关终端 Tab = 杀 pty（design-terminal-tab §1.1）：DELETE（404 = 已退出被
-   * legacy 路由回收，视为成功）；入关闭栈（Ctrl+Shift+T 恢复 = 原目录新建）。
+   * 路由回收，视为成功）；入关闭栈（Ctrl+Shift+T 恢复 = 原目录新建）。
    */
   async closeTerminalTab(ptyID: string): Promise<void> {
     const key = `terminal:${ptyID}`
@@ -4827,14 +4908,14 @@ export class AppStore {
         )[0]
         if (session) {
           const page = await client
-            .listMessagesPage(session.id, session.directory ?? directory, { limit: 100 })
+            .listMessagesPage(session.id, { limit: 100 })
             .catch(() => null)
           const lastUser = [...(page?.entries ?? [])]
             .reverse()
             .find((m) => m.info.role === "user")
           files =
             lastUser != null
-              ? await client.listSessionDiff(session.id, session.directory ?? directory, lastUser.info.id)
+              ? await client.listSessionDiff(session.id, lastUser.info.id)
               : []
         } else {
           files = []
@@ -4855,9 +4936,8 @@ export class AppStore {
    *  口径不带 workspace）；缺省 = 当前作用域（openFileTab 时 Tab 归属即当前作用域） */
   async loadFileContent(absolutePath: string, directory?: string) {
     const dir = directory ?? this.scopeQuery.directory
-    const workspace = directory == null ? this.scopeQuery.workspace : undefined
     try {
-      const fc = await this.client!.readFileContent(dir, absolutePath, workspace)
+      const fc = await this.client!.readFileContent(dir, absolutePath)
       this.fileContents.set(absolutePath, fileContentEntry(fc))
     } catch (e) {
       this.fileContents.set(absolutePath, {
@@ -4883,10 +4963,10 @@ export class AppStore {
     if (!client || (cached && !cached.error) || this.fileImageInflight.has(absolutePath)) {
       return
     }
-    const { directory, workspace } = this.scopeQuery
+    const { directory } = this.scopeQuery
     this.fileImageInflight.add(absolutePath)
     void client
-      .readFileContent(directory, absolutePath, workspace)
+      .readFileContent(directory, absolutePath)
       .then((fc) => {
         if (this.client !== client) return
         this.fileContents.set(absolutePath, fileContentEntry(fc))
@@ -5185,26 +5265,24 @@ export class AppStore {
   private ensureScopeFor(entry: ClosedTabEntry): boolean {
     const dir = entry.directory
     if (!dir || this.scopeDirectory() === dir) return true
-    // 当前项目内（仅普通项目——global 项目 sandboxes 恒空，跨目录恢复走 entry
-    // 分支，否则会被误判不可达）：项目根或 worktree
+    // 当前项目内：项目根或 worktree
     const cur = this.currentProject
-    if (cur && entry.projectId === cur.id && cur.id !== GLOBAL_PROJECT_ID) {
+    if (cur && entry.projectId === cur.id) {
       if (dir === cur.worktree) void this.setCurrentWorkspace(null)
       else if ((cur.sandboxes ?? []).includes(dir)) void this.setCurrentWorkspace(dir)
       else return false
       return true
     }
-    // 其他已打开 entry：entry 根/global 目录走 openEntry；普通项目的 worktree
-    // 一步直达 setCurrentProject（= openProject(projectId, dir)，同步段落位——
-    // 先 openEntry 再补 setCurrentWorkspace 会把 Tab 开在项目根作用域）
+    // 其他已打开 entry：entry 根走 openEntry；项目 worktree 一步直达
+    // setCurrentProject（= openProject(projectId, dir)，同步段落位——先 openEntry
+    // 再补 setCurrentWorkspace 会把 Tab 开在项目根作用域）
     const target = this.openedEntries.find(
       (e) =>
         e.project.id === entry.projectId &&
-        (e.directory === dir ||
-          (!e.isGlobal && (e.project.sandboxes ?? []).includes(dir))),
+        (e.directory === dir || (e.project.sandboxes ?? []).includes(dir)),
     )
     if (!target) return false
-    if (target.isGlobal || dir === target.directory) void this.openEntry(target.key)
+    if (dir === target.directory) void this.openEntry(target.key)
     else void this.setCurrentProject(target.project.id, dir)
     return true
   }
@@ -5278,19 +5356,17 @@ export class AppStore {
     this.emit()
   }
 
-  /** 平铺可遍历行（左栏显示顺序）：entry 行 +（普通项目）其工作区行；
-   *  删除中（清理中）的工作区行排除——与左栏点击禁用同口径（design-layout
-   *  §工作区行），当前作用域不受影响（删当前作用域时 removeWorkspace 同步段
-   *  已跳回项目根） */
+  /** 平铺可遍历行（左栏显示顺序）：entry 行 + 其工作区行（伪项目无 sandboxes
+   *  自然无子行）；删除中（清理中）的工作区行排除——与左栏点击禁用同口径
+   *  （design-layout §工作区行），当前作用域不受影响（删当前作用域时
+   *  removeWorkspace 同步段已跳回项目根） */
   private scopeNavRows(): ScopeNavRow[] {
     const rows: ScopeNavRow[] = []
     for (const e of this.openedEntries) {
       rows.push({ kind: "entry", key: e.key })
-      if (!e.isGlobal) {
-        for (const w of this.workspacesOfProject(e.project.id)) {
-          if (this.isWorkspaceDeleting(e.project.id, w.directory)) continue
-          rows.push({ kind: "ws", projectId: e.project.id, directory: w.directory })
-        }
+      for (const w of this.workspacesOfProject(e.project.id)) {
+        if (this.isWorkspaceDeleting(e.project.id, w.directory)) continue
+        rows.push({ kind: "ws", projectId: e.project.id, directory: w.directory })
       }
     }
     return rows
@@ -5515,11 +5591,10 @@ export class AppStore {
   // ============ 文件树 ============
 
   async loadFileNodes(dirPath: string) {
-    const { directory, workspace } = this.scopeQuery
-    if (!this.client || !directory) return
-    const nodes = await this.client
-      .listFiles(directory, dirPath, workspace)
-      .catch(() => null)
+    const client = this.client
+    const directory = this.scopeQuery.directory
+    if (!client || !directory) return
+    const nodes = await client.listFiles(directory, dirPath).catch(() => null)
     // 闸门：在途请求落地时作用域可能已切走——旧目录节点不得污染新作用域文件树
     if (nodes && this.scopeQuery.directory === directory) {
       this.fileTreeNodes.set(dirPath, nodes)
@@ -5852,11 +5927,8 @@ export class AppStore {
   mountReconciler() {
     this.reconciler = new Reconciler({
       client: () => this.client,
-      // 对账目录源 = 打开项目全集（与事件闸门同源；单全局流下无"订阅集"概念；
-      // global 分支 = 已打开目录 entry，见 openedDirectories）
+      // 对账目录源 = 打开项目全集（与事件闸门同源；单全局流下无"订阅集"概念）
       getOpenedDirectories: () => this.openedDirectories(),
-      // 状态快照目录集同源（全集内每个目录都有事件通道，stale busy 纠正覆盖全部）
-      getStatusDirectories: () => this.openedDirectories(),
       getActiveSessions: () =>
         this.tabs
           .filter((t) => t.kind === "chat")
@@ -5872,14 +5944,8 @@ export class AppStore {
         for (const [pid, list] of byProject) {
           this.applySessionsSnapshot(pid, dir, list)
         }
-        // 旧"无 Tab busy 重置"启发式移除：权威修正由下方 onStatusSnapshot 的
-        // 按目录覆盖合并承担（失败目录保留旧值，不再有 SS-1 式误清）
-      },
-      onStatusSnapshot: (dir, statuses) => {
-        // 闸门：对账在途时项目可能已关/工作区可能已删——过期状态丢弃，
-        // 防复活 closeProject/removeWorkspace 刚 purge 掉的条目（与 sessions 快照同规则）
-        if (!this.isOpenedDirectory(dir)) return
-        this.applyStatusSnapshot(dir, statuses)
+        // v2 状态快照阶段退役（M3a）：无 /session/status 端点——stale busy 由
+        // onMessagesSnapshot 的 finish 推断兜底 + 下一 session.status 事件收敛
       },
       onMessagesSnapshot: (sessionID, msgs) => {
         this.noteSyntheticInSnapshot(sessionID, msgs)

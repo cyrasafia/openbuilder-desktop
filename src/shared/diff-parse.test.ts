@@ -5,7 +5,6 @@
  */
 import { describe, expect, it } from "vitest"
 import { HUNK_CONTEXT_KEEP, parseDiffHunks } from "./diff-parse"
-import { VCS_DIFF_CONTEXT } from "./rest-client"
 
 describe("parseDiffHunks", () => {
   it("git --git 风格文件头全部丢弃；@@ 切界；行号推进正确", () => {
@@ -215,9 +214,9 @@ describe("context 收窄（session diff 整文件 patch，design-diff-view §4.1
     expect(hunks[0].lines.map((l) => l.kind)).toEqual(["+", "+", "+"])
   })
 
-  it("不变量：HUNK_CONTEXT_KEEP >= VCS_DIFF_CONTEXT（/vcs/diff 的 -U patch 幂等通过收窄的前提）", () => {
+  it("不变量：HUNK_CONTEXT_KEEP >= 3（/vcs/diff 的 -U patch 幂等通过收窄的前提）", () => {
     // keep 低于线上 context 时，server 按 -U{n>keep} 产出的 patch 会被再裁剪，
     // 展示 context 少于请求语义——两常量须同向维护（review 意见，防漂移）
-    expect(HUNK_CONTEXT_KEEP).toBeGreaterThanOrEqual(VCS_DIFF_CONTEXT)
+    expect(HUNK_CONTEXT_KEEP).toBeGreaterThanOrEqual(3)
   })
 })

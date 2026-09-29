@@ -76,7 +76,7 @@
 - **作用域 = 待处理卡存活期**：监听（window keydown）挂 `PermissionCard` / `QuestionCard` 组件内，随卡片挂载/卸载；卡片仅在 ChatView（激活 chat Tab）内渲染——`{active?.kind === "chat" && <ChatView/>}` 条件渲染，切走即卸载，**天然仅会话页生效**，不经全局 useShortcuts 分发（同 §1.1 引导页磁贴先例）。授权/问题卡互斥渲染（授权优先），同屏至多一个监听
 - **键位（与按钮点击同路径、同禁用态）**：
   - 授权卡：**Ctrl+N = 拒绝、Ctrl+A = 总是允许、Ctrl+Y = 允许一次**（动作首字母语义；2026-09-28 同日自 Ctrl+1/2/3 改字母——用户决策，数字域让给问题卡选项）
-  - 问题卡：**Ctrl+1..9 = 切换选中选项**（radio 单选替换 / checkbox 增删，与点击同 toggle 语义；第 10+ 项无快捷键）、**Ctrl+0 = 拒绝**（0 = 否定语义，与选项数字域相邻）、**Ctrl+Enter = 下一步/提交**（当前步未选不动作，同按钮禁用态；多子问步进；NumpadEnter 经 `e.key==="Enter"` 一并覆盖）
+  - 问题卡（v2 form 体系，M6a 起字段六型）：**Ctrl+1..9 = 切换选中选项**（radio 单选替换 / checkbox 增删，与点击同 toggle 语义；第 10+ 项无快捷键；**text/number 输入步无选项可切，放行**——2026-09-29 rebase 适配 v2 form 增）、**Ctrl+0 = 拒绝**（0 = 否定语义，与选项数字域相邻）、**Ctrl+Enter = 下一步/提交**（当前步未答不动作，同按钮禁用态——选项步未选恒禁、输入步 required 空禁/可空不禁；多字段步进；NumpadEnter 经 `e.key==="Enter"` 一并覆盖）
 - **角标提示**：Ctrl（mac ⌘，metaKey 等价）按住期间按钮/选项行**右上角**显示键位角标（`.pending-key-badge`，同 §1.1 磁贴角标 idiom；Enter 显示 "↵"）——按住态跟踪复用 §1.1 的 ctrl-held 模块级单例（挂载晚于 keydown 的初始态问题已解）。回复中（replying，按钮禁用）/卡片收起不渲染（快捷键同样不动作，同引导页"禁用磁贴不显示角标"）。**字形纵向居中（2026-09-28 二修，review 反馈"文字相对角标边框靠上"）**：键位字符用 `--font-mono`（同 `.sc-kbd` 键位 chip 惯例）——headless Electron 像素实测（8× 放大 0.125px 分辨率、真实级联、dpr 1/1.25/1.5/2、X11/Wayland、zh-CN lang 均一致）：sans（system-ui）下 "1" 因字形自带旗+底脚 ink 高 9px（其余字形 8px），居中偏上 0.5px（上白隙 1px/下 2px，2:1 可感知）；mono 数字/字母 ink 高度均一，全字形居中偏差 0.00px。居中机制维持 flex + line-height:1（text-box-trim 实测在 flex 匿名项上无效、block 布局变体全部更差）。**例外 ↵（.enter 修饰类）**：mono 字体下该符号偏低 1.5–1.75px，保留 sans（偏差 ≤0.5px）。期间走过一次弯路：把角标改为宿主右缘垂直居中 + 选项行 20px 留位（用户否决——右上角放置本就符合预期），已回退
 - **守卫**：`isComposing` 不触发（fcitx5）；已 preventDefault 的事件不处理（内层消费优先）；Shift/Alt 组合不触发；repeat 不触发（checkbox 连按连切、重复提交）；**overlay 遮挡（overlayCount>0）不动作**（Alt 域/Ctrl+W 同闸门语义——ConfirmDialog 的 Enter=确认自带 stopPropagation 先于 window，闸门是遮罩下无动作的双保险）；卡片收起（collapsed）不动作（按钮不可见，角标亦不显示）
 - **effect 不带依赖数组**（每次渲染重挂）：监听闭包恒新——`replying`/`collapsed`/`step` 等守卫不 stale（§1.1 修复教训的泛化：state 闭包过期会让"回复中不动作"守卫失效）
@@ -192,7 +192,7 @@ private closedTabs: ClosedTabEntry[] = []   // push 尾 / pop 尾，上限 20（
 - Alt+N：当前项目新建（随机 slug）并切换到新 worktree；global 不动作
 - Ctrl+O 放行无副作用（Electron 默认菜单无该加速键，§0.2）
 - §1.1：引导页 Ctrl+1/2/3 开 diff/终端/网页 Tab（禁用态不动作）；Ctrl 按住三磁贴显数字角标、松开/失焦消失；离开引导页后按键无动作
-- §1.1b：会话页授权卡 Ctrl+N/A/Y → 拒绝/总是允许/允许一次（preventDefault，与按钮点击同响应；Ctrl+A/Y 文本域聚焦让行 全选/redo、消息区聚焦由 onKeySelectAll 先行消费）；问题卡 Ctrl+1..9 切换选项（radio 排他/checkbox 增删）、Ctrl+0 拒绝、Ctrl+Enter 下一步/末步提交（未选不动作）；回复中/收起/overlay 遮挡不动作；Ctrl 按住按钮与选项显角标（禁用/收起不显，Enter 显示 "↵"）、松开/失焦消失；离开会话页（切 Tab/关 Tab）按键无动作；输入框聚焦时 N 照常动作且无损打字（Ctrl+A/Y 让行 全选/redo）
+- §1.1b：会话页授权卡 Ctrl+N/A/Y → 拒绝/总是允许/允许一次（preventDefault，与按钮点击同响应；Ctrl+A/Y 文本域聚焦让行 全选/redo、消息区聚焦由 onKeySelectAll 先行消费）；问题卡 Ctrl+1..9 切换选项（radio 排他/checkbox 增删；v2 form 输入步放行）、Ctrl+0 拒绝、Ctrl+Enter 下一步/末步提交（当前步未答不动作）；回复中/收起/overlay 遮挡不动作；Ctrl 按住按钮与选项显角标（禁用/收起不显，Enter 显示 "↵"）、松开/失焦消失；离开会话页（切 Tab/关 Tab）按键无动作；输入框聚焦时 N 照常动作且无损打字（Ctrl+A/Y 让行 全选/redo）
 - `npm run test` / `typecheck` / `build` 全绿
 
 ## 8. 设置页快捷键列表（2026-09-06）

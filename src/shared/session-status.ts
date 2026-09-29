@@ -10,41 +10,6 @@
  */
 import type { Message, SessionStatusValue } from "./api-types"
 
-export type StatusSourceIndex = Map<string, string>
-
-/**
- * 按目录覆盖合并一份 REST 状态快照（仅对来自该目录的条目拥有权威）。
- * 返回新 Map（immutable 风格，与 session-merge/message-merge 一致）。
- */
-export function mergeStatusSnapshot(
-  status: Map<string, SessionStatusValue>,
-  sources: StatusSourceIndex,
-  directory: string,
-  fresh: Record<string, SessionStatusValue>,
-): { status: Map<string, SessionStatusValue>; sources: StatusSourceIndex } {
-  const nextStatus = new Map(status)
-  const nextSources = new Map(sources)
-  const freshIds = new Set(Object.keys(fresh))
-  for (const [sid, st] of Object.entries(fresh)) {
-    if (!st?.type) continue
-    if (st.type === "idle") {
-      nextStatus.delete(sid)
-      nextSources.delete(sid)
-    } else {
-      nextStatus.set(sid, st)
-      nextSources.set(sid, directory)
-    }
-  }
-  // covered ⇒ idle：记录来源为本目录、但 fresh 里缺席 ⇒ 已结束（server 侧 idle 即删除条目）
-  for (const [sid, dir] of nextSources) {
-    if (dir === directory && !freshIds.has(sid)) {
-      nextStatus.delete(sid)
-      nextSources.delete(sid)
-    }
-  }
-  return { status: nextStatus, sources: nextSources }
-}
-
 /** 终态 finish 判定（D-SS-B：stop/error 是终态；tool-calls 中间步骤、null 生成中，均不触发） */
 export function isTerminalFinish(finish: unknown): boolean {
   return finish === "stop" || finish === "error"
