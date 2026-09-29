@@ -3332,7 +3332,10 @@ export class AppStore {
     }
     let dirs: string[] | null = null
     try {
-      dirs = (await client.listWorktrees(projectId)).map((w) => w.directory)
+      // server 返回创建逆序（新创建的在上，2.0.18 活体实测 2026-09-29，契约无显式
+      // 排序保证——WorktreeDirectory 无时间戳字段，数组序是创建序唯一载体），
+      // 反转为创建顺序（新建的在最后）
+      dirs = (await client.listWorktrees(projectId)).map((w) => w.directory).reverse()
     } catch {
       dirs = null
     }

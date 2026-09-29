@@ -713,14 +713,16 @@ describe("worktree 库存（v2 权威源，2026-09-29：sandboxes 冻结）", ()
     // sandboxes 冻结态：残留幽灵 GHOST、缺他端新建 WT3
     projectList = [{ ...project(), sandboxes: [WT1, WT2, GHOST] }]
     const cv2 = fakeClient()
+    // server 返回创建逆序（新创建的在上）
     cv2.listWorktrees = async () => [
       { directory: ROOT },
-      { directory: WT1, strategy: "git" },
-      { directory: WT2, strategy: "git" },
       { directory: WT3, strategy: "git" },
+      { directory: WT2, strategy: "git" },
+      { directory: WT1, strategy: "git" },
     ]
     await store.syncWorktrees()
     const dirs = store.workspacesOfProject("proj1").map((w) => w.directory)
+    // 客户端反转为创建顺序（新建的在最后）
     expect(dirs).toEqual([WT1, WT2, WT3])
     // 库存目录 union 进内部 sandboxes：事件闸门/作用域/快照目录集受益
     const sandboxes = store.projects.find((p) => p.id === "proj1")?.sandboxes
