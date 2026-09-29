@@ -88,6 +88,8 @@
 
 #### M6d 收敛发版
 
+**已落地（2026-09-29）**：v1 面删除（rest-client.ts 原文件 + v1 测试 + api-types 的 HealthInfo/ConfigProviders/ProviderCatalog/ProviderInfo(v1)/Todo/PtyShell 死类型 + model-catalog 的 parseModels/parseCatalog）；`rest-client-v2.ts` 更名 `rest-client.ts`、类名 RestClientV2 → RestClient、AppStore 双字段合一（client 即 v2 唯一实例）；main 进程两处 v1 探活换绑（managed-server 健康等待 + scan 发现扫描 → `GET /api/info`，v2 版本前缀校验）；**Provider 页签降级移除**（v2 credential/integration 无 API key 写入路径——spec-v0.5 降级表 #2）；欢迎屏测试连接换 serverInfo（unsupported → 「需要 v2」指引）。全局 grep 无 v1 根路径调用残留（注释中的历史提及已改写或加注记）。
+
 - 删除 v1 面（rest-client.ts/api-types.ts 及 v1 测试）、`rest-client-v2.ts` 更名 `rest-client.ts`（或 import 统一改指），全局 grep `/session?`（根路径）/`/project`（非 /api 前缀）/`/global/event` 等无残留；
 - AGENTS.md（联调说明、契约约束换 pin 至 opencode_openapi_v2.json、归档锁定语义修订——D1 metadata.archivedAt）、spec-v0.5、版本号 0.5.0（package.json + PKGBUILD + spec 三落点）+ `git tag v0.5`；
 - 文档同步复核：`docs/design-pending-cards.md`（M6a 已改写 v2 契约，检查回填节 M6c 改动后是否仍一致）、其余 design 文档中残留的 v1 端点引用（grep `/session`、`/permission`、`/question` 等根路径）；

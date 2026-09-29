@@ -242,19 +242,21 @@ export async function scanBinaries(deps: Partial<ScanDeps> = {}): Promise<Binary
 
 // ============ server 扫描 ============
 
-/** 候选健康验证：不可连/不健康 = null；健康 = 版本（缺失时 null 值随健康位返回） */
+/** 候选健康验证：不可连/不健康 = null；健康 = 版本（缺失时 null 值随健康位返回）。
+ *  v2 `GET /api/info`（v0.5 起唯一支持面）——版本字段直接在响应顶层；v1
+ *  /global/health 已消亡，v1 server 探活 404/HTML 即被淘汰（双兼容裁定） */
 async function healthCheck(
   fetchFn: FetchFn,
   url: string,
 ): Promise<{ healthy: true; version: string | null } | null> {
   try {
-    const res = await fetchFn(`${url}/global/health`, {
+    const res = await fetchFn(`${url}/api/info`, {
       signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
     })
     if (!res.ok) return null
-    const body = (await res.json()) as { healthy?: unknown; version?: unknown }
-    if (body.healthy !== true) return null
-    return { healthy: true, version: typeof body.version === "string" ? body.version : null }
+    const body = (await res.json()) as { version?: unknown }
+    if (typeof body.version !== "string" || !body.version.startsWith("2.")) return null
+    return { healthy: true, version: body.version }
   } catch {
     return null
   }

@@ -4,7 +4,7 @@ import { useI18n, useStore } from "../app"
 import { ConfirmDialog } from "./confirm-dialog"
 import { relativeTime } from "../i18n"
 import type { Project, Session } from "@shared/api-types"
-import { MIN_SERVER_VERSION } from "@shared/semver"
+import { MIN_SERVER_VERSION_V2 } from "@shared/semver"
 import { managedNoticeText } from "./managed-notice"
 import { PanelResizeHandle } from "./panel-resize"
 
@@ -147,7 +147,7 @@ function ServerStatus() {
     store.serverVersionWarning
       ? t.serverVersionWarn
           .replace("{version}", store.serverVersionWarning.version)
-          .replace(/\{min\}/g, MIN_SERVER_VERSION)
+          .replace(/\{min\}/g, MIN_SERVER_VERSION_V2)
       : null,
     store.managedNotice ? managedNoticeText(store.managedNotice, t) : null,
   ]

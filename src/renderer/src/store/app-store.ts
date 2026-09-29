@@ -3,7 +3,6 @@
  * 事件闸门、乐观消息、SSE 生命周期都在这里收敛。
  */
 import { RestClient, ApiError } from "@shared/rest-client"
-import { RestClientV2, ApiError as ApiErrorV2 } from "@shared/rest-client-v2"
 import type { V2ModelInfo } from "@shared/api-v2-types"
 import {
   archivedAtOf,
@@ -133,7 +132,7 @@ const PANEL_LIMITS = {
  * 明确「仅支持 v2」指引；auth（401）→ 提示凭据；其余透传错误消息。
  */
 function connectProbeError(e: unknown): string {
-  if (e instanceof ApiErrorV2) {
+  if (e instanceof ApiError) {
     if (e.kind === "unsupported" || e.kind === "not-found")
       return "服务器版本不支持：v0.5 起仅支持 opencode v2 server"
     if (e.kind === "auth") return "认证失败：v2 server 需要密码（检查服务器的用户名/密码设置）"
@@ -440,12 +439,6 @@ export class AppStore {
    */
   pendingPermissions = new Map<string, PendingPermission>()
   pendingQuestions = new Map<string, PendingQuestion>()
-  /**
-   * 会话任务列表（design-task-list，纯展示）：sessionID → 全量列表（todo.updated
-   * 与 REST 快照均整表替换，无合并）。生命周期随会话运行时（关 Tab/删会话经
-   * cleanupSessionState 卸载，teardown 全清）——重开 Tab 由激活回填补齐。
-   */
-
   // ---- UI 状态 ----
   tabs: TabEntity[] = []
   activeTabKey: string | null = null
@@ -612,9 +605,9 @@ export class AppStore {
   >()
 
   // ---- 内部 ----
+  /** 唯一 REST client（v2；连接成功置位、teardown 置 null——全 store 的连接哨兵） */
   private client: RestClient | null = null
-  /** v2 client（plan-v2-protocol M1：探活/项目/会话列表已换绑；其余子系统逐里程碑迁移，M6 收敛后取代 v1 client） */
-  private clientV2: RestClientV2 | null = null
+  /** 对账引擎（SSE 断连恢复后重拉快照，挂载于 connect；deps.client 即唯一 client） */
   private reconciler: Reconciler | null = null
   private listeners = new Set<Listener>()
   private snapshotHandlers: Array<() => void> = []
@@ -786,19 +779,18 @@ export class AppStore {
     }
 
     const client = new RestClient({ baseUrl, username, password })
-    const clientV2 = new RestClientV2({ baseUrl, username, password })
     let projects: Project[]
     try {
       // v2 探活（GET /api/info，取代 v1 /global/health）：v1 server 对未知 /api 路径
       // 返回 SPA fallback（200 HTML）或 404 → ApiError unsupported/not-found →
       // 明确报错指引（双兼容裁定：v0.5 起仅支持 v2，不做协议分派）
-      const info = await clientV2.serverInfo()
+      const info = await client.serverInfo()
       if (stale()) return
       // 版本下限校验：v2 以 GA（2.0.0）为下限，仅提示不阻断
       this.serverVersionWarning = belowMinServerVersion(info.version, MIN_SERVER_VERSION_V2)
         ? { version: info.version }
         : null
-      projects = (await clientV2.listProjects()).map(toInternalProject)
+      projects = (await client.listProjects()).map(toInternalProject)
     } catch (e) {
       if (stale()) return
       this.connectionState = "disconnected"
@@ -810,7 +802,6 @@ export class AppStore {
 
     // 全部快照成功后才暴露 client（失败路径不悬挂）
     this.client = client
-    this.clientV2 = clientV2
     this.projects = projects
     // v1→v2 持久化键迁移（M1b，连接期一次）：global\0<dir> entry 键与
     // currentProjectId="global" 按 worktree 匹配转项目 ID（含伪项目行）；未匹配
@@ -994,7 +985,7 @@ export class AppStore {
     this.sseSubscriber = null
     // pty 全杀（fire-and-forget）+ 运行时全清——**必须在 client 置 null 之前**
     // 执行（评审 H2：置 null 后再杀是死代码，远程 server 留孤儿进程）
-    const killClient = this.clientV2
+    const killClient = this.client
     if (killClient) {
       for (const tab of this.tabs) {
         if (tab.kind !== "terminal" || !tab.directory) continue
@@ -1019,7 +1010,6 @@ export class AppStore {
     // openProjectPicker 的已开短路会吃掉新一次直达）
     this.pickerOpen = false
     this.client = null
-    this.clientV2 = null
     this.managedBaseUrl = null
     this.projects = []
     this.sessionsByProject.clear()
@@ -1845,11 +1835,11 @@ export class AppStore {
    * 匹配（同毫秒并发的 createdAt 不可区分，评审 2026-09-28）。
    */
   private async refreshMessagesAfterPrompt(sessionID: string, optimisticLocalId: string, optimisticCreatedAt: number) {
-    const clientV2 = this.clientV2
+    const client = this.client
     const session = this.findSession(sessionID)
-    if (!clientV2 || !session) return
-    const page = await clientV2.listMessagesPage(sessionID, { limit: 20 }).catch(() => null)
-    if (this.clientV2 !== clientV2 || !page) return
+    if (!client || !session) return
+    const page = await client.listMessagesPage(sessionID, { limit: 20 }).catch(() => null)
+    if (this.client !== client || !page) return
     this.mergeMessagePage(sessionID, page.entries)
     // 投影 user 消息到达（created >= 乐观创建时刻）→ **精确**清除该条乐观
     // （评审 2026-09-28：全清会在 busy 补充发送（design-supplement-send）下误清
@@ -1890,12 +1880,12 @@ export class AppStore {
       this.conversationTailDirty.add(sessionID)
       return
     }
-    const clientV2 = this.clientV2
-    if (!clientV2) return
+    const client = this.client
+    if (!client) return
     this.conversationTailInflight.add(sessionID)
     try {
-      const page = await clientV2.listMessagesPage(sessionID, { limit: 20 }).catch(() => null)
-      if (this.clientV2 === clientV2 && page) {
+      const page = await client.listMessagesPage(sessionID, { limit: 20 }).catch(() => null)
+      if (this.client === client && page) {
         const knownUsers = new Set(
           [...(this.messagesBySession.get(sessionID)?.values() ?? [])]
             .filter((m) => m.info.role === "user")
@@ -2172,19 +2162,19 @@ export class AppStore {
    * 不再打开（静默返回，弹窗已卸载无错误呈现方）。
    */
   async createProjectFromDirectory(directory: string, signal?: AbortSignal): Promise<void> {
-    const clientV2 = this.clientV2
-    if (!clientV2) throw new Error("未连接服务器")
+    const client = this.client
+    if (!client) throw new Error("未连接服务器")
     // v2：GET /api/location?location[directory]= 让 server 解析（resolve → upsert：
     // git 仓库 → 独立项目；非 git → 目录哈希伪项目行，用户裁定 A——统一走普通
     // 项目行，v1 的 global 分支退役）
-    const location = await clientV2.resolveLocation(directory)
+    const location = await client.resolveLocation(directory)
     if (signal?.aborted) return
     // 在途闸门：注册期间可能已断连/切 profile——不打开过期解析结果（抛错让选择器呈现，不静默）
-    if (this.clientV2 !== clientV2) throw new Error("连接已断开，请重试")
+    if (this.client !== client) throw new Error("连接已断开，请重试")
     // 失败必须上抛：projects 仍是旧列表（不含新项目）时继续打开会落进
     // "opened 指向不存在项目"的不一致态（currentProject 为 null、左栏无行，
     // 要等 60s syncWorktrees 才自愈）——评审 2026-08-30 R1
-    const fresh = (await clientV2.listProjects()).map(toInternalProject)
+    const fresh = (await client.listProjects()).map(toInternalProject)
     if (signal?.aborted) return
     // projects 是左栏/打开流数据源，必须先含新项目再 openProject
     this.projects = fresh
@@ -2760,7 +2750,7 @@ export class AppStore {
    * 拉取项目会话快照：项目根 + 各 worktree 目录**逐目录**拉取（实测
    * /session?directory=X 精确匹配，项目根快照不含 worktree 会话，切进工作区/
    * 左栏指示器都依赖 worktree 目录有自己的快照）；合并按 directory 分域。
-   * 同一批目录附带拉会话状态快照（GET /session/status，冷启动/项目打开路径；
+   * 状态快照端点已随 v2 退役（M3a：状态事件驱动 + finish 推断兜底；
    * 重连对账由 Reconciler 负责）。
    * 成功落地的目录记入 snapshottedDirs（applySessionsSnapshot 统一维护，含对账
    * 路径）——restoreScopeTabs 以此区分"真实空目录"（可写空记忆哨兵）与
@@ -2770,8 +2760,8 @@ export class AppStore {
   private snapshottedDirs = new Set<string>()
 
   async refreshSessionsForProject(project: Project) {
-    const clientV2 = this.clientV2
-    if (!clientV2) return
+    const client = this.client
+    if (!client) return
     const dirs = [...new Set([project.worktree, ...(project.sandboxes ?? [])])]
     await runLimited(dirs, 3, async (dir) => {
       // v2：flat directory query + {data, cursor} envelope；limit 200 覆盖 v0.x 规模
@@ -2779,7 +2769,7 @@ export class AppStore {
       // Tab 收敛（死会话关闭）与 archivedSessions 展示段依赖其存在；展示层
       // 过滤在 scopeSessions（!time.archived）——D1 双源过滤（metadata.archivedAt）
       // 是 M2 归档写入落地时一并接线
-      const page = await clientV2
+      const page = await client
         .listSessions({ directory: dir, limit: 200 })
         .catch(() => null)
       if (page === null) return
@@ -2798,8 +2788,8 @@ export class AppStore {
    *  新 worktree 随 SSE 事件到达，用户切过去时即见）。 */
   async createWorkspace(projectId: string = this.currentProject?.id ?? ""): Promise<{ ok: boolean; error?: string }> {
     const project = this.projects.find((p) => p.id === projectId)
-    const clientV2 = this.clientV2
-    if (!clientV2 || !project) return { ok: false, error: "no project" }
+    const client = this.client
+    if (!client || !project) return { ok: false, error: "no project" }
     // 非 git 项目（v2 伪项目行）：无 worktree 概念（左栏也不渲染该入口，此处兜底）
     if (!project.vcs) {
       return { ok: false, error: "non-git project has no worktree" }
@@ -2807,7 +2797,7 @@ export class AppStore {
     const isCurrent = project.id === this.currentProject?.id
     try {
       // v2：name 省略 = server 随机 slug；父目录省略 = 项目配置/默认数据目录
-      const result = await clientV2.createWorktree(project.id)
+      const result = await client.createWorktree(project.id)
       // worktree API 返回轻量对象，重拉列表拿完整 Workspace 记录（刷新全局 projects）
       await this.refreshWorkspacesForProject(project)
       if (isCurrent && this.currentProject?.sandboxes?.includes(result.directory)) {
@@ -2834,8 +2824,8 @@ export class AppStore {
     projectId: string = this.currentProject?.id ?? "",
   ): Promise<{ ok: boolean; error?: string }> {
     const project = this.projects.find((p) => p.id === projectId)
-    const clientV2 = this.clientV2
-    if (!clientV2 || !project) return { ok: false, error: "no project" }
+    const client = this.client
+    if (!client || !project) return { ok: false, error: "no project" }
     const deleteKey = `${project.id}\u0000${directory}`
     // 重入防御：同行删除在途时再触发（UI 已禁用，兜底）
     if (this.deletingWorkspaces.has(deleteKey)) return { ok: false, error: "deleting" }
@@ -2869,12 +2859,12 @@ export class AppStore {
         }
       }
       await Promise.all(
-        sessionIds.map((id) => clientV2.deleteSession(id).catch(() => {})),
+        sessionIds.map((id) => client.deleteSession(id).catch(() => {})),
       )
       // force=false 首发：脏 worktree 返回 400 WorktreeError{forceRequired:true}
       // （活体实测）→ 置二次确认态，用户确认后带 force 重试（M5 UX）
       const force = this.forceDeleteRequests.has(deleteKey)
-      await clientV2.deleteWorktree(project.id, directory, { force })
+      await client.deleteWorktree(project.id, directory, { force })
       // worktree 列表数据源是 Project.sandboxes，重拉项目列表同步（刷新全局 projects）
       await this.refreshWorkspacesForProject(project)
       const restored = await this.unloadWorktreeDirectory(directory, project.id, isCurrent)
@@ -2883,7 +2873,7 @@ export class AppStore {
     } catch (e) {
       // forceRequired：脏 worktree 的 server 拒绝（含未提交变更）——复用确认弹窗
       // 二次确认（文案由 forceDelete 标记切换），非终态报错
-      if (e instanceof ApiErrorV2 && e.forceRequired) {
+      if (e instanceof ApiError && e.forceRequired) {
         this.forceDeleteRequests.add(deleteKey)
         this.pendingWorktreeDelete = { directory, projectId }
         return { ok: false, error: "force-required" }
@@ -3028,16 +3018,16 @@ export class AppStore {
    * 幂等：无变化时只重拉 projects（同 refreshWorkspacesForProject，无害 emit）。
    */
   async syncWorktrees(): Promise<void> {
-    const clientV2 = this.clientV2
-    if (!clientV2) return
+    const client = this.client
+    if (!client) return
     const before = this.projects
-    const fresh = await clientV2
+    const fresh = await client
       .listProjects()
       .then((ps) => ps.map(toInternalProject))
       .catch(() => null)
     if (!fresh) return
     // 在途闸门：diff 期间 client 可能已拆（disconnect/切 profile）
-    if (this.clientV2 !== clientV2) return
+    if (this.client !== client) return
     // 比对每个打开项目（含未打开项目的 worktree 变化不影响左栏展示，跳过）
     const toUnload: Array<{ directory: string; projectId: string; isCurrent: boolean }> = []
     // 新增 sandbox：`worktree.ready` 只发一次不补发，断连窗口内他端创建的事件
@@ -3079,7 +3069,7 @@ export class AppStore {
 
   private async refreshWorkspacesForProject(project: Project) {
     // worktree 列表数据源是 Project.sandboxes（directory 数组，实测 /experimental/workspace 不可靠）
-    const fresh = await this.clientV2
+    const fresh = await this.client
       ?.listProjects()
       .then((ps) => ps.map(toInternalProject))
       .catch(() => null)
@@ -3143,7 +3133,7 @@ export class AppStore {
    * 发送成功才开 Tab（失败保留草稿，重试复用同一会话，不产生空 Tab）。
    */
   async createSession(opts: { openTab?: boolean } = {}): Promise<Session | null> {
-    if (!this.clientV2 || !this.currentProject) return null
+    if (!this.client || !this.currentProject) return null
     const { directory } = this.scopeQuery
     // 全局默认值（per-profile）应用到 POST /session body（D-AM-4）。
     // 有效性校验（AM-IMPL3-4）：POST /session 不校验 model（实测无效模型 200 落库，
@@ -3168,7 +3158,7 @@ export class AppStore {
         )
       : explicitModel
     try {
-      const wire = await this.clientV2.createSession({
+      const wire = await this.client.createSession({
         directory,
         ...(agent ? { agent } : {}),
         ...(model ? { model } : {}),
@@ -3211,11 +3201,11 @@ export class AppStore {
   }
 
   async loadSessionMessages(sessionID: string, directory: string) {
-    const clientV2 = this.clientV2
-    if (!clientV2) return
-    const page = await clientV2.listMessagesPage(sessionID, { limit: 100 }).catch(() => null)
+    const client = this.client
+    if (!client) return
+    const page = await client.listMessagesPage(sessionID, { limit: 100 }).catch(() => null)
     // 世代守卫：await 期间断开/切 profile → 迟到响应不写新连接（同 loadEarlierMessages 模式）
-    if (this.clientV2 !== clientV2) return
+    if (this.client !== client) return
     if (!page) {
       // 失败且无既有状态：置 error 种子（cursor null + 未穷尽 = 可重试态）——
       // 空内容会话无法触发滚动，error 行是唯一重试入口（review P2-1）
@@ -3277,7 +3267,7 @@ export class AppStore {
    * - 失败置 error（UI 重试行），不判穷尽可重试。
    */
   async loadEarlierMessages(sessionID: string) {
-    const client = this.clientV2
+    const client = this.client
     const session = this.findSession(sessionID)
     if (!client || !session) return
     let state = this.sessionPages.get(sessionID)
@@ -3348,15 +3338,15 @@ export class AppStore {
    * 识别层双源不受影响
    */
   private async patchSessionArchive(sessionID: string, archivedAt: number | null): Promise<boolean> {
-    const clientV2 = this.clientV2
-    if (!clientV2) return false
+    const client = this.client
+    if (!client) return false
     const session = this.findSession(sessionID)
     if (!session) return false
     const metadata = { ...(session.metadata ?? {}) }
     if (archivedAt == null) delete metadata.archivedAt
     else metadata.archivedAt = archivedAt
     try {
-      await clientV2.updateSession(sessionID, { metadata })
+      await client.updateSession(sessionID, { metadata })
       const map = this.sessionsByProject.get(session.projectID)
       map?.set(sessionID, { ...session, metadata })
       this.emit()
@@ -3444,7 +3434,7 @@ export class AppStore {
       // v2 text 必填且原样落库（fromUserMessage 直接入投影）：纯附件/纯引用
       // 发送以零宽空格占位——v1 语义是回显只有文件 chip，"." 会成为可见噪音
       // （评审 2026-09-28）
-      await this.clientV2!.prompt(sessionID, { text: text || "\u200b", files })
+      await this.client!.prompt(sessionID, { text: text || "\u200b", files })
       // 回执驱动（plan M4）：v2 无 user 消息 SSE 事件——POST 200 准入后首页
       // 重取拾取投影 user 消息（真实 id），乐观清除挂在其到达
       void this.refreshMessagesAfterPrompt(sessionID, optimistic.localId, optimistic.createdAt)
@@ -3475,8 +3465,8 @@ export class AppStore {
   // 会话重命名（design-tab-drag-rename §2，v0.3 恢复入口：chat Tab 双击行内编辑；
   // 删除入口仍无）。他端重命名经 session.updated 事件同步 Tab 标题（既有路径）。
   async renameSession(sessionID: string, title: string): Promise<boolean> {
-    const clientV2 = this.clientV2
-    if (!clientV2) return false
+    const client = this.client
+    if (!client) return false
     const session = this.findSession(sessionID)
     if (!session) return false
     // 空标题防御：v2 契约 title:"" 会触发 server 生成随机标题（非拒绝）——
@@ -3486,7 +3476,7 @@ export class AppStore {
     try {
       // v2 PATCH 204 无返回体：本地乐观落地（title 必填回填 slug 语义由 server
       // 收敛，重连快照对账兜底）
-      await clientV2.updateSession(sessionID, { title: trimmed })
+      await client.updateSession(sessionID, { title: trimmed })
       const map = this.sessionsByProject.get(session.projectID)
       map?.set(sessionID, { ...session, title: trimmed })
       // Tab 标题即时同步（SSE 回环亦可到达，此处消除本地等待）
@@ -3516,11 +3506,11 @@ export class AppStore {
   /** opts.directory 不参与请求（v2 fork 经 location middleware 取作用域）——
    *  仅作僵尸 Tab 守卫：本地无源会话记录且未直传时不发起（M5 评审记录） */
   forkSession(sessionID: string, opts: { messageID?: string; directory?: string } = {}): void {
-    const clientV2 = this.clientV2
-    if (!clientV2) return
+    const client = this.client
+    if (!client) return
     const directory = opts.directory ?? this.findSession(sessionID)?.directory
     if (!directory) return
-    void clientV2
+    void client
       .forkSession(sessionID, opts)
       .then((wire) => {
         const forked = toInternalSession(wire)
@@ -3546,7 +3536,7 @@ export class AppStore {
     if (!this.client) return
     const session = this.findSession(sessionID)
     if (!session) return
-    await this.clientV2?.interrupt(sessionID).catch(() => {})
+    await this.client?.interrupt(sessionID).catch(() => {})
   }
 
   // ============ 回滚（design-message-revert） ============
@@ -3603,8 +3593,8 @@ export class AppStore {
     sessionID: string,
     messageID: string,
   ): Promise<{ ok: boolean; error?: string }> {
-    const clientV2 = this.clientV2
-    if (!clientV2) return { ok: false, error: "not connected" }
+    const client = this.client
+    if (!client) return { ok: false, error: "not connected" }
     const session = this.findSession(sessionID)
     if (!session) return { ok: false, error: "session not found" }
     // interrupt 等待 run 结算后才响应（v2 awaitSettlement），随后 stage 不会撞
@@ -3613,7 +3603,7 @@ export class AppStore {
     try {
       // v2 三段式第一段：stage（files:true 同步还原工作区，v1 行为）。
       // 响应 `{data: Revert}`（无完整 Session）——revert 状态本地合成合并
-      const revert = await clientV2.revertStage(sessionID, messageID)
+      const revert = await client.revertStage(sessionID, messageID)
       this.mergeSessionUpdate({ ...session, revert } as typeof session)
       // 斜杠命令回显不回填（design-message-revert §3.3 修订）：展开文本非用户
       // 原文（参数已消费），回填是噪音
@@ -3628,7 +3618,7 @@ export class AppStore {
       return { ok: true }
     } catch (e) {
       const msg =
-        e instanceof ApiErrorV2 && e.body?.name === "SessionBusyError"
+        e instanceof ApiError && e.body?.name === "SessionBusyError"
           ? "会话仍在进行中，请稍后再回滚"
           : e instanceof Error
             ? e.message
@@ -3641,13 +3631,13 @@ export class AppStore {
 
   /** 撤销回滚暂存：恢复文件、清 session.revert */
   async unrevertSession(sessionID: string): Promise<{ ok: boolean; error?: string }> {
-    const clientV2 = this.clientV2
-    if (!clientV2) return { ok: false, error: "not connected" }
+    const client = this.client
+    if (!client) return { ok: false, error: "not connected" }
     const session = this.findSession(sessionID)
     if (!session) return { ok: false, error: "session not found" }
     try {
       // v2 三段式第二段：clear（204 无返回体——revert 状态本地清复合并）
-      await clientV2.revertClear(sessionID)
+      await client.revertClear(sessionID)
       this.mergeSessionUpdate({ ...session, revert: null } as typeof session)
       // 撤销即清输入框：空种子 = 清空草稿（官方 restore→promptSession.reset 语义）。
       // 仅当输入框正承载本地回填文本（种子已消费）时清空——跨客户端回滚/无文本
@@ -3662,7 +3652,7 @@ export class AppStore {
       return { ok: true }
     } catch (e) {
       const msg =
-        e instanceof ApiErrorV2 && e.body?.name === "SessionBusyError"
+        e instanceof ApiError && e.body?.name === "SessionBusyError"
           ? "会话仍在进行中，请稍后再操作"
           : e instanceof Error
             ? e.message
@@ -3723,9 +3713,9 @@ export class AppStore {
    * （浮层显示空态/加载态，不打扰输入）；结果为相对 directory 的路径。
    */
   async searchFiles(query: string, directory: string): Promise<string[] | null> {
-    if (!this.clientV2) return null
+    if (!this.client) return null
     try {
-      return await this.clientV2.findFiles(query, directory)
+      return await this.client.findFiles(query, directory)
     } catch {
       return null
     }
@@ -3740,7 +3730,7 @@ export class AppStore {
    */
 
   async refreshCommands(directory: string | null): Promise<void> {
-    const client = this.clientV2
+    const client = this.client
     if (!client || !directory) return
     const existing = this.commandsInFlight.get(directory)
     if (existing) return existing
@@ -3752,7 +3742,7 @@ export class AppStore {
       } catch {
         result = { ok: false as const }
       }
-      if (this.clientV2 !== client) return
+      if (this.client !== client) return
       this.commandCache = applyCommandFetch(this.commandCache, directory, result)
       this.emit()
     })().finally(() => {
@@ -3772,7 +3762,7 @@ export class AppStore {
     refs?: FileRef[],
     attachments?: Attachment[],
   ): Promise<{ ok: boolean; error?: string }> {
-    if (!this.clientV2) return { ok: false, error: "not connected" }
+    if (!this.client) return { ok: false, error: "not connected" }
     const session = this.findSession(sessionID)
     if (!session) return { ok: false, error: "session not found" }
     const text = arguments_ ? `/${command} ${arguments_}` : `/${command}`
@@ -3798,7 +3788,7 @@ export class AppStore {
         ...(refs ?? []).map((r) => ({ uri: fileRefToFilePart(r).url, name: r.filename })),
         ...(attachments ?? []).map((a) => ({ uri: a.dataUrl, name: a.filename })),
       ]
-      await this.clientV2.sendCommand(
+      await this.client.sendCommand(
         sessionID,
         command,
         arguments_,
@@ -3859,10 +3849,6 @@ export class AppStore {
     )
   }
 
-  //（todo 体系 v2 移除：无端点、无事件（移动端基线「确认移除」）——
-  // sessionTodos/TodoCard/loadSessionTodos/todo.updated case 已删，
-  // design-task-list 的恢复等 server 侧概念回归后另行设计）
-
   /**
    * 会话状态点投影（design-agent-status-indicator + design-error-message §3/§3.4）：
    * waiting > error（retry 退避，红呼吸）> running > failed（报错终局，红静态）> idle。
@@ -3887,7 +3873,7 @@ export class AppStore {
    * onPendingSnapshot（同一合并函数）。
    */
   private async backfillPending() {
-    const client = this.clientV2
+    const client = this.client
     if (!client) return
     const dirs = this.openedDirectories()
     let changed = false
@@ -3898,7 +3884,7 @@ export class AppStore {
       const questions = await client.listPendingForms(dir).catch(() => null)
       // 在途闸门（同 applySessionsSnapshot）：disconnect/切 profile 后丢弃旧连接的
       // 迟到结果，防止写回已清空的 map；目录已出打开集合（关项目/删 worktree）同理
-      if (this.clientV2 !== client || !this.openedDirectories().includes(dir)) return
+      if (this.client !== client || !this.openedDirectories().includes(dir)) return
       // 各类别独立合并；null = 失败保留本地（同 reconcile 路径）
       changed =
         mergePendingSnapshot(
@@ -3938,7 +3924,7 @@ export class AppStore {
     sessionID: string,
     response: "once" | "always" | "reject",
   ): Promise<{ ok: boolean; error?: string }> {
-    const client = this.clientV2
+    const client = this.client
     const p = this.pendingPermissions.get(sessionID)
     if (!client || !p) return { ok: false, error: "no pending permission" }
     try {
@@ -3951,7 +3937,7 @@ export class AppStore {
       this.emit()
       return { ok: true }
     } catch (e) {
-      if (e instanceof ApiErrorV2 && e.status === 404) {
+      if (e instanceof ApiError && e.status === 404) {
         if (this.pendingPermissions.get(sessionID)?.id === p.id) {
           this.pendingPermissions.delete(sessionID)
         }
@@ -3968,7 +3954,7 @@ export class AppStore {
     questionID: string,
     input: Record<number, PendingFieldInput>,
   ): Promise<{ ok: boolean; error?: string }> {
-    const client = this.clientV2
+    const client = this.client
     const q = this.pendingQuestions.get(questionID)
     if (!client || !q) return { ok: false, error: "no pending question" }
     try {
@@ -3977,7 +3963,7 @@ export class AppStore {
       this.emit()
       return { ok: true }
     } catch (e) {
-      if (e instanceof ApiErrorV2 && e.status === 404) {
+      if (e instanceof ApiError && e.status === 404) {
         this.pendingQuestions.delete(questionID)
         this.emit()
         return { ok: true }
@@ -3988,7 +3974,7 @@ export class AppStore {
 
   /** 取消表单卡（v2：DELETE /api/session/:id/form/:formID，M6a）；404 语义同上 */
   async rejectQuestion(questionID: string): Promise<{ ok: boolean; error?: string }> {
-    const client = this.clientV2
+    const client = this.client
     const q = this.pendingQuestions.get(questionID)
     if (!client || !q) return { ok: false, error: "no pending question" }
     try {
@@ -3997,7 +3983,7 @@ export class AppStore {
       this.emit()
       return { ok: true }
     } catch (e) {
-      if (e instanceof ApiErrorV2 && e.status === 404) {
+      if (e instanceof ApiError && e.status === 404) {
         this.pendingQuestions.delete(questionID)
         this.emit()
         return { ok: true }
@@ -4070,7 +4056,7 @@ export class AppStore {
   }
 
   refreshModelCatalog(directory: string | null): Promise<void> {
-    const client = this.clientV2
+    const client = this.client
     if (!client || !directory) return Promise.resolve()
     const existing = this.modelCatalogLoading.get(directory)
     if (existing) return existing
@@ -4087,7 +4073,7 @@ export class AppStore {
         // 两个请求均保留 null（失败即按失败处理）
       }
       // client 身份守卫：迟到于 teardown 的旧 fetch 不写新连接
-      if (this.clientV2 !== client) return
+      if (this.client !== client) return
       const prev = this.modelCatalogs.get(directory)
       if (agents === null && models === null) {
         // 失败保留好缓存（设计错误表"目录加载失败"）；
@@ -4123,7 +4109,7 @@ export class AppStore {
 
   /** 切换会话 agent（v2 client，M6a）：POST 204 → 乐观写本地记录；失败不改本地。 */
   async switchSessionAgent(sessionID: string, agent: string): Promise<boolean> {
-    const client = this.clientV2
+    const client = this.client
     if (!client) return false
     try {
       await client.switchAgent(sessionID, agent)
@@ -4147,7 +4133,7 @@ export class AppStore {
     id: string,
     variant?: string,
   ): Promise<boolean> {
-    const client = this.clientV2
+    const client = this.client
     if (!client) return false
     const session = this.findSession(sessionID)
     // 切模型时若未显式传 variant，按携带规则推导（仅当新模型有同名 variant 才沿用）
@@ -4182,7 +4168,7 @@ export class AppStore {
     id: string,
     variant: string | undefined,
   ): Promise<boolean> {
-    const client = this.clientV2
+    const client = this.client
     if (!client) return false
     const model: ModelRef = variant ? { id, providerID, variant } : { id, providerID }
     try {
@@ -4348,21 +4334,20 @@ export class AppStore {
    * 归作用域（directory 过滤通用）。失败经 connectionError 呈现（引导页按钮
    * 不额外提示）。
    *
-   * 不取 /pty/shells 首个 acceptable：那会取 /etc/shells 顺序首个（实测
-   * /bin/sh），反而覆盖 server 正确的 $SHELL 默认。/pty/shells 留待将来做
-   * shell 选择器。
+   * command 省略 = server 用默认 $SHELL（v2 无 /pty/shells 端点；
+   * shell 选择器留待将来按 /api/config/shell 另行设计）。
    */
   async openTerminalTab(): Promise<boolean> {
-    if (!this.clientV2 || !this.scopeDirectory()) {
+    if (!this.client || !this.scopeDirectory()) {
       this.connectionError = "无法创建终端：未连接或无作用域"
       this.emit()
       return false
     }
     // 入口同步捕获（M1）：await 期间作用域可能已切走——directory/projectId 用
     // 捕获值（Tab 归属创建时作用域），激活只在仍在该作用域时抢；client 同步捕获
-    // （显示环境 IPC 的 await 会放大窗口：teardown 置 null 后 this.clientV2.createPty
+    // （显示环境 IPC 的 await 会放大窗口：teardown 置 null 后 this.client.createPty
     // 抛 TypeError 落 catch 变晦涩 connectionError——review 2026-09-11）
-    const client = this.clientV2
+    const client = this.client
     const directory = this.scopeDirectory()
     const projectId = this.currentProject?.id ?? ""
     try {
@@ -4433,28 +4418,28 @@ export class AppStore {
     ptyID: string,
     cursor?: number,
   ): Promise<{ url: string } | { gone: true } | null> {
-    if (!this.clientV2) return null
+    if (!this.client) return null
     const directory = this.tabs.find((t) => t.key === `terminal:${ptyID}`)?.directory
     if (!directory) return null
     try {
-      const ticket = await this.clientV2.ptyConnectToken(ptyID, directory)
+      const ticket = await this.client.ptyConnectToken(ptyID, directory)
       const qs = new URLSearchParams({ ticket: ticket.ticket, "location[directory]": directory })
       if (cursor !== undefined) qs.set("cursor", String(cursor))
       return {
-        url: `${this.clientV2.ptyWsOrigin()}/api/pty/${encodeURIComponent(ptyID)}/connect?${qs.toString()}`,
+        url: `${this.client.ptyWsOrigin()}/api/pty/${encodeURIComponent(ptyID)}/connect?${qs.toString()}`,
       }
     } catch (e) {
-      if (e instanceof ApiErrorV2 && e.kind === "not-found") return { gone: true }
+      if (e instanceof ApiError && e.kind === "not-found") return { gone: true }
       return null
     }
   }
 
   /** pty resize 上报（TerminalView 节流调用；失败静默——尺寸下次再同步） */
   reportPtySize(ptyID: string, rows: number, cols: number) {
-    if (!this.clientV2) return
+    if (!this.client) return
     const directory = this.tabs.find((t) => t.key === `terminal:${ptyID}`)?.directory
     if (!directory) return
-    void this.clientV2.updatePtySize(ptyID, directory, { rows, cols }).catch(() => {})
+    void this.client.updatePtySize(ptyID, directory, { rows, cols }).catch(() => {})
   }
 
   /**
@@ -4465,9 +4450,9 @@ export class AppStore {
     const key = `terminal:${ptyID}`
     const tab = this.tabs.find((t) => t.key === key)
     const directory = tab?.directory
-    if (this.clientV2 && directory && !this.ptyRuntimes.get(ptyID)?.exited) {
+    if (this.client && directory && !this.ptyRuntimes.get(ptyID)?.exited) {
       try {
-        await this.clientV2.deletePty(ptyID, directory)
+        await this.client.deletePty(ptyID, directory)
       } catch {
         // 404（已退出）/ 网络失败：本地 Tab 照关（server 侧孤儿由其自身回收）
       }
@@ -4478,12 +4463,12 @@ export class AppStore {
 
   /** 目录卸载（关项目/删工作区/teardown）时杀该目录运行中 pty（fire-and-forget，防孤儿） */
   private killPtyInDirectory(directory: string) {
-    if (!this.clientV2) return
+    if (!this.client) return
     for (const tab of this.tabs) {
       if (tab.kind !== "terminal" || tab.directory !== directory) continue
       const id = tab.key.slice("terminal:".length)
       if (!this.ptyRuntimes.get(id)?.exited) {
-        void this.clientV2.deletePty(id, directory).catch(() => {})
+        void this.client.deletePty(id, directory).catch(() => {})
       }
       this.ptyRuntimes.delete(id)
     }
@@ -4802,8 +4787,7 @@ export class AppStore {
    */
   async loadDiffTab(type: DiffTabType, directory: string) {
     const client = this.client
-    const clientV2 = this.clientV2
-    if (!client || !clientV2) return
+    if (!client) return
     const tabKey = diffTabKey(directory)
     const key = diffDataKey(type, directory)
     const prev = this.diffData.get(key)
@@ -4819,7 +4803,7 @@ export class AppStore {
           directory,
         )[0]
         if (session) {
-          const page = await clientV2
+          const page = await client
             .listMessagesPage(session.id, { limit: 100 })
             .catch(() => null)
           const lastUser = [...(page?.entries ?? [])]
@@ -4827,13 +4811,13 @@ export class AppStore {
             .find((m) => m.info.role === "user")
           files =
             lastUser != null
-              ? await clientV2.listSessionDiff(session.id, lastUser.info.id)
+              ? await client.listSessionDiff(session.id, lastUser.info.id)
               : []
         } else {
           files = []
         }
       } else {
-        files = await clientV2.listVcsDiff(directory, type === "uncommitted" ? "git" : "branch")
+        files = await client.listVcsDiff(directory, type === "uncommitted" ? "git" : "branch")
       }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e)
@@ -4849,7 +4833,7 @@ export class AppStore {
   async loadFileContent(absolutePath: string, directory?: string) {
     const dir = directory ?? this.scopeQuery.directory
     try {
-      const fc = await this.clientV2!.readFileContent(dir, absolutePath)
+      const fc = await this.client!.readFileContent(dir, absolutePath)
       this.fileContents.set(absolutePath, fileContentEntry(fc))
     } catch (e) {
       this.fileContents.set(absolutePath, {
@@ -4870,7 +4854,7 @@ export class AppStore {
    * 丢弃）。不跟随 file watch（监听仅覆盖打开的 file Tab）。
    */
   ensureFileImage(absolutePath: string): void {
-    const client = this.clientV2
+    const client = this.client
     const cached = this.fileContents.get(absolutePath)
     if (!client || (cached && !cached.error) || this.fileImageInflight.has(absolutePath)) {
       return
@@ -4880,11 +4864,11 @@ export class AppStore {
     void client
       .readFileContent(directory, absolutePath)
       .then((fc) => {
-        if (this.clientV2 !== client) return
+        if (this.client !== client) return
         this.fileContents.set(absolutePath, fileContentEntry(fc))
       })
       .catch((e: unknown) => {
-        if (this.clientV2 !== client) return
+        if (this.client !== client) return
         this.fileContents.set(absolutePath, {
           content: "",
           error: e instanceof Error ? e.message : String(e),
@@ -5503,7 +5487,7 @@ export class AppStore {
   // ============ 文件树 ============
 
   async loadFileNodes(dirPath: string) {
-    const client = this.clientV2
+    const client = this.client
     const directory = this.scopeQuery.directory
     if (!client || !directory) return
     const nodes = await client.listFiles(directory, dirPath).catch(() => null)
@@ -5590,7 +5574,7 @@ export class AppStore {
       this.fileReloadDirty.add(file)
       return
     }
-    const client = this.clientV2
+    const client = this.client
     const tab = this.tabs.find((t) => t.kind === "file" && t.key === `file:${file}`)
     if (!client || !tab || !tab.directory) return
     this.fileReloadInflight.add(file)
@@ -5598,11 +5582,11 @@ export class AppStore {
       // directory = Tab 打开时作用域（非当前 scopeQuery）：Tab 跨作用域混排，
       // 事件到达时当前作用域可能已不是该 Tab 的
       const fc = await client.readFileContent(tab.directory, file)
-      if (this.clientV2 !== client || !this.tabs.some((t) => t.key === `file:${file}`)) return
+      if (this.client !== client || !this.tabs.some((t) => t.key === `file:${file}`)) return
       this.fileContents.set(file, fileContentEntry(fc))
       this.emit()
     } catch (e) {
-      if (this.clientV2 !== client || !this.tabs.some((t) => t.key === `file:${file}`)) return
+      if (this.client !== client || !this.tabs.some((t) => t.key === `file:${file}`)) return
       this.fileContents.set(file, {
         content: "",
         error: e instanceof Error ? e.message : String(e),
@@ -5839,7 +5823,6 @@ export class AppStore {
   mountReconciler() {
     this.reconciler = new Reconciler({
       client: () => this.client,
-      clientV2: () => this.clientV2,
       // 对账目录源 = 打开项目全集（与事件闸门同源；单全局流下无"订阅集"概念）
       getOpenedDirectories: () => this.openedDirectories(),
       getActiveSessions: () =>
@@ -5879,7 +5862,7 @@ export class AppStore {
       onPendingSnapshot: (dir, permissions, questions) => {
         // 在途闸门：连接已拆或目录已出打开集合（in-flight reconcile 跨越了 teardown/
         // 关项目）时丢弃，防止写回已清空的 map
-        if (!this.clientV2 || !this.openedDirectories().includes(dir)) return
+        if (!this.client || !this.openedDirectories().includes(dir)) return
         // 各类别独立合并；null = 该目录该类别抓取失败，保留本地
         mergePendingSnapshot(this.pendingPermissions, this.pendingQuestions, dir, permissions, questions)
       },

@@ -1,5 +1,8 @@
 # 会话 Agent / 模型 / 思考强度切换 + 全局默认模型 — 设计文档
 
+> **v2 迁移注记（2026-09-29，M6b/M6d）**：数据源已换绑 `GET /api/agent` + `GET /api/model`——LR-1/D-AM-1 所据「/api/model 只返回 opencode 一家」在 2.0.18 实测已不成立（65 模型跨 5 provider）；v1 `/config/providers`/`/agent` 端点已删除。切换端点 `POST /api/session/:id/{agent,model}`（同过渡面）。wire Agent.Info 的 **id 是标识符、name 是显示标签**（内部 name=id、label=wire name，M6b 评审修复）。详见 design-v2-migration.md 与 model-catalog.ts 头注释。
+
+
 > 参考移动端同类设计：`../openbuilder/docs/design-agent-model-switch.md`（数据源选型、
 > variants/variants-dict 契约、跨 provider 重名、乐观切换等坑均出自该文档五轮评审）。
 > 本文落地桌面端，交互按桌面习惯调整：popover 替代 bottom sheet、工具条并入 composer

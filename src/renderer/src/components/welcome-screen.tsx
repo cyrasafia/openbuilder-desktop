@@ -69,12 +69,14 @@ export function WelcomeScreen() {
       password: profile.password,
     })
     void client
-      .health()
+      .serverInfo()
       .then(() => connectWithProfile(store, profile))
       .catch((e: unknown) => {
         setPickError(
           e instanceof ApiError
-            ? `${t.testFailed} (${e.message})`
+            ? e.kind === "unsupported"
+              ? `${t.testFailed} (${t.serverUnsupportedV2})`
+              : `${t.testFailed} (${e.message})`
             : e instanceof Error
               ? e.message
               : String(e),

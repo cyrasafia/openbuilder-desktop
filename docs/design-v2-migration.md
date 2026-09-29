@@ -119,7 +119,7 @@ v2 server 默认强制密码（移动端基线 §认证）。桌面端影响：
 
 选定后**同步修订 AGENTS.md 锁定语义**条目（架构文档决策记录性质：改写决策与依据）。
 
-**D2 worktree 删除后消失（已确认，2026-09-28）——删除前级联删会话（非归档）**：删除入口调 `DELETE /api/worktree` → `worktree.updated` 事件 → 重拉 `GET /api/worktree?projectID=`（数据源从 `Project.sandboxes` 换到此端点）。外部删除对账：SSE 重连全量对账时 + 项目选择器打开时调 `POST /api/worktree/refresh`。
+**D2 worktree 删除后消失（已确认，2026-09-28）——删除前级联删会话（非归档）**：删除入口调 `DELETE /api/worktree` → `worktree.updated` 事件 → 重拉。**实施修订（M5/M6d）**：原案「数据源换 `GET /api/worktree?projectID=` + `POST /api/worktree/refresh` 对账」未直连实施——列表数据源实况 = `GET /api/project` 的 `Project.sandboxes` 投影，对账走项目列表全量 diff（外部删除等价可发现），端点直连与 refresh 列为 v0.6 优化。外部删除对账：SSE 重连全量对账 + 项目选择器打开时项目列表刷新。
 
 **删除 worktree 时级联删除该 directory 下全部会话（`DELETE /api/session/:id`，连子会话）而非归档**——与现行实现一致（`removeWorkspace`，app-store.ts:2883「删除 worktree 前，先级联删除该目录全部会话」），v2 迁移时语义照搬。这同时消解**同名重建会话重现**问题（store.ts 精确匹配 directory 字符串、无 incarnation 概念——会话已删，重建后无旧会话可重现）；唯兜底场景是对账时发现「他端删除未走本端」（会话残留），按 D3 的悬空标记提示用户手动清理。
 

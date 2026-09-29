@@ -107,18 +107,6 @@ export interface AssistantMessage {
 
 export type Message = UserMessage | AssistantMessage
 
-/**
- * 会话任务（v1 `todo.updated` 载荷；v2 无对应端点/事件——**M6c 起死类型**，
- * 待 M6d 随 v1 类型面整体删除）。
- */
-export interface Todo {
-  content: string
-  /** pending | in_progress | completed | cancelled */
-  status: string
-  /** high | medium | low */
-  priority: string
-}
-
 export type PartType =
   | "text"
   | "reasoning"
@@ -265,12 +253,6 @@ export interface Pty {
   exitCode?: number
 }
 
-export interface PtyShell {
-  path: string
-  name: string
-  acceptable: boolean
-}
-
 export interface PtyTicket {
   ticket: string
   expires_in: number
@@ -342,13 +324,6 @@ export interface Workspace {
   timeUsed?: number
 }
 
-/** POST /experimental/worktree 响应（server 1.18.x 实测） */
-export interface WorktreeResult {
-  name: string
-  branch?: string
-  directory: string
-}
-
 /** GET /vcs/diff 与 GET /session/{id}/diff 的文件级 diff（契约同 SnapshotFileDiff） */
 export interface FileDiff {
   file: string
@@ -356,11 +331,6 @@ export interface FileDiff {
   additions: number
   deletions: number
   status: "added" | "deleted" | "modified"
-}
-
-export interface HealthInfo {
-  healthy: boolean
-  version: string
 }
 
 /** 会话状态（SSE session.status / GET /session/status 的值；server 仅保留非 idle 项） */
@@ -398,7 +368,7 @@ export interface AgentInfo {
 }
 
 /**
- * 模型（`GET /config/providers` 拍平后的项）。`variants` 为 dict/List 双形态解析后的 keys。
+ * 模型（v2 `GET /api/model` 经 parseModelsV2 转换后的项）。`variants` 为 dict/List 双形态解析后的 keys。
  * 思考强度 = variant id（如 low/high/max）。
  */
 export interface ModelInfo {
@@ -408,18 +378,6 @@ export interface ModelInfo {
   /** alpha | beta | deprecated | active | …；黑名单语义见 model-catalog.ts */
   status?: string
   variants: string[]
-}
-
-/** `GET /config/providers` 响应。`default` = 每家 provider 的默认 model id（v0.2 不展示）。 */
-export interface ConfigProviders {
-  providers: Array<{
-    id: string
-    name?: string
-    /** 明文 API key——解析期丢弃（LR-2），rest-client 不读此字段 */
-    key?: unknown
-    models: Record<string, { name?: string; status?: string; variants?: unknown }>
-  }>
-  default?: Record<string, string>
 }
 
 /** SSE 事件（/event）。仅声明 v0.1/v0.2 消费的事件，未知类型透传忽略。 */
@@ -488,44 +446,7 @@ export type OpencodeEvent =
   // （见 app-store.reDiscoverInstanceCatalog）。
   | { id: string; type: "server.instance.disposed"; properties: { directory: string } }
   // ---- 待处理人机交互（授权/问题）。properties 防御式解析（pending-requests.ts 归一化）----
-  | { id: string; type: "permission.asked" | "permission.v2.asked" | "permission.updated"; properties: Record<string, unknown> }
-  | { id: string; type: "permission.replied" | "permission.v2.replied"; properties: Record<string, unknown> }
-  | { id: string; type: "question.asked" | "question.v2.asked"; properties: Record<string, unknown> }
-  | { id: string; type: "question.replied" | "question.v2.replied" | "question.rejected" | "question.v2.rejected"; properties: Record<string, unknown> }
-  // ---- 会话任务列表（design-task-list）。properties 防御式解析（session-todos.ts 归一化）----
-  | { id: string; type: "todo.updated"; properties: Record<string, unknown> }
+  | { id: string; type: "permission.asked" | "permission.updated"; properties: Record<string, unknown> }
+  | { id: string; type: "permission.replied"; properties: Record<string, unknown> }
+  // ---- 其余事件宽松透传（未知类型忽略，AGENTS.md 风险对策）----
   | { id: string; type: string; properties: Record<string, unknown> }
-
-/**
- * /global/event 信封（design-sse-global-event.md §3 实测契约）：
- * - directory 缺省视为 "global"（server.connected/heartbeat 帧无 directory 字段）
- * - payload.type === "sync" 是 durable 事件的重复包装，订阅层丢弃
- */
-export interface GlobalEventEnvelope {
-  directory?: string
-  project?: string
-  workspace?: string
-  payload: OpencodeEvent | { type: "sync"; syncEvent: unknown }
-}
-
-// ============ Provider 目录（design-provider-config，GET /provider 实测契约） ============
-
-/**
- * Provider 目录项。**key 为明文 API key**（server 响应原样）——传输层保留，
- * 消费侧只可做布尔判定（已配置/未配置），不得展示/记录/持久化。
- */
-export interface ProviderInfo {
-  id: string
-  name: string
-  source: string
-  env?: string[]
-  key?: string | null
-  models: Record<string, unknown>
-}
-
-/** GET /provider 响应：全目录 + 各 provider 默认模型 + 已连接 id 集 */
-export interface ProviderCatalog {
-  all: ProviderInfo[]
-  default: Record<string, string>
-  connected: string[]
-}

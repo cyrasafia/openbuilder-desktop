@@ -1,5 +1,8 @@
 # 会话附件（文件与贴图）— 设计文档
 
+> **v2 迁移注记（2026-09-29，M4）**：发送端点换 `POST /api/session/:id/prompt`（200 回执驱动，files 为 v2 `{uri, name}`）；data URL 内联策略与体积上限延续。
+
+
 > 对应 [spec-v0.4.md](./spec-v0.4.md) #5。三入口（粘贴图片/拖拽外部文件/附件按钮）→ data URL 内联随 `prompt_async` parts 发送；输入区附件条 + 用户气泡缩略图渲染。
 >
 > 参考来源（按 AGENTS.md 前置约定检索）：`../openbuilder/docs/design-attachments.md`（完整通路 + 四轮评审修复 AT-1~AT-R12 全部继承）与 `design-image-attachment-thumbnail.md`（惰性缩略图与乐观/权威统一渲染）。桌面端按 Web 平台特性重组（见 §6 平台差异）。

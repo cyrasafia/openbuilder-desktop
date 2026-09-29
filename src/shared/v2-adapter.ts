@@ -1,7 +1,8 @@
 /**
  * v2 wire → 内部模型适配层（docs/plan-v2-protocol.md §模块策略）。
- * 迁移过渡：内部 Project/Session 仍是 v1 形状（worktree/directory 字段名），
- * v2 的 canonical/location 映射到旧字段名——M5/M6 收敛时统一改名，届时本层收编进 api 层。
+ * 内部 Project/Session 沿用 v1 时代的字段名（worktree/directory），v2 的
+ * canonical/location 映射进来（M6d 收敛后字段改名未做——收益小于触碰面，
+ * 留待自然演进；本层是唯一映射点，改名时只动这里）。
  */
 import type { ProjectInfo, SessionInfo } from "./api-v2-types"
 import type { Project, Session } from "./api-types"

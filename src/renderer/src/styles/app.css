@@ -3762,51 +3762,6 @@
   margin: -4px 0 8px;
 }
 
-/* ---------- Provider 页签（design-provider-config，2026-09-23 修订：搜索/手动刷新移除） ---------- */
-
-.provider-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-top: 8px;
-}
-
-.provider-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
-  border-radius: var(--radius-chip);
-  min-height: 30px;
-}
-
-.provider-row:hover {
-  background: var(--surface-container-high);
-}
-
-.provider-row button {
-  margin-left: auto;
-}
-
-.provider-row button + button {
-  margin-left: 0;
-}
-
-.provider-key-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.provider-key-dot.on {
-  background: var(--primary);
-}
-
-.provider-key-dot.off {
-  background: var(--outline-variant);
-}
-
 /* ---------- 模型页签（design-model-list） ---------- */
 
 /* 定高弹窗（dialog-lg）内填满 dialog-body：列表成为唯一滚动层（body 不滚，

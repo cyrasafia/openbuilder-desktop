@@ -5,7 +5,6 @@
  */
 import type { Session } from "./api-types"
 import type { RestClient } from "./rest-client"
-import type { RestClientV2 } from "./rest-client-v2"
 import { toInternalSession as toInternalSessionForReconcile } from "./v2-adapter"
 import { mergeSnapshotIntoMessages } from "./message-merge"
 import type { MessageWithParts } from "./api-types"
@@ -13,10 +12,8 @@ import type { PendingQuestion } from "./pending-requests"
 import { runLimited } from "./run-limited"
 
 export interface ReconcilerDeps {
-  /** 连接拆除后返回 null（reconcile 直接放弃，不再非空断言） */
+  /** 连接拆除后返回 null（reconcile 直接放弃，不再非空断言）；v0.5 起唯一 v2 client */
   client: () => RestClient | null
-  /** v2 client（M6：消息快照换绑——v1 listMessages 在 v2 server 全 404） */
-  clientV2: () => RestClientV2 | null
   getOpenedDirectories: () => string[]
   getActiveSessions: () => Array<{ sessionID: string; directory: string }>
   onSessionsSnapshot: (directory: string, sessions: Session[]) => void
@@ -82,11 +79,9 @@ export class Reconciler {
   private async reconcileOnce() {
     const client = this.d.client()
     if (!client) return
-    const clientV2 = this.d.clientV2()
-    if (!clientV2) return
     // 在途闸门：client() 变化（disconnect/切 profile/teardown）即丢弃本轮剩余
     // 结果——防止旧连接的迟到快照写回已清空/新连接的状态
-    const stale = () => this.d.client() !== client || this.d.clientV2() !== clientV2
+    const stale = () => this.d.client() !== client
     // 会话快照逐目录并发受限 + 容错：目录数 = 打开项目全集（单全局流后无
     // 5 条订阅上限，可达几十），无界扇出会让排队请求的 15s 超时从分发起算、
     // 尾部饿死（run-limited 注释记录过的失败模式）；单目录失败跳过回调
@@ -95,24 +90,24 @@ export class Reconciler {
     await runLimited(dirs, 3, async (dir) => {
       // M6：消息快照换绑 v2（v1 listMessages 在 v2 server 全 404——typed union
       // 经 toInternalMessages 收敛为内部形状，与 loadSessionMessages 同管道）
-      const page = await clientV2.listSessions({ directory: dir, limit: 200 }).catch(() => null)
+      const page = await client.listSessions({ directory: dir, limit: 200 }).catch(() => null)
       if (stale()) return
       if (page !== null) this.d.onSessionsSnapshot(dir, page.data.map((s) => toInternalSessionForReconcile(s)))
     })
     if (this.d.onPendingSnapshot) {
       // M6c：pending 回填换绑 v2（GET /api/permission/request + GET /api/form，
-      // 均带 deepObject location）；clientV2 层完成 envelope 解包与 form 归一化
+      // 均带 deepObject location）；client 层完成 envelope 解包与 form 归一化
       for (const dir of dirs) {
-        const permissions = await clientV2.listPendingPermissionRequests(dir).catch(() => null)
+        const permissions = await client.listPendingPermissionRequests(dir).catch(() => null)
         if (stale()) return
-        const questions = await clientV2.listPendingForms(dir).catch(() => null)
+        const questions = await client.listPendingForms(dir).catch(() => null)
         if (stale()) return
         this.d.onPendingSnapshot(dir, permissions, questions)
       }
     }
     // 消息快照（M6：换绑 v2——typed union + cursor，与 loadSessionMessages 同管道）
     await runLimited(this.d.getActiveSessions(), 4, async ({ sessionID, directory }) => {
-      const page = await clientV2.listMessagesPage(sessionID, { limit: RECONCILE_WINDOW }).catch(() => null)
+      const page = await client.listMessagesPage(sessionID, { limit: RECONCILE_WINDOW }).catch(() => null)
       if (stale()) return
       if (page !== null) this.d.onMessagesSnapshot(sessionID, page.entries)
     })

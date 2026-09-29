@@ -101,8 +101,8 @@ function stubExec(byCmd: Record<string, { stdout: string } | Error>): ExecFn {
   }
 }
 
-function ok(res: { healthy?: boolean; version?: string }): Response {
-  return new Response(JSON.stringify(res ?? { healthy: true, version: "1.0.0" }), {
+function ok(res: { version?: string }): Response {
+  return new Response(JSON.stringify(res ?? { version: "2.0.1" }), {
     status: 200,
   })
 }
@@ -261,35 +261,35 @@ describe("scanServers（桩）", () => {
       bonjourFactory: () => bonj as unknown as BonjourLike,
       mdnsWindowMs: 20,
       fetch: async (url) => {
-        if (url === `${LOOPBACK_PROBE_URL}/global/health`) {
-          return ok({ healthy: true, version: "1.1.1" })
+        if (url === `${LOOPBACK_PROBE_URL}/api/info`) {
+          return ok({ version: "2.0.1" })
         }
-        if (url === "http://192.168.1.5:4096/global/health") {
-          return ok({ healthy: true, version: "1.2.2" })
+        if (url === "http://192.168.1.5:4096/api/info") {
+          return ok({ version: "2.0.2" })
         }
         throw new Error("network unreachable")
       },
     })
     expect(results).toEqual([
-      { url: LOOPBACK_PROBE_URL, version: "1.1.1", source: "loopback" },
-      { url: "http://192.168.1.5:4096", version: "1.2.2", source: "mdns" },
+      { url: LOOPBACK_PROBE_URL, version: "2.0.1", source: "loopback" },
+      { url: "http://192.168.1.5:4096", version: "2.0.2", source: "mdns" },
     ])
     expect(bonj.destroyed).toBe(true)
   })
 
-  it("健康验证失败（不健康/不可达）丢弃候选；healthy 缺 version = null 版本保留", async () => {
+  it("健康验证失败（不可达/非 v2）丢弃候选；v2 info 即版本来源", async () => {
     const bonj = stubBonjour([{ name: "opencode-4096", port: 4096, addresses: ["192.168.1.5"] }])
     const results = await scanServers({
       bonjourFactory: () => bonj as unknown as BonjourLike,
       mdnsWindowMs: 20,
       fetch: async (url) => {
-        if (url === `${LOOPBACK_PROBE_URL}/global/health`) return ok({ healthy: true })
-        if (url === "http://192.168.1.5:4096/global/health") return ok({ healthy: false })
+        if (url === `${LOOPBACK_PROBE_URL}/api/info`) return ok({ version: "2.0.3" })
+        if (url === "http://192.168.1.5:4096/api/info") return new Response("{}", { status: 404 })
         throw new Error("unreachable")
       },
     })
     expect(results).toEqual([
-      { url: LOOPBACK_PROBE_URL, version: null, source: "loopback" },
+      { url: LOOPBACK_PROBE_URL, version: "2.0.3", source: "loopback" },
     ])
   })
 
@@ -299,9 +299,9 @@ describe("scanServers（桩）", () => {
         throw new Error("multicast unavailable")
       },
       mdnsWindowMs: 20,
-      fetch: async () => ok({ healthy: true, version: "1.0.0" }),
+      fetch: async () => ok({ version: "2.0.3" }),
     })
-    expect(results).toEqual([{ url: LOOPBACK_PROBE_URL, version: "1.0.0", source: "loopback" }])
+    expect(results).toEqual([{ url: LOOPBACK_PROBE_URL, version: "2.0.3", source: "loopback" }])
   })
 
   it("loopback 不可达且 mDNS 命中同一 URL 去重", async () => {
@@ -309,10 +309,10 @@ describe("scanServers（桩）", () => {
     const results = await scanServers({
       bonjourFactory: () => bonj as unknown as BonjourLike,
       mdnsWindowMs: 20,
-      fetch: async () => ok({ healthy: true, version: "1.0.0" }),
+      fetch: async () => ok({ version: "2.0.3" }),
     })
     // mDNS 声明 addresses=[127.0.0.1] 构造出的 URL 与 loopback 探测同址 → 去重为一条 loopback
-    expect(results).toEqual([{ url: LOOPBACK_PROBE_URL, version: "1.0.0", source: "loopback" }])
+    expect(results).toEqual([{ url: LOOPBACK_PROBE_URL, version: "2.0.3", source: "loopback" }])
   })
 
   it("find 同步抛错 = mDNS 空集（不整体失败，仍 destroy）；窗口后迟到事件不进结果", async () => {
@@ -329,9 +329,9 @@ describe("scanServers（桩）", () => {
     const r1 = await scanServers({
       bonjourFactory: () => bonjThrow as unknown as BonjourLike,
       mdnsWindowMs: 20,
-      fetch: async () => ok({ healthy: true, version: "1.0.0" }),
+      fetch: async () => ok({ version: "2.0.3" }),
     })
-    expect(r1).toEqual([{ url: LOOPBACK_PROBE_URL, version: "1.0.0", source: "loopback" }])
+    expect(r1).toEqual([{ url: LOOPBACK_PROBE_URL, version: "2.0.3", source: "loopback" }])
     expect(bonjThrow.destroyed).toBe(true)
 
     // 迟到事件：事件在窗口结束后才回调——结果只含 loopback
@@ -346,11 +346,11 @@ describe("scanServers（桩）", () => {
     const r2 = await scanServers({
       bonjourFactory: () => bonjLate as unknown as BonjourLike,
       mdnsWindowMs: 20,
-      fetch: async () => ok({ healthy: true, version: "1.0.0" }),
+      fetch: async () => ok({ version: "2.0.3" }),
     })
-    expect(r2).toEqual([{ url: LOOPBACK_PROBE_URL, version: "1.0.0", source: "loopback" }])
+    expect(r2).toEqual([{ url: LOOPBACK_PROBE_URL, version: "2.0.3", source: "loopback" }])
     // 窗口外到达的事件（即便格式正确）不影响已返回的结果
     lateUp?.({ name: "opencode-4096", port: 4096, addresses: ["192.168.1.7"] })
-    expect(r2).toEqual([{ url: LOOPBACK_PROBE_URL, version: "1.0.0", source: "loopback" }])
+    expect(r2).toEqual([{ url: LOOPBACK_PROBE_URL, version: "2.0.3", source: "loopback" }])
   })
 })

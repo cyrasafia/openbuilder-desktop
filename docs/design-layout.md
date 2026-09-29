@@ -1,5 +1,8 @@
 # 主界面布局设计
 
+> **v2 迁移注记（2026-09-29）**：归档字段改 `metadata.archivedAt` 私约（D1，`PATCH time.archived` 无 REST 写入路径）；worktree 创建/删除换 `/api/worktree`；列表数据源实况 = `GET /api/project` 的 `Project.sandboxes` 投影（D2 原案的 `/api/worktree?projectID=` 直连未实施，列 v0.6 优化）；global 项目行已退役（D6，非 git 目录 = 普通项目行）。详见 design-v2-migration.md。
+
+
 对应 spec-v0.1。布局框架的最终依据，后续交互设计不得与本文冲突；修订需更新本文。
 
 ## 1. 总体结构

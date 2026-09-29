@@ -1,5 +1,8 @@
 # SSE 单全局流：`/global/event` 替代 N×`/event?directory=`
 
+> **v2 迁移注记（2026-09-29）**：SSE 已换绑 `GET /api/event` 单流（V2Event 信封，volatile 契约——重连必全量对账）；本文档的 `/global/event` 多流订阅模型与 5 连接上限背景为 v1 史。闸门语义（openedProjects 的目录全集）延续。
+
+
 > 状态：已实施（2026-08-24）。代码：sse-subscriber.ts（单流 + 信封解析 + sync 丢弃）、
 > app-store.ts（单 subscriber、openedDirectories 统一目录源、handleEvent 前置闸门）。
 > E2E 见 §8。

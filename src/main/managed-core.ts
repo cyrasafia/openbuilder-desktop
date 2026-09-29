@@ -30,9 +30,9 @@ export interface ControllerDeps {
   spawnImpl: typeof spawn
   findFreePort: () => Promise<number>
   probeVersion: (bin: string) => Promise<string | null>
-  /** 健康等待：authorization 为 spawn 注入密码构造的 Basic 头——/global/health
-   *  在 server 的 RootHttpApi 上受 Authorization 中间件保护（联调实测 2026-09-04：
-   *  裸 fetch 恒 401 → 永远"启动超时"），必须带凭据探测 */
+  /** 健康等待：authorization 为 spawn 注入密码构造的 Basic 头——探活端点
+   *  （v2 = GET /api/info）在 server 的 RootHttpApi 上受 Authorization 中间件
+   *  保护（联调实测 2026-09-04：裸 fetch 恒 401 → 永远"启动超时"），必须带凭据探测 */
   waitHealthy: (baseUrl: string, timeoutMs: number, authorization: string) => Promise<void>
   emit: (e: ManagedEvent) => void
   randomPassword: () => string

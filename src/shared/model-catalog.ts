@@ -13,7 +13,7 @@
  * - AM-FIX-1 agent 过滤 !hidden && mode !== 'subagent'（与 server agent.ts:337 一致，
  *   有意偏离移动端"只留 primary"——config 自定义 agent 默认 mode:"all"，排除会全藏掉）
  */
-import type { AgentInfo, ConfigProviders, ModelInfo, ModelRef } from "./api-types"
+import type { AgentInfo, ModelInfo, ModelRef } from "./api-types"
 import type { V2ModelInfo } from "./api-v2-types"
 
 export interface ModelCatalog {
@@ -50,41 +50,10 @@ export function parseVariants(v: unknown): string[] {
 }
 
 /**
- * 拍平 providers.models 为 ModelInfo[]，黑名单过滤 deprecated/disabled。
- * Provider.key 解析期丢弃——只读 id/name/models（LR-2）。
- */
-export function parseModels(raw: ConfigProviders | null | undefined): ModelInfo[] {
-  if (!raw || !Array.isArray(raw.providers)) return []
-  const out: ModelInfo[] = []
-  for (const p of raw.providers) {
-    if (!p || !p.models) continue
-    for (const [id, m] of Object.entries(p.models)) {
-      if (!m) continue
-      const status = m.status
-      if (status === "deprecated" || status === "disabled") continue
-      out.push({
-        id,
-        providerID: p.id,
-        name: m.name ?? id,
-        status,
-        variants: parseVariants(m.variants),
-      })
-    }
-  }
-  return out
-}
-
-export function parseCatalog(
-  agents: AgentInfo[] | null | undefined,
-  providers: ConfigProviders | null | undefined,
-): ModelCatalog {
-  return { agents: parseAgents(agents), models: parseModels(providers) }
-}
-
-/**
  * v2 `GET /api/model` 平铺列表 → ModelInfo[]（M6b 换绑）：
  * status 黑名单沿用 LR-BL1（deprecated/disabled），另滤 enabled === false
  * （provider 层显式禁用；缺省视为启用——对齐移动端 listModels 过滤）。
+ * v1 parseModels/parseCatalog（/config/providers 拍平）已随 v1 面删除（M6d）。
  */
 export function parseModelsV2(raw: V2ModelInfo[] | null | undefined): ModelInfo[] {
   if (!Array.isArray(raw)) return []

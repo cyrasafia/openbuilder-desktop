@@ -16,7 +16,6 @@ describe("Reconciler client 判空", () => {
       const onState = vi.fn()
       const r = new Reconciler({
         client: () => null,
-        clientV2: () => null,
         getOpenedDirectories: () => ["/proj"],
         getActiveSessions: () => [],
         onSessionsSnapshot: () => {},

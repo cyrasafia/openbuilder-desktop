@@ -41,7 +41,7 @@ describe.skipIf(!RUN)("ManagedServerController 集成（真二进制）", () => 
         const deadline = Date.now() + timeoutMs
         while (Date.now() < deadline) {
           try {
-            const res = await fetch(`${baseUrl}/global/health`, {
+            const res = await fetch(`${baseUrl}/api/info`, {
               signal: AbortSignal.timeout(2000),
               headers: { authorization },
             })
@@ -64,8 +64,8 @@ describe.skipIf(!RUN)("ManagedServerController 集成（真二进制）", () => 
     expect(first.baseUrl).toBeTruthy()
     expect(first.version).toMatch(/^\d/)
 
-    // 健康端点带凭据可达（auth 修复回归点）
-    const health = await fetch(`${first.baseUrl}/global/health`, {
+    // 健康端点带凭据可达（auth 修复回归点；v2 = /api/info）
+    const health = await fetch(`${first.baseUrl}/api/info`, {
       headers: { authorization: basicAuthHeader(first.username ?? "opencode", first.password ?? "") },
     })
     expect(health.ok).toBe(true)

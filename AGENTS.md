@@ -5,8 +5,8 @@ opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录�
 ## 开发命令
 
 - `npm run dev` — electron-vite dev；Wayland 下如遇 Vulkan/GPU 崩溃用 `./scripts/dev.sh --disable-gpu`（或 `OB_DISABLE_GPU=1 npm run dev`）。**不要**写 `npm run dev -- --disable-gpu`：electron-vite 5 的 CLI（cac）不透传 Chromium 开关、直接 `CACError: Unknown option '--disableGpu'`；开关经 env 门控在 `main/index.ts` `app.commandLine.appendSwitch("disable-gpu")`（2026-09-08 修，原记载的透传写法从未生效）
-- `npm run build` / `npm run typecheck`（node+web 双 tsconfig）/ `npm run test`（vitest，20 用例）
-- 联调：本机 opencode server `http://127.0.0.1:15120`（不要停止/重启）；CDP 驱动 E2E 用 `--remote-debugging-port=9222`
+- `npm run build` / `npm run typecheck`（node+web 双 tsconfig）/ `npm run test`（vitest，约千余用例——以实跑为准）
+- 联调：本机 opencode server `http://127.0.0.1:15120`（v2.0.18，Basic auth——密码见 systemd unit；不要停止/重启）；v1 回归（如需）另起 1.18.x 二进制于其他端口；CDP 驱动 E2E 用 `--remote-debugging-port=9222`
 - preload 必须 CJS 输出（`.cjs`）——sandbox:true 不支持 ESM preload（electron.vite.config.ts 有注释）
 - 打包：`npm run package:linux`（electron-builder）；发行包用 `scripts/package-arch.sh`（makepkg）/ `scripts/package-fedora.sh`（fedora:41 容器内 rpmbuild）
 
@@ -14,7 +14,7 @@ opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录�
 
 - `PRINCIPLES.md`（根目录，设计原则）— 基本原则 Keep Lean（保持精简）+ 三条推论（服务用户/不做大而全/理念先行）+ 目标用户与工作流推导（产品定位、功能取向、三栏布局）+ 界面理念 Everything is a tab。**功能取舍与版本规划的判据源**，spec/design 文档与其冲突时先修订本文
 - `docs/design-architecture.md` — 技术栈与 4 条关键决策（D1–D4）及依据。**决策不可被隐式推翻**：Electron 而非 Tauri（GNOME/Wayland 性能）；自建而非 fork opencode-desktop（其内嵌 server 不发 npm，fork 即冻结）；React 19 而非 Solid；无中间服务层，renderer 直连 opencode server
-- `docs/spec-v0.1.md` — 当前版本功能范围、API 映射表、SSE+REST 对账策略、验收口径。改功能范围必须同步此文件
+- `docs/spec-v0.5.md` — 当前版本（v2 契约）功能范围、API 映射表、SSE+REST 对账策略、验收口径。改功能范围必须同步此文件（v0.1–v0.4 的 spec 见 git 历史）
 - `docs/design-layout.md` — 主界面三栏布局、Tab 注册制、project-scoped 语义。布局/交互改动以此为准
 - `docs/design-v0.1-implementation.md` — v0.1 实现方案 + **联调实测的 API 契约事实**（prompt_async、file/content 包装、worktree API、浏览器连接池上限等，改通信层前必读）+ 三轮 code review 记录
 - `DESIGN.md`（根目录，视觉设计）— 配色/i18n 沿用移动端 openbuilder 的 `../openbuilder/DESIGN.md`；排版密度按桌面习惯重设计。token 唯一权威落点 `src/renderer/src/styles/tokens.css`
@@ -26,7 +26,7 @@ opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录�
 
 ## 硬约束（agent 最容易踩的）
 
-- **不用 `@opencode-ai/sdk`**——npm 发布滞后于 server，是过期契约。通信层自写（REST + SSE 直连），API 契约以 `../openbuilder/opencode_openapi.json` 为准（与移动端同源）
+- **不用 `@opencode-ai/sdk`**——npm 发布滞后于 server，是过期契约。通信层自写（REST + SSE 直连），API 契约以 `../openbuilder/opencode_openapi_v2.json` 为准（v2，2.0.18 pin，与移动端同源；源 `anomalyco/opencode` `packages/protocol/openapi.json`）。**v0.5 起仅支持 v2 server**——v1（1.18.x）契约面已删除，连接 v1 server 报「版本不支持」（2026-09-28 裁定，见 docs/design-v2-migration.md）
 - 文档命名遵循移动端项目体系：`docs/design-*.md`（功能/技术设计）、`docs/plan-*.md`（计划）、`docs/review-*.md`（复盘）、`docs/spec-*.md`（版本范围）；根目录 `DESIGN.md` 专属视觉设计、`PRINCIPLES.md` 专属设计原则，**不得**用作其他用途
 - 中文文档、中文 commit message，前缀惯例 `feat:` / `fix:` / `ui:` / `build:` / `chore:` / `docs:`（见 git log）；**commit 标题只用一句话讲最核心的信息**（范本 9d85f0e / c15cdff，实测 ≤76 字；至多带一处 `——`/`（）` 紧凑定位短语），根因、方案细节、review 修订、测试计数、文档同步一律放正文——按主题分段、约 60 字换行，不得把细节整段挤进标题单行（2026-09-23 增补）
 - 合并其他分支到 main 默认用普通合并（`git merge --no-ff`，保留分支提交历史，生成 merge commit；2026-08-31 修订，原 squash merge 单提交方案弃用）
@@ -42,8 +42,8 @@ opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录�
 ## 已锁定的语义（实现时不可走样）
 
 - 项目打开/关闭是**纯客户端状态**（按 profile 持久化），server 无此概念；关闭项目 = 不展示 + 事件忽略，重开走 REST 快照
-- chat Tab 与归档对称：关闭 Tab = 归档（`PATCH time.archived`），打开 Tab = 取消归档，无"仅关闭不归档"路径
-- 工作区（worktree）从属项目，左栏二级展示；会话/文件树按 `?workspace=` 过滤；创建/删除用 `POST/DELETE /experimental/worktree`（**不用** `/experimental/workspace`，其 create 契约不稳定）；name 省略时 server 生成随机 slug；列表数据源是 `Project.sandboxes`（见 rest-client.ts / app-store.ts 注释）
+- chat Tab 与归档对称：关闭 Tab = 归档，打开 Tab = 取消归档，无"仅关闭不归档"路径。存储字段 = **`metadata.archivedAt` 私约**（`PATCH /api/session/:id`，D1——v2 无 REST 归档字段，官方 API 回归后迁回；metadata 是 REPLACE 语义须整包合并，识别层双源兼容存量 `time.archived`）
+- 工作区（worktree）从属项目，左栏二级展示；会话/文件树按 directory 作用域（v2 无 workspace 参数，worktree 即完整目录）；创建/删除用 `POST/DELETE /api/worktree`（v2，M5 换绑；payload projectID 必填、delete force 必填）；列表数据源 = `GET /api/project` 的 `Project.sandboxes` 投影（D2 原案的 `/api/worktree?projectID=` 直连与 refresh 端点未实施——对账走项目列表全量 diff，外部删除等价可发现；直连列为 v0.6 优化）；**删除 worktree = 级联删该目录全部会话**（`DELETE /api/session/:id` 连子会话，非归档——D2 裁定）
 - 工作区与文件树 project-scoped：切换项目/工作区 = 打开作用域会话 Tab（不关不归档已有 Tab，Tab 跨项目混排）+ 文件树重置；关闭项目仅关该项目 Tab（不归档）
 - Tab 注册制：kind + 稳定标识（chat=sessionID、file=路径、terminal=ptyID、browser=URL——新开空白 Tab 例外：唯一 `browser:new:N` 键不去重，2026-09-15），"打开指定地址"类入口（文件树 .html/关闭栈按 URL 重开）重复打开复用
 - **global 语义已退役**（2026-09-28 M1b 裁定，改写原 2026-08-24「global 按 directory 拆分」决策，依据 v2 GA 实测）：v2 server 取消 global 项目（非 git 目录 = 目录哈希伪项目行，出现在 `GET /api/project`），桌面端 v1 的 `global\0<directory>` entry 模型整体删除——非 git 目录以普通项目行进左栏，打开/关闭/作用域/事件闸门统一走项目路径；持久化旧键由 `migrateLegacyGlobalState`（project-entries.ts）在连接期按 worktree 匹配转项目 ID；新目录发现由项目列表刷新承接（连接/选择器打开时 syncWorktrees/60s diff/M3 起的 project.updated 事件）。原「不用裸 `GET /session` 做 global 发现」约束随机制消亡；SSE 事件闸门 = 已打开项目的 worktree ∪ sandboxes

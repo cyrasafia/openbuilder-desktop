@@ -1,5 +1,8 @@
 # managed 模式配置流程完善设计
 
+> **v2 迁移注记（2026-09-29，M6d）**：探活/健康等待换 `GET /api/info`（managed spawn 健康与发现扫描同源）；v0.5 起仅支持 v2 server，`MIN_SERVER_VERSION`（1.0.66，v1 单流要求）已无意义——连接期 v2 版本前缀校验即淘汰 v1。
+
+
 对应 [spec-v0.4.md](./spec-v0.4.md) 功能 #2。四个子项：profile 表单按模式分化、版本检测、崩溃自动重启、日志可观察。依赖功能 #3 的扫描（[design-auto-scan.md](./design-auto-scan.md)，已合并）。
 
 ## 1. profile 表单按模式分化

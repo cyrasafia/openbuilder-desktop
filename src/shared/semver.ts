@@ -1,12 +1,10 @@
 /**
- * server 版本下限校验（design-managed-config §2）：单全局 SSE（/global/event）
- * 需 server ≥ 1.0.66；低于仅提示不阻断。纯函数供单测。
+ * server 版本下限校验：v0.5 起 v2-only——探活已拒 v1，这里只对 v2 小版本
+ * 做推荐位提示（低于 2.0.0 仅提示不阻断，design-managed-config §2 语义延续）。
+ * 纯函数供单测。
  */
 
-/** 最低 server 版本（单全局事件流要求，design-sse-global-event） */
-export const MIN_SERVER_VERSION = "1.0.66"
-
-/** v2 最低 server 版本（plan-v2-protocol M1：v2 GA 线下限，仅提示不阻断） */
+/** 推荐 server 版本下限（v2 GA 基线；v1 的 1.0.66 下限已随 v2-only 退役） */
 export const MIN_SERVER_VERSION_V2 = "2.0.0"
 
 /** 解析数字三元组（容忍 v 前缀/预发布后缀/缺段补零）；无法解析 = null */
@@ -35,7 +33,7 @@ export function compareVersions(a: string, b: string): number {
 }
 
 /** 是否低于最低版本；无法解析 = false（提示不阻断的原则下从宽） */
-export function belowMinServerVersion(version: string, min: string = MIN_SERVER_VERSION): boolean {
+export function belowMinServerVersion(version: string, min: string = MIN_SERVER_VERSION_V2): boolean {
   const p = parseTriple(version)
   const m = parseTriple(min)
   if (!p || !m) return false

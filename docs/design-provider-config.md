@@ -1,5 +1,8 @@
 # Provider/Model 配置设计
 
+> **v2 迁移注记（2026-09-29，M6d 降级）**：Provider 页签已整体移除——v2 credential/integration 是全新体系（无 API key 写入端点、Provider.Info 无 key/connected 状态），本文档的端点契约全部失效；恢复待 credential 体系设计（v0.6+ 评估，见 spec-v0.5 功能降级表 #2）。
+
+
 对应 [spec-v0.4.md](./spec-v0.4.md) 功能 #4。设置弹窗新增 Provider 页签（列表 + API key 设置/删除）；Model 配置复用现有「默认」页签（agent/model 切换）。
 
 ## 1. 契约事实（live server 1.18.20 实测，2026-09-04）
