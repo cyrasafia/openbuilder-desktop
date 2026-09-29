@@ -3071,6 +3071,144 @@ describe("报错消息与重试状态（design-error-message）", () => {
   })
 })
 
+describe("活跃集合对账（design-typing-indicator §4 来源 5，V2D-3 修复）", () => {
+  /** 直驱 handleEvent（SSE 已 mock off）：事件信封 { type, properties } */
+  function dispatch(ev: { type: string; properties: unknown }) {
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, ev)
+  }
+
+  function seedSession() {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    return s1
+  }
+
+  /** 直驱对账挂点（reconciler 经 onActiveSnapshot 到达的同一方法） */
+  function reconcile(active: Set<string> | null, fetchedAt = 0) {
+    ;(store as unknown as { reconcileActiveSnapshot: (a: Set<string> | null, f: number) => void }).reconcileActiveSnapshot(
+      active,
+      fetchedAt,
+    )
+  }
+
+  it("补丢的 busy：本地 idle + active 在场 → busy（左栏灰点/详情页无 indicator 修复）", () => {
+    seedSession()
+    expect(store.dotStateFor("s1")).toBe("idle")
+    reconcile(new Set(["s1"]))
+    expect(store.statusOf("s1").type).toBe("busy")
+    expect(store.dotStateFor("s1")).toBe("running")
+    expect(store.isSessionActive("s1")).toBe(true)
+  })
+
+  it("清 stale busy：本地 busy + active 缺席 → idle（左栏卡绿修复，无需开 Tab）", () => {
+    seedSession()
+    dispatch({ type: "session.status", properties: { sessionID: "s1", status: { type: "busy" } } })
+    expect(store.dotStateFor("s1")).toBe("running")
+    reconcile(new Set())
+    expect(store.statusOf("s1").type).toBe("idle")
+    expect(store.dotStateFor("s1")).toBe("idle")
+  })
+
+  it("retry 保留：active 在场不降级（细节等下一次 retry 事件带回）", () => {
+    seedSession()
+    dispatch({
+      type: "session.status",
+      properties: { sessionID: "s1", status: { type: "retry", attempt: 2, message: "rate limited" } },
+    })
+    reconcile(new Set(["s1"]))
+    expect(store.statusOf("s1")).toMatchObject({ type: "retry", attempt: 2 })
+    expect(store.dotStateFor("s1")).toBe("error")
+  })
+
+  it("retry 清除：active 缺席 → idle 且 retryHold 一并解除（后续 busy 不被扣住）", () => {
+    seedSession()
+    dispatch({
+      type: "session.status",
+      properties: { sessionID: "s1", status: { type: "retry", attempt: 1, message: "rate limited" } },
+    })
+    reconcile(new Set())
+    expect(store.statusOf("s1").type).toBe("idle")
+    // retryHold 已清的证据：随后 busy 事件正常生效（锁存残留会把投影扣在 retry）
+    dispatch({ type: "session.status", properties: { sessionID: "s1", status: { type: "busy" } } })
+    expect(store.statusOf("s1").type).toBe("busy")
+    expect(store.dotStateFor("s1")).toBe("running")
+  })
+
+  it("乐观 in-flight 跳过清除：prompt 未落地前 active 可能尚未登记该会话", () => {
+    seedSession()
+    dispatch({ type: "session.status", properties: { sessionID: "s1", status: { type: "busy" } } })
+    store.optimisticBySession.set("s1", [
+      { optimistic: true, localId: "opt_1", text: "在途", createdAt: 999 },
+    ])
+    reconcile(new Set())
+    // 乐观窗口不清（刚发送的会话在 server 排队中）；真实回显到达清乐观后下轮对账收敛
+    expect(store.statusOf("s1").type).toBe("busy")
+  })
+
+  it("null = 拉取失败整体保留本地（不清不补）", () => {
+    seedSession()
+    dispatch({ type: "session.status", properties: { sessionID: "s1", status: { type: "busy" } } })
+    reconcile(null)
+    expect(store.statusOf("s1").type).toBe("busy")
+  })
+
+  it("闸门：active 里未打开目录的会话不补 busy（active 是全局集合）", () => {
+    seedSession()
+    // s2 属未打开目录（proj1 的 opened 集 = ROOT/WT1/WT2）
+    const s2 = session("s2", "/other/project", { created: 1, updated: 1 })
+    store.sessionsByProject.get("proj1")!.set("s2", s2)
+    reconcile(new Set(["s2"]))
+    expect(store.statusOf("s2").type).toBe("idle")
+  })
+
+  it("未知会话跳过：active 在场但本地未加载（findSession 未命中）不产生孤儿状态", () => {
+    seedSession()
+    reconcile(new Set(["s_unknown"]))
+    expect(store.statusOf("s_unknown").type).toBe("idle")
+    expect(store.isSessionActive("s_unknown")).toBe(false)
+  })
+
+  it("新事件守卫：置位时刻晚于快照发起（fetchedAt）⇒ 旧快照不清新事件（在途竞态）", () => {
+    seedSession()
+    // 快照发起在前（fetchedAt=1000），会话开始事件在后（置位时刻=wall clock）
+    dispatch({ type: "session.status", properties: { sessionID: "s1", status: { type: "busy" } } })
+    const setAt = (store as unknown as { statusSetAt: Map<string, number> }).statusSetAt.get("s1")!
+    expect(setAt).toBeGreaterThan(1000)
+    reconcile(new Set(), 1000)
+    // 快照在途期间 status(busy) 先到——他端触发的会话刚点亮的绿点不熄灭
+    expect(store.statusOf("s1").type).toBe("busy")
+    // fetchedAt 晚于置位（正常时序：快照比本地状态新）⇒ 照常清除
+    reconcile(new Set(), setAt + 1000)
+    expect(store.statusOf("s1").type).toBe("idle")
+  })
+
+  it("终局证据守卫：本地消息以终态 assistant 结尾 ⇒ 不复活绿点（在途竞态）", () => {
+    seedSession()
+    // 会话结束：completed 消息（finish=stop）与 idle 事件先于 active 响应到达
+    store.messagesBySession.set(
+      "s1",
+      new Map([
+        [
+          "msg_a1",
+          {
+            info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 100, completed: 200 }, finish: "stop" },
+            parts: [],
+          },
+        ],
+      ]),
+    )
+    expect(store.dotStateFor("s1")).toBe("idle")
+    reconcile(new Set(["s1"]))
+    // 旧快照在场但本地已有更新的终局证据——不补 busy（否则绿点卡到下次重连）
+    expect(store.statusOf("s1").type).toBe("idle")
+    // 对照：无消息数据（未开 Tab）时在场快照仍是唯一依据，照补（左栏核心场景）
+    const s2 = session("s2", ROOT, { created: 2, updated: 2 })
+    store.sessionsByProject.get("proj1")!.set("s2", s2)
+    reconcile(new Set(["s2"]))
+    expect(store.statusOf("s2").type).toBe("busy")
+  })
+})
+
 describe("布局状态（design-layout-collapse）", () => {
   let saved: Array<{ key: string; value: unknown }>
   beforeEach(() => {

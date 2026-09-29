@@ -232,6 +232,20 @@ export class RestClient {
   }
 
   /**
+   * GET /api/session/active：server 前台 drain 执行集合快照（**无目录参数，
+   * 全局集合**），值恒 `{type:"running"}`——契约语义「absent = inactive」，
+   * 缺席即不活跃。状态对账（design-typing-indicator §4 来源 5）的权威源：
+   * drain 与 SessionStatus 生命周期绑定（runner onBusy/onIdle、retry 在 drain
+   * 内），在场 ⇒ busy/retry，缺席 ⇒ idle。v2.0.18 活体核对 2026-09-29；
+   * 完整 per-session 状态端点（`/api/session/status`）已在官方源码但未随
+   * 2.0.18 发布，回归后可换绑以恢复 retry 细节。
+   */
+  async listActiveSessions(): Promise<Set<string>> {
+    const res = await this.fetchJson<{ data: Record<string, { type: string }> }>("/api/session/active")
+    return new Set(Object.keys(res.data ?? {}))
+  }
+
+  /**
    * POST /api/session：创建会话（payload 为 location 对象，取代 v1 的
    * directory query）。响应 `{data: SessionInfo}`；model 形状与 v1 ModelRef 同构。
    */

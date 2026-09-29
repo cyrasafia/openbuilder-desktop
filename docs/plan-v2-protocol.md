@@ -39,7 +39,7 @@
 ### M3 SSE 与对账
 
 - `sse-subscriber` 换绑：`GET /api/event`（无 query 单流）+ `V2Event` envelope（`{id, created, metadata?, location?, type, data}`）；事件表按 `session.*` 命名空间重写（映射见移动端基线 §SSE 事件契约）；
-- **volatile 契约落地**：重连必全量对账（对账触发从「增量 reconcile」升级为「全量快照重建」）；`/session/status` 快照删除——状态改事件驱动（`session.execution.*`/`session.idle`）+ `SessionInfo.outcome`；
+- **volatile 契约落地**：重连必全量对账（对账触发从「增量 reconcile」升级为「全量快照重建」）；`/session/status` 快照删除——状态改事件驱动（`session.status`/`session.idle`）+ `GET /api/session/active` 对账（V2D-3 修复 2026-09-29：reconciler 末段 `onActiveSnapshot` 双向 diff，详见 design-typing-indicator §4 与 design-v2-migration D7；`SessionInfo.outcome` 未采用——idle 消息经 v2-adapter 丢弃，failed 终局由 assistant `error` 字段派生已冗余覆盖）；
 - 事件闸门：`location.directory` 为闸门键（PublicRef 无 workspaceID，口径以客户端可见为准）；
 - 验收：断流/重连场景（含 kill server）全量恢复；慢消费断流不 panic。
 

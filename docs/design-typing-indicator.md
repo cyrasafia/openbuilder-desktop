@@ -67,8 +67,8 @@ sessionStatus: Map<sessionID, 'busy' | 'idle' | 'retry'>
 | SSE `session.status`（`{sessionID, status}`，status = busy/idle/retry） | 实时 | 权威设置（含 retry 态） |
 | SSE `session.idle`（`{sessionID}`） | 实时 | 置 idle（仅状态实际变化时通知，防 spurious idle 抖动——移动端 wasBusy/wasRetry 守卫） |
 | 乐观设置 | `POST /session/{id}/message` 成功 | 立即置 busy（不等事件，消除首字节延迟） |
-| REST `GET /session/status?directory=<dir>` | 冷启动快照 + 重连对账 | **按目录覆盖合并**：成功目录 fresh 权威（返回里缺该会话 ⇒ idle）；失败目录**保留旧值**——严禁 `clear() + addAll()`（SS-1 回归：某目录 fetch 失败返回 `{}` 会把已知 busy 全误清成 idle）。**快照目录集 = 打开项目全集（root ∪ sandboxes）**：非当前 worktree 无 SSE 事件通道（订阅集合仅含当前 scope，见 design-v0.1-implementation 连接池约束），其 busy 结束后只能靠对账快照纠正——对账目录集若与订阅集一致，左栏 dots 会永久卡亮（对齐移动端 `_fetchAllStatuses` 覆盖全部目录的语义） |
-| 消息 finish 推断 | 任何 `GET /session/{id}/message` 结果处理时 | 末条 assistant 且 `finish === 'stop' \|\| 'error'` ⇒ idle；`'tool-calls'`（中间步骤）与 `null`（生成中）**不触发**（移动端 D-SS-A/B 已验证：进行中消息在 REST 可见且 finish=null） |
+| REST `GET /api/session/active`（v2，**全局 drain 集合**，无目录参数） | SSE 首连/重连对账（reconciler `onActiveSnapshot`，2026-09-29 V2D-3 修复）+ **60s 周期对账**（review #1：request 原只有重连触发，竞态残余与未知漂移会卡到下次重连） | **双向 diff**：本地 busy/retry × 缺席 ⇒ idle；本地无条目 × 在场 ⇒ 补 busy（经 `findSession` 解析目录过 `isOpenedDirectory` 闸门——active 是全局集合）。retry × 在场保留不降级（细节等下一次 retry 事件）；乐观 in-flight（`optimisticBySession` 有条目）跳过清除——prompt_async 未落地前 active 可能尚未登记；失败传 null 整体保留本地（同 pending null 语义）。**回调时序在消息快照之后**（active 是在场判定的更权威源，覆盖 finish 推断在「消息末条旧终态 × drain 已重建新轮」窗口的误清）。**在途竞态守卫**（review #1）：快照是响应生成时刻的集合、SSE 事件独立到达——清 idle 前 `statusSetAt` 置位时刻晚于快照发起（fetchedAt）则跳过（状态比快照新）；补 busy 前本地消息以终态 assistant 结尾则跳过（idle 及先行 completed 已更新到达，不复活绿点），无消息数据（未开 Tab）照补。守卫拦不住的残余由 60s 周期对账收敛。v1 的 `GET /session/status?directory=` 按目录覆盖合并语义随端点消亡（SS-1 教训的等价物 = null 保留 + 闸门过滤） |
+| 消息 finish 推断 | 任何 `GET /session/{id}/message` 结果处理时 | 末条 assistant 且 `finish === 'stop' \|\| 'error'` ⇒ idle；`'tool-calls'`（中间步骤）与 `null`（生成中）**不触发**（移动端 D-SS-A/B 已验证：进行中消息在 REST 可见且 finish=null）。**已知盲区**：仅覆盖开 Tab 会话且只能清不能补——active 对账（上行）是左栏未开 Tab 会话与丢失 busy 事件的主收敛通道，本行退居激活重拉的兜底 |
 
 - 状态不落盘（时效性强，磁盘 busy 是误导；冷启动显示 idle 直到 REST 返回）；
 - chat Tab 标题的 8px running 状态点（design-layout §4 / DESIGN.md 既有约定）与消息流槽位**消费同一状态源**，单一事实源，杜绝 Tab 与消息流不一致。
