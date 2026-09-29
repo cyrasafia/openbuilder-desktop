@@ -29,6 +29,13 @@ export interface ReconcilerDeps {
     permissions: Record<string, unknown>[] | null,
     questions: PendingQuestion[] | null,
   ) => void
+  /**
+   * 活跃集合对账（design-typing-indicator §4 来源 5）：`GET /api/session/active`
+   * 全局 drain 集合。null = 拉取失败——调用方保留本地状态（同 pending 的
+   * null 语义）。**在消息快照之后回调**：active 是在场判定的更权威源，
+   * 后行可覆盖 finish 推断（消息末条旧终态 × drain 已重建新轮的极小窗口）。
+   */
+  onActiveSnapshot?: (active: Set<string> | null) => void
   onReconcileStateChange: (active: boolean) => void
   log?: (...args: unknown[]) => void
 }
@@ -111,6 +118,13 @@ export class Reconciler {
       if (stale()) return
       if (page !== null) this.d.onMessagesSnapshot(sessionID, page.entries)
     })
+    // 活跃集合对账（V2D-3 修复）：单请求无目录维度，全局一次；失败传 null
+    // 保留本地（不清不补）。放在末段——见 onActiveSnapshot 注释的顺序依据
+    if (this.d.onActiveSnapshot) {
+      const active = await client.listActiveSessions().catch(() => null)
+      if (stale()) return
+      this.d.onActiveSnapshot(active)
+    }
   }
 }
 

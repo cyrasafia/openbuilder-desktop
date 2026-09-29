@@ -406,7 +406,8 @@ export class AppStore {
   /**
    * 会话状态（busy/idle/retry）——纯客户端内存映射，单一事实源：
    * Tab 状态点、左栏指示器、消息流 TypingSlot 都消费它（design-typing-indicator §4）。
-   * idle 不落 map（缺省即 idle）；来源见 setSessionStatus（事件驱动，M3a 起无快照阶段）。
+   * idle 不落 map（缺省即 idle）；来源见 setSessionStatus（事件驱动）
+   * 与 reconcileActiveSnapshot（active 对账，断线窗口收敛）。
    */
   sessionStatus = new Map<string, SessionStatusValue>()
   /** sessionID → 状态来源目录（REST 按目录覆盖合并的权威边界） */
@@ -1959,6 +1960,39 @@ export class AppStore {
     }
   }
 
+  /**
+   * 活跃集合对账（design-typing-indicator §4 来源 5，V2D-3 修复）：
+   * `GET /api/session/active` 的全局 drain 集合 ↔ 本地 sessionStatus 双向 diff——
+   * 补断连窗口丢失的 session.status/session.idle 事件（左栏卡绿/进行中显灰两类
+   * 漂移的唯一权威收敛通道；消息 finish 推断只覆盖开 Tab 会话且只能清不能补）。
+   * - 本地 busy/retry × active 缺席 ⇒ idle（stale busy 清除；retryHold 由
+   *   setSessionStatus 一并卸载）；
+   * - 本地无条目 × active 在场 ⇒ 补 busy（按 findSession 解析 directory 过
+   *   isOpenedDirectory 闸门——active 是全局集合，未打开项目/未加载会话跳过）；
+   * - 本地 retry × active 在场 ⇒ **保留不降级**（active 只证明在场，attempt/
+   *   message 细节等下一次 retry 事件秒级带回）；
+   * - 乐观 in-flight（optimisticBySession 有条目）跳过清除——prompt_async
+   *   未落地前 active 可能尚未登记该会话，清了会误灭刚发的乐观 busy；
+   * - null = 拉取失败，整体保留本地（同 onPendingSnapshot null 语义）。
+   */
+  private reconcileActiveSnapshot(active: Set<string> | null) {
+    if (!active) return
+    let changed = false
+    for (const sid of [...this.sessionStatus.keys()]) {
+      if (active.has(sid) || this.optimisticBySession.has(sid)) continue
+      this.setSessionStatus(sid, { type: "idle" })
+      changed = true
+    }
+    for (const sid of active) {
+      if (this.sessionStatus.has(sid)) continue
+      const session = this.findSession(sid)
+      if (!session || !this.isOpenedDirectory(session.directory)) continue
+      this.setSessionStatus(sid, { type: "busy" }, session.directory)
+      changed = true
+    }
+    if (changed) this.emit()
+  }
+
   /** 目录是否仍属于某个打开项目（root 或其 worktree）——在途状态快照的闸门 */
   private isOpenedDirectory(dir: string): boolean {
     return this.openedProjects.some(
@@ -2790,10 +2824,10 @@ export class AppStore {
       if (page === null) return
       const sessions = page.data.map(toInternalSession)
       this.applySessionsSnapshot(project.id, dir, sessions)
-      // v2 状态快照退役（M3a）：/session/status 无对应端点，busy/idle/retry 改
-      // session.status 事件驱动（ephemeral——断线窗口内丢失的态转靠下一事件
-      // 或重连后交互收敛；stale busy 已知局限，M4 评估按 SessionInfo.time.idle
-      // /outcome 对账推导）
+      // v2 状态对账（V2D-3 修复）：/session/status 无对应端点（M3a 裁定仍成立），
+      // 但 `GET /api/session/active`（drain 集合，活体 2026-09-29 发现）在
+      // reconciler 的 onActiveSnapshot 提供双向 diff——断线窗口丢失的
+      // session.status/idle 事件经重连对账收敛，stale busy 不再依赖交互触发
     })
   }
 
@@ -5944,9 +5978,12 @@ export class AppStore {
         for (const [pid, list] of byProject) {
           this.applySessionsSnapshot(pid, dir, list)
         }
-        // v2 状态快照阶段退役（M3a）：无 /session/status 端点——stale busy 由
-        // onMessagesSnapshot 的 finish 推断兜底 + 下一 session.status 事件收敛
+        // v2 状态对账（V2D-3 修复，2026-09-29）：`GET /api/session/active` 全局
+        // drain 集合双向 diff（M3a「无 /session/status 端点」裁定按当期契约正确，
+        // active 端点系活体重新发现——完整 status 端点未随 2.0.18 发布）。
+        // stale busy 清理不再依赖消息 finish 推断（仅覆盖开 Tab 会话）
       },
+      onActiveSnapshot: (active) => this.reconcileActiveSnapshot(active),
       onMessagesSnapshot: (sessionID, msgs) => {
         this.noteSyntheticInSnapshot(sessionID, msgs)
         const local = this.messagesBySession.get(sessionID) ?? new Map()
