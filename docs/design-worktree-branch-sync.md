@@ -96,17 +96,13 @@ creates a branch」。无关联 issue（N/A），提交保留/数据安全零讨
 
 1. 在**项目 canonical** 下操作（worktree 目录已消失，不能 `-C` 进去）：
    检查 `opencode/<name>` 是否存在
-2. 存在 → 判断是否已并入其他 ref：`git rev-parse` 取 tip +
-   `git for-each-ref --contains <tip> refs/heads refs/remotes`（排除自身，
-   `--format='%(refname)'` **必须单引号**——fish 把裸括号解析为命令替换，
-   活体踩坑 2026-09-29）
-   - 非空 = 已并入 → `git branch -D opencode/<name>` 清理；**-D 失败**
-     （如同名分支恰被另一 worktree 检出）→ 改走保留路径 + 提示（review
-     Finding 2：不静默残留）
-   - 空 = **未并入 → 保留分支 + UI 提示「分支已保留：opencode/<name>
-     （含未合并提交）」**——零静默丢失、零长期污染
-4. slug 守卫同 §2.2（不匹配 = 外部 worktree，跳过整段）
-5. 用户在 worktree 内自切的其他分支不碰（只认 `opencode/<name>` 归属）
+2. 存在 → `git branch -D opencode/<name>` 强制删除（无论是否已并入，
+   `-D` 均可删未合并分支；不依赖合并状态检测，对 squash merge 无影响）
+   - **-D 失败**（如同名分支恰被另一 worktree 检出）→ 返回分支名 +
+     UI 提示「分支 {branch} 删除失败（可能被其他工作区占用）」
+     （review Finding 2：不静默残留）
+3. slug 守卫同 §2.2（不匹配 = 外部 worktree，跳过整段）
+4. 用户在 worktree 内自切的其他分支不碰（只认 `opencode/<name>` 归属）
 
 ### 2.4 失败降级与边界
 
@@ -117,7 +113,7 @@ creates a branch」。无关联 issue（N/A），提交保留/数据安全零讨
 | `switch -c` 撞名 | 后缀重试 ≤2 → 放弃（detached） |
 | 官方 desktop 建的 detached worktree（如 curious-cabin） | **不主动补挂**——只管自己 create 流程 |
 | 外部 `git worktree add` 的 worktree | 同上不动（库存正常显示，见 design-worktree-sync） |
-| 删除时分支检查 shell 失败 | 保留分支（宁残留不误删），无重试 |
+| 删除时分支检查 shell 失败 | 返回 null（宁残留不误删），无重试 |
 | shell 经用户登录 shell（fish/bash/zsh）执行 | 命令保持 POSIX 子集 + **括号 token 一律单引号**（`%(refname)` 裸写被 fish 解析为命令替换，实测）；`&&`、`$()` 实测 fish 可用，不用 bashism |
 
 ### 2.5 双端落点
@@ -129,7 +125,7 @@ creates a branch」。无关联 issue（N/A），提交保留/数据安全零讨
 | 移动 | `lib/data/api/opencode_client.dart` | `createWorktree`（:167）旁增同构 shell 方法 |
 | 移动 | `lib/core/session/server_store.dart` | create 调用点（:474）增挂载；`removeWorktree`（:381）增分支处理 |
 
-行为一致点：分支命名、撞名策略、删除保留规则；UI 提示文案各自平台风格。
+行为一致点：分支命名、撞名策略、删除规则；UI 提示文案各自平台风格。
 
 ## 3. 测试要点（PC 端已落地，共 10 用例）
 
@@ -137,9 +133,9 @@ creates a branch」。无关联 issue（N/A），提交保留/数据安全零讨
   running 轮询至 exited 透传 exit code；超时抛 ApiError(timeout)
 - `app-store.test.ts`（7）：创建成功挂 `opencode/<basename>`（cwd = 新目录）；
   撞名 show-ref 判定 + `-<rand>` 后缀重试；shell 异常降级不阻塞创建；
-  删除已并入 → canonical 下 `branch -D`；未并入 → 保留 + branchNotice；
+  删除 → canonical 下直接 `branch -D`（无论是否已并入）；
   无同名分支 → 仅一次存在性探测；非 slug 目录名跳过分支管理（挂载/清理
-  零 shell 调用）；`-D` 失败 → 保留 + 提示兜底
+  零 shell 调用）；`-D` 失败 → 返回分支名 + 提示兜底
 - 既有 worktree 用例全保留（fake 无 runShell = 降级路径回归）
 
 ## 4. 不做的事
@@ -147,4 +143,4 @@ creates a branch」。无关联 issue（N/A），提交保留/数据安全零讨
 - 不给存量 detached worktree 补挂分支（官方 desktop/外部 git 建的）
 - 不做分支显示 UI（上游 #50228 属 tab 副标题，另案）
 - 不改 server、不 fork（上游 issue 另提；若上游回归 v1 `-b` 语义则本方案退役）
-- 不做未合并提交的合并建议——只保留分支 + 提示，保留后动作归用户
+- 不做未合并提交的合并建议——分支直接删除，不保留

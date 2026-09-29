@@ -875,7 +875,7 @@ describe("worktree 库存（v2 权威源，2026-09-29：sandboxes 冻结）", ()
     expect(store.currentWorkspace?.directory).toBe(NEW)
   })
 
-  it("removeWorkspace 分支清理（§2.3）：已并入 → -D；未并入 → 保留 + branchNotice", async () => {
+  it("removeWorkspace 分支清理（§2.3）：直接 -D 删除分支（无论是否已并入）", async () => {
     snapshots.set(ROOT, [])
     snapshots.set(WT2, [])
     const cv2 = fakeClient()
@@ -883,26 +883,21 @@ describe("worktree 库存（v2 权威源，2026-09-29：sandboxes 冻结）", ()
     cv2.listWorktrees = async () => [{ directory: ROOT }, { directory: WT2, strategy: "git" }]
     projectList = [{ ...project(), sandboxes: [WT1, WT2] }]
     const shells: Array<{ command: string; cwd?: string }> = []
-    // contains 输出可变：第一段 = 已并入（main 含其提交），第二段 = 仅自身
-    let containsOut = "refs/heads/opencode/wt1\nrefs/heads/main\n"
     cv2.runShell = async (command: string, opts: { cwd?: string } = {}) => {
       shells.push({ command, ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}) })
-      if (command.includes("for-each-ref")) return { exit: 0, output: containsOut }
       return { exit: 0, output: "" }
     }
     await store.syncWorktrees()
     const res = await store.removeWorkspace(WT1)
     expect(res.ok).toBe(true)
     expect(res.keptBranch).toBeUndefined()
-    // canonical 下清分支（worktree 目录已删，不能 -C 进去）
+    // canonical 下直接删分支（worktree 目录已删，不能 -C 进去）
     expect(shells.some((s) => s.command === "git branch -D opencode/wt1" && s.cwd === ROOT)).toBe(true)
-    // 未并入：仅自身包含 → 保留并提示
-    containsOut = "refs/heads/opencode/wt2\n"
+    // 第二个 worktree 也直接删
     const res2 = await store.removeWorkspace(WT2)
     expect(res2.ok).toBe(true)
-    expect(res2.keptBranch).toBe("opencode/wt2")
-    expect(store.branchNotice).toBe("opencode/wt2")
-    expect(shells.some((s) => s.command === "git branch -D opencode/wt2")).toBe(false)
+    expect(res2.keptBranch).toBeUndefined()
+    expect(shells.some((s) => s.command === "git branch -D opencode/wt2" && s.cwd === ROOT)).toBe(true)
   })
 
   it("removeWorkspace 无同名分支（外部 worktree/降级挂载）：不做分支处理", async () => {
@@ -961,9 +956,6 @@ describe("worktree 库存（v2 权威源，2026-09-29：sandboxes 冻结）", ()
     projectList = [{ ...project(), sandboxes: [WT1, WT2] }]
     cv2.runShell = async (command: string) => {
       if (command.includes("show-ref")) return { exit: 0, output: "" }
-      if (command.includes("for-each-ref")) {
-        return { exit: 0, output: "refs/heads/opencode/wt1\nrefs/heads/main\n" } // 已并入
-      }
       // branch -D 失败（如分支被另一 worktree 检出）
       return { exit: 1, output: "error: cannot delete branch checked out" }
     }
