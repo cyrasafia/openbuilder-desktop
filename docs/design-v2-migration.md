@@ -185,7 +185,7 @@ v2 server 默认强制密码（移动端基线 §认证）。桌面端影响：
 |------|--------|------|------|
 | V2D-1 | 🔴 高 | D1 归档方案 a 的 metadata 字段是私约，其他 v2 客户端不识别 | 官方 app 留有 *"Restore archiving when the V2 client exposes a session archive API"* TODO（三处）且两个完整实现 PR（#38440/#39358）现成未合——落地时先核对当期 v2 是否已补 API；私约方案定位为过渡桥接，并在 openbuilder 侧对齐字段约定；回归后切回官方字段 |
 | V2D-2 | 🟡 中 | pty ticket/WS 契约（`x-opencode-ticket`、1000/4404 分流）未逐项核对 | plan-v2-terminal 首项任务：对照 v2 pty handler 源码核对，终端退出分流语义不可走样（2026-09-22/09-23 锁定语义） |
-| V2D-3 | ✅ 已解决（2026-09-29） | `GET /session/status` 消失后的状态对账细节（运行中会话的 UI 指示）未设计 | 落地记录：M3a 曾裁定「无端点、靠 finish 推断 + 事件收敛」——finish 推断只覆盖开 Tab 会话且只能清不能补，左栏漂移（卡绿/显灰）无收敛通道。活体重新调研发现 `GET /api/session/active`（drain 集合，缺席即不活跃）可做双向 diff，已落地 reconciler `onActiveSnapshot` → `reconcileActiveSnapshot`（决策矩阵见 design-typing-indicator §4）。完整 `/api/session/status` 发布后换绑端点即可恢复 retry 细节，对账框架不变 |
+| V2D-3 | 🟢 低（已解决，2026-09-29） | `GET /session/status` 消失后的状态对账细节（运行中会话的 UI 指示）未设计 | 落地记录：M3a 曾裁定「无端点、靠 finish 推断 + 事件收敛」——finish 推断只覆盖开 Tab 会话且只能清不能补，左栏漂移（卡绿/显灰）无收敛通道。活体重新调研发现 `GET /api/session/active`（drain 集合，缺席即不活跃）可做双向 diff，已落地 reconciler `onActiveSnapshot` → `reconcileActiveSnapshot`（决策矩阵见 design-typing-indicator §4）。review #1 修订（2026-09-29）：补在途竞态守卫（清 idle 看 `statusSetAt` 置位时刻 vs 快照发起时刻；补 busy 看本地消息终局证据）+ 60s 周期对账钳制残余漂移存活时间。完整 `/api/session/status` 发布后换绑端点即可恢复 retry 细节，对账框架不变 |
 | V2D-4 | 🟢 低 | global 发现翻页全量的性能（会话多时 cursor 翻页 N 次） | plan-v2-protocol 内评估 limit 上限与增量缓存；必要时只在选择器打开时发现 |
 | V2D-5 | 🟢 低 | `POST /session` payload 无 parentID，子会话（后台任务）创建路径未确认 | 核对 v2 fork/inbox 体系是否覆盖桌面端现有用例 |
 
@@ -200,7 +200,7 @@ v2 server 默认强制密码（移动端基线 §认证）。桌面端影响：
 | D5 | 确认（dispose 不映射 reload；refresh + 服务层自管理） |
 | 双兼容 | **不做兼容；v0.5 起仅支持 v2**（0.4.x 及以前维持 v1.18.x 契约；v0.5 按版本规则打 tag） |
 | **D6（M1 实施期增补）** | **global 语义退役**：v2 实测无 global 项目行（非 git 目录 = 目录哈希伪项目行，出现在 `GET /api/project`）——v1 的 `global\0<dir>` entry 模型整体删除，非 git 目录以普通项目行进左栏；持久化旧键连接期按 worktree 匹配迁移（`migrateLegacyGlobalState`）；M1b 已落地（AGENTS.md 锁定语义已同步改写） |
-| **D7（V2D-3 修复，2026-09-29）** | **会话状态对账换绑 active**：`GET /api/session/active`（全局 drain 集合快照，`{ses_x: {type:"running"}}`，缺席 = 不活跃；v2.0.18 活体核对）作为断连窗口状态漂移的权威收敛源——reconciler 末段拉取后与本地 `sessionStatus` 双向 diff（清 stale busy/retry、补丢失 busy；retry 在场保留细节；乐观 in-flight 跳过；null 保留）。server 侧依据：drain 与 SessionStatus 生命周期绑定（run-state `onBusy`/`onIdle`、processor 的 retry 在 drain 内）。未来 `/api/session/status`（完整 Map，源码已有未发布）回归后换绑，恢复 retry 细节 |
+| **D7（V2D-3 修复，2026-09-29）** | **会话状态对账换绑 active**：`GET /api/session/active`（全局 drain 集合快照，`{ses_x: {type:"running"}}`，缺席 = 不活跃；v2.0.18 活体核对）作为断连窗口状态漂移的权威收敛源——reconciler 末段拉取后与本地 `sessionStatus` 双向 diff（清 stale busy/retry、补丢失 busy；retry 在场保留细节；乐观 in-flight 跳过；null 保留）。server 侧依据：drain 与 SessionStatus 生命周期绑定（run-state `onBusy`/`onIdle`、processor 的 retry 在 drain 内）。未来 `/api/session/status`（完整 Map，源码已有未发布）回归后换绑，恢复 retry 细节。**review #1 修订**：在途竞态守卫（`statusSetAt` vs `fetchedAt` + 消息终局证据，快照在途期间新旧事件交错的误置防护）+ 60s 周期对账（request 原只有 onReconnected 触发，残余漂移无自愈通道） |
 
 ### 修复复审
 

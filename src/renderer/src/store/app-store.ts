@@ -410,6 +410,9 @@ export class AppStore {
    * 与 reconcileActiveSnapshot（active 对账，断线窗口收敛）。
    */
   sessionStatus = new Map<string, SessionStatusValue>()
+  /** sessionID → 最近一次置位（busy/retry）时刻——active 对账的「新事件守卫」：
+   * 置位晚于快照发起 ⇒ 本地状态比快照新（在途竞态），旧快照不得清除 */
+  private statusSetAt = new Map<string, number>()
   /** sessionID → 状态来源目录（REST 按目录覆盖合并的权威边界） */
   private statusSources = new Map<string, string>()
   /**
@@ -866,6 +869,7 @@ export class AppStore {
     this.persistTabSession()
     this.startSse()
     this.startWorktreeSyncTimer()
+    this.startReconcileTimer()
     // 冷启动 pending 回填（离线期间产生的授权/问题请求）
     void this.backfillPending()
     this.connectionState = "streaming"
@@ -1026,6 +1030,7 @@ export class AppStore {
     this.fileRefs.clear()
     this.attachments.clear()
     this.sessionStatus.clear()
+    this.statusSetAt.clear()
     this.statusSources.clear()
     this.retryHold.clear()
     this.pendingPermissions.clear()
@@ -1095,6 +1100,7 @@ export class AppStore {
     // dispose 等待全部兑现放弃（后续 client 身份守卫丢弃），防跨连接误等
     this.clearFileWatchTimers()
     this.stopWorktreeSyncTimer()
+    this.stopReconcileTimer()
     this.snapshottedDirs.clear()
     // agent/模型目录：切 profile 全量重建（与命令缓存同模式）
     this.modelCatalogs.clear()
@@ -1777,6 +1783,30 @@ export class AppStore {
   private worktreeSyncTimer: ReturnType<typeof setInterval> | null = null
   private static readonly WORKTREE_SYNC_INTERVAL_MS = 60_000
 
+  /**
+   * 周期全量对账（review #1，2026-09-29）：SSE 稳定时 reconciler.request()
+   * 原只有 onReconnected 一个触发点——active 对账的在途竞态误置（守卫拦不住的
+   * 残余，见 reconcileActiveSnapshot 注释）与任何未知漂移源会卡到下次重连。
+   * 60s 周期把存活时间钳制到一轮（与 worktree 对账同节拍；request 自带
+   * 800ms debounce + 互斥，与事件触发合并）。
+   */
+  private reconcileTimer: ReturnType<typeof setInterval> | null = null
+  private static readonly RECONCILE_INTERVAL_MS = 60_000
+
+  private startReconcileTimer() {
+    this.stopReconcileTimer()
+    this.reconcileTimer = setInterval(() => {
+      this.reconciler?.request()
+    }, AppStore.RECONCILE_INTERVAL_MS)
+  }
+
+  private stopReconcileTimer() {
+    if (this.reconcileTimer) {
+      clearInterval(this.reconcileTimer)
+      this.reconcileTimer = null
+    }
+  }
+
   private startWorktreeSyncTimer() {
     this.stopWorktreeSyncTimer()
     this.worktreeSyncTimer = setInterval(() => {
@@ -1936,6 +1966,7 @@ export class AppStore {
   private setSessionStatus(sessionID: string, status: SessionStatusValue, directory?: string) {
     if (status.type === "idle") {
       this.sessionStatus.delete(sessionID)
+      this.statusSetAt.delete(sessionID)
       this.statusSources.delete(sessionID)
       this.retryHold.delete(sessionID)
     } else {
@@ -1944,6 +1975,7 @@ export class AppStore {
       if (status.type === "busy" && this.retryHold.has(sessionID)) return
       if (status.type === "retry") this.retryHold.add(sessionID)
       this.sessionStatus.set(sessionID, status)
+      this.statusSetAt.set(sessionID, Date.now())
       if (directory) this.statusSources.set(sessionID, directory)
     }
   }
@@ -1954,6 +1986,7 @@ export class AppStore {
     for (const [sid, dir] of this.statusSources) {
       if (set.has(dir)) {
         this.statusSources.delete(sid)
+        this.statusSetAt.delete(sid)
         this.sessionStatus.delete(sid)
         this.retryHold.delete(sid)
       }
@@ -1974,12 +2007,26 @@ export class AppStore {
    * - 乐观 in-flight（optimisticBySession 有条目）跳过清除——prompt_async
    *   未落地前 active 可能尚未登记该会话，清了会误灭刚发的乐观 busy；
    * - null = 拉取失败，整体保留本地（同 onPendingSnapshot null 语义）。
+   *
+   * 在途竞态守卫（review #1，2026-09-29）：快照是 HTTP 响应生成时刻的 drain
+   * 集合，SSE 事件在另一条连接独立到达——旧快照覆盖新事件会误置且无自愈事件
+   * （idle/busy 均只发一次）。两个方向：
+   * - **清 idle**：置位时刻（statusSetAt）晚于快照发起（fetchedAt）⇒ 状态比
+   *   快照新（快照在途期间 status 事件先到），跳过——他端触发的会话恰在窗口
+   *   内开始时，不熄灭刚点亮的绿点；残余（事件在窗口内到且又在快照生成前结
+   *   束）由 60s 周期对账收敛；
+   * - **补 busy**：本地消息以终态 assistant 结尾 ⇒ idle 事件（及其先行的
+   *   completed 消息，同连接串行处理）已比快照新到达——会话恰在窗口内结束，
+   *   不复活绿点。无消息数据（未开 Tab）照补——终局证据缺席时在场快照是唯一
+   *   依据；「旧终态 × 新轮 drain 已建」的显灰残余同样由周期对账收敛（user
+   *   消息落地后末条不再是旧终态）。
    */
-  private reconcileActiveSnapshot(active: Set<string> | null) {
+  private reconcileActiveSnapshot(active: Set<string> | null, fetchedAt = 0) {
     if (!active) return
     let changed = false
     for (const sid of [...this.sessionStatus.keys()]) {
       if (active.has(sid) || this.optimisticBySession.has(sid)) continue
+      if (fetchedAt > 0 && (this.statusSetAt.get(sid) ?? 0) > fetchedAt) continue
       this.setSessionStatus(sid, { type: "idle" })
       changed = true
     }
@@ -1987,6 +2034,13 @@ export class AppStore {
       if (this.sessionStatus.has(sid)) continue
       const session = this.findSession(sid)
       if (!session || !this.isOpenedDirectory(session.directory)) continue
+      const msgs = this.messagesBySession.get(sid)
+      if (
+        msgs &&
+        inferIdleFromMessages([...msgs.values()].sort(sortMessages).map((m) => m.info))
+      ) {
+        continue
+      }
       this.setSessionStatus(sid, { type: "busy" }, session.directory)
       changed = true
     }
@@ -5983,7 +6037,7 @@ export class AppStore {
         // active 端点系活体重新发现——完整 status 端点未随 2.0.18 发布）。
         // stale busy 清理不再依赖消息 finish 推断（仅覆盖开 Tab 会话）
       },
-      onActiveSnapshot: (active) => this.reconcileActiveSnapshot(active),
+      onActiveSnapshot: (active, fetchedAt) => this.reconcileActiveSnapshot(active, fetchedAt),
       onMessagesSnapshot: (sessionID, msgs) => {
         this.noteSyntheticInSnapshot(sessionID, msgs)
         const local = this.messagesBySession.get(sessionID) ?? new Map()

@@ -2910,9 +2910,10 @@ describe("活跃集合对账（design-typing-indicator §4 来源 5，V2D-3 修�
   }
 
   /** 直驱对账挂点（reconciler 经 onActiveSnapshot 到达的同一方法） */
-  function reconcile(active: Set<string> | null) {
-    ;(store as unknown as { reconcileActiveSnapshot: (a: Set<string> | null) => void }).reconcileActiveSnapshot(
+  function reconcile(active: Set<string> | null, fetchedAt = 0) {
+    ;(store as unknown as { reconcileActiveSnapshot: (a: Set<string> | null, f: number) => void }).reconcileActiveSnapshot(
       active,
+      fetchedAt,
     )
   }
 
@@ -2963,7 +2964,7 @@ describe("活跃集合对账（design-typing-indicator §4 来源 5，V2D-3 修�
     seedSession()
     dispatch({ type: "session.status", properties: { sessionID: "s1", status: { type: "busy" } } })
     store.optimisticBySession.set("s1", [
-      { optimistic: true, localId: "opt_1", text: "在途", createdAt: 999 } as never,
+      { optimistic: true, localId: "opt_1", text: "在途", createdAt: 999 },
     ])
     reconcile(new Set())
     // 乐观窗口不清（刚发送的会话在 server 排队中）；真实回显到达清乐观后下轮对账收敛
@@ -2991,6 +2992,46 @@ describe("活跃集合对账（design-typing-indicator §4 来源 5，V2D-3 修�
     reconcile(new Set(["s_unknown"]))
     expect(store.statusOf("s_unknown").type).toBe("idle")
     expect(store.isSessionActive("s_unknown")).toBe(false)
+  })
+
+  it("新事件守卫：置位时刻晚于快照发起（fetchedAt）⇒ 旧快照不清新事件（在途竞态）", () => {
+    seedSession()
+    // 快照发起在前（fetchedAt=1000），会话开始事件在后（置位时刻=wall clock）
+    dispatch({ type: "session.status", properties: { sessionID: "s1", status: { type: "busy" } } })
+    const setAt = (store as unknown as { statusSetAt: Map<string, number> }).statusSetAt.get("s1")!
+    expect(setAt).toBeGreaterThan(1000)
+    reconcile(new Set(), 1000)
+    // 快照在途期间 status(busy) 先到——他端触发的会话刚点亮的绿点不熄灭
+    expect(store.statusOf("s1").type).toBe("busy")
+    // fetchedAt 晚于置位（正常时序：快照比本地状态新）⇒ 照常清除
+    reconcile(new Set(), setAt + 1000)
+    expect(store.statusOf("s1").type).toBe("idle")
+  })
+
+  it("终局证据守卫：本地消息以终态 assistant 结尾 ⇒ 不复活绿点（在途竞态）", () => {
+    seedSession()
+    // 会话结束：completed 消息（finish=stop）与 idle 事件先于 active 响应到达
+    store.messagesBySession.set(
+      "s1",
+      new Map([
+        [
+          "msg_a1",
+          {
+            info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 100, completed: 200 }, finish: "stop" },
+            parts: [],
+          },
+        ],
+      ]),
+    )
+    expect(store.dotStateFor("s1")).toBe("idle")
+    reconcile(new Set(["s1"]))
+    // 旧快照在场但本地已有更新的终局证据——不补 busy（否则绿点卡到下次重连）
+    expect(store.statusOf("s1").type).toBe("idle")
+    // 对照：无消息数据（未开 Tab）时在场快照仍是唯一依据，照补（左栏核心场景）
+    const s2 = session("s2", ROOT, { created: 2, updated: 2 })
+    store.sessionsByProject.get("proj1")!.set("s2", s2)
+    reconcile(new Set(["s2"]))
+    expect(store.statusOf("s2").type).toBe("busy")
   })
 })
 
