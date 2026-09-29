@@ -2590,14 +2590,29 @@ function ReasoningChip({ part }: { part: Part }) {
   )
 }
 
+/**
+ * 从 tool input 中提取第一个有意义的字段作为摘要副标题。
+ * 参考官方 session-ui basic-tool.tsx:label() 的实现。
+ */
+function toolSummary(input: unknown): string {
+  if (!input || typeof input !== "object") return ""
+  const keys = ["description", "query", "url", "filePath", "path", "pattern", "name", "command"]
+  for (const key of keys) {
+    const value = (input as Record<string, unknown>)[key]
+    if (typeof value === "string" && value.length > 0) return value
+  }
+  return ""
+}
+
 function ToolChip({ part }: { part: ToolPart }) {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const state = part.state
   const status = state.status
+  // v2 协议无有意义的 title，参考官方实现从 input 提取摘要
   const summary =
     status === "completed"
-      ? state.title || ""
+      ? toolSummary(state.input)
       : status === "error"
         ? state.error.slice(0, 120)
         : ""
