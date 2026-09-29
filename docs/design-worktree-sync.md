@@ -32,7 +32,11 @@ legacy 列**——server 侧唯一写点只剩 `upsertProject` 的 insert 空数
   载入 + `mergeWorktreeDirsIntoProjects()` **union 进内部 sandboxes**（只增不减——
   闸门/作用域/快照/记忆全下游同构受益，无需逐处改）；
 - `workspacesOfProject` 渲染**库存优先**（幽灵不渲染、新建可见），未加载/端点失败回退
-  sandboxes（旧 server 兼容）；
+  sandboxes（旧 server 兼容）。**显示顺序 = 创建顺序（新建的在最后，2026-09-29）**：
+  server 返回创建逆序（2.0.18 活体实测，契约无显式排序保证），客户端在
+  `loadWorktreeInventory` 反转——`WorktreeDirectory` 无时间戳字段，数组序是创建序
+  唯一载体，只能信任 server 返回序；回退 sandboxes 路径不反转（顺序随 server 快照，
+  兼容路径不做保证）；
 - 对账触发点：连接（refreshAllOpenedProjects）/打开项目/60s 定时/SSE 重连 → 每打开的
   git 项目 `refresh + list`；本端 create/remove 后定向 list（server 状态已随 mutation
   更新）；`worktree.updated` SSE → syncWorktrees（丢消息补偿）；
