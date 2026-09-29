@@ -742,7 +742,8 @@ export class RestClient {
   }
 
   /**
-   * POST /api/session/:sessionID/command：body `{name, text?, files?}`（files =
+   * POST /api/session/:sessionID/command：body `{name, text, files?}`（text =
+   * v2 必填、无参传 ""；files =
    * v2 {uri, name}，同 prompt 契约）。同步执行，NoContent/200 即完成——
    * **timeoutMs: 0 不设超时**（design-slash-command SC-4：命令跑超 15s 客户端
    * 会误判失败撤乐观 + 回填草稿，而 server 继续执行不随断连取消；v1 同判）。
