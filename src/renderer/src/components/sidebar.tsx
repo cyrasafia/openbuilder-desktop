@@ -428,6 +428,14 @@ function ProjectTree() {
         })}
       </div>
 
+      {/* 保留分支提示（design-worktree-branch-sync §2.3）：删除的工作区分支含
+          未合并提交时保留（不静默丢代码），10s 自动消失 */}
+      {store.branchNotice && (
+        <div className="branch-notice" title={store.branchNotice}>
+          {t.keptBranchNotice.replace("{branch}", store.branchNotice)}
+        </div>
+      )}
+
       {store.pickerOpen && <ProjectPicker onClose={() => store.closeProjectPicker()} />}
 
       {store.pendingWorktreeDelete && (

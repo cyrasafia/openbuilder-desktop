@@ -797,6 +797,180 @@ describe("worktree 库存（v2 权威源，2026-09-29：sandboxes 冻结）", ()
     expect(res.ok).toBe(true)
     expect(store.workspacesOfProject("proj1").some((w) => w.directory === WT1)).toBe(false)
   })
+
+  it("createWorkspace 分支挂载（design-worktree-branch-sync §2.2）：成功挂 opencode/<name>", async () => {
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+    const NEW = "/data/worktree/abc123/wt-new"
+    const cv2 = fakeClient()
+    cv2.createWorktree = async () => ({ directory: NEW })
+    cv2.listWorktrees = async () => [
+      { directory: ROOT },
+      { directory: WT1, strategy: "git" },
+      { directory: WT2, strategy: "git" },
+      { directory: NEW, strategy: "git" },
+    ]
+    const shells: Array<{ command: string; cwd?: string }> = []
+    cv2.runShell = async (command: string, opts: { cwd?: string } = {}) => {
+      shells.push({ command, ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}) })
+      return { exit: 0, output: "切换到一个新分支" }
+    }
+    const res = await store.createWorkspace()
+    expect(res.ok).toBe(true)
+    // 快路径单命令：git switch -c opencode/<basename>，cwd = 新 worktree 目录
+    expect(shells).toEqual([{ command: "git switch -c opencode/wt-new", cwd: NEW }])
+  })
+
+  it("createWorkspace 撞名重试：同名残留分支 → <name>-<rand> 后缀（show-ref 判撞名）", async () => {
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+    const NEW = "/data/worktree/abc123/wt-new"
+    const cv2 = fakeClient()
+    cv2.createWorktree = async () => ({ directory: NEW })
+    cv2.listWorktrees = async () => [
+      { directory: ROOT },
+      { directory: NEW, strategy: "git" },
+    ]
+    const switches: string[] = []
+    cv2.runShell = async (command: string) => {
+      if (command.startsWith("git switch -c ")) {
+        switches.push(command)
+        return switches.length === 1
+          ? { exit: 1, output: "fatal: a branch named ... already exists" }
+          : { exit: 0, output: "切换到一个新分支" }
+      }
+      // show-ref 探测：exit 0 = 分支已存在（撞名成立才值得重试）
+      return { exit: 0, output: "" }
+    }
+    const res = await store.createWorkspace()
+    expect(res.ok).toBe(true)
+    expect(switches[0]).toBe("git switch -c opencode/wt-new")
+    expect(switches).toHaveLength(2)
+    expect(switches[1]).toMatch(/^git switch -c opencode\/wt-new-[a-z0-9]{1,4}$/)
+  })
+
+  it("createWorkspace 挂载降级：/api/shell 异常不阻塞创建（保持 detached）", async () => {
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+    const NEW = "/data/worktree/abc123/wt-new"
+    const cv2 = fakeClient()
+    cv2.createWorktree = async () => ({ directory: NEW })
+    cv2.listWorktrees = async () => [
+      { directory: ROOT },
+      { directory: WT1, strategy: "git" },
+      { directory: WT2, strategy: "git" },
+      { directory: NEW, strategy: "git" },
+    ]
+    // 旧 v2 无 /api/shell / 网络异常：挂载失败降级，创建流程照常完成
+    cv2.runShell = async () => {
+      throw new Error("shell endpoint unavailable")
+    }
+    const res = await store.createWorkspace()
+    expect(res.ok).toBe(true)
+    expect(store.currentWorkspace?.directory).toBe(NEW)
+  })
+
+  it("removeWorkspace 分支清理（§2.3）：已并入 → -D；未并入 → 保留 + branchNotice", async () => {
+    snapshots.set(ROOT, [])
+    snapshots.set(WT2, [])
+    const cv2 = fakeClient()
+    cv2.deleteWorktree = async () => {}
+    cv2.listWorktrees = async () => [{ directory: ROOT }, { directory: WT2, strategy: "git" }]
+    projectList = [{ ...project(), sandboxes: [WT1, WT2] }]
+    const shells: Array<{ command: string; cwd?: string }> = []
+    // contains 输出可变：第一段 = 已并入（main 含其提交），第二段 = 仅自身
+    let containsOut = "refs/heads/opencode/wt1\nrefs/heads/main\n"
+    cv2.runShell = async (command: string, opts: { cwd?: string } = {}) => {
+      shells.push({ command, ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}) })
+      if (command.includes("for-each-ref")) return { exit: 0, output: containsOut }
+      return { exit: 0, output: "" }
+    }
+    await store.syncWorktrees()
+    const res = await store.removeWorkspace(WT1)
+    expect(res.ok).toBe(true)
+    expect(res.keptBranch).toBeUndefined()
+    // canonical 下清分支（worktree 目录已删，不能 -C 进去）
+    expect(shells.some((s) => s.command === "git branch -D opencode/wt1" && s.cwd === ROOT)).toBe(true)
+    // 未并入：仅自身包含 → 保留并提示
+    containsOut = "refs/heads/opencode/wt2\n"
+    const res2 = await store.removeWorkspace(WT2)
+    expect(res2.ok).toBe(true)
+    expect(res2.keptBranch).toBe("opencode/wt2")
+    expect(store.branchNotice).toBe("opencode/wt2")
+    expect(shells.some((s) => s.command === "git branch -D opencode/wt2")).toBe(false)
+  })
+
+  it("removeWorkspace 无同名分支（外部 worktree/降级挂载）：不做分支处理", async () => {
+    snapshots.set(ROOT, [])
+    snapshots.set(WT2, [])
+    const cv2 = fakeClient()
+    cv2.deleteWorktree = async () => {}
+    cv2.listWorktrees = async () => [{ directory: ROOT }, { directory: WT2, strategy: "git" }]
+    projectList = [{ ...project(), sandboxes: [WT1, WT2] }]
+    const commands: string[] = []
+    cv2.runShell = async (command: string) => {
+      commands.push(command)
+      // show-ref exit 1 = 分支不存在
+      return { exit: 1, output: "" }
+    }
+    await store.syncWorktrees()
+    const res = await store.removeWorkspace(WT1)
+    expect(res.ok).toBe(true)
+    expect(res.keptBranch).toBeUndefined()
+    expect(store.branchNotice).toBeNull()
+    // 只有一次存在性探测，无 for-each-ref / branch -D
+    expect(commands).toEqual([`git show-ref --verify --quiet refs/heads/opencode/wt1`])
+  })
+
+  it("非 slug 目录名跳过分支管理（review Finding 1）：挂载与清理均不发 shell", async () => {
+    snapshots.set(ROOT, [])
+    snapshots.set(WT2, [])
+    const cv2 = fakeClient()
+    cv2.deleteWorktree = async () => {}
+    cv2.listWorktrees = async () => [{ directory: ROOT }, { directory: WT2, strategy: "git" }]
+    projectList = [{ ...project(), sandboxes: [WT1, WT2] }]
+    const shells: string[] = []
+    cv2.runShell = async (command: string) => {
+      shells.push(command)
+      return { exit: 0, output: "" }
+    }
+    await store.syncWorktrees()
+    // 清理：外部 worktree 目录名含空格/大写（库存可见、UI 可删）→ 不发 shell
+    const res = await store.removeWorkspace("/repo/.git/opencode-worktrees/My Dir")
+    expect(res.ok).toBe(true)
+    expect(res.keptBranch).toBeUndefined()
+    // 挂载：server 返回非 slug 名（大写）→ 不发 shell，创建流程照常完成
+    const NEW = "/data/worktree/abc123/NotSlug"
+    cv2.createWorktree = async () => ({ directory: NEW })
+    const res2 = await store.createWorkspace()
+    expect(res2.ok).toBe(true)
+    expect(shells).toEqual([])
+  })
+
+  it("removeWorkspace -D 失败走保留路径（review Finding 2）：keptBranch + 提示兜底", async () => {
+    snapshots.set(ROOT, [])
+    snapshots.set(WT2, [])
+    const cv2 = fakeClient()
+    cv2.deleteWorktree = async () => {}
+    cv2.listWorktrees = async () => [{ directory: ROOT }, { directory: WT2, strategy: "git" }]
+    projectList = [{ ...project(), sandboxes: [WT1, WT2] }]
+    cv2.runShell = async (command: string) => {
+      if (command.includes("show-ref")) return { exit: 0, output: "" }
+      if (command.includes("for-each-ref")) {
+        return { exit: 0, output: "refs/heads/opencode/wt1\nrefs/heads/main\n" } // 已并入
+      }
+      // branch -D 失败（如分支被另一 worktree 检出）
+      return { exit: 1, output: "error: cannot delete branch checked out" }
+    }
+    await store.syncWorktrees()
+    const res = await store.removeWorkspace(WT1)
+    expect(res.ok).toBe(true)
+    expect(res.keptBranch).toBe("opencode/wt1")
+    expect(store.branchNotice).toBe("opencode/wt1")
+  })
 })
 
 describe("busy 补充发送（design-supplement-send）", () => {

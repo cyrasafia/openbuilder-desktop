@@ -272,6 +272,8 @@ const zh = {
   forceDeleteWorkspaceMsg: "该工作区含未提交变更，普通删除被拒绝。强制删除将丢弃这些变更，且不可恢复。",
   forceDeleteConfirm: "强制删除",
   deletingWorkspace: "正在清理…",
+  // 保留分支提示（design-worktree-branch-sync §2.3）
+  keptBranchNotice: "分支已保留 {branch}（含未合并提交）",
   // agent/模型/思考强度切换（design-agent-model-switch）
   model: "模型",
   thinkingLabel: "思考强度",
@@ -549,6 +551,7 @@ const en: typeof zh = {
   forceDeleteWorkspaceMsg: "This worktree has uncommitted changes and normal deletion was refused. Force delete discards them and cannot be undone.",
   forceDeleteConfirm: "Force delete",
   deletingWorkspace: "Cleaning up…",
+  keptBranchNotice: "Branch kept {branch} (has unmerged commits)",
   model: "Model",
   thinkingLabel: "Thinking",
   thinkingDefault: "Default",
