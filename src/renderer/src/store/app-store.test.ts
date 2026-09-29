@@ -699,6 +699,106 @@ describe("worktree 事件（M3a v2 语义：reconcile 取代 dispose 链）", ()
   })
 })
 
+describe("worktree 库存（v2 权威源，2026-09-29：sandboxes 冻结）", () => {
+  /** v2 GA 事实：create/remove 只写 WorktreeTable（GET /api/worktree），
+   *  Project.sandboxes 是冻结 legacy 列——含已删幽灵、缺新建。默认 fake 无
+   *  listWorktrees（= 旧 server 无端点，回退 sandboxes）；本组用例显式挂载。 */
+  function fakeClient() {
+    return (store as unknown as { client: Record<string, unknown> }).client
+  }
+
+  it("库存为准渲染：幽灵不渲染、仅库存有的新建可见，库存 union 进 sandboxes", async () => {
+    const WT3 = "/repo/.git/opencode-worktrees/wt3"
+    const GHOST = "/repo/.git/opencode-worktrees/ghost"
+    // sandboxes 冻结态：残留幽灵 GHOST、缺他端新建 WT3
+    projectList = [{ ...project(), sandboxes: [WT1, WT2, GHOST] }]
+    const cv2 = fakeClient()
+    cv2.listWorktrees = async () => [
+      { directory: ROOT },
+      { directory: WT1, strategy: "git" },
+      { directory: WT2, strategy: "git" },
+      { directory: WT3, strategy: "git" },
+    ]
+    await store.syncWorktrees()
+    const dirs = store.workspacesOfProject("proj1").map((w) => w.directory)
+    expect(dirs).toEqual([WT1, WT2, WT3])
+    // 库存目录 union 进内部 sandboxes：事件闸门/作用域/快照目录集受益
+    const sandboxes = store.projects.find((p) => p.id === "proj1")?.sandboxes
+    expect(sandboxes).toContain(WT3)
+    expect(sandboxes).toContain(GHOST) // 幽灵保留（闸门无害，仅不渲染）
+  })
+
+  it("createWorkspace：裸 {directory} 响应解析 + 库存刷新后默认切换到新 worktree", async () => {
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+    const NEW = "/data/worktree/abc123/wt-new"
+    const cv2 = fakeClient()
+    // 2.0.18 活体：响应是裸对象（旧代码按 {data:...} envelope 解析 → directory
+    // undefined → TypeError → UI 报创建失败）
+    cv2.createWorktree = async () => ({ directory: NEW })
+    cv2.listWorktrees = async () => [
+      { directory: ROOT },
+      { directory: WT1, strategy: "git" },
+      { directory: WT2, strategy: "git" },
+      { directory: NEW, strategy: "git" },
+    ]
+    const res = await store.createWorkspace()
+    expect(res.ok).toBe(true)
+    // 库存含新目录 → 合并进 sandboxes → 幻影防御通过 → 切换生效
+    expect(store.currentWorkspace?.directory).toBe(NEW)
+    expect(store.workspacesOfProject("proj1").some((w) => w.directory === NEW)).toBe(true)
+  })
+
+  it("他端删除走库存 diff（sandboxes 冻结不变）——卸载消失目录的会话/Tab", async () => {
+    // v2 GA 后创建的 worktree 只进库存（sandboxes 从无它）——他端 DELETE 移除库存行
+    const s2 = session("s2", WT1, { created: 2, updated: 2 })
+    store.sessionsByProject.set("proj1", sessionsOf(s2))
+    store.tabMemory = { default: { [WT1]: { projectId: "proj1", tabs: ["s2"], active: "s2" } } }
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [s2])
+    snapshots.set(WT2, [])
+    projectList = [{ ...project(), sandboxes: [WT2] }]
+    const cv2 = fakeClient()
+    cv2.refreshWorktrees = async () => {}
+    let dropped = false
+    cv2.listWorktrees = async () =>
+      dropped
+        ? [{ directory: ROOT }, { directory: WT2, strategy: "git" }]
+        : [{ directory: ROOT }, { directory: WT1, strategy: "git" }, { directory: WT2, strategy: "git" }]
+    // 首轮：库存载入 + 合并（setCurrentWorkspace 的幻影防御依赖合并后的 sandboxes）
+    await store.syncWorktrees()
+    await store.setCurrentWorkspace(WT1)
+    expect(store.tabs.some((t) => t.key === "chat:s2")).toBe(true)
+    // 他端删除：库存行消失（sandboxes/projectList 不变）
+    dropped = true
+    await store.syncWorktrees()
+    expect(store.workspacesOfProject("proj1").some((w) => w.directory === WT1)).toBe(false)
+    expect(store.tabs.some((t) => t.directory === WT1)).toBe(false)
+    // 卸载后内部 sandboxes 剥离（防 60s diff 重复卸载）
+    expect(store.projects.find((p) => p.id === "proj1")?.sandboxes).not.toContain(WT1)
+  })
+
+  it("removeWorkspace：库存行随 DELETE 消失（v2 权威源刷新，非 sandboxes）", async () => {
+    snapshots.set(ROOT, [])
+    snapshots.set(WT2, [])
+    const wtOnly = new Set([WT1])
+    const cv2 = fakeClient()
+    cv2.deleteWorktree = async () => {}
+    cv2.listWorktrees = async () =>
+      wtOnly.has(WT1)
+        ? [{ directory: ROOT }, { directory: WT1, strategy: "git" }, { directory: WT2, strategy: "git" }]
+        : [{ directory: ROOT }, { directory: WT2, strategy: "git" }]
+    projectList = [{ ...project(), sandboxes: [WT1, WT2] }]
+    await store.syncWorktrees()
+    expect(store.workspacesOfProject("proj1").some((w) => w.directory === WT1)).toBe(true)
+    wtOnly.delete(WT1)
+    const res = await store.removeWorkspace(WT1)
+    expect(res.ok).toBe(true)
+    expect(store.workspacesOfProject("proj1").some((w) => w.directory === WT1)).toBe(false)
+  })
+})
+
 describe("busy 补充发送（design-supplement-send）", () => {
   /** 直驱 handleEvent（SSE 已 mock off）：事件信封 { type, properties } */
   function dispatch(ev: { type: string; properties: unknown }) {

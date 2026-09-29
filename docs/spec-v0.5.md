@@ -8,7 +8,7 @@
 |---|------|------|
 | 1 | 通信层 v2 全量换绑 | REST 走 `/api/*` 面（session/project/worktree/fs/vcs/pty/command/permission/form/model/agent），SSE 走 `GET /api/event` 单流（`V2Event` 信封 + `session.*` 命名空间）；Basic auth（用户名固定 `opencode`）；**volatile 契约**下对账升级为重连必全量（会话 + 消息 + worktree + pending）；`rest-client-v2.ts` 更名 `rest-client.ts` 为唯一 client（v1 面删除，M6d） |
 | 2 | 归档私约（D1） | 关 Tab = 归档改写 `metadata.archivedAt`（`PATCH /api/session/:id`，metadata REPLACE 语义整包合并）；识别层双源兼容存量 `time.archived`；官方归档 API 回归后迁回（迁移触发核对点见 plan-v2-protocol 复核清单） |
-| 3 | worktree 域（D2/D5） | 创建/删除走 `/api/worktree`（delete force 必填，脏 worktree 400 forceRequired 二次确认强删）；**删除 = 级联删该目录全部会话**（非归档）；列表数据源 = `GET /api/project` 的 `Project.sandboxes` 投影（对账走项目列表全量 diff，外部删除等价可发现；D2 原案的 `/api/worktree` 直连与 refresh 未实施，列 v0.6 优化）；`instance/dispose` 退役（不映射 reload，服务层自管理） |
+| 3 | worktree 域（D2/D5，2026-09-29 修订） | 创建/删除走 `/api/worktree`（delete force 必填，脏 worktree 400 forceRequired 二次确认强删；**create 响应是裸 `{directory}`，无 `{data}` envelope**）；**删除 = 级联删该目录全部会话**（非归档）；**列表数据源 = `GET /api/worktree?projectID=` 库存（WorktreeTable，v2 权威源）**——`Project.sandboxes` 是冻结 legacy 列（v2 GA 起 create/remove 不再维护：已删目录残留、新建缺失，2026-09-29 活体核实），对账 = 打开项目 `POST /api/worktree/refresh` + list diff（外部 git worktree 增删/死行清理）；`instance/dispose` 退役（不映射 reload，服务层自管理） |
 | 4 | 消息域（typed union） | v2 消息 11 型 union 经 `toInternalMessages` 收敛为内部形状（渲染管线不变）；分页 cursor 双向（上滚翻页走 `cursor.next`）；prompt 200 回执驱动乐观清除（`SessionInbox.User` 准入确认 + post-200 首页重取）；**流式事件翻译层**（`session.text/tool/reasoning/step.*` → v1 part 管线）；**inbox 落地链路**（M6c）：user 消息经 `session.inbox.enqueued|delivered` 实时落地（他端/命令），enqueued 非过滤项（compaction 等）不消费命令回显标记 |
 | 5 | 待办人机交互（form 体系） | 授权卡换 `POST /api/session/:id/permission/:requestID/reply`（decision）；问题卡整体切 v2 form（`form.created/replied/cancelled` 事件 + `replyForm`/`cancelForm`）：字段六型归一化（select/multiselect/boolean 合成是/否/text/number 输入步），hidden/external 剔除，required 门控（Q-7：当前步未答不得前进）；回填 = `GET /api/permission/request` + `GET /api/form`（冷启动/开项目/SSE 重连） |
 | 6 | 文件/diff/终端域 | fs 组（list/read/find，deepObject location）：read 是原始字节流，text/binary 客户端判定（NUL 嗅探为主——server MIME 库对 `.ts` 误判 `video/mp2t`，活体发现）；diff 双模式（vcs mode 映射 git→working；session diff turn 语义 + context=3 根治 v1 全文件 patch 陷阱）；pty 四方法 + WS connect（ticket 头 + 0x00+`{cursor:N}` 锚点帧 + close 1000/4404 分流——**契约逐项活体核对**，V2D-2 关闭，terminal-view 零改动兼容） |
@@ -40,7 +40,7 @@
 | 会话列表/创建/改/删 | `GET/POST /api/session`（cursor envelope）、`PATCH/DELETE /api/session/:id`（级联删） |
 | 消息/prompt/中断 | `GET /api/session/:id/message`（typed union + cursor）、`POST .../prompt`（200 回执）、`POST .../interrupt` |
 | 回滚 | 三段式：`POST .../revert/stage`、`DELETE .../revert`、`POST .../revert/commit` |
-| worktree | `GET/POST/DELETE /api/worktree`（refresh 端点存在但未消费，见范围表 #3 实况注） |
+| worktree | `GET/POST/DELETE /api/worktree` + `POST /api/worktree/refresh`（库存直连 + 对账，2026-09-29 起消费，见范围表 #3） |
 | 文件 | `GET /api/fs/list|read/*|find`（deepObject location） |
 | diff | `GET /api/vcs/diff`（mode=working/branch）、`GET /api/session/:id/diff?from&context`（turn） |
 | pty | `POST/PUT/DELETE /api/pty*` + `connect-token`（x-opencode-ticket 头）+ WS `/api/pty/:id/connect` |
@@ -55,6 +55,7 @@
 - [ ] 连接 v1 server（1.18.x，如需另起端口）：连接失败并明确提示「服务器版本不支持，需要 opencode v2」（探活 unsupported 分类；欢迎屏测试连接同文案）
 - [ ] 关 chat Tab → 重连后会话不在列表（metadata.archivedAt 过滤）；开 Tab → 字段清除；存量 time.archived 会话同样被识别为归档
 - [ ] 删除 worktree：级联删该目录全部会话（Tab 随关）；脏 worktree 弹二次确认强删；外部删除经重连对账消失
+- [ ] worktree 库存同步（2026-09-29）：他端（v2 API/移动端）创建的 worktree 左栏可见；已删除目录的 sandboxes 幽灵行不渲染且不再出现；本端创建默认切换到新 worktree（裸 `{directory}` 响应解析）
 - [ ] 发送消息：乐观上屏 → 200 回执 → 首页重取精确清除；流式渲染（text/tool/reasoning）；他端发消息实时到达（inbox 链路）；断流重连后全量恢复（kill server 场景）
 - [ ] 授权卡/表单卡：SSE 实时到达与回填恢复；boolean/选择/输入字段作答与 required 门控；404 他端已答静默移除
 - [ ] 文件 Tab：文本/图片/PDF/二进制判定正确（含 `.ts` 文本——server MIME 误判不影响）；diff Tab 双模式 + 会话轮 diff

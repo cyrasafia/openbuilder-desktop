@@ -17,6 +17,7 @@ import type {
   V2FsEntry,
   V2ModelInfo,
   V2PermissionDecision,
+  WorktreeDirectory,
 } from "./api-v2-types"
 import { toInternalMessages, type V2MessageEntry } from "./v2-adapter"
 import { normalizeForm, type PendingQuestion } from "./pending-requests"
@@ -276,8 +277,9 @@ export class RestClient {
   /**
    * DELETE /api/worktree（payload `{projectID, directory, force}`，**force 必填**；
    * 60s 超时——git worktree remove 大目录可慢，对齐 v1 语义）。脏 worktree 且
-   * force=false 时返回 WorktreeError（400，`forceRequired: true`）——forceRequired
-   * 重试 UX 是 plan-v2-worktree（M5）决策点，先按 false 保平价。
+   * force=false 时返回 WorktreeError（400，`forceRequired: true`）。库存行不存在
+   * 或目录已从磁盘消失 → 400（InvalidDirectory / DirectoryUnavailable——幽灵
+   * 条目只剩 sandboxes 残留时删除必拒，对账清理由 refresh 承担）。
    */
   async deleteWorktree(projectID: string, directory: string, opts: { force?: boolean } = {}): Promise<void> {
     await this.fetchResponse("/api/worktree", {
@@ -344,20 +346,47 @@ export class RestClient {
     })
   }
 
-  // ============ worktree / revert / fork（M5） ============
+  // ============ worktree / revert / fork（M5；库存直连 2026-09-29） ============
+
+  /**
+   * GET /api/worktree?projectID=：项目的 worktree 库存（WorktreeTable，**裸数组**
+   * 无 envelope，2.0.18 活体核对）。v2 GA 起 worktree 增删只写 WorktreeTable，
+   * `Project.sandboxes` 不再随之维护（legacy 冻结列）——库存是左栏工作区行的
+   * 权威数据源（官方 v2 app 同源：withWorktreeInventory 以此覆盖 sandboxes）。
+   * 返回含主 checkout 行（strategy 缺省），展示层须排除项目 canonical。
+   */
+  async listWorktrees(projectID: string): Promise<WorktreeDirectory[]> {
+    const q = new URLSearchParams({ projectID })
+    return this.fetchJson<WorktreeDirectory[]>(`/api/worktree?${q.toString()}`)
+  }
+
+  /**
+   * POST /api/worktree/refresh：跨已知 checkout 根发现 + reconcile 库存
+   * （外部 git worktree 增删、死行清理），204。变更时发 worktree.updated
+   * SSE（data.projectID，无 location）。对账触发点：连接/打开项目/60s 定时
+   * ——外部删除（rm -rf 后库存行残留）只有此端点能清。
+   */
+  async refreshWorktrees(projectID: string): Promise<void> {
+    await this.fetchResponse("/api/worktree/refresh", {
+      method: "POST",
+      body: JSON.stringify({ projectID }),
+      timeoutMs: 60000,
+    })
+  }
 
   /**
    * POST /api/worktree：创建 worktree（payload {projectID, from?, branch?, name?}；
-   * v1 的 directory 父目录参数省略 = server 用项目 canonical 配置/默认数据目录）。
-   * 响应 `{data: {directory}}`（Worktree.Info）。
+   * 父目录省略 = 项目配置/默认 `worktree/<projectID 前 6 字符>`，2.0.18 实测）。
+   * 响应**裸 `Worktree.Info`（`{directory}`，无 `{data}` envelope**——openapi v2
+   * + 活体核对 2026-09-29；全 client 唯一的非 envelope 单对象 POST）。
+   * 成功即写库存 + 发 worktree.updated；不再维护 Project.sandboxes。
    */
   async createWorktree(projectID: string, opts: { name?: string } = {}): Promise<{ directory: string }> {
-    const res = await this.fetchJson<{ data: { directory: string } }>("/api/worktree", {
+    return this.fetchJson<{ directory: string }>("/api/worktree", {
       method: "POST",
       body: JSON.stringify({ projectID, ...(opts.name !== undefined ? { name: opts.name } : {}) }),
       timeoutMs: 60000,
     })
-    return res.data
   }
 
   /**

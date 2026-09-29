@@ -54,6 +54,7 @@
 - `listWorktrees(projectID)`、`createWorktree`、`deleteWorktree`（D2：级联删会话在 store 层组合）、`refreshWorktrees`（对账触发点：SSE 重连 + 选择器打开）；
 - `location.reload`/`debug evict` 不接（D5）；`instance/dispose` 调用点删除；
 - 验收：D2 交互（删除后消失/外部删除对账消失）。
+- **补录（2026-09-29）**：`listWorktrees`/`refreshWorktrees` 当日落地消费（原 M5/M6d 判定「sandboxes 投影够用、直连列 v0.6」被活体推翻——v2.0.18 起 sandboxes 是冻结 legacy 列，详见 design-worktree-sync §0）；`createWorktree` 响应裸 `{directory}`（无 envelope）同日修正。
 
 ### M6 收敛与发版（2026-09-29 拆分为 M6a–M6d）
 

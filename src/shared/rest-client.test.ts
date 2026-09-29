@@ -174,6 +174,55 @@ describe("会话域（M2）", () => {
   })
 })
 
+describe("worktree 库存直连（2026-09-29：v2 权威源）", () => {
+  it("listWorktrees：GET /api/worktree?projectID=，裸数组（无 envelope），strategy 缺省容忍", async () => {
+    let seenUrl = ""
+    const client = mkClient((url) => {
+      seenUrl = url
+      return new Response(
+        JSON.stringify([
+          { directory: "/repo", strategy: undefined },
+          { directory: "/data/worktree/abc123/wt1", strategy: "git" },
+        ]),
+      )
+    })
+    const list = await client.listWorktrees("p1")
+    expect(seenUrl).toBe("http://server/api/worktree?projectID=p1")
+    expect(list).toEqual([
+      { directory: "/repo", strategy: undefined },
+      { directory: "/data/worktree/abc123/wt1", strategy: "git" },
+    ])
+  })
+
+  it("createWorktree：POST /api/worktree，响应是裸 {directory}（无 {data} envelope）", async () => {
+    let seenBody = ""
+    const client = mkClient((_url, init) => {
+      seenBody = String(init.body)
+      // 2.0.18 活体：裸 Worktree.Info，不包 {data:...}——曾按 envelope 解析致
+      // result.directory undefined、createWorkspace 报 TypeError
+      return new Response(JSON.stringify({ directory: "/data/worktree/abc123/wt9" }))
+    })
+    const result = await client.createWorktree("p1")
+    expect(seenBody).toBe(JSON.stringify({ projectID: "p1" }))
+    expect(result).toEqual({ directory: "/data/worktree/abc123/wt9" })
+    // name 可选透传
+    await client.createWorktree("p1", { name: "feat-x" })
+    expect(seenBody).toBe(JSON.stringify({ projectID: "p1", name: "feat-x" }))
+  })
+
+  it("refreshWorktrees：POST /api/worktree/refresh，payload {projectID}，204 容忍空体", async () => {
+    const seen: Array<{ url: string; method: string; body: string }> = []
+    const client = mkClient((url, init) => {
+      seen.push({ url, method: init.method ?? "", body: String(init.body) })
+      return new Response(null, { status: 204 })
+    })
+    await client.refreshWorktrees("p1")
+    expect(seen).toEqual([
+      { url: "http://server/api/worktree/refresh", method: "POST", body: JSON.stringify({ projectID: "p1" }) },
+    ])
+  })
+})
+
 describe("待办人机交互与会话切换（M6a）", () => {
   function recorder(): {
     seen: Array<{ url: string; method: string; body: unknown }>

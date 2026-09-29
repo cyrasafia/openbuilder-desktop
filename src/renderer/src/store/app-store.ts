@@ -1012,6 +1012,9 @@ export class AppStore {
     this.client = null
     this.managedBaseUrl = null
     this.projects = []
+    // worktree 库存随连接拆除清空（v2 权威源；重连时 refreshAllOpenedProjects
+    // 重新 refresh+list 载入）
+    this.worktreeDirs.clear()
     this.sessionsByProject.clear()
     this.messagesBySession.clear()
     this.syntheticDroppedBySession.clear()
@@ -1100,8 +1103,17 @@ export class AppStore {
   }
 
   private async refreshAllOpenedProjects() {
-    // 嵌套限流的乘积才是总并发：外层 2 × 内层（refreshSessionsForProject 目录 3）
-    // = 6 ≈ 空闲槽（1 条 SSE 常驻后 5 槽 + 排队余量）——外层限值不可单独解读
+    // worktree 库存先行（v2 权威源，含 refresh 对账）：会话快照的目录集 =
+    // worktree ∪ sandboxes（WT-1：worktree 会话只有逐目录快照可达），库存合并
+    // 必须在快照拉取前完成。外层限 3 × 内层（快照目录 3）与单一 opened 并发，
+    // 嵌套乘积 ≤ 6 ≈ 空闲槽（1 条 SSE 常驻后 5 槽 + 排队余量）
+    await runLimited(
+      this.openedProjects.filter((p) => p.vcs),
+      3,
+      async (p) => {
+        await this.loadWorktreeInventory(p.id, { refresh: true })
+      },
+    )
     await runLimited(this.openedProjects, 2, (p) => this.refreshSessionsForProject(p))
   }
 
@@ -1512,11 +1524,12 @@ export class AppStore {
     ev: { type: string; properties: Record<string, unknown> },
     meta?: SseEventMeta,
   ) {
-    // ---- worktree 生命周期（design-worktree-sync）：目录闸门不适用——新 directory
-    // 尚未进本地 sandboxes，按信封 project 字段（projectID）判断"该项目是否打开"。
-    // ready → 重拉项目列表拿 sandboxes（左栏即时多一行）；failed 仅日志（createWorkspace
-    // 是同步 await，无 busy UI 需复位）。本端创建已 await refreshWorkspacesForProject，
-    // 他端创建靠此事件刷新。
+    // ---- worktree 生命周期（design-worktree-sync §3 修订）：目录闸门不适用——
+    // 事件的目录可能尚未进本地库存。v2 GA：create/remove/refresh 变更时发
+    // worktree.updated（data.projectID，**无 location**——信封 project 字段亦无，
+    // 活体实测 2026-09-29）；worktree.ready/failed 是旧 experimental 面事件，
+    // v2.0.18 已不发（保留分支兼容早期 v2）。统一走 syncWorktrees：
+    // refresh（server 对账）+ list（库存重载，左栏即时多一行/消失行）。
     // ---- 新目录发现接力（M3，活体实测：首个会话解析出伪项目行时随发
     // project.updated）：未知项目 id = 新行——重拉项目全集；已知项目仅
     // time.active 活跃度变化，跳过（左栏排序靠快照/对账，不追实时）
@@ -2178,6 +2191,8 @@ export class AppStore {
     if (signal?.aborted) return
     // projects 是左栏/打开流数据源，必须先含新项目再 openProject
     this.projects = fresh
+    // 库存合并重放（listProjects 重映射丢失既有合并——见 mergeWorktreeDirsIntoProjects）
+    this.mergeWorktreeDirsIntoProjects()
     this.emit()
     return this.openProject(location.project.id)
   }
@@ -2797,8 +2812,11 @@ export class AppStore {
     const isCurrent = project.id === this.currentProject?.id
     try {
       // v2：name 省略 = server 随机 slug；父目录省略 = 项目配置/默认数据目录
+      // （worktree/<projectID 前 6 字符>）。响应是裸 {directory}（无 envelope，
+      // rest-client 已收敛）。创建只写 WorktreeTable 库存 + 发 worktree.updated
       const result = await client.createWorktree(project.id)
-      // worktree API 返回轻量对象，重拉列表拿完整 Workspace 记录（刷新全局 projects）
+      // 重拉 projects + 该项目库存（v2 权威源）；库存目录随即 union 进内部
+      // sandboxes——下方 includes 校验由此通过（幻影 currentWorkspaceId 防御）
       await this.refreshWorkspacesForProject(project)
       if (isCurrent && this.currentProject?.sandboxes?.includes(result.directory)) {
         // 默认切换到新 worktree；setCurrentWorkspace 内含会话快照/文件树重置/开作用域 Tab。
@@ -2865,7 +2883,8 @@ export class AppStore {
       // （活体实测）→ 置二次确认态，用户确认后带 force 重试（M5 UX）
       const force = this.forceDeleteRequests.has(deleteKey)
       await client.deleteWorktree(project.id, directory, { force })
-      // worktree 列表数据源是 Project.sandboxes，重拉项目列表同步（刷新全局 projects）
+      // worktree 库存是 v2 权威源：DELETE 移除库存行，重拉库存即从左栏消失
+      // （refreshWorkspacesForProject 内含 projects + 库存定向刷新）
       await this.refreshWorkspacesForProject(project)
       const restored = await this.unloadWorktreeDirectory(directory, project.id, isCurrent)
       if (restored) this.restoreScopeTabs(project.worktree, true)
@@ -2947,6 +2966,12 @@ export class AppStore {
     isCurrent: boolean,
   ): Promise<boolean> {
     const project = this.projects.find((p) => p.id === projectId)
+    // 内部 sandboxes 剥离该目录（v2 库存合并的残留——union 只增不减，残留会让
+    // 60s diff 对已卸载目录重复触发；server 冻结 legacy 列的回归无害：diff 基线
+    // 双侧同含，不触发卸载，仅闸门放宽）
+    if (project?.sandboxes?.includes(directory)) {
+      project.sandboxes = project.sandboxes.filter((d) => d !== directory)
+    }
     // 卸载已删目录的会话与状态（目录已出 sandboxes，此后无快照/订阅通道覆盖它）
     const map = this.sessionsByProject.get(projectId)
     if (map) {
@@ -3010,36 +3035,47 @@ export class AppStore {
   }
 
   /**
-   * 刷新对账检测他端 worktree 增删（design-worktree-sync §2）：删除无 SSE 事件，
-   * 靠 listProjects() diff sandboxes 检测。新建由 worktree.ready SSE 实时刷新，
-   * 此方法是 SSE 丢消息/断连/未收事件的补偿兜底（启动/focus/定时/reconnect 触发）——
-   * 删除走 unloadWorktreeDirectory 清理，新增 sandbox 补跑 skill 缓存冻结防御
-   * （reDiscoverInstanceCatalog，ready 只发一次不补发）。
-   * 幂等：无变化时只重拉 projects（同 refreshWorkspacesForProject，无害 emit）。
+   * 刷新对账检测他端/外部 worktree 增删（design-worktree-sync §2 修订）：
+   * v2 权威源 = worktree 库存（WorktreeTable）。每打开的 git 项目先 refresh
+   * （server 端发现外部 git worktree 增删、清理死行——rm -rf 的库存残留只有
+   * 此端点能清）再 list；变更时 server 另发 worktree.updated SSE（本方法是其
+   * 丢消息/断连窗口的补偿兜底：启动/focus/定时/重连触发）。
+   * 删除检测 = 库存 diff（sandboxes 冻结不参与 diff 基线——它的变化只是 server
+   * 侧 legacy 列的惰性漂移）；消失目录走 unloadWorktreeDirectory 清理。
+   * 幂等：无变化时只重拉（同 refreshWorkspacesForProject，无害 emit）。
    */
   async syncWorktrees(): Promise<void> {
     const client = this.client
     if (!client) return
     const before = this.projects
+    // 打开的 git 项目逐个 refresh + list（限流 3 与会话快照内层一致）；
+    // loadWorktreeInventory 内含合并 + emit。未打开项目的库存不影响左栏展示，跳过。
+    await runLimited(
+      this.openedProjects.filter((p) => p.vcs),
+      3,
+      async (p) => {
+        await this.loadWorktreeInventory(p.id, { refresh: true })
+      },
+    )
+    // 在途闸门：diff 期间 client 可能已拆（disconnect/切 profile）
+    if (this.client !== client) return
     const fresh = await client
       .listProjects()
       .then((ps) => ps.map(toInternalProject))
       .catch(() => null)
-    if (!fresh) return
-    // 在途闸门：diff 期间 client 可能已拆（disconnect/切 profile）
-    if (this.client !== client) return
-    // 比对每个打开项目（含未打开项目的 worktree 变化不影响左栏展示，跳过）
+    if (!fresh || this.client !== client) return
+    this.projects = fresh
+    this.mergeWorktreeDirsIntoProjects()
+    // diff 基线 = worktree ∪ sandboxes（before 的 sandboxes 已含上一轮库存合并），
+    // 对照 = fresh sandboxes ∪ 新库存——库存行消失（他端 DELETE / refresh 清理）
+    // 即卸载信号
     const toUnload: Array<{ directory: string; projectId: string; isCurrent: boolean }> = []
-    // 新增 sandbox：`worktree.ready` 只发一次不补发，断连窗口内他端创建的事件
-    // 丢失时，此 diff 是 skill 缓存冻结防御（reDiscoverInstanceCatalog）的唯一
-    // 补偿入口（左栏展示本身随 projects 更新自然出现，无需处理）
-    const appeared: string[] = []
     for (const old of before) {
       const opened = this.openedProjects.some((p) => p.id === old.id)
       if (!opened) continue
-      const next = fresh.find((p) => p.id === old.id)
-      const oldDirs = new Set([...(old.sandboxes ?? [])])
-      const nextDirs = new Set([...(next?.sandboxes ?? [])])
+      const next = this.projects.find((p) => p.id === old.id)
+      const oldDirs = new Set([...(old.sandboxes ?? []), ...(this.worktreeDirs.get(old.id) ?? [])])
+      const nextDirs = new Set([...(next?.sandboxes ?? []), ...(this.worktreeDirs.get(old.id) ?? [])])
       for (const d of oldDirs) {
         if (!nextDirs.has(d)) {
           toUnload.push({
@@ -3049,11 +3085,7 @@ export class AppStore {
           })
         }
       }
-      for (const d of nextDirs) {
-        if (!oldDirs.has(d)) appeared.push(d)
-      }
     }
-    this.projects = fresh
     for (const { directory, projectId, isCurrent } of toUnload) {
       const restored = await this.unloadWorktreeDirectory(directory, projectId, isCurrent)
       if (restored) {
@@ -3061,29 +3093,101 @@ export class AppStore {
         if (p) this.restoreScopeTabs(p.worktree, true)
       }
     }
-    // 正常链路 ready 到达即刷新 projects，此 diff 多数时候为空。
-    // v1 的 reDiscoverInstanceCatalog（instance dispose + 命令重发现）已随 v2
-    // 实例模型消亡删除——v2 无 catalog 事件，命令缓存刷新走惰性路径（输入 `/` 时）
     this.emit()
+  }
+
+  // ============ worktree 库存（v2 权威源，design-worktree-sync §0 修订） ============
+
+  /**
+   * worktree 库存：projectId → GET /api/worktree 目录列表（含主 checkout 行）。
+   * v2 GA 起 worktree 增删只写 server 的 WorktreeTable，`Project.sandboxes` 是
+   * 冻结 legacy 列（含已删幽灵、缺新建）——库存经 loadWorktreeInventory 载入，
+   * 并 union 进内部 sandboxes（事件闸门/作用域/快照/记忆全下游同构受益）。
+   */
+  private worktreeDirs = new Map<string, string[]>()
+
+  /**
+   * 拉取项目 worktree 库存并合并进内部 sandboxes。
+   * opts.refresh：先 POST /api/worktree/refresh（server 端对账——发现外部
+   * git worktree 增删、清理死行；外部 rm -rf 的库存残留只有此端点能清）。
+   * 对账触发点：连接/打开项目/60s 定时/SSE 重连；本端 create/remove 后的
+   * 定向刷新不带 refresh（server 状态已随 mutation 更新）。
+   * 失败（含旧 server 无端点）返回 null 不落缓存——下游回退 sandboxes 语义。
+   */
+  private async loadWorktreeInventory(
+    projectId: string,
+    opts: { refresh?: boolean } = {},
+  ): Promise<string[] | null> {
+    const client = this.client
+    if (!client) return null
+    if (opts.refresh) {
+      try {
+        await client.refreshWorktrees(projectId)
+      } catch {
+        // best-effort：refresh 失败仍尝试 list（旧 server 无端点/瞬时失败）
+      }
+    }
+    let dirs: string[] | null = null
+    try {
+      dirs = (await client.listWorktrees(projectId)).map((w) => w.directory)
+    } catch {
+      dirs = null
+    }
+    // 在途闸门：拉取期间可能已断连/切 profile——不落过期库存
+    if (dirs === null || this.client !== client) return null
+    this.worktreeDirs.set(projectId, dirs)
+    this.mergeWorktreeDirsIntoProjects()
+    this.emit()
+    return dirs
+  }
+
+  /**
+   * 库存目录 union 进各内部项目的 sandboxes（只增不减——幽灵目录保留在
+   * sandboxes 对闸门无害且不渲染；projects 每次 listProjects 重映射后须重放）。
+   * toInternalProject 产新鲜对象，原位改写安全。
+   */
+  private mergeWorktreeDirsIntoProjects() {
+    for (const p of this.projects) {
+      const dirs = this.worktreeDirs.get(p.id)
+      if (!dirs) continue
+      const known = new Set(p.sandboxes ?? [])
+      let changed = false
+      for (const d of dirs) {
+        if (!known.has(d)) {
+          known.add(d)
+          changed = true
+        }
+      }
+      if (changed) p.sandboxes = [...known]
+    }
   }
 
   private async refreshWorkspacesForProject(project: Project) {
-    // worktree 列表数据源是 Project.sandboxes（directory 数组，实测 /experimental/workspace 不可靠）
-    const fresh = await this.client
-      ?.listProjects()
+    // 项目列表（canonical/name 等字段对账）+ 该项目 worktree 库存定向刷新
+    // （v2 权威源：create/remove 后库存已更新，sandboxes 不再随之变化）
+    const client = this.client
+    if (!client) return
+    const fresh = await client
+      .listProjects()
       .then((ps) => ps.map(toInternalProject))
       .catch(() => null)
-    if (fresh) this.projects = fresh
+    if (fresh && this.client === client) {
+      this.projects = fresh
+      this.mergeWorktreeDirsIntoProjects()
+      await this.loadWorktreeInventory(project.id)
+    }
     this.emit()
   }
 
-  /** 当前项目的工作区列表（从 sandboxes 派生，name 取 directory 末段） */
-  /** 指定项目的工作区列表（从 sandboxes 派生，name 取 directory 末段） */
+  /** 指定项目的工作区列表（name 取 directory 末段）。v2 权威源 = worktree 库存
+   *  （design-worktree-sync §0 修订）：sandboxes 是冻结 legacy 列——已删目录
+   *  残留（幽灵行）、新建目录缺失。库存已加载时以它为准；未加载（连接初期
+   *  /端点失败）回退 sandboxes。主 checkout 行（项目 canonical）排除，防重复。 */
   workspacesOfProject(projectId: string): Array<{ name: string; directory: string }> {
     const p = this.projects.find((x) => x.id === projectId)
     if (!p) return []
-    // 防御：主工作区 = 项目行本身，sandboxes 若含项目根路径则排除（防重复展示）
-    return (p.sandboxes ?? [])
+    const dirs = this.worktreeDirs.get(projectId) ?? (p.sandboxes ?? [])
+    return dirs
       .filter((dir) => dir !== p.worktree)
       .map((dir) => ({
         name: dir.split("/").pop() ?? dir,

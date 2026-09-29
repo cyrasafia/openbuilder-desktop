@@ -27,6 +27,17 @@ export interface ProjectInfo {
 }
 
 /**
+ * GET /api/worktree 条目（Worktree.Directory，2.0.18 活体核对 2026-09-29）：
+ * strategy 缺省 = 发现的 checkout 根（含项目 canonical 本身，展示层须排除）。
+ * worktree 库存的权威数据源（WorktreeTable）——Project.sandboxes 是冻结的
+ * legacy 列（v2 GA 起 create/remove 不再维护，见 design-worktree-sync §0）。
+ */
+export interface WorktreeDirectory {
+  directory: string
+  strategy?: string
+}
+
+/**
  * v2 Location.Ref。wire 上响应序列化为 PublicRef（只有 directory，workspaceID
  * 不出网）；请求侧 deepObject query 形如 ?location[directory]=<path>。
  * location 是 v2 的作用域单位（取代 v1 的裸 directory 参数），无独立 ID，
