@@ -1,7 +1,8 @@
 # design-worktree-branch-sync.md — worktree 创建后的分支挂载（PC/移动双端）
 
 > 日期：2026-09-29
-> 状态：设计定稿，待实现（实现时同步 AGENTS.md 已锁定语义 + spec-v0.5）
+> 状态：PC 端已实现（2026-09-29）；移动端 openbuilder 对齐中。AGENTS.md 已锁定
+> 语义 + spec-v0.5 已同步
 > 关联：`design-worktree-sync.md`（库存数据源与对账，本文只管分支）；移动端参考
 > `../openbuilder/docs/design-worktree-remove-cleanup.md`（删除时序与定向清理）
 
@@ -77,13 +78,17 @@ creates a branch」。无关联 issue（N/A），提交保留/数据安全零讨
 ### 2.2 创建流程（createWorkspace 增补）
 
 1. `POST /api/worktree {projectID, name?}` → `{directory}`（现状不变）
-2. `name = basename(directory)`；目标分支 `opencode/<name>`
-3. `POST /api/shell {command:"git switch -c <branch>", cwd: directory,
-   timeout: 15s}` → 轮询至终态（`GET /api/shell/{id}`）：
+2. 库存刷新 + 默认切换到新 worktree（**先行**——挂载延迟不阻塞左栏出现
+   与作用域切换，review Finding 3 修订）
+3. `name = basename(directory)`，**slug 守卫**（`/^[a-z0-9][a-z0-9-]*$/`，
+   不匹配跳过——外部 worktree 目录名可含空格/元字符，未加引号拼接有
+   多 token 误删与命令替换风险，且非本端创建不属管理范围，review
+   Finding 1）；目标分支 `opencode/<name>`
+4. `POST /api/shell {command:"git switch -c <branch>", cwd: directory,
+   timeout: 5s}`（本地 server 毫秒级，5s 远超正常耗时）→ 轮询至终态：
    - 成功即完成（`switch -c` 输出「切换到一个新分支」即证据）
    - 撞名（「分支已存在」，历史残留）：改 `opencode/<name>-<rand>` 重试 ≤2
      次；仍失败 → 保持 detached，日志
-4. 库存刷新逻辑不变（库存只记 directory，与分支正交）
 
 ### 2.3 删除流程（removeWorkspace 增补）
 
@@ -92,22 +97,28 @@ creates a branch」。无关联 issue（N/A），提交保留/数据安全零讨
 1. 在**项目 canonical** 下操作（worktree 目录已消失，不能 `-C` 进去）：
    检查 `opencode/<name>` 是否存在
 2. 存在 → 判断是否已并入其他 ref：`git rev-parse` 取 tip +
-   `git for-each-ref --contains <tip> refs/heads refs/remotes`（排除自身）
-   - 非空 = 已并入 → `git branch -D opencode/<name>` 清理
+   `git for-each-ref --contains <tip> refs/heads refs/remotes`（排除自身，
+   `--format='%(refname)'` **必须单引号**——fish 把裸括号解析为命令替换，
+   活体踩坑 2026-09-29）
+   - 非空 = 已并入 → `git branch -D opencode/<name>` 清理；**-D 失败**
+     （如同名分支恰被另一 worktree 检出）→ 改走保留路径 + 提示（review
+     Finding 2：不静默残留）
    - 空 = **未并入 → 保留分支 + UI 提示「分支已保留：opencode/<name>
      （含未合并提交）」**——零静默丢失、零长期污染
-3. 用户在 worktree 内自切的其他分支不碰（只认 `opencode/<name>` 归属）
+4. slug 守卫同 §2.2（不匹配 = 外部 worktree，跳过整段）
+5. 用户在 worktree 内自切的其他分支不碰（只认 `opencode/<name>` 归属）
 
 ### 2.4 失败降级与边界
 
 | 场景 | 行为 |
 |------|------|
 | `/api/shell` 端点不存在（旧 v2）或超时 | 保持 detached，日志，不阻塞创建 |
+| 目录名非 slug（外部 worktree：空格/大写/元字符） | **跳过分支管理**（挂载/清理均不发 shell——注入面归零 + 语义正确） |
 | `switch -c` 撞名 | 后缀重试 ≤2 → 放弃（detached） |
 | 官方 desktop 建的 detached worktree（如 curious-cabin） | **不主动补挂**——只管自己 create 流程 |
 | 外部 `git worktree add` 的 worktree | 同上不动（库存正常显示，见 design-worktree-sync） |
 | 删除时分支检查 shell 失败 | 保留分支（宁残留不误删），无重试 |
-| shell 经用户登录 shell（fish/bash/zsh）执行 | 命令保持 POSIX 子集（`&&`、`$()` 实测 fish 可用），不用 bashism |
+| shell 经用户登录 shell（fish/bash/zsh）执行 | 命令保持 POSIX 子集 + **括号 token 一律单引号**（`%(refname)` 裸写被 fish 解析为命令替换，实测）；`&&`、`$()` 实测 fish 可用，不用 bashism |
 
 ### 2.5 双端落点
 
@@ -120,13 +131,16 @@ creates a branch」。无关联 issue（N/A），提交保留/数据安全零讨
 
 行为一致点：分支命名、撞名策略、删除保留规则；UI 提示文案各自平台风格。
 
-## 3. 测试要点
+## 3. 测试要点（PC 端已落地，共 10 用例）
 
-- `rest-client.test.ts`：runShell payload/轮询/超时/无端点降级
-- `app-store.test.ts`：创建成功挂分支；撞名重试；shell 失败降级 detached；
-  删除已并入清理 / 未并入保留；既有 worktree 用例全保留（fake 无 shell
-  端点 = 降级路径回归）
-- 移动端对应用例同构
+- `rest-client.test.ts`（3）：POST 即终态 payload/顺序（POST→output→DELETE）；
+  running 轮询至 exited 透传 exit code；超时抛 ApiError(timeout)
+- `app-store.test.ts`（7）：创建成功挂 `opencode/<basename>`（cwd = 新目录）；
+  撞名 show-ref 判定 + `-<rand>` 后缀重试；shell 异常降级不阻塞创建；
+  删除已并入 → canonical 下 `branch -D`；未并入 → 保留 + branchNotice；
+  无同名分支 → 仅一次存在性探测；非 slug 目录名跳过分支管理（挂载/清理
+  零 shell 调用）；`-D` 失败 → 保留 + 提示兜底
+- 既有 worktree 用例全保留（fake 无 runShell = 降级路径回归）
 
 ## 4. 不做的事
 

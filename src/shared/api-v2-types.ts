@@ -38,6 +38,20 @@ export interface WorktreeDirectory {
 }
 
 /**
+ * /api/shell wire（`{data}` envelope 内；2.0.18 活体核对 2026-09-29）：POST 创建
+ * （`{command!, cwd?, timeout?}`）→ 轮询 `GET /api/shell/:id` 至
+ * `status !== "running"` → `GET /api/shell/:id/output` 取累积输出。经用户登录
+ * shell 执行（实测 fish）——命令须跨 shell 可移植：单命令下发 + exit code 判定，
+ * 不用组合语法（fish 无 POSIX 分组/`$?`）。
+ */
+export interface ShellInfo {
+  id: string
+  status: string
+  /** 终态才有（活体：status "exited" + exit 0） */
+  exit?: number
+}
+
+/**
  * v2 Location.Ref。wire 上响应序列化为 PublicRef（只有 directory，workspaceID
  * 不出网）；请求侧 deepObject query 形如 ?location[directory]=<path>。
  * location 是 v2 的作用域单位（取代 v1 的裸 directory 参数），无独立 ID，

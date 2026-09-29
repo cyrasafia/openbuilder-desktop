@@ -371,6 +371,21 @@
   margin-bottom: 6px;
 }
 
+/* 保留分支提示（design-worktree-branch-sync §2.3）：删除的工作区分支含未合并
+   提交时保留，左栏列表尾一行提示，10s 自动消失 */
+.branch-notice {
+  margin: 2px 6px 6px;
+  padding: 4px 8px;
+  border-radius: var(--radius-chip);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--status-error);
+  background: var(--surface-container-high);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* 行右缘操作 overlay（2026-08-29 修订）：绝对定位不占行内流式空间，名称/路径
    不再被隐藏按钮截断。背景 = 渐变淡出区 + 实底胶囊：左起 40px 由透明渐入行底色，
    行尾路径/指示器区渐隐而非硬切（下垫文本在半透段可读、靠钮侧全遮）——

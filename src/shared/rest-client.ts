@@ -17,6 +17,7 @@ import type {
   V2FsEntry,
   V2ModelInfo,
   V2PermissionDecision,
+  ShellInfo,
   WorktreeDirectory,
 } from "./api-v2-types"
 import { toInternalMessages, type V2MessageEntry } from "./v2-adapter"
@@ -387,6 +388,47 @@ export class RestClient {
       body: JSON.stringify({ projectID, ...(opts.name !== undefined ? { name: opts.name } : {}) }),
       timeoutMs: 60000,
     })
+  }
+
+  /**
+   * POST /api/shell：server 侧执行一次性命令至终态（design-worktree-branch-sync
+   * 的分支挂载/清理通道——纯 API，移动端同构，PC 不依赖本地 git）。轮询
+   * `GET /api/shell/:id`（300ms 间隔）至 `status !== "running"`，再取
+   * `:id/output` 累积输出，best-effort `DELETE :id` 清理。超时抛 ApiError
+   * ("timeout")，端点缺失等由调用方降级（挂载失败 = 保持 server 默认 detached）。
+   * 命令跨 shell 可移植（见 ShellInfo 注释）。
+   */
+  async runShell(
+    command: string,
+    opts: { cwd?: string; timeoutMs?: number } = {},
+  ): Promise<{ exit: number | null; output: string }> {
+    const timeoutMs = opts.timeoutMs ?? 15000
+    const created = await this.fetchJson<{ data: ShellInfo }>("/api/shell", {
+      method: "POST",
+      body: JSON.stringify({
+        command,
+        ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+        timeout: timeoutMs,
+      }),
+      timeoutMs: timeoutMs + 5000,
+    })
+    const id = created.data.id
+    const deadline = Date.now() + timeoutMs
+    let info = created.data
+    while (info.status === "running" && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      info = (await this.fetchJson<{ data: ShellInfo }>(`/api/shell/${encodeURIComponent(id)}`)).data
+    }
+    if (info.status === "running") {
+      throw new ApiError(0, "timeout", `shell 未在 ${timeoutMs}ms 内退出: ${command}`)
+    }
+    try {
+      const out = await this.fetchJson<{ data: { output?: string } }>(`/api/shell/${encodeURIComponent(id)}/output`)
+      return { exit: info.exit ?? null, output: out.data.output ?? "" }
+    } finally {
+      // best-effort 清理（退出态 shell 记录；失败吞掉不影响结果）
+      void this.fetchResponse(`/api/shell/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => {})
+    }
   }
 
   /**

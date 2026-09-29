@@ -223,6 +223,70 @@ describe("worktree 库存直连（2026-09-29：v2 权威源）", () => {
   })
 })
 
+describe("runShell（design-worktree-branch-sync：POST /api/shell 至终态）", () => {
+  it("POST 即终态：payload {command,cwd,timeout}，读 output，best-effort DELETE", async () => {
+    const seen: Array<{ url: string; method: string }> = []
+    let seenBody = ""
+    const client = mkClient((url, init) => {
+      // GET 无 method（fetchJson 不传 init）——按 URL 分流，method 缺省记 GET
+      seen.push({ url, method: init.method ?? "GET" })
+      if (url.endsWith("/api/shell") && init.method === "POST") {
+        seenBody = String(init.body)
+        // 2.0.18 活体：{data} envelope；status 直接终态（快命令常见）
+        return new Response(JSON.stringify({ data: { id: "sh_1", status: "exited", exit: 0 } }))
+      }
+      if (url.endsWith("/api/shell/sh_1/output")) {
+        return new Response(JSON.stringify({ data: { output: "切换到一个新分支 'opencode/wt'\n", cursor: 40, size: 40 } }))
+      }
+      return new Response(null, { status: 204 }) // DELETE 清理
+    })
+    const r = await client.runShell("git switch -c opencode/wt", { cwd: "/wt", timeoutMs: 15000 })
+    expect(r).toEqual({ exit: 0, output: "切换到一个新分支 'opencode/wt'\n" })
+    expect(seenBody).toBe(
+      JSON.stringify({ command: "git switch -c opencode/wt", cwd: "/wt", timeout: 15000 }),
+    )
+    expect(seen.map((s) => s.method + " " + s.url.split("http://server")[1])).toEqual([
+      "POST /api/shell",
+      "GET /api/shell/sh_1/output",
+      "DELETE /api/shell/sh_1",
+    ])
+  })
+
+  it("running → 轮询 GET /api/shell/:id 至 exited，透传 exit code", async () => {
+    let polls = 0
+    const client = mkClient((url, init) => {
+      if (init.method === "POST") {
+        return new Response(JSON.stringify({ data: { id: "sh_2", status: "running" } }))
+      }
+      if (url.endsWith("/api/shell/sh_2/output")) {
+        return new Response(JSON.stringify({ data: { output: "fatal: 分支已存在" } }))
+      }
+      if (init.method === "DELETE") {
+        return new Response(null, { status: 204 })
+      }
+      // GET /api/shell/sh_2（轮询）：首轮即终态
+      polls += 1
+      return new Response(JSON.stringify({ data: { id: "sh_2", status: "exited", exit: 1 } }))
+    })
+    const r = await client.runShell("git switch -c x", { timeoutMs: 5000 })
+    expect(polls).toBe(1) // 300ms 间隔后首轮即终态
+    expect(r).toEqual({ exit: 1, output: "fatal: 分支已存在" })
+  })
+
+  it("超时：deadline 内未退出抛 ApiError(timeout)，不再取 output", async () => {
+    const client = mkClient((url, init) => {
+      if (url.endsWith("/api/shell") && init.method === "POST") {
+        return new Response(JSON.stringify({ data: { id: "sh_3", status: "running" } }))
+      }
+      return new Response(JSON.stringify({ data: { id: "sh_3", status: "running" } }))
+    })
+    // timeoutMs 1：首轮 300ms 轮询后仍 running → 判超时（ApiError timeout）
+    await expect(client.runShell("sleep 100", { timeoutMs: 1 })).rejects.toMatchObject({
+      kind: "timeout",
+    })
+  })
+})
+
 describe("待办人机交互与会话切换（M6a）", () => {
   function recorder(): {
     seen: Array<{ url: string; method: string; body: unknown }>

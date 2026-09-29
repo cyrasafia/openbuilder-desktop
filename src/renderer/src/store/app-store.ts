@@ -464,6 +464,13 @@ export class AppStore {
    *  重试；取消/重开清位 */
   forceDeleteRequests = new Set<string>()
   /**
+   * 保留分支提示（design-worktree-branch-sync §2.3）：删除的 worktree 分支含
+   * 未合并提交时保留，值为分支名（渲染层 i18n 插值），10s 自动清空；新提示
+   * 覆盖旧的。无 toast 基建（同 connectionError 取舍），呈现于左栏工作区列表尾。
+   */
+  branchNotice: string | null = null
+  private branchNoticeTimer: ReturnType<typeof setTimeout> | null = null
+  /**
    * 待确认关闭的 Tab（tab-actions closeTabInteractive 置位，Tab 栏 X 钮与
    * Ctrl+W 同入口）：非空 = ConfirmDialog 挂载中；chat 流式中 / 终端运行中
    * 关闭需二次确认——确认走 confirmTabClose（届时重估流式/运行态，弹窗期间
@@ -2827,6 +2834,11 @@ export class AppStore {
         // 非当前项目：不切当前作用域，仅刷新展示（SSE 单全局流常驻，新 worktree 事件天然到达）
         this.emit()
       }
+      // 分支挂载（design-worktree-branch-sync §2.2）：v2 create 一律 detached，
+      // 提交不可见且删除即失——挂 opencode/<name> 兜底。置于刷新/切换之后：
+      // 挂载延迟不阻塞左栏出现与作用域切换（review Finding 3）；失败降级
+      // detached（server 默认态），不阻塞创建流程
+      await this.mountWorktreeBranch(client, result.directory)
       return { ok: true }
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
@@ -2840,7 +2852,7 @@ export class AppStore {
   async removeWorkspace(
     directory: string,
     projectId: string = this.currentProject?.id ?? "",
-  ): Promise<{ ok: boolean; error?: string }> {
+  ): Promise<{ ok: boolean; error?: string; keptBranch?: string }> {
     const project = this.projects.find((p) => p.id === projectId)
     const client = this.client
     if (!client || !project) return { ok: false, error: "no project" }
@@ -2888,7 +2900,11 @@ export class AppStore {
       await this.refreshWorkspacesForProject(project)
       const restored = await this.unloadWorktreeDirectory(directory, project.id, isCurrent)
       if (restored) this.restoreScopeTabs(project.worktree, true)
-      return { ok: true }
+      // 分支清理（design-worktree-branch-sync §2.3）：v2 DELETE 不清分支。
+      // 已并入其他 ref → -D；未并入 → 保留 + branchNotice 提示（零静默丢失）
+      const kept = await this.cleanupWorktreeBranch(client, project, directory)
+      if (kept) this.showBranchNotice(kept)
+      return { ok: true, ...(kept ? { keptBranch: kept } : {}) }
     } catch (e) {
       // forceRequired：脏 worktree 的 server 拒绝（含未提交变更）——复用确认弹窗
       // 二次确认（文案由 forceDelete 标记切换），非终态报错
@@ -2902,6 +2918,105 @@ export class AppStore {
       this.deletingWorkspaces.delete(deleteKey)
       this.emit()
     }
+  }
+
+  /** 目录末段 = worktree 名。仅接受 server slug 字符集（[a-z0-9-]）：外部
+   *  git worktree add 的目录名可含空格/元字符——未加引号拼进 shell 命令有
+   *  多 token 误删（branch -D 多参逐个删）与命令替换风险，且非本端创建的
+   *  worktree 不属分支管理范围——不匹配返回 null，挂载/清理均跳过（review
+   *  Finding 1，2026-09-29） */
+  private worktreeBranchBase(directory: string): string | null {
+    const base = directory.split("/").filter(Boolean).pop() ?? ""
+    return /^[a-z0-9][a-z0-9-]*$/.test(base) ? base : null
+  }
+
+  /**
+   * 挂载 opencode/{worktree-name} 分支（design-worktree-branch-sync §2.2）：
+   * `git switch -c` 单命令（跨 shell 可移植），exit 0 即成。失败先以
+   * show-ref 判撞名（历史残留同名分支）→ 换 `<name>-<rand>` 后缀重试 ≤2；
+   * 非撞名或 shell 通道异常（旧 v2 无 /api/shell/网络）→ 放弃，保持 detached
+   * （server 默认态，console.warn 留痕）——创建本身已成功，不回滚不报错。
+   */
+  private async mountWorktreeBranch(client: RestClient, directory: string): Promise<void> {
+    const base = this.worktreeBranchBase(directory)
+    if (!base) return // 非 slug 目录（外部 worktree）：不管理
+    const candidates = [`opencode/${base}`]
+    for (let i = 0; i < 2; i++) candidates.push(`opencode/${base}-${Math.random().toString(36).slice(2, 6)}`)
+    for (const branch of candidates) {
+      try {
+        // 本地 server 的 git switch 是毫秒级——5s 超时已远超正常耗时
+        const created = await client.runShell(`git switch -c ${branch}`, {
+          cwd: directory,
+          timeoutMs: 5000,
+        })
+        if (created.exit === 0) return
+        // 撞名才重试：分支已存在（exit 0）；其他 git 失败重试无意义
+        const probe = await client.runShell(`git show-ref --verify --quiet refs/heads/${branch}`, {
+          cwd: directory,
+          timeoutMs: 5000,
+        })
+        if (probe.exit !== 0) break
+      } catch {
+        break // shell 通道异常：降级 detached，不重试
+      }
+    }
+    console.warn(`[worktree] 分支挂载失败，保持 detached: ${directory}`)
+  }
+
+  /**
+   * 删除后分支清理（design-worktree-branch-sync §2.3）：v2 DELETE 不清分支
+   * （活体实测 E）。在项目 canonical 下操作（worktree 目录已消失，不能 -C 进去）。
+   * show-ref 探存在 → for-each-ref --contains（排除自身）判是否已并入其他 ref：
+   * 已并入 → `branch -D` 清理返回 null；未并入 → 返回分支名（调用方提示保留）。
+   * shell 通道异常 → 返回 null（宁残留不误删，也不误报「已保留」）。
+   */
+  private async cleanupWorktreeBranch(
+    client: RestClient,
+    project: { worktree: string },
+    directory: string,
+  ): Promise<string | null> {
+    const base = this.worktreeBranchBase(directory)
+    if (!base || !project.worktree) return null // 非 slug 目录（外部 worktree）：不管理
+    const branch = `opencode/${base}`
+    try {
+      const exists = await client.runShell(`git show-ref --verify --quiet refs/heads/${branch}`, {
+        cwd: project.worktree,
+      })
+      if (exists.exit !== 0) return null // 无同名分支（外部 worktree/降级挂载）——无事可做
+      const contains = await client.runShell(
+        // --format 值必须单引号：fish 把裸括号 %(refname) 解析为命令替换
+        // （活体踩坑 2026-09-29），单引号在 fish/POSIX shell 下均为字面量
+        `git for-each-ref --contains refs/heads/${branch} --format='%(refname)' refs/heads refs/remotes`,
+        { cwd: project.worktree },
+      )
+      // 竞态（show-ref 后分支被删）下 for-each-ref 报错退出 129——不误报「已保留」
+      if (contains.exit !== 0) return null
+      const mergedElsewhere = contains.output
+        .split("\n")
+        .map((line) => line.trim())
+        .some((ref) => ref && ref !== `refs/heads/${branch}`)
+      if (mergedElsewhere) {
+        const del = await client.runShell(`git branch -D ${branch}`, { cwd: project.worktree })
+        // -D 失败（如同名分支恰被另一 worktree 检出，git 拒删）→ 改走保留
+        // 路径，branchNotice 兜底——不静默残留（review Finding 2）
+        return del.exit === 0 ? null : branch
+      }
+      return branch // 未并入 → 保留（含未合并提交）
+    } catch {
+      return null
+    }
+  }
+
+  /** 置保留分支提示（10s 自动清空，新提示覆盖旧计时） */
+  private showBranchNotice(branch: string) {
+    if (this.branchNoticeTimer != null) clearTimeout(this.branchNoticeTimer)
+    this.branchNotice = branch
+    this.emit()
+    this.branchNoticeTimer = setTimeout(() => {
+      this.branchNotice = null
+      this.branchNoticeTimer = null
+      this.emit()
+    }, 10000)
   }
 
   /** 该 worktree 是否删除中（左栏行禁用态数据源，design-layout §工作区行） */
