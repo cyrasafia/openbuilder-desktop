@@ -1784,6 +1784,56 @@ describe("隐式默认模型（D-AM-4 修订）", () => {
     await store.createSession({ openTab: false })
     expect(body.model).toBeUndefined()
   })
+
+  it("session.created 事件骨架不覆盖 POST 响应的 agent/model（活体复现 2026-09-30）", async () => {
+    // 场景：引导页发首条消息。createSession POST 响应（v2 SessionInfo，含
+    // agent/model）经 toInternalSession 写入 map；随后 SSE session.created
+    // 骨架（time 以事件时间播种）到达——活体 2.0.18 实测事件 data 携带
+    // agent/model（带 model 创建时），但 v2 事件字段是增量形状且 time 为
+    // 事件时间。原实现 applySessionEvent 直接 map.set 整体覆盖，若事件
+    // 竞态先到/字段缺失（如他端不带 model 创建），POST 写入的完整记录被
+    // 骨架顶掉 → 会话底部 model/variant 消失（bug 现象）。
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
+      createSession: async (input: {
+        directory: string
+        agent?: string
+        model?: ModelRef
+      }) =>
+        ({
+          id: "live1",
+          projectID: "proj1",
+          agent: input.agent,
+          model: input.model,
+          time: { created: 100, updated: 100 },
+          location: { directory: input.directory },
+        }) as never,
+    })
+    store.defaults = {
+      default: { agent: "build", model: { id: "glm-5.3", providerID: "zai", variant: "high" } },
+    }
+
+    const created = await store.createSession({ openTab: false })
+    expect(created?.model).toEqual({ id: "glm-5.3", providerID: "zai", variant: "high" })
+
+    // SSE session.created 到达（活体形状：无 agent/model 字段的骨架——
+    // 对应他端/CLI 不带 model 创建、或字段缺失的事件）
+    ;(store as unknown as { handleEvent: (d: string, ev: unknown) => void }).handleEvent(ROOT, {
+      type: "session.created",
+      properties: {
+        sessionID: "live1",
+        projectID: "proj1",
+        slug: "quiet-knight",
+        location: { directory: ROOT },
+        subpath: "",
+        version: "2.0.18",
+      },
+    })
+
+    // 修复断言：事件骨架不得覆盖 POST 已写入的 agent/model
+    const after = store.findSession("live1")
+    expect(after?.model).toEqual({ id: "glm-5.3", providerID: "zai", variant: "high" })
+    expect(after?.agent).toBe("build")
+  })
 })
 
 // ============ 模型开关（design-model-list，spec-v0.4 #4 增补） ============

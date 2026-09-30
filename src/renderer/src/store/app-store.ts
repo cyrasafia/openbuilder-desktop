@@ -1480,17 +1480,24 @@ export class AppStore {
         }
         // v1 形状（properties.info 而非 sessionID）不属 v2 事件——回落 v1 表
         if (!p.sessionID || !p.projectID) return false
+        // 字段级合并（活体复现修复 2026-09-30）：v2 事件 payload 是增量字段
+        // 而非完整 SessionInfo——本端 createSession 的 POST 响应（完整
+        // SessionInfo）可能先于事件落地 map，事件骨架直接覆盖会把已写入的
+        // agent/model 等字段顶掉（会话底部 model/variant 消失的根因）。事件
+        // 缺失的字段从本地记录回填，事件显式携带（含 undefined 语义的
+        // agent/model）以事件为准；本地无记录 = 他端/CLI 新建，骨架原样入。
+        const local = this.findSession(p.sessionID)
         this.applySessionEvent(
           {
             id: p.sessionID,
-            parentID: p.parentID,
+            parentID: p.parentID ?? local?.parentID,
             projectID: p.projectID,
             directory,
-            slug: p.slug,
-            title: p.title,
-            agent: p.agent,
-            model: p.model,
-            metadata: p.metadata,
+            slug: p.slug ?? local?.slug,
+            title: p.title ?? local?.title,
+            agent: p.agent ?? local?.agent,
+            model: p.model ?? local?.model,
+            metadata: p.metadata ?? local?.metadata,
             time: { created: eventTime, updated: eventTime },
           },
           directory,
