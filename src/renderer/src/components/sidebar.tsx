@@ -113,9 +113,8 @@ function ServerStatus() {
   const store = useStore()
   const { t } = useI18n()
 
-  const state = store.reconciling
-    ? "reconciling"
-    : store.connectionState === "streaming"
+  const state =
+    store.connectionState === "streaming"
       ? "streaming"
       : store.connectionState === "degraded"
         ? "degraded"
@@ -124,20 +123,14 @@ function ServerStatus() {
           : "offline"
 
   const label =
-    state === "reconciling"
-      ? t.statusReconciling
-      : state === "streaming"
-        ? t.statusStreaming
-        : state === "degraded"
-          ? t.statusDegraded
-          : t.statusOffline
+    state === "streaming"
+      ? t.statusStreaming
+      : state === "degraded"
+        ? t.statusDegraded
+        : t.statusOffline
 
   const dotClass =
-    state === "streaming" || state === "reconciling"
-      ? "running"
-      : state === "degraded"
-        ? "pending"
-        : "error"
+    state === "streaming" ? "running" : state === "degraded" ? "pending" : "error"
 
   const title = [
     store.activeProfile?.name,
@@ -156,7 +149,7 @@ function ServerStatus() {
 
   return (
     <button className="status-cluster" title={title} onClick={() => store.openSettings()}>
-      <span className={"status-dot " + dotClass + (state === "reconciling" ? " blink" : "")} />
+      <span className={"status-dot " + dotClass} />
       <span>{label}</span>
       {store.connectionError && <TriangleAlert className="status-error" size={12} aria-hidden />}
     </button>
