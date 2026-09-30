@@ -91,11 +91,13 @@ class FakeWS {
   }
 }
 
-/** 可变 runtime 对象：markPtyExited/markPtyDisconnected 模拟 store 原位突变（真实 store 改同一引用） */
-const runtimeObj: { exited: boolean; disconnected: boolean; title: string; buffer?: string } = {
+/** 可变 runtime 对象：markPtyExited/markPtyDisconnected 模拟 store 原位突变（真实 store 改同一引用）。
+ * attached: true = 重挂载语境（§1.2b 闸门武装）；首连豁免用例动态改 false */
+const runtimeObj: { exited: boolean; disconnected: boolean; title: string; attached?: boolean; buffer?: string } = {
   exited: false,
   disconnected: false,
   title: "bash",
+  attached: true,
 }
 
 /** platform 可变的 window.desktop 假体（复制/粘贴快捷键按 platform 区分修饰键） */
@@ -120,6 +122,9 @@ const actions = {
   }),
   markPtyDisconnected: vi.fn((_id: string, disconnected: boolean) => {
     runtimeObj.disconnected = disconnected
+  }),
+  markPtyAttached: vi.fn((_id: string) => {
+    runtimeObj.attached = true
   }),
   cachePtyBuffer: vi.fn((_id: string, _buf: string) => {
     runtimeObj.buffer = _buf
@@ -182,6 +187,7 @@ beforeEach(() => {
   actions.ptyConnectUrl.mockResolvedValue({ url: "ws://s/pty/pty_1/connect?ticket=t" })
   runtimeObj.exited = false
   runtimeObj.disconnected = false
+  runtimeObj.attached = true
   runtimeObj.buffer = undefined
   platform = "linux"
   keyHandler = null
@@ -495,6 +501,66 @@ describe("TerminalView", () => {
     ws2.onmessage?.({ data: "resumed-out" })
     dataHandler!("\x1b[?1;2c")
     expect(ws2.sent).toEqual([])
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    dataHandler!("\x1b[?1;2c")
+    expect(ws2.sent).toEqual(["\x1b[?1;2c"])
+  })
+
+  // —— 首连豁免（design-terminal-tab §1.2b，2026-09-30）——
+  it("首连豁免：全新 pty（attached=false）回放里的 fish 活查询应答放行，不致 DA1 10s 超时", async () => {
+    vi.useFakeTimers()
+    runtimeObj.attached = false
+    const { ws } = await bootLive()
+    // 全新 pty：server 在 WS 建立前已 spawn fish，其启动查询三件套（fish 阻塞
+    // 等待应答的活查询）已进回放缓冲——回放帧夹着它们
+    ws.onmessage?.({ data: "\x1b]11;?\x1b\\" })
+    ws.onmessage?.({ data: "\x1b[c" })
+    // xterm 对活查询的自动应答必须放行（拦截 = fish 等应答超时 → PDA 警告）
+    dataHandler!("\x1b[?1;2c")
+    dataHandler!("\x1b]11;rgb:1616/1b1b/1616\x1b\\")
+    dataHandler!("\x1b[29;1R")
+    expect(ws.sent).toEqual(["\x1b[?1;2c", "\x1b]11;rgb:1616/1b1b/1616\x1b\\", "\x1b[29;1R"])
+    // attach 标记落位：WS onopen 调 markPtyAttached
+    expect(actions.markPtyAttached).toHaveBeenCalledWith("pty_1")
+    // 排空后 live 应答照常放行
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    dataHandler!("\x1b[?1;2c")
+    expect(ws.sent).toEqual(["\x1b[?1;2c", "\x1b]11;rgb:1616/1b1b/1616\x1b\\", "\x1b[29;1R", "\x1b[?1;2c"])
+  })
+
+  it("豁免翻转闭环：首连豁免（attached=false）→ onopen 置位 → 重连后闸门武装拦截", async () => {
+    vi.useFakeTimers()
+    runtimeObj.attached = false
+    const { ws } = await bootLive()
+    // 首连豁免：回放里的应答放行（前置条件——本用例的豁免起点）
+    ws.onmessage?.({ data: "\x1b[c" })
+    dataHandler!("\x1b[?1;2c")
+    expect(ws.sent).toEqual(["\x1b[?1;2c"])
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    // 异常断开 → 退避重连（markPtyAttached 已在首连 onopen 落位）
+    act(() => {
+      ws.onclose?.({ code: 1006 })
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    const ws2 = FakeWS.instances[1]!
+    ws2.readyState = 1
+    act(() => {
+      ws2.onopen?.()
+    })
+    // 重连续传的 meta 前帧 = server 补发回放（历史查询语境）→ 闸门已武装，
+    // 应答被拦截；豁免只豁免首连，不豁免后续连接
+    ws2.onmessage?.({ data: "resumed-out" })
+    dataHandler!("\x1b[?1;2c")
+    expect(ws2.sent).toEqual([])
+    // 排空后放行（闸门语义不变）
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0)
     })

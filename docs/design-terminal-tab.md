@@ -49,6 +49,7 @@
 
 - **因果链（实测定位，2026-09-23）**：fish 每条 prompt 发终端查询三件套（`OSC 11;?` 背景色 / `CSI 6n` CPR / `CSI 0c` DA1——输出流一部分），累积在 server 2MB 回放缓冲；重挂载不带 cursor 的**全量回放**把这些历史查询重放进新 xterm，xterm 解析时自动应答（DA1 → `ESC[?1;2c`；OSC 11 → `ESC]11;rgb:1616/1b1b/1616` = 主题背景色序列化，xterm 6.0.0 该应答仅在 `open()` 后经 `_themeService` 生效；CPR → `ESC[行;列R`，行号 = 回放解析进行到该查询时光标实时位置）。应答经 `onData → ws.send` 注入 pty **形同用户键入**；前台 pager 收到的是按帧分离的应答字节（每个 onData 一帧、server 逐帧 `process.write`），无法重组为转义序列 → 逐键当命令键回显（less 把 ESC 键拼写成 "ESC" 文本、逐键 `ESC[K` 擦写、`r`/`R` 字节触发重绘）；回显又进 server buffer → 下次回放复现、逐次累积
 - **闸门**：meta 帧前的输出帧 = 回放（server 契约 replay → meta → live），经**带回调的 `term.write` 计数**（`gate.pending`）；`onData` 时 `pending > 0` 且匹配应答模式（`isTerminalQueryResponse`）即丢弃不转发。不漏拦依据：xterm 解析在写回调前同步完成——最后一块回放的应答发出时计数仍 >0；live 帧在回放之后排队，处理时计数已归零，其查询的应答不受影响。重连续传（带 cursor）的补发回放同样过闸门（server 契约同序）
+- **首连豁免（2026-09-30 修复）**：新建 pty 的 server 在 WS 建立前即 spawn shell——fish 启动的 DA1/CPR/OSC 11 **活查询**（fish 阻塞等待应答中）在客户端连上前就进了回放缓冲。首连回放里是活查询而非历史查询，闸门的风险前提（历史查询打到前台 pager）不存在，拦截却使 fish 等应答 10s 超时打 PDA 警告（`man fish-terminal-compatibility`）。故闸门仅在 pty **曾被 attach 过**时武装：`ptyRuntimes[id].attached` 标记——`openTerminalTab` 创建置 `false`、WS 首次 `onopen` 经 `markPtyAttached` 置 `true`、重启恢复路径（restoreTerminalTab）置 `true`（上次会话 attach 过）。重挂载/重连（曾 attach）照常拦截——那才是历史查询语境
 - **live 期必须放行**：fish prompt 握手依赖即时应答（实测无应答 fish 启动阻塞等待）——闸门只覆盖回放窗口，不作全局过滤
 - **误杀面≈0**：完整应答转义序列（ESC 打头 + 转义收尾的 `^…$` 匹配）无法逐键物理敲出；粘贴经 bracketed-paste 包裹（`CSI 200~…201~`）不匹配。模式集：CSI `[?>=]?…c`（DA1/DA2/DA3）、CSI `[?]…R`（CPR/DECXCPR）、CSI `[?]…$y`（DECRPM）、CSI `…n`（DSR，`CSI 5n` 应答 `ESC[0n`）、DCS `…ST`（DECRQSS/XTGETTCAP 状态应答，如 `ESC P1$r0m ESC\`；XTWINOPS 18 应答需 windowOptions、本应用未开实测不产生）、OSC `4/10/11/12;rgb:…`（颜色报告，含 BEL/ST 终止）——评审 2026-09-23 补 DSR/DCS 两类
 - **生命周期**：gate 对象按 `connect()` 运行重建（`replayGateRef` 持当前对象）——卸载/重连后残留的迟到写回调递减的是旧对象，不污染新一轮（StrictMode 双挂载同构防污染）
@@ -100,7 +101,7 @@ ptyRuntimes = new Map<string, { exited: boolean; disconnected: boolean; title: s
 | `src/renderer/src/components/tab-actions.ts` | terminal 关闭确认 + closeTerminalTab |
 | `src/renderer/src/styles/app.css` | `.terminal-view`（深色固定 + 已退出/已断开/重连中叠加态） |
 | `src/renderer/src/i18n/index.ts` | confirmCloseTerminal / terminalExited / terminalDisconnected / terminalReconnecting / terminalCopy / terminalPaste 等 |
-| 测试 | store（创建/关闭/恢复/卸载 DELETE/teardown 杀序/ptyConnectUrl 三态）；rest-client pty 端点 URL/头/方法断言；TerminalView 用注入 WS 假类测生命周期（open/write/控制帧锚点/close code 三分：**1000 主动中断自动关 Tab**·4404 被动终态叠加·其余重连/退避重连带 cursor/无锚点 reset/gone 终态/focus kick/卸载清定时器/断开态 Ctrl 系释放与复制不受影响/**live·dead 态 Ctrl+D 分流与 dead 态关闭**·**回放闸门：未排空丢弃幽灵应答/用户键入照发/排空后 live 应答放行/重连续传同受闸门 + isTerminalQueryResponse 模式表（§1.2b）**） |
+| 测试 | store（创建/关闭/恢复/卸载 DELETE/teardown 杀序/ptyConnectUrl 三态）；rest-client pty 端点 URL/头/方法断言；TerminalView 用注入 WS 假类测生命周期（open/write/控制帧锚点/close code 三分：**1000 主动中断自动关 Tab**·4404 被动终态叠加·其余重连/退避重连带 cursor/无锚点 reset/gone 终态/focus kick/卸载清定时器/断开态 Ctrl 系释放与复制不受影响/**live·dead 态 Ctrl+D 分流与 dead 态关闭**·**回放闸门：未排空丢弃幽灵应答/用户键入照发/排空后 live 应答放行/重连续传同受闸门/首连豁免（attached=false 活查询应答放行 + markPtyAttached 落位）/豁免翻转闭环（首连豁免→onopen 置位→重连武装拦截）+ isTerminalQueryResponse 模式表（§1.2b）**） |
 
 ## 5. 验收（对齐 spec #5）
 
@@ -109,6 +110,6 @@ ptyRuntimes = new Map<string, { exited: boolean; disconnected: boolean; title: s
 - **断线自动重连（§1.2a）**：断开 server 网络（pty 进程仍活）→ 重连中 banner，网络恢复后（或窗口 focus kick）自动续传恢复输出，无重复内容；杀掉 server（token 404）→ 已退出终态不再重试
 - **主动/被动退出分流（2026-09-22）**：pty 内 Ctrl+D/`exit`（WS 在连）→ Tab **自动关闭**（终端模拟器惯例；关闭栈 Ctrl+Shift+T 原目录新建）；切走期间退出/server 重启（token 404 / close 4404 被动关闭）→ 呈「已退出」只读叠加，此时 **Ctrl+D / Ctrl+W / Tab 栏 X 直接关闭**（免确认）；live 态 Ctrl+W 仍归 pty（readline/vim 键位不受影响）
 - 关 Tab 后 `GET /pty` 无该会话；运行中关闭有确认
-- **回放幽灵应答闸门（§1.2b，2026-09-23）**：阅读态（pager 在前台）反复切走切回终端 Tab 无乱码注入、不随往返累积；live 期 shell prompt 查询应答正常放行（终端即开即用，fish 启动不阻塞）
+- **回放幽灵应答闸门（§1.2b，2026-09-23）**：阅读态（pager 在前台）反复切走切回终端 Tab 无乱码注入、不随往返累积；live 期 shell prompt 查询应答正常放行（终端即开即用，fish 启动不阻塞）；**首连豁免（2026-09-30）**：新建终端即开即用，fish 启动查询应答不被闸门拦截（无 PDA 10s 超时警告）
 - 浅色主题下终端恒深色；`npm run test` / `typecheck` / `build` 全绿
 - **打包形态（file://）实测记录（2026-08-27，server 1.18.20）**：CDP 驱动 out/ 构建真窗口——创建 pty / connect-token(POST) / WS（Origin 剥离后 101）/ xterm 渲染 / 无断开叠加，全链路通过

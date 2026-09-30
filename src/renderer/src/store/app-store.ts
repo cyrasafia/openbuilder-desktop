@@ -549,7 +549,7 @@ export class AppStore {
    */
   private ptyRuntimes = new Map<
     string,
-    { exited: boolean; disconnected: boolean; title: string; buffer?: string }
+    { exited: boolean; disconnected: boolean; title: string; attached?: boolean; buffer?: string }
   >()
   /**
    * 浏览器 Tab（design-browser-tab §1.3）：tabKey → viewId（main 进程
@@ -2606,7 +2606,11 @@ export class AppStore {
         return true
       case "terminal": {
         // pty 运行时播种（title 供展示；挂载即 connect-token + WS 全量回放）。
-        // pty 已亡（server 重启/被回收）→ 挂载走 token 404 gone 终态（已退出只读空视图）
+        // pty 已亡（server 重启/被回收）→ 挂载走 token 404 gone 终态（已退出只读空视图）。
+        // attached: true = 保守近似：恢复的 Tab 上次会话存在、通常曾 attach 过。
+        // 极端窗口（新建终端 Tab 即崩溃 + 10s 内重启）下 pty 仍在 fish 启动
+        // 等待期，会被误武装拦掉活查询应答——fish 超时优雅降级（仅禁用可选
+        // 功能），可接受，不为此持久化精确标记（design-terminal-tab §1.2b）
         const ptyID = e.key.slice("terminal:".length)
         this.tabs.push({
           kind: "terminal",
@@ -2615,7 +2619,7 @@ export class AppStore {
           title: e.title,
           directory: e.directory,
         })
-        this.ptyRuntimes.set(ptyID, { exited: false, disconnected: false, title: e.title })
+        this.ptyRuntimes.set(ptyID, { exited: false, disconnected: false, title: e.title, attached: true })
         return true
       }
       case "browser":
@@ -4589,8 +4593,19 @@ export class AppStore {
   /** pty 运行时读（TerminalView 挂载判断已退出态；无条目 = 全新） */
   ptyRuntimeFor(
     ptyID: string,
-  ): { exited: boolean; disconnected: boolean; title: string; buffer?: string } | null {
+  ): { exited: boolean; disconnected: boolean; title: string; attached?: boolean; buffer?: string } | null {
     return this.ptyRuntimes.get(ptyID) ?? null
+  }
+
+  /**
+   * 首次 attach 标记（回放幽灵应答闸门首连豁免，design-terminal-tab §1.2b）：
+   * WS 首次建连即置 true。此后重挂载/重连的回放是历史查询语境，闸门武装；
+   * 全新 pty 首连的回放是 fish 活查询（fish 等应答），闸门不武装。无 UI
+   * 派生不 emit。
+   */
+  markPtyAttached(ptyID: string) {
+    const rt = this.ptyRuntimes.get(ptyID)
+    if (rt && !rt.exited) rt.attached = true
   }
 
   /** 自然退出标记（WS close code 1000/4404、token 404；emit 驱动叠加态渲染） */
@@ -4650,7 +4665,7 @@ export class AppStore {
         cwd: directory,
         env: await this.ptyDisplayEnvForServer(),
       })
-      this.ptyRuntimes.set(pty.id, { exited: false, disconnected: false, title: pty.title ?? "terminal" })
+      this.ptyRuntimes.set(pty.id, { exited: false, disconnected: false, title: pty.title ?? "terminal", attached: false })
       const key = `terminal:${pty.id}`
       this.tabs.push({
         kind: "terminal",
