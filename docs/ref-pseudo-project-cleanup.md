@@ -1,6 +1,6 @@
 # ref: 伪项目（pseudo project）成因与清理方法
 
-> 性质：参考资料（数据中心运维手册）｜ 首版：2026-09-29，基于当日 v2.0.18 server（端口 15120）全量清理实战
+> 性质：参考资料（数据中心运维手册）｜ 首版：2026-09-29，基于当日 v2.0.18 server（端口 15120）全量清理实战｜ 2026-09-30 增补：燃料模型实证（§3.3）、顽固行剥洋葱（§5.2）、worktree 开发测试善后实录（§7b）
 > 关联：`../openbuilder/docs/todo-ghost-worktree-projects.md`（客户端视角的同类问题记录，其「修复方向 3：一次性清理」本文即实施方法）
 
 ## 1. 定义与判定指纹
@@ -44,18 +44,23 @@
 | 客户端 SSE 订阅（`location.directory`=死目录） | 幽灵 Tab 每 5-20 秒触发一次 realPath |
 | 客户端持久化状态（打开的项目/Tab 引用已删 worktree） | 删行 12 秒后重生 |
 | v1→v2 迁移存量（v1 按目录建档，整批带入） | 首次盘点 101 条（2026-09-29 记录） |
+| **worktree 功能测试**（建 worktree → 建测试会话 → 删目录） | 分支挂载开发两天产生 18 个死目录伪行（2026-09-30） |
+| **清理验证脚本自身** | `final-verify-<ts>` 等会话建在生产库——验证动作成为燃料（2026-09-30） |
 | **server 重启解析自身 cwd** | `/home/cyrasafia` 伪行在每次重启后复活（cwd=home），上游问题暂无解 |
 
 ### 3.3 燃料模型（为什么删不干净）
 
-伪行再生需要「有人引用死目录」。燃料优先级：
+伪行再生需要「有人引用死目录」。燃料清单（2026-09-30 全部实证）：
 
 1. **未归档会话**挂在死目录（主力燃料；server 扫描 sweep 数据源）
-2. **客户端活动引用**（幽灵 Tab / 打开状态 / SSE 订阅）
-3. `project.sandboxes` JSON 死条目（冻结 legacy 列）
-4. `project_directory` / `worktree` 库存死登记
+2. **`project.sandboxes` JSON 死条目**（冻结 legacy 列）——**实证为活跃燃料**：quiet-mountain 归档会话 + 清库存登记后仍再生，清此列才断根。该列无写 API（server 唯一写点 = insert 空数组，onConflict 不更新），SQL 直改后**不会被内存态回写**
+3. **`project_directory` 库存死登记**——挂在**父项目**下，删伪行不级联它，须补刀 SQL（§5.2）。注意：登记本身被内存回写后**不再触发行重建**（解析触发源才是关键，2026-09-30 实证）
+4. **客户端活动引用**（幽灵 Tab / 打开状态 / SSE 订阅）
+5. **server 内存态回写**（一次性：凭空重建后不再生——proud-cactus 无任何 DB 引用被重建一次，重删即断，无须重启 server）
 
 **燃料灭则火灭**：归档全部未归档会话 + 客户端断开后，删行实测 60-120 秒零再生。
+
+**单行可穿多层燃料**：quiet-mountain 依次穿透 1→3→2 三层才断根（归档 4 条会话→仍再生→补刀 6 条库存登记→仍再生→清 sandboxes 死条目→断根）。顽固行按 §5.2 剥洋葱处理，每剥一层删行重验。
 
 **归档判定陷阱**：未归档 = `time_archived IS NULL` **或 `time_archived = 0`**。v1 迁移产生大量 epoch 零值（`0` 非 NULL），按 `IS NULL` 归档会漏——漏网的恰好是手机端渲染出来、且持续再生的那批。app 侧判定同源：`time.archived != 0` 才算归档（openbuilder `models.dart`）。
 
@@ -87,13 +92,17 @@ session_share / todo ──CASCADE──→ session
 ```sql
 -- 伪行全量
 SELECT id, worktree, vcs FROM project WHERE worktree LIKE '%opencode/worktree%';
--- 各项目 sandboxes 死条目
-SELECT id, sandboxes FROM project WHERE sandboxes != '[]';
--- 死目录上的未归档会话（燃料；注意 =0 陷阱）
+-- 死目录上的未归档会话（燃料 1；注意 =0 陷阱）
 SELECT directory, COUNT(*) FROM session
 WHERE (time_archived IS NULL OR time_archived=0) GROUP BY directory;
--- 库存死登记
-SELECT project_id, directory FROM worktree WHERE directory LIKE '%…%';
+-- 库存死登记（project_directory 挂父项目下，删伪行不级联；磁盘存在性 shell 侧判）
+SELECT project_id, directory FROM project_directory WHERE directory LIKE '%…%';
+-- 各项目 sandboxes 死条目（§3.3 燃料 2）
+SELECT id, sandboxes FROM project WHERE sandboxes != '[]';
+-- 伪行挂载量（删行 = 级联物理删挂载会话，删前必查）
+SELECT p.worktree, (SELECT COUNT(*) FROM session s WHERE s.project_id=p.id),
+       (SELECT COUNT(*) FROM session_v2 s WHERE s.project_id=p.id)
+FROM project p WHERE p.vcs IS NULL;
 ```
 
 磁盘存在性在 shell 侧判（SQL 无法 stat）：导出目录列表逐个 `[ -d ]`。
@@ -123,6 +132,25 @@ PRAGMA foreign_keys=ON;
 DELETE FROM project WHERE worktree LIKE '%opencode/worktree%';  -- 库存随级联清
 ```
 
+**同路径双行重指向**（同一目录既有 git 行又有伪行时，伪行挂的真实会话无损转移）：
+
+```sql
+UPDATE session    SET project_id='<同路径 git 行 id>' WHERE project_id='<伪行 id>';
+UPDATE session_v2 SET project_id='<同路径 git 行 id>' WHERE project_id='<伪行 id>';
+-- 然后删伪行；2026-09-30 Agent-Engine 案例实证
+```
+
+**顽固行剥洋葱**（删后仍再生的行，按序剥层，每剥一层删行重验）：
+
+```sql
+-- ① 归档该目录全部未归档会话（双表，见上）
+-- ② 补刀 project_directory 死登记（挂父项目下，删伪行不级联它）
+DELETE FROM project_directory WHERE directory LIKE '%<死目录>%';
+-- ③ 清父项目 sandboxes 死条目（冻结列无 API；server 不回写此列，SQL 直改即终态）
+UPDATE project SET sandboxes='[]' WHERE id='<父项目>';  -- 或从 JSON 数组中仅剔除死条目
+-- ④ 删伪行；若仍再生且 DB 无任何引用 → server 内存态（一次性），重删一次即断
+```
+
 **空壳 worktree**（先断目录再走正规通道）：
 
 ```bash
@@ -146,7 +174,8 @@ curl -s -u … http://127.0.0.1:15120/api/project | jq '[.[] | select(.canonical
 | --- | --- | --- |
 | **API 字段假阴性** | API 用 `canonical`，DB 列叫 `worktree`；过滤字段写错则「验证通过」是假的 | 一律按 `canonical` 过滤 |
 | **`time_archived=0`** | v1 迁移 epoch 零值，`IS NULL` 条件漏掉；app 同样视 0 为未归档 | 条件写 `(IS NULL OR =0)` |
-| **SQL 迁移竞态** | 运行中 server 内存态会用改库前的旧 directory 重新 upsert 旧伪行（实测迁移瞬间重建 7 行） | 迁移后观察一个扫描周期（几分钟）再收尾；客户端先断开更稳 |
+| **SQL 迁移竞态** | 运行中 server 内存态会用改库前的旧 directory 重新 upsert 旧伪行（实测迁移瞬间重建 7 行） | 迁移后观察一个扫描周期（几分钟）再收尾；客户端先断开更稳。**内存回写是一次性的**（proud-cactus 实证：凭空重建一次后不再生）——重删即断，无须重启 server |
+| **project_directory 登记回写** | 死登记补刀删除后可能被内存态回写回来 | 回写**不触发行重建**（解析触发源才是关键，2026-09-30 实证）——行不再生即算断根，登记残留无害 |
 | **PATCH 死目录会话 500** | `PATCH /api/session/:id`（D1 归档私约）会让 server realPath 会话目录，死目录直接 500 | 死目录会话只能 SQL 处置；用户裁定死目录不执行私约 |
 | **删 project 级联删会话** | `session.project_id` 外键 CASCADE | 删行前必查挂载量；无处安放的会话先重指向（`global` 案例：11 重指向 + 74 级联删） |
 | **server 重启 cwd 建档** | 重启解析 cwd（如 home 目录）→ 伪行复活 | 上游问题，删了治标；列表侧可按 §1 指纹客户端过滤 |
@@ -161,6 +190,20 @@ curl -s -u … http://127.0.0.1:15120/api/project | jq '[.[] | select(.canonical
 - 文档死目录迁移 5 条会话到新路径；qingjian 归档 1 条 + 删行
 - `协作工作区`/`zl-ai` 旧路径孤儿 **237 条**全量迁移（17 组映射）
 - 终态：项目表 53 行全部 canonical 磁盘存在；未归档会话全部挂活目录；`GET /api/project` 触发 + 120 秒零再生
+
+## 7b. 2026-09-30 实战记录（worktree 开发测试善后）
+
+**背景**：09-29 清理终态被打破——盘点 82 行、伪行约 40。燃料不是旧账复发，而是**清理之后新产生的**：worktree 分支挂载功能开发（09-29~30，design-worktree-branch-sync）建删测试 worktree 留下 18 个死目录伪行；`/tmp` 验证脚本产生 11 行（含 `final-verify-<ts>`——清理动作的验证本身成为燃料）；server 重启重建 cwd 行。
+
+- 删伪行 **34** 条（82→50）：死 worktree 19 + `/tmp` 系 11 + cwd 1 + skills 1 + Agent-Engine 同路径伪行 1 + 内存回写 1
+- 归档测试/调研会话 **13** 条（`/tmp` 系 9 + quiet-mountain 4，双表）；级联删挂伪行的测试会话 **10** 条
+- 同路径双行重指向 **1** 条（Agent-Engine 伪行挂的真实会话 → 同路径 git 行，无损删行，见 §5.2）
+- **quiet-mountain 剥洋葱**（§3.3 多层燃料实证来源）：归档 4 条会话→仍再生→补刀 `project_directory` 死登记 6 条→仍再生→清 opencode 项目 `sandboxes` 死条目→断根
+- **proud-cactus**：DB 零引用凭空新建（内存态回写）→ 一次性，重删后不再生
+- 文档目录 6 伪行**保留**（用户裁定：挂 13 条手机端真实工作会话，删行 = 级联物理删记录，归档也保不住；目录在磁盘上属设计内行为）
+- 终态：50 行，worktree 类伪行双轮扫描零再生；cwd 行待 server 重启后复活（上游问题）
+- **教训**：① worktree 功能测试是批量伪行源——测试用隔离 DB（`OPENCODE_DB`）别打生产库；② 清理验证脚本会把会话建在生产库，验证完同步清理自身；③ 「全都归档了」要用 SQL 复核，不要凭印象（本次复核出 8 条手机端未归档 + 文档目录活会话）
+
 
 ## 8. 客户端可防御点（与 openbuilder TODO 方向 2 的关系）
 
