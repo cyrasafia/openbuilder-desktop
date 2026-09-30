@@ -3054,8 +3054,8 @@ export class AppStore {
   /**
    * 删除后分支清理（design-worktree-branch-sync §2.3）：v2 DELETE 不清分支
    * （活体实测 E）。在项目 canonical 下操作（worktree 目录已消失，不能 -C 进去）。
-   * show-ref 探存在 → for-each-ref --contains（排除自身）判是否已并入其他 ref：
-   * 已并入 → `branch -D` 清理返回 null；未并入 → 返回分支名（调用方提示保留）。
+   * show-ref 探存在 → `branch -D` 强制删除（无论是否已并入，-D 均可删未合并分支）。
+   * -D 失败（如分支被另一 worktree 检出）→ 返回分支名（调用方提示保留）。
    * shell 通道异常 → 返回 null（宁残留不误删，也不误报「已保留」）。
    */
   private async cleanupWorktreeBranch(
@@ -3071,31 +3071,16 @@ export class AppStore {
         cwd: project.worktree,
       })
       if (exists.exit !== 0) return null // 无同名分支（外部 worktree/降级挂载）——无事可做
-      const contains = await client.runShell(
-        // --format 值必须单引号：fish 把裸括号 %(refname) 解析为命令替换
-        // （活体踩坑 2026-09-29），单引号在 fish/POSIX shell 下均为字面量
-        `git for-each-ref --contains refs/heads/${branch} --format='%(refname)' refs/heads refs/remotes`,
-        { cwd: project.worktree },
-      )
-      // 竞态（show-ref 后分支被删）下 for-each-ref 报错退出 129——不误报「已保留」
-      if (contains.exit !== 0) return null
-      const mergedElsewhere = contains.output
-        .split("\n")
-        .map((line) => line.trim())
-        .some((ref) => ref && ref !== `refs/heads/${branch}`)
-      if (mergedElsewhere) {
-        const del = await client.runShell(`git branch -D ${branch}`, { cwd: project.worktree })
-        // -D 失败（如同名分支恰被另一 worktree 检出，git 拒删）→ 改走保留
-        // 路径，branchNotice 兜底——不静默残留（review Finding 2）
-        return del.exit === 0 ? null : branch
-      }
-      return branch // 未并入 → 保留（含未合并提交）
+      const del = await client.runShell(`git branch -D ${branch}`, { cwd: project.worktree })
+      // -D 失败（如同名分支恰被另一 worktree 检出，git 拒删）→ 改走保留
+      // 路径，branchNotice 兜底——不静默残留（review Finding 2）
+      return del.exit === 0 ? null : branch
     } catch {
       return null
     }
   }
 
-  /** 置保留分支提示（10s 自动清空，新提示覆盖旧计时） */
+  /** 置分支删除失败提示（10s 自动清空，新提示覆盖旧计时） */
   private showBranchNotice(branch: string) {
     if (this.branchNoticeTimer != null) clearTimeout(this.branchNoticeTimer)
     this.branchNotice = branch
