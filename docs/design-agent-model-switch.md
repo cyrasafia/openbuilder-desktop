@@ -207,6 +207,7 @@ defaults: Record<profileKey, { agent?: string; model?: ModelRef }>  // 持久化
 - **缓存生命周期**：`teardownConnection` 清空（切 profile 重建），目录级隔离（与 commandCache 同模式）；在途结果按 client 身份守卫丢弃；
 - **事件处理**：store 新增消费 `session.next.agent.switched` / `session.next.model.switched`——按 sessionID 补丁 `sessionsByProject` 中该会话的 `agent` / `model` 字段。单全局流（design-sse-global-event）下 `handleEvent` 顶部已有 `isOpenedDirectory` 统一闸门，两个 case 无需各自设闸。本端乐观更新与事件补丁收敛到同一写路径，幂等；未打开目录的事件被闸门拦截，由下次快照兜底；
 - **会话当前值**：`Session.agent` / `Session.model` 已在 api-types 声明，`sessionsByProject` 既有数据流自动携带（v1 列表 + SSE `session.updated`）。
+- **session.created 事件骨架字段级合并（2026-09-30 活体修复）**：v2 迁移后发现 `session.created` 事件 payload 是增量字段而非完整 Session.Info。引导页发首条消息时，`createSession` POST 响应（含 agent/model）先写入 map，随后到达的 SSE 骨架经 `applyV2SessionEvent` 构造后**整体覆盖**本地记录——agent/model 被顶掉，会话底部 model pill 显示占位、thinking 控件消失（本设计「打开 chat 视图显示 session.model」的验收即破）。修复：骨架构造前 `findSession` 回读本地，事件缺失字段从本地回填（事件显式携带以事件为准，本地无记录骨架原样入）。详见 design-v2-migration「SSE 与对账重设计」。
 
 ### 错误处理（AM-OPT-1：不静默）
 

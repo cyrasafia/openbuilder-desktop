@@ -133,6 +133,40 @@ describe("模型开关过滤（design-model-list）", () => {
     expect(screen.queryByText("GLM Air")).toBeNull() // picker 内无该行（无勾选）；pill 本体照显（上方断言）
   })
 
+  it("session 模式字面 variant:\"default\" 归一化：pill 照显、thinking 可见且示「默认」", () => {
+    // 活体回归（2026-09-30）：2.0.18 会话记录实测大量带 variant:"default"
+    // （TUI/CLI 写入）——归一化后等同未设，但模型保留，thinking 控件照常渲染
+    render(
+      <ModelSwitcherBar
+        directory={DIR}
+        mode="session"
+        session={mkSession({ id: "glm-5.3", providerID: "zai", variant: "default" })}
+      />,
+    )
+    expect(screen.getByText("zai/glm-5.3")).toBeTruthy()
+    expect(screen.getByText("思考强度")).toBeTruthy()
+    expect(screen.getByText("默认")).toBeTruthy()
+  })
+
+  it("session 模式 model 直读会话记录，不依赖目录加载（目录空仍有 pill）", () => {
+    // 活体回归（2026-09-30）：session.model 来自 POST 响应/事件合并，
+    // 目录（modelCatalogs）未加载时 pill 仍有值——仅 thinking 依赖目录
+    ;(storeState.current.modelCatalogFor as (dir: string) => ModelCatalog) = () => ({
+      agents: [],
+      models: [],
+    })
+    render(
+      <ModelSwitcherBar
+        directory={DIR}
+        mode="session"
+        session={mkSession({ id: "glm-5.3", providerID: "zai", variant: "high" })}
+      />,
+    )
+    expect(screen.getByText("zai/glm-5.3")).toBeTruthy()
+    // 目录空 → 当前模型查无 variants → thinking 控件不渲染（预期降级）
+    expect(screen.queryByText("思考强度")).toBeNull()
+  })
+
   it("defaults 模式显式默认被关 → 展示首个开启模型（同失效默认路径）", () => {
     ;(
       storeState.current.disabledModelsFor as () => Record<string, string[]>
