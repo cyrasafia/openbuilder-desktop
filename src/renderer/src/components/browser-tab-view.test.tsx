@@ -180,22 +180,27 @@ describe("BrowserTabView", () => {
     expect(browser.browserNavigate).toHaveBeenLastCalledWith(1, "http://plain.io")
   })
 
-  it("地址栏 IME 切换反弹（2026-09-30）：瞬时 blur→focus 不清空输入；真实失焦窗口外回显页面 URL", async () => {
-    vi.useFakeTimers()
+  it("地址栏失焦保留草稿与光标（selection-restore，2026-09-30）：IME 反弹/真实离开再回来均续编辑", () => {
     render(<BrowserTabView tabKey="browser:https://example.com/" viewId={1} />)
     const input = screen.getByRole("textbox") as HTMLInputElement
-    fireEvent.focus(input)
-    fireEvent.change(input, { target: { value: "https://draft.io/" } })
-    // IME 切换反弹：blur 后窗口内（IME_REFOCUS_WINDOW_MS=200ms）回焦——输入
-    // 未上屏内容保留，不回显页面 URL
+    fireEvent.focus(input) // 首次聚焦（新会话）→ 全选默认
+    fireEvent.change(input, { target: { value: "https://draft.io/p" } })
+    // 模拟用户编辑位置：光标移到中部
+    input.setSelectionRange(10, 10)
+    // IME 切换的瞬时 blur→focus 反弹（回归可晚于任意固定窗口，不判定）与
+    // 真实离开再回来同路径：value 未变 → 草稿与光标恢复续编辑
     fireEvent.blur(input)
     fireEvent.focus(input)
-    await act(() => vi.advanceTimersByTime(1000))
-    expect(input.value).toBe("https://draft.io/")
-    // 真实失焦：blur 后窗口外无回焦——回显 store 当前页 URL
-    fireEvent.blur(input)
-    await act(() => vi.advanceTimersByTime(1000))
+    expect(input.value).toBe("https://draft.io/p")
+    expect(input.selectionStart).toBe(10)
+    expect(input.selectionEnd).toBe(10)
+    // Escape = 放弃编辑会话：还原当前页 URL（回显唯一路径）
+    fireEvent.keyDown(input, { key: "Escape" })
     expect(input.value).toBe("https://example.com/")
+    // 再聚焦 = 新会话：走全选默认（保存已清，value 亦已变）
+    fireEvent.focus(input)
+    expect(input.selectionStart).toBe(0)
+    expect(input.selectionEnd).toBe("https://example.com/".length)
   })
 
   it("地址栏聚焦时机（2026-09-18 修订）：新开 Tab（待聚焦标记）聚焦并全选；切入既有 Tab 不聚焦", () => {
