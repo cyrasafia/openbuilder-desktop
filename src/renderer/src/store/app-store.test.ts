@@ -4326,7 +4326,7 @@ describe("终端 Tab（design-terminal-tab）", () => {
     expect(calls).toEqual([`create:${ROOT}:undefined`])
     expect(store.tabs.some((t) => t.key === "terminal:pty_1" && t.directory === ROOT)).toBe(true)
     expect(store.activeTabKey).toBe("terminal:pty_1")
-    expect(store.ptyRuntimeFor("pty_1")).toEqual({ exited: false, disconnected: false, title: "bash" })
+    expect(store.ptyRuntimeFor("pty_1")).toEqual({ exited: false, disconnected: false, title: "bash", attached: false })
   })
 
   it("openTerminalTab 显示环境注入（design-terminal-tab §1.1）：回环 server 随 body.env 回填主进程显示切片", async () => {
@@ -5225,7 +5225,7 @@ describe("Tab 会话持久层（design-tab-session-restore）", () => {
     // 播种记录经规则 1.5 恢复任意 kind 激活（原冷启动恒落 chat 记忆激活）
     expect(store.activeTabKey).toBe(`file:${ROOT}/a.md`)
     // pty 运行时播种（挂载即全量回放；已亡则 token 404 终态）
-    expect(store.ptyRuntimeFor("pty1")).toEqual({ exited: false, disconnected: false, title: "zsh" })
+    expect(store.ptyRuntimeFor("pty1")).toEqual({ exited: false, disconnected: false, title: "zsh", attached: true })
     // 内容预拉用 Tab 归属目录（跨作用域 Tab 不用当前 scopeQuery、不带 workspace）
     expect(readCalls).toContainEqual([ROOT, `${ROOT}/a.md`])
   })

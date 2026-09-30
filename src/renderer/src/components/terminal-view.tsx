@@ -111,7 +111,7 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
   // 回放闸门状态（design-terminal-tab §1.2b）：主 effect 写、输入 effect 读。
   // 对象按 effect 运行重建——卸载后残留的迟到写回调递减的是旧对象，不污染
   // 下一轮（React StrictMode 双挂载/重连同 ptyID 重跑 effect 同理）
-  const replayGateRef = useRef({ pending: 0 })
+  const replayGateRef = useRef({ pending: 0, armed: false })
   const runtime = store.ptyRuntimeFor(ptyID)
   const [state, setState] = useState<"connecting" | "live" | "reconnecting" | "closed">("connecting")
   // 已退出 = store 标记（自然退出/session 不在，重挂载仍呈只读态）或本次连接已终结
@@ -319,8 +319,13 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
       // 的 onData。live 期（回放排空后）应答必须放行——fish prompt 握手依赖
       // 即时应答（实测无应答则阻塞等待）。写回调先于计数递减不会漏拦：解析
       // 在回调前同步完成，最后一块的应答发出时计数仍 >0；live 帧在回放之后
-      // 排队，处理时计数已归零，其查询的应答不受影响
-      const gate = { pending: 0 }
+      // 排队，处理时计数已归零，其查询的应答不受影响。
+      // 首连豁免（2026-09-30 修复）：新建 pty 的 server 在 WS 建立前即 spawn
+      // shell，fish 启动的 DA1/CPR/OSC 11 活查询（fish 阻塞等应答）已进回放
+      // 缓冲——首连回放里是活查询而非历史查询，闸门风险前提（历史查询打到
+      // 前台 pager）不存在，拦截却使 fish 等应答 10s 超时打 PDA 警告。故闸门
+      // 仅在 pty 曾被 attach 过（runtime.attached，重挂载/重连语境）时武装。
+      const gate = { pending: 0, armed: !!rt?.attached }
       replayGateRef.current = gate
       let metaSeen = false
       const writeOutput = (text: string) => {
@@ -355,6 +360,9 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
         backoffIdx = 0
         setState("live")
         store.markPtyDisconnected(ptyID, false)
+        // 首次 attach 落位（首连豁免判据，见闸门注释）：此后重挂载/重连的
+        // 回放是历史查询语境，闸门武装
+        store.markPtyAttached(ptyID)
         // 建连即同步一次尺寸（server 会话保留断线前 size，视图可能已变）
         store.reportPtySize(ptyID, term.rows, term.cols)
       }
@@ -474,8 +482,11 @@ export function TerminalView({ ptyID }: { ptyID: string }) {
     const d = term.onData((data) => {
       // 回放幽灵应答闸门（design-terminal-tab §1.2b）：回放写队列未排空期间
       // 丢弃 xterm 对回放流中历史查询的自动应答（完整转义模式用户物理敲不
-      // 出、粘贴有 bracketed-paste 包裹，误杀面≈0）；live 期照常放行
-      if (replayGateRef.current.pending > 0 && isTerminalQueryResponse(data)) return
+      // 出、粘贴有 bracketed-paste 包裹，误杀面≈0）；live 期照常放行。首连
+      // 豁免：全新 pty 的回放是 fish 活查询（无闸门风险前提），放行避免 10s
+      // 超时——见 connect() 内闸门注释
+      const gateRef = replayGateRef.current
+      if (gateRef.pending > 0 && gateRef.armed && isTerminalQueryResponse(data)) return
       const ws = wsRef.current
       if (ws && ws.readyState === WebSocket.OPEN) ws.send(data)
     })
