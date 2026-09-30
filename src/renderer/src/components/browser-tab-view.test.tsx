@@ -197,7 +197,25 @@ describe("BrowserTabView", () => {
     // Escape = 放弃编辑会话：还原当前页 URL（回显唯一路径）
     fireEvent.keyDown(input, { key: "Escape" })
     expect(input.value).toBe("https://example.com/")
-    // 再聚焦 = 新会话：走全选默认（保存已清，value 亦已变）
+    // 再聚焦 = 新会话：走全选默认（草稿 value 与还原后的 URL 失配，快照
+    // 失效；未改值场景的覆盖路径见上方未改值 Escape 用例）
+    fireEvent.focus(input)
+    expect(input.selectionStart).toBe(0)
+    expect(input.selectionEnd).toBe("https://example.com/".length)
+  })
+
+  it("地址栏未改值即 Escape（2026-09-30 review）：再聚焦走全选默认，不误恢复旧光标", () => {
+    render(<BrowserTabView tabKey="browser:https://example.com/" viewId={1} />)
+    const input = screen.getByRole("textbox") as HTMLInputElement
+    fireEvent.focus(input) // 首次聚焦全选
+    // 仅移动光标不改 value（value 恒等于当前页 URL）——value 失配兜底不成立，
+    // 只有 blur 后清保存（clear 在 blur 之后）才不会误恢复旧光标
+    input.setSelectionRange(5, 5)
+    fireEvent.keyDown(input, { key: "Escape" })
+    // Escape handler 内 blur() 在 jsdom 不派发 React blur 事件，手动触发——
+    // onBlur 的 save 正是会覆盖 clear 的路径（先清后存 bug 场景）
+    fireEvent.blur(input)
+    expect(input.value).toBe("https://example.com/")
     fireEvent.focus(input)
     expect(input.selectionStart).toBe(0)
     expect(input.selectionEnd).toBe("https://example.com/".length)
@@ -365,3 +383,4 @@ describe("BrowserTabView", () => {
     expect((document.querySelector(".find-bar input") as HTMLInputElement).value).toBe("hello")
   })
 })
+

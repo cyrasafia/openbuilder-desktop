@@ -202,6 +202,13 @@ export function Workspace() {
       setDragSlot(null)
     }
   }, [dragKey, tabs])
+  // 重命名目标 Tab 被外部关闭（SSE 删会话/收敛）时清悬挂的 renaming（同
+  // dragKey 失效守卫模式）：新方案失焦不提交后，renaming 不再有 blur 提交
+  // 兜底收敛——isRenamingThis 按 key 匹配永不命中即无功能影响，但状态
+  // 悬挂与既有守卫惯例不一致（2026-09-30 review 提出）
+  useEffect(() => {
+    if (renaming && !tabs.some((tb) => tb.key === renaming.key)) setRenaming(null)
+  }, [renaming, tabs])
 
   // 重命名编辑会话保存/恢复（selection-restore，2026-09-30）：失焦不提交
   // （IME 切换的瞬时 blur→focus 反弹不退出编辑态），回焦恢复光标续编辑；

@@ -47,5 +47,20 @@ save/restore/clear）。会话有效性 = value 快照等值——导航回写�
 还原、换目标重命名等任何改值路径自动令恢复失效走默认（全选/末尾），
 无需额外清理同步。
 
+### 显式结束会话的时序（2026-09-30 review 修订）
+
+Escape 后的 `blur()` 会同步触发 onBlur 的 `save`（Chromium 事件同步派
+发），覆盖 handler 内先行执行的 `clear`——快照 value 恰与还原后 URL
+等值时（未改值即 Escape），下次聚焦误恢复旧光标而非全选。地址栏以
+`addressEscape` 标记让该次终止性失焦跳过 save（jsdom 不派发 blur 事件，
+clear/blur 顺序在两环境下相反，故不依赖顺序而以标记表达语义）。重命名
+的 Escape 不经 blur 路径（handler 内直接清 + 退出编辑态由 setRenaming
+卸载输入框），无此问题；Enter 路径 save 先于 navigate 内 clear，顺序
+恰好正确。配套用例「未改值即 Escape 再聚焦应全选」在未修复代码上可复
+现故障（stash 反证验证）。
+
+外部关闭 renaming 目标 Tab 时清悬挂状态（对齐 dragKey 失效守卫惯例）：
+`renaming && !tabs.some(key 匹配)` 即 setRenaming(null)。
+
 移动端 openbuilder 同类问题（输入框 focus/blur 处理器假设真实用户
 行为）可同构参考。

@@ -56,6 +56,11 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
   // 地址栏编辑会话保存/恢复（selection-restore，2026-09-30）：失焦不清空输入
   // （含 IME 切换的瞬时 blur→focus 反弹），回焦恢复草稿与光标续编辑
   const addressSel = useSelectionRestore()
+  // Escape 终止性失焦跳过 save（否则快照 value 恰与还原后 URL 等值时，下次
+  // 聚焦误恢复旧光标而非全选——2026-09-30 review 发现）。标记法而非调整
+  // clear/blur 顺序：Chromium blur() 同步派发 onBlur（save 先于 clear 可
+  // 靠），jsdom 不派发（clear 先于 save）——两环境下顺序都不可依赖
+  const addressEscape = useRef(false)
   // 页面内搜索（design-find-in-page §2.2/§2.4）：Ctrl+F 唤起（经 store 注册）
   const find = useWebContentsFind(viewId, tabKey)
 
@@ -213,8 +218,10 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
           }}
           onBlur={(e) => {
             addressFocused.current = false
-            // 失焦不清空输入（保留草稿与光标），回焦恢复（selection-restore）
-            addressSel.save(e.currentTarget)
+            // 失焦不清空输入（保留草稿与光标），回焦恢复（selection-restore）；
+            // Escape 的终止性失焦跳过保存（见 addressEscape 注释）
+            if (!addressEscape.current) addressSel.save(e.currentTarget)
+            addressEscape.current = false
           }}
           onKeyDown={(e) => {
             if (e.nativeEvent.isComposing) return
@@ -224,10 +231,11 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
               navigate(address)
             } else if (e.key === "Escape") {
               e.preventDefault()
-              // Escape = 放弃编辑会话：清保存 + 还原当前页 URL（回显的唯一路径）
-              addressSel.clear()
               if (state?.url) setAddress(addressOf(state.url))
+              // 终止性失焦：标记跳过 onBlur 的 save（时序见 addressEscape 注释）
+              addressEscape.current = true
               e.currentTarget.blur()
+              addressSel.clear()
             }
           }}
         />
