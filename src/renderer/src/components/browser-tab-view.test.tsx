@@ -107,6 +107,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.useRealTimers()
   ;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = undefined
 })
 
@@ -177,6 +178,24 @@ describe("BrowserTabView", () => {
     // 显式 scheme 永不补全
     nav("http://plain.io")
     expect(browser.browserNavigate).toHaveBeenLastCalledWith(1, "http://plain.io")
+  })
+
+  it("地址栏 IME 切换反弹（2026-09-30）：瞬时 blur→focus 不清空输入；真实失焦窗口外回显页面 URL", async () => {
+    vi.useFakeTimers()
+    render(<BrowserTabView tabKey="browser:https://example.com/" viewId={1} />)
+    const input = screen.getByRole("textbox") as HTMLInputElement
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: "https://draft.io/" } })
+    // IME 切换反弹：blur 后窗口内（IME_REFOCUS_WINDOW_MS=200ms）回焦——输入
+    // 未上屏内容保留，不回显页面 URL
+    fireEvent.blur(input)
+    fireEvent.focus(input)
+    await act(() => vi.advanceTimersByTime(1000))
+    expect(input.value).toBe("https://draft.io/")
+    // 真实失焦：blur 后窗口外无回焦——回显 store 当前页 URL
+    fireEvent.blur(input)
+    await act(() => vi.advanceTimersByTime(1000))
+    expect(input.value).toBe("https://example.com/")
   })
 
   it("地址栏聚焦时机（2026-09-18 修订）：新开 Tab（待聚焦标记）聚焦并全选；切入既有 Tab 不聚焦", () => {

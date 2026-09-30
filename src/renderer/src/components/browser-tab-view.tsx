@@ -3,6 +3,7 @@ import { ArrowLeft, ArrowRight, ExternalLink, FileText, FolderOpen, Globe, Rotat
 import { useI18n, useStore } from "../app"
 import { fileUrlOf } from "@shared/file-url"
 import { FindBar, useWebContentsFind } from "./find-bar"
+import { useImeBlurDebounce } from "./ime-refocus"
 
 /**
  * 地址栏无 scheme 输入的 web/file 分流（design-browser-tab §1.3，2026-09-19）：
@@ -52,6 +53,9 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
   const [address, setAddress] = useState(state?.url ? addressOf(state.url) : tabKey.slice("browser:".length))
   const addressFocused = useRef(false)
   const addressRef = useRef<HTMLInputElement>(null)
+  // 失焦回显经 IME 反弹窗口判定（ime-refocus，2026-09-30）：IME 切换的瞬时
+  // blur 不清空输入内容（清空回显页面 URL 即用户所报 bug）
+  const addressIme = useImeBlurDebounce()
   // 页面内搜索（design-find-in-page §2.2/§2.4）：Ctrl+F 唤起（经 store 注册）
   const find = useWebContentsFind(viewId, tabKey)
 
@@ -114,6 +118,8 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
   }, [])
 
   const navigate = (raw: string) => {
+    // Enter 路径 blur 已挂起回显——立即取消，防窗口外覆写下方乐观展示地址
+    addressIme.cancel()
     const value = raw.trim()
     if (!value) return
     // 乐观展示（2026-09-18 review）：在途期间地址栏保持所输 URL——Enter 先 blur，
@@ -202,11 +208,16 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
           onChange={(e) => setAddress(e.target.value)}
           onFocus={(e) => {
             addressFocused.current = true
+            // IME 切换反弹回焦：保留编辑态（不重新全选打断光标/选区）
+            if (addressIme.refocus()) return
             e.currentTarget.select()
           }}
           onBlur={() => {
             addressFocused.current = false
-            if (state?.url) setAddress(addressOf(state.url))
+            // 失焦回显延迟到反弹窗口外执行（IME 切换的瞬时 blur 不清空输入）
+            addressIme.defer(() => {
+              if (state?.url) setAddress(addressOf(state.url))
+            })
           }}
           onKeyDown={(e) => {
             if (e.nativeEvent.isComposing) return

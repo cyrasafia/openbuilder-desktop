@@ -77,6 +77,7 @@ import { BrowserTabView } from "./browser-tab-view"
 import { FileRefChips, useFileRefInput, userFileChipItems } from "./file-ref"
 import { AttachmentChips, AttachmentThumb, useAttachmentInput, userImageParts } from "./attachments"
 import { useCtrlHeld } from "./ctrl-held"
+import { useImeBlurDebounce } from "./ime-refocus"
 
 /** .tab 最小宽（px）——与 app.css `.tab` 的 min-width 同值，改一处须同步另一处 */
 const TAB_MIN_W = 96
@@ -202,7 +203,12 @@ export function Workspace() {
     }
   }, [dragKey, tabs])
 
+  // 重命名失焦提交经 IME 反弹窗口判定（ime-refocus，2026-09-30）：IME 切换的
+  // 瞬时 blur 不误提交（提交即退出重命名态=编辑被重置）
+  const renameIme = useImeBlurDebounce()
   const commitRename = (tab: { kind: string; key: string; title: string }) => {
+    // 任何路径的提交都使挂起的失焦提交失效（Enter/换目标重命名防双提交）
+    renameIme.cancel()
     if (!renaming || renaming.key !== tab.key) return
     const value = renaming.value.trim()
     setRenaming(null)
@@ -406,7 +412,11 @@ export function Workspace() {
                 autoFocus
                 aria-label={t.renameTab}
                 title={t.renameTab}
-                onFocus={(e) => e.currentTarget.select()}
+                onFocus={(e) => {
+                  // IME 切换反弹回焦：保留编辑态（不重新全选打断光标/选区）
+                  if (renameIme.refocus()) return
+                  e.currentTarget.select()
+                }}
                 onChange={(e) => setRenaming({ key: tab.key, value: e.target.value })}
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => e.stopPropagation()}
@@ -422,7 +432,10 @@ export function Workspace() {
                     setRenaming(null)
                   }
                 }}
-                onBlur={() => commitRename(tab)}
+                onBlur={() => {
+                  // 提交延迟到反弹窗口外（IME 切换的瞬时 blur 不误提交）
+                  renameIme.defer(() => commitRename(tab))
+                }}
               />
              ) : (
                // 展示标题映射收编 displayTabTitle（与溢出菜单共用；浏览器欢迎页态
@@ -855,6 +868,10 @@ function GuidePage() {
   const scopeName = store.scopeDisplayName
   // 文件引用输入接线（design-file-reference §3）：引用按作用域目录键存（与草稿同构）
   const guideTaRef = useRef<HTMLTextAreaElement>(null)
+  // 「光标置末尾」仅首次聚焦（autoFocus 挂载）执行：IME 切换会让聚焦中的输入框
+  // 瞬时 blur→focus（Wayland text-input 上下文重建，见 ime-refocus），后续聚焦
+  // 若重置光标会跳到末尾——首次后不再执行，浏览器自行恢复原光标位置
+  const cursorToEndOnce = useRef(true)
   const refInput = useFileRefInput({
     refKey: directory,
     directory,
@@ -1073,7 +1090,11 @@ function GuidePage() {
                 rows={1}
                 autoFocus
                 onFocus={(e) => {
-                  // 默认聚焦（autoFocus）时光标置于末尾，而非开头（有草稿时）
+                  // 默认聚焦（autoFocus）时光标置于末尾，而非开头（有草稿时）；
+                  // 仅首次聚焦生效——后续聚焦（含 IME 切换的 blur→focus 反弹）
+                  // 不重置光标位置
+                  if (!cursorToEndOnce.current) return
+                  cursorToEndOnce.current = false
                   const el = e.currentTarget
                   requestAnimationFrame(() => {
                     const len = el.value.length
@@ -1295,6 +1316,8 @@ function ChatView({ sessionID }: { sessionID: string }) {
   // 引用按 sessionID 键存（与草稿同构）。选中引用后移除 @词 区间并把光标
   // 回退到该位置（受控赋值会把光标甩到末尾）
   const composerTaRef = useRef<HTMLTextAreaElement>(null)
+  // 同 GuidePage：光标置末尾仅首次聚焦（autoFocus）执行，IME 切换反弹不重置
+  const cursorToEndOnce = useRef(true)
   const refInput = useFileRefInput({
     refKey: sessionID,
     directory: store.findSession(sessionID)?.directory ?? null,
@@ -1650,7 +1673,11 @@ function ChatView({ sessionID }: { sessionID: string }) {
             rows={1}
             autoFocus
             onFocus={(e) => {
-              // 默认聚焦（autoFocus）时光标置于末尾，而非开头（有草稿时）
+              // 默认聚焦（autoFocus）时光标置于末尾，而非开头（有草稿时）；
+              // 仅首次聚焦生效——后续聚焦（含 IME 切换的 blur→focus 反弹）
+              // 不重置光标位置
+              if (!cursorToEndOnce.current) return
+              cursorToEndOnce.current = false
               const el = e.currentTarget
               requestAnimationFrame(() => {
                 const len = el.value.length
