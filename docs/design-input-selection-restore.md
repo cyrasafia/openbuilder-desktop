@@ -60,7 +60,14 @@ clear/blur 顺序在两环境下相反，故不依赖顺序而以标记表达语
 现故障（stash 反证验证）。
 
 外部关闭 renaming 目标 Tab 时清悬挂状态（对齐 dragKey 失效守卫惯例）：
-`renaming && !tabs.some(key 匹配)` 即 setRenaming(null)。
+`renaming && !store.tabs.some(key 匹配)` 即 `renameSel.clear()` +
+`setRenaming(null)`。判定集合须用**未过滤的 store.tabs**：用作用域过滤
+数组会把「切作用域看一眼」误判为 Tab 已关，草稿静默丢弃（切回原作用域
+本可恢复编辑；2026-09-30 前后三代行为对照——blur 即提交时代该流提交、
+50c0187 该流保留、错误判定的守卫版本该流丢弃，只有最后者丢数据）。
+右键菜单「重命名」入口镜像双击路径：换目标先 commitRename 提交旧目标
+（失焦不提交后 setRenaming 的唯一无保护入口；提交顺带 clear 快照，防
+标题等值时光标串台）。
 
 移动端 openbuilder 同类问题（输入框 focus/blur 处理器假设真实用户
 行为）可同构参考。

@@ -383,4 +383,3 @@ describe("BrowserTabView", () => {
     expect((document.querySelector(".find-bar input") as HTMLInputElement).value).toBe("hello")
   })
 })
-

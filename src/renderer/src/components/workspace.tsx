@@ -202,18 +202,25 @@ export function Workspace() {
       setDragSlot(null)
     }
   }, [dragKey, tabs])
-  // 重命名目标 Tab 被外部关闭（SSE 删会话/收敛）时清悬挂的 renaming（同
-  // dragKey 失效守卫模式）：新方案失焦不提交后，renaming 不再有 blur 提交
-  // 兜底收敛——isRenamingThis 按 key 匹配永不命中即无功能影响，但状态
-  // 悬挂与既有守卫惯例不一致（2026-09-30 review 提出）
-  useEffect(() => {
-    if (renaming && !tabs.some((tb) => tb.key === renaming.key)) setRenaming(null)
-  }, [renaming, tabs])
 
   // 重命名编辑会话保存/恢复（selection-restore，2026-09-30）：失焦不提交
   // （IME 切换的瞬时 blur→focus 反弹不退出编辑态），回焦恢复光标续编辑；
   // 提交收敛于 Enter/Escape/换目标三条显式路径
   const renameSel = useSelectionRestore()
+  // 重命名目标 Tab 被外部关闭（SSE 删会话/收敛）时清悬挂的 renaming（同
+  // dragKey 失效守卫模式）。判定用**未过滤的 store.tabs**：作用域过滤数组
+  // 会把"切作用域看一眼"误判为 Tab 已关——草稿静默丢弃（切回原作用域本
+  // 可恢复编辑，2026-09-30 review 发现）；真关闭时补 renameSel.clear()，
+  // 与 Enter/Escape 提交路径的状态清理对齐（残留快照与未来标题恰好等值
+  // 的 Tab 会发生光标串台）。依赖 tabs（作用域数组）仅为触发时机——作用域
+  // 切换/scopeDir 变化都会产生新数组引用，真关闭的 SSE emit 同样如此
+  useEffect(() => {
+    if (renaming && !store.tabs.some((tb) => tb.key === renaming.key)) {
+      renameSel.clear()
+      setRenaming(null)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renaming, tabs])
   const commitRename = (tab: { kind: string; key: string; title: string }) => {
     // 任何路径的提交都结束编辑会话（下次聚焦走全选默认）
     renameSel.clear()
@@ -529,6 +536,14 @@ export function Workspace() {
           x={menu.x}
           y={menu.y}
           onRename={() => {
+            // 镜像双击路径（onDoubleClick）：换目标编辑先提交旧的——失焦不
+            // 提交（blur 只 save selection-restore 快照）后，右键菜单是
+            // 唯一不经 commitRename 的 setRenaming 入口，缺这步会静默丢弃
+            // 进行中的草稿；提交同时 clear 快照，防标题等值时光标串台
+            if (renaming && renaming.key !== menu.tab.key) {
+              const prev = store.tabs.find((x) => x.key === renaming.key)
+              if (prev) commitRename(prev)
+            }
             // 复用双击重命名路径：以 Tab 当前标题进编辑态（提交经 commitRename）
             setRenaming({ key: menu.tab.key, value: menu.tab.title })
           }}
