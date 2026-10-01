@@ -392,6 +392,32 @@ export type OpencodeEvent =
       properties: { sessionID: string; status: SessionStatusValue }
     }
   | { id: string; type: "session.idle"; properties: { sessionID: string } }
+  // ---- execution 生命周期（官方 GUI 同构；v2.0.18 活体实测唯一 busy/idle 事件源，
+  // session.status/session.idle 在该 pin 无发布者）。**信封无 location**：subscriber
+  // 回调 directory = "global"，消费方须按 sessionID 解析目录（app-store 闸门旁路）----
+  | { id: string; type: "session.execution.started"; properties: { sessionID: string } }
+  | { id: string; type: "session.execution.succeeded"; properties: { sessionID: string } }
+  | {
+      id: string
+      type: "session.execution.failed"
+      properties: { sessionID: string; error: { type: string; message: string } }
+    }
+  | {
+      id: string
+      type: "session.execution.interrupted"
+      properties: { sessionID: string; reason: "user" | "shutdown" | "superseded" | "inactivity" }
+    }
+  | {
+      id: string
+      type: "session.retry.scheduled"
+      properties: {
+        sessionID: string
+        assistantMessageID: string
+        attempt: number
+        at: number
+        error: { type: string; message: string }
+      }
+    }
   | {
       id: string
       type: "session.next.agent.switched"

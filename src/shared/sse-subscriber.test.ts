@@ -290,4 +290,47 @@ describe("SseSubscriber", () => {
     expect(events).toHaveLength(0)
     sub.stop()
   })
+
+  it("execution 生命周期帧（wire data 字段、无 location）→ properties 形态回调 + directory=global（design-typing-indicator §4 来源 0 活体实测帧形状）", async () => {
+    const { sub, sources, events } = makeSubscriber()
+    sub.start()
+    await vi.waitFor(() => expect(sources[0]).toBeTruthy())
+    sources[0].open()
+    // v2.0.18 实测帧：execution/retry 不带 location；数据在 data
+    sources[0].send({
+      id: "evt_e1",
+      created: 1000,
+      type: "session.execution.started",
+      data: { sessionID: "ses_1" },
+      durable: { aggregateID: "ses_1", seq: 2, version: 1 },
+    })
+    sources[0].send({
+      id: "evt_e2",
+      created: 2000,
+      type: "session.retry.scheduled",
+      data: {
+        sessionID: "ses_1",
+        assistantMessageID: "msg_a1",
+        attempt: 2,
+        at: 5000,
+        error: { type: "rate_limited", message: "rate limited" },
+      },
+      durable: { aggregateID: "ses_1", seq: 3, version: 1 },
+    })
+    sources[0].send({
+      id: "evt_e3",
+      created: 3000,
+      type: "session.execution.succeeded",
+      data: { sessionID: "ses_1" },
+      durable: { aggregateID: "ses_1", seq: 12, version: 1 },
+    })
+    expect(events).toHaveLength(3)
+    for (const e of events) {
+      expect(e.directory).toBe("global")
+      // wire 的 data 字段映射为回调的 properties（store 消费形态）
+      expect(e.event.properties.sessionID).toBe("ses_1")
+    }
+    expect(events[1].event.properties).toMatchObject({ attempt: 2, at: 5000, error: { message: "rate limited" } })
+    sub.stop()
+  })
 })
