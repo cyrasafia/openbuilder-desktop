@@ -30,7 +30,7 @@ function deferred<T>() {
 function mount(onConfirm: () => void | Promise<void>, onClose: () => void) {
   return render(
     <ConfirmDialog
-      title="删除工作区"
+      title="删除工作树"
       message="确认删除？"
       confirmLabel="删除"
       cancelLabel="取消"
