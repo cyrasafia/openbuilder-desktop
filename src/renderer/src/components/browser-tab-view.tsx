@@ -3,6 +3,7 @@ import { ArrowLeft, ArrowRight, ExternalLink, FileText, FolderOpen, Globe, Rotat
 import { useI18n, useStore } from "../app"
 import { fileUrlOf } from "@shared/file-url"
 import { FindBar, useWebContentsFind } from "./find-bar"
+import { useSelectionRestore } from "./selection-restore"
 
 /**
  * 地址栏无 scheme 输入的 web/file 分流（design-browser-tab §1.3，2026-09-19）：
@@ -52,6 +53,14 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
   const [address, setAddress] = useState(state?.url ? addressOf(state.url) : tabKey.slice("browser:".length))
   const addressFocused = useRef(false)
   const addressRef = useRef<HTMLInputElement>(null)
+  // 地址栏编辑会话保存/恢复（selection-restore，2026-09-30）：失焦不清空输入
+  // （含 IME 切换的瞬时 blur→focus 反弹），回焦恢复草稿与光标续编辑
+  const addressSel = useSelectionRestore()
+  // Escape 终止性失焦跳过 save（否则快照 value 恰与还原后 URL 等值时，下次
+  // 聚焦误恢复旧光标而非全选——2026-09-30 review 发现）。标记法而非调整
+  // clear/blur 顺序：Chromium blur() 同步派发 onBlur（save 先于 clear 可
+  // 靠），jsdom 不派发（clear 先于 save）——两环境下顺序都不可依赖
+  const addressEscape = useRef(false)
   // 页面内搜索（design-find-in-page §2.2/§2.4）：Ctrl+F 唤起（经 store 注册）
   const find = useWebContentsFind(viewId, tabKey)
 
@@ -114,6 +123,8 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
   }, [])
 
   const navigate = (raw: string) => {
+    // Enter = 编辑会话结束：清除保存（下次聚焦走全选默认），乐观展示接管
+    addressSel.clear()
     const value = raw.trim()
     if (!value) return
     // 乐观展示（2026-09-18 review）：在途期间地址栏保持所输 URL——Enter 先 blur，
@@ -202,11 +213,15 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
           onChange={(e) => setAddress(e.target.value)}
           onFocus={(e) => {
             addressFocused.current = true
-            e.currentTarget.select()
+            // 同一编辑会话（value 未变）恢复光标续编辑；新会话走全选默认
+            if (!addressSel.restore(e.currentTarget)) e.currentTarget.select()
           }}
-          onBlur={() => {
+          onBlur={(e) => {
             addressFocused.current = false
-            if (state?.url) setAddress(addressOf(state.url))
+            // 失焦不清空输入（保留草稿与光标），回焦恢复（selection-restore）；
+            // Escape 的终止性失焦跳过保存（见 addressEscape 注释）
+            if (!addressEscape.current) addressSel.save(e.currentTarget)
+            addressEscape.current = false
           }}
           onKeyDown={(e) => {
             if (e.nativeEvent.isComposing) return
@@ -217,7 +232,10 @@ export function BrowserTabView({ tabKey, viewId }: { tabKey: string; viewId: num
             } else if (e.key === "Escape") {
               e.preventDefault()
               if (state?.url) setAddress(addressOf(state.url))
+              // 终止性失焦：标记跳过 onBlur 的 save（时序见 addressEscape 注释）
+              addressEscape.current = true
               e.currentTarget.blur()
+              addressSel.clear()
             }
           }}
         />

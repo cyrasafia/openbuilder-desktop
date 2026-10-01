@@ -77,6 +77,7 @@ import { BrowserTabView } from "./browser-tab-view"
 import { FileRefChips, useFileRefInput, userFileChipItems } from "./file-ref"
 import { AttachmentChips, AttachmentThumb, useAttachmentInput, userImageParts } from "./attachments"
 import { useCtrlHeld } from "./ctrl-held"
+import { useSelectionRestore } from "./selection-restore"
 
 /** .tab 最小宽（px）——与 app.css `.tab` 的 min-width 同值，改一处须同步另一处 */
 const TAB_MIN_W = 96
@@ -202,7 +203,27 @@ export function Workspace() {
     }
   }, [dragKey, tabs])
 
+  // 重命名编辑会话保存/恢复（selection-restore，2026-09-30）：失焦不提交
+  // （IME 切换的瞬时 blur→focus 反弹不退出编辑态），回焦恢复光标续编辑；
+  // 提交收敛于 Enter/Escape/换目标三条显式路径
+  const renameSel = useSelectionRestore()
+  // 重命名目标 Tab 被外部关闭（SSE 删会话/收敛）时清悬挂的 renaming（同
+  // dragKey 失效守卫模式）。判定用**未过滤的 store.tabs**：作用域过滤数组
+  // 会把"切作用域看一眼"误判为 Tab 已关——草稿静默丢弃（切回原作用域本
+  // 可恢复编辑，2026-09-30 review 发现）；真关闭时补 renameSel.clear()，
+  // 与 Enter/Escape 提交路径的状态清理对齐（残留快照与未来标题恰好等值
+  // 的 Tab 会发生光标串台）。依赖 tabs（作用域数组）仅为触发时机——作用域
+  // 切换/scopeDir 变化都会产生新数组引用，真关闭的 SSE emit 同样如此
+  useEffect(() => {
+    if (renaming && !store.tabs.some((tb) => tb.key === renaming.key)) {
+      renameSel.clear()
+      setRenaming(null)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renaming, tabs])
   const commitRename = (tab: { kind: string; key: string; title: string }) => {
+    // 任何路径的提交都结束编辑会话（下次聚焦走全选默认）
+    renameSel.clear()
     if (!renaming || renaming.key !== tab.key) return
     const value = renaming.value.trim()
     setRenaming(null)
@@ -406,7 +427,10 @@ export function Workspace() {
                 autoFocus
                 aria-label={t.renameTab}
                 title={t.renameTab}
-                onFocus={(e) => e.currentTarget.select()}
+                onFocus={(e) => {
+                  // 同一编辑会话（value 未变）恢复光标续编辑；新会话走全选默认
+                  if (!renameSel.restore(e.currentTarget)) e.currentTarget.select()
+                }}
                 onChange={(e) => setRenaming({ key: tab.key, value: e.target.value })}
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => e.stopPropagation()}
@@ -419,10 +443,15 @@ export function Workspace() {
                     commitRename(tab)
                   } else if (e.key === "Escape") {
                     e.preventDefault()
+                    // Escape = 放弃编辑会话（清保存，下次聚焦走全选默认）
+                    renameSel.clear()
                     setRenaming(null)
                   }
                 }}
-                onBlur={() => commitRename(tab)}
+                onBlur={(e) => {
+                  // 失焦不提交：保存选区，回焦恢复续编辑（selection-restore）
+                  renameSel.save(e.currentTarget)
+                }}
               />
              ) : (
                // 展示标题映射收编 displayTabTitle（与溢出菜单共用；浏览器欢迎页态
@@ -507,6 +536,14 @@ export function Workspace() {
           x={menu.x}
           y={menu.y}
           onRename={() => {
+            // 镜像双击路径（onDoubleClick）：换目标编辑先提交旧的——失焦不
+            // 提交（blur 只 save selection-restore 快照）后，右键菜单是
+            // 唯一不经 commitRename 的 setRenaming 入口，缺这步会静默丢弃
+            // 进行中的草稿；提交同时 clear 快照，防标题等值时光标串台
+            if (renaming && renaming.key !== menu.tab.key) {
+              const prev = store.tabs.find((x) => x.key === renaming.key)
+              if (prev) commitRename(prev)
+            }
             // 复用双击重命名路径：以 Tab 当前标题进编辑态（提交经 commitRename）
             setRenaming({ key: menu.tab.key, value: menu.tab.title })
           }}
@@ -855,6 +892,10 @@ function GuidePage() {
   const scopeName = store.scopeDisplayName
   // 文件引用输入接线（design-file-reference §3）：引用按作用域目录键存（与草稿同构）
   const guideTaRef = useRef<HTMLTextAreaElement>(null)
+  // 编辑会话保存/恢复（selection-restore，2026-09-30）：失焦保存光标，回焦
+  // 恢复续编辑（IME 切换的瞬时 blur→focus 反弹自然覆盖）；无保存（首次
+  // 聚焦）才走默认（光标置末尾）
+  const guideSel = useSelectionRestore()
   const refInput = useFileRefInput({
     refKey: directory,
     directory,
@@ -1073,13 +1114,16 @@ function GuidePage() {
                 rows={1}
                 autoFocus
                 onFocus={(e) => {
-                  // 默认聚焦（autoFocus）时光标置于末尾，而非开头（有草稿时）
+                  // 同一编辑会话（value 未变）恢复光标续编辑；无保存（首次
+                  // 聚焦）光标置于末尾而非开头（有草稿时，原 autoFocus 语义）
                   const el = e.currentTarget
+                  if (guideSel.restore(el)) return
                   requestAnimationFrame(() => {
                     const len = el.value.length
                     el.setSelectionRange(len, len)
                   })
                 }}
+                onBlur={(e) => guideSel.save(e.currentTarget)}
                 onChange={(e) => {
                   setDraft(e.target.value)
                   setCmdDismissed(false)
@@ -1295,6 +1339,8 @@ function ChatView({ sessionID }: { sessionID: string }) {
   // 引用按 sessionID 键存（与草稿同构）。选中引用后移除 @词 区间并把光标
   // 回退到该位置（受控赋值会把光标甩到末尾）
   const composerTaRef = useRef<HTMLTextAreaElement>(null)
+  // 同 GuidePage：失焦保存光标、回焦恢复（selection-restore），首次聚焦置末尾
+  const composerSel = useSelectionRestore()
   const refInput = useFileRefInput({
     refKey: sessionID,
     directory: store.findSession(sessionID)?.directory ?? null,
@@ -1650,13 +1696,16 @@ function ChatView({ sessionID }: { sessionID: string }) {
             rows={1}
             autoFocus
             onFocus={(e) => {
-              // 默认聚焦（autoFocus）时光标置于末尾，而非开头（有草稿时）
+              // 同一编辑会话（value 未变）恢复光标续编辑；无保存（首次
+              // 聚焦）光标置于末尾而非开头（有草稿时，原 autoFocus 语义）
               const el = e.currentTarget
+              if (composerSel.restore(el)) return
               requestAnimationFrame(() => {
                 const len = el.value.length
                 el.setSelectionRange(len, len)
               })
             }}
+            onBlur={(e) => composerSel.save(e.currentTarget)}
             onChange={(e) => {
               setDraft(e.target.value)
               setCmdDismissed(false)
