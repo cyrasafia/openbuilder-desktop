@@ -201,6 +201,6 @@ private closedTabs: ClosedTabEntry[] = []   // push 尾 / pop 尾，上限 20（
 
 - **数据源单一**：渲染数据 `SHORTCUT_GROUPS` 定义在 `shortcuts.ts`（与 `dispatch` 同文件维护，防表-码漂移）；行结构 `{ keys, macKeys?, action(i18n key), only?: "mac" | "non-mac" }`，" / " 分隔的等效键拆独立 chip
 - **平台分支渲染**：`window.desktop.platform === "darwin"` 时显示 `macKeys`（缺省回退 `keys`）；`only` 行互斥——mac 切 Tab 惯例键（⌘⌥←/→、⌘⇧[/]）与非 mac Ctrl+Tab/PgUp/PgDn 系各只在本平台展示，与 §1 分发表绑定语义一致
-- **范围**：全局组 = §1 表全量（2026-09-06 更新：Ctrl+O 行改 Alt+O / ⌘⌥O，新增 Alt+C 关闭项目、Alt+N 新建工作区、Alt+⌫ 删除工作区行）；「输入与视图」组收分发之外的局部键——Enter/Shift+Enter（聊天输入）、Ctrl+F（code-view CodeMirror searchKeymap + 页面内查找条 design-find-in-page，2026-09-09 起两行分列：文件内查找/页面内查找 + 查找条 Enter/Shift+Enter 行）、终端复制/粘贴（Linux Ctrl+Shift+C/V、mac ⌘C/⌘V，键位随平台展示）、Esc（关闭弹窗/菜单，含确认弹窗取消——§4.1 的 Enter 确认随 Enter 行标注）；**待处理卡片两行（2026-09-28 增，§1.1b：授权卡 Ctrl+N/A/Y、问题卡 Ctrl+1–9 / Ctrl+0 / Ctrl+Enter，action 键 `scPermCard`/`scQuestionCard`）**
+- **范围**：全局组 = §1 表全量（2026-09-06 更新：Ctrl+O 行改 Alt+O / ⌘⌥O，新增 Alt+C 关闭项目、Alt+N 新建工作区、Alt+⌫ 删除工作树行）；「输入与视图」组收分发之外的局部键——Enter/Shift+Enter（聊天输入）、Ctrl+F（code-view CodeMirror searchKeymap + 页面内查找条 design-find-in-page，2026-09-09 起两行分列：文件内查找/页面内查找 + 查找条 Enter/Shift+Enter 行）、终端复制/粘贴（Linux Ctrl+Shift+C/V、mac ⌘C/⌘V，键位随平台展示）、Esc（关闭弹窗/菜单，含确认弹窗取消——§4.1 的 Enter 确认随 Enter 行标注）；**待处理卡片两行（2026-09-28 增，§1.1b：授权卡 Ctrl+N/A/Y、问题卡 Ctrl+1–9 / Ctrl+0 / Ctrl+Enter，action 键 `scPermCard`/`scQuestionCard`）**
 - 设置页签本地类型为 store `settingsInitialTab` 的超集（store 不加宽——无 shortcuts 直达调用方）
 - 样式：`.sc-row`（动作左、键位 chip 右）+ `.sc-kbd`（mono chip），组间 gap 呼吸，token 全复用（DESIGN.md 无新增 token）
