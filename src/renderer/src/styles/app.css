@@ -1706,6 +1706,12 @@
   resize: none;
   /* 高度随内容增长（软换行/手动换行一致），上限 200px 后内部滚动（同前） */
   field-sizing: content;
+  /* 强制长行换行（field-sizing:content 会按最长行扩展宽度，无空格长中文/URL
+     会撑出横向滚动条；anywhere 让浏览器在任意字符间断行，优先换行而非撑宽。
+     注：anywhere 在计算 field-sizing:content 宽度时不会像 break-word 那样
+     产生"换行宽度>可见宽度"的膨胀，且仅在单词本身超过容器宽度时才在单词
+     中间断行——正常长度英文单词不受影响） */
+  overflow-wrap: anywhere;
   overflow-y: auto;
   /* 默认一行（14px × 1.5 + 上下 padding 3px = 27px），高度随内容增长 */
   min-height: 27px;
