@@ -1572,6 +1572,54 @@ export class AppStore {
       void this.syncWorktrees()
       return
     }
+    // ---- execution 生命周期（design-typing-indicator §4 来源 0，官方 GUI 客户端
+    // 同构；v2.0.18 活体实测 2026-10-01：一轮 run 全程只发 execution.*,全程
+    // session.status/session.idle 帧数为 0——它们是 dev 后续才接线的发布者，
+    // 下面两个 case 在本 pin 上不触发，作兼容保留）。**闸门旁路**：execution/
+    // retry 信封无 location（server 侧 execution.ts publish 不带 location
+    // options），subscriber 按「wire.location?.directory || "global"」回调，
+    // 走前置闸门必被 isOpenedDirectory("global") 拦截——上移到闸门之前，
+    // directory 按 sessionID 解析（statusSources 是关项目卸载键，不能缺省）；
+    // 未加载会话/未打开项目跳过（60s 对账兜底）
+    if (
+      ev.type === "session.execution.started" ||
+      ev.type === "session.execution.succeeded" ||
+      ev.type === "session.execution.failed" ||
+      ev.type === "session.execution.interrupted" ||
+      ev.type === "session.retry.scheduled"
+    ) {
+      const p = ev.properties as {
+        sessionID?: string
+        attempt?: unknown
+        at?: unknown
+        error?: { type?: unknown; message?: unknown }
+      }
+      const sid = p.sessionID ?? ""
+      const session = sid ? this.findSession(sid) : undefined
+      if (!session || !this.isOpenedDirectory(session.directory)) return
+      // retry attempt/next 为防御式钳制（契约 PositiveInt/NonNegativeInt；wire 违约
+      // 时 attempt 兜 1 而非 0——消费方语义"第 N 次重试"不自相矛盾）
+      if (ev.type === "session.retry.scheduled") {
+        const attempt = typeof p.attempt === "number" && p.attempt >= 1 ? p.attempt : 1
+        this.setSessionStatus(sid, {
+          type: "retry",
+          attempt,
+          message: typeof p.error?.message === "string" ? p.error.message : "",
+          next: typeof p.at === "number" && p.at >= 0 ? p.at : 0,
+        }, session.directory)
+      } else if (ev.type === "session.execution.started") {
+        // busy 开始；retryHold 锁存中的 busy 是退避后新一轮尝试的起点事件——
+        // 扣住不覆写（同 session.status busy 语义，红点稳定整个重试期）
+        this.setSessionStatus(sid, { type: "busy" }, session.directory)
+      } else {
+        this.setSessionStatus(sid, { type: "idle" }, session.directory)
+      }
+      // 状态已变须驱动渲染（review 2026-10-01）：早退在尾部 emit 之前——
+      // session.status 路径本就无条件 emit（rAF 合帧，重复 emit 成本低）；
+      // 不补 emit 则安静收尾后 dots/红点滞留到下一次任意 emit（60s 对账）
+      this.emit()
+      return
+    }
     // 前置闸门（design-sse-global-event §4.2）：单流收到 server 全部目录的事件，
     // 仅打开项目的目录全集（worktree ∪ sandboxes）放行——关闭项目 = 事件忽略。
     // 此前 message.*/session.created 等依赖"订阅集合即打开集合"隐式隔离，单流后必须显式过滤

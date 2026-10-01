@@ -6515,3 +6515,88 @@ describe("inbox.enqueued 链路（M6c：他端 user 消息实时落地）", () =
     expect(store.takeRevertDraft("s1")).toBeNull()
   })
 })
+
+describe("execution 生命周期状态（design-typing-indicator §4 来源 0；v2.0.18 活体实测唯一 busy/idle 源）", () => {
+  /** 直驱 handleEvent：execution/retry 信封无 location → subscriber 回调 directory="global"，
+   *  闸门旁路 + sessionID 解析目录。用例断言 directory="global" 形态下仍生效 */
+  function dispatch(ev: { type: string; properties: unknown }) {
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent("global", ev)
+  }
+
+  function seedSession() {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    return s1
+  }
+
+  /** emit 计数：执行 fn 并断言至少发生 expectEmits 次（UI 渲染驱动，review 2026-10-01） */
+  function expectEmits(fn: () => void, expectEmits: number) {
+    let emits = 0
+    const unsub = store.subscribe(() => emits++)
+    fn()
+    unsub()
+    expect(emits).toBe(expectEmits)
+  }
+
+  it("execution.started → busy；execution.succeeded → idle（wire 帧 data 字段经 subscriber 映射为 properties）", () => {
+    seedSession()
+    dispatch({ type: "session.execution.started", properties: { sessionID: "s1" } })
+    expect(store.statusOf("s1")).toEqual({ type: "busy" })
+    dispatch({ type: "session.execution.succeeded", properties: { sessionID: "s1" } })
+    expect(store.statusOf("s1")).toEqual({ type: "idle" })
+  })
+
+  it("状态变更必须 emit：早退在尾部 emit 之前，缺 emit 则 dots 滞留（review 2026-10-01 回归钉）", () => {
+    seedSession()
+    expectEmits(() => dispatch({ type: "session.execution.started", properties: { sessionID: "s1" } }), 1)
+    expectEmits(() => dispatch({ type: "session.execution.succeeded", properties: { sessionID: "s1" } }), 1)
+    // retry 事件同样变更状态 → emit
+    expectEmits(
+      () =>
+        dispatch({
+          type: "session.retry.scheduled",
+          properties: { sessionID: "s1", attempt: 1, at: 100, error: { type: "x", message: "m" } },
+        }),
+      1,
+    )
+    // 无状态变化的重复事件也 emit（同 session.status 无条件语义；rAF 合帧成本可忽略）
+    expectEmits(() => dispatch({ type: "session.execution.started", properties: { sessionID: "s1" } }), 1)
+  })
+
+  it("execution.failed / interrupted → idle 一并覆盖；directory 按 sessionID 解析进 statusSources", () => {
+    const s1 = seedSession()
+    dispatch({ type: "session.execution.started", properties: { sessionID: "s1" } })
+    dispatch({ type: "session.execution.failed", properties: { sessionID: "s1", error: { type: "unknown", message: "x" } } })
+    expect(store.statusOf("s1")).toEqual({ type: "idle" })
+    dispatch({ type: "session.execution.started", properties: { sessionID: "s1" } })
+    dispatch({ type: "session.execution.interrupted", properties: { sessionID: "s1", reason: "user" } })
+    expect(store.statusOf("s1")).toEqual({ type: "idle" })
+    // 目录解析：busy 在场时 statusSources 含 ROOT（purgeStatusForDirectories 的卸载键）
+    dispatch({ type: "session.execution.started", properties: { sessionID: "s1" } })
+    const sources = (store as unknown as { statusSources: Map<string, string> }).statusSources
+    expect(sources.get("s1")).toBe(s1.directory)
+    dispatch({ type: "session.execution.succeeded", properties: { sessionID: "s1" } })
+  })
+
+  it("retry.scheduled → retry（attempt/next/error.message）；started 在锁存中不覆写", () => {
+    seedSession()
+    dispatch({
+      type: "session.retry.scheduled",
+      properties: { sessionID: "s1", assistantMessageID: "msg_a1", attempt: 2, at: 5000, error: { type: "rate_limited", message: "rate limited" } },
+    })
+    expect(store.statusOf("s1")).toMatchObject({ type: "retry", attempt: 2, next: 5000, message: "rate limited" })
+    dispatch({ type: "session.execution.started", properties: { sessionID: "s1" } })
+    expect(store.statusOf("s1")).toMatchObject({ type: "retry" })
+  })
+
+  it("未加载会话 / 已关项目：跳过不建状态（对账兜底）", () => {
+    // 未知 sessionID：不建条目
+    dispatch({ type: "session.execution.started", properties: { sessionID: "ses_unknown" } })
+    expect(store.statusOf("ses_unknown")).toEqual({ type: "idle" })
+    // 已知会话但目录未打开（关项目后）：同样跳过
+    const s1 = session("s2", "/not-opened", { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj_other", sessionsOf(s1))
+    dispatch({ type: "session.execution.started", properties: { sessionID: "s2" } })
+    expect(store.statusOf("s2")).toEqual({ type: "idle" })
+  })
+})
