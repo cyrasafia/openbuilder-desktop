@@ -32,6 +32,11 @@ opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录�
 - 合并其他分支到 main 默认用普通合并（`git merge --no-ff`，保留分支提交历史，生成 merge commit；2026-08-31 修订，原 squash merge 单提交方案弃用）
 - 架构文档是"决策记录"性质：修订需在文档内改写决策及依据，而不是只改代码留文档过期
 
+## 回复约定
+
+- Agent 给用户的回复用中文，按 **ASD-STE100**（Simplified Technical English）原则适配（2026-10-03 增补）：一句一个意思、一句一个动作；句子短（说明句约 ≤25 字，步骤句约 ≤20 字）；一词一义，同一概念不换词；用主动语态；不省略主语与关键成分；不堆叠名词串；先结论后细节
+- 代码、命令、路径、标识符等技术名词照抄原文，不翻译、不改写
+
 ## 版本号管理
 
 - 升级版本号时**必须同时修改所有版本落点**：`package.json`（+ `package-lock.json` 随 `npm version` 同步）、`packaging/arch/PKGBUILD`（`pkgver`）、`packaging/fedora/openbuilder-desktop.spec`（`Version:`）
