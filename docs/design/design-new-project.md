@@ -141,7 +141,7 @@ async createProjectFromDirectory(directory: string, signal?: AbortSignal): Promi
 | `src/renderer/src/components/sidebar.tsx` | `ProjectPicker` 底部新建入口（busy/错误/取消） |
 | `src/renderer/src/i18n/index.ts` | `newProject`/`newProjectCreating`（zh/en） |
 | `src/renderer/src/styles/app.css` | `.dialog-project .dialog-footer` 等 |
-| `docs/spec-v0.1.md` | §3 项目管理行补「新建项目」入口一句 |
+| `docs/spec/spec-v0.1.md` | §3 项目管理行补「新建项目」入口一句 |
 
 ## 7. 测试
 

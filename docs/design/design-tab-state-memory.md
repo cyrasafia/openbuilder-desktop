@@ -166,7 +166,7 @@ private diffViewStates = new Map<string, { foldOpen: boolean; fileOpens: Readonl
 | `src/renderer/src/components/code-view.tsx` | `initialScrollTop` / `onScrollTop` 接线（创建后设 scrollDOM + 滚动监听） |
 | `src/renderer/src/styles/app.css` | `.file-view` / `.message-list` 关闭 scroll anchoring（§2.2/§2.3 2026-09-22 修订：防迟渲染内容长高的锚定补偿污染滚动记忆；图片平移容器同 `.file-view` 受覆，自管锚定相扰一并消除） |
 | `src/renderer/src/store/app-store.test.ts` | store 级用例 |
-| `docs/design-tab-memory.md` / `docs/design-markdown-preview.md` / `docs/spec-v0.1.md` | 决策修订与范围同步 |
+| `docs/design/design-tab-memory.md` / `docs/design/design-markdown-preview.md` / `docs/spec/spec-v0.1.md` | 决策修订与范围同步 |
 
 ## 7. 验证记录（2026-08-26）
 

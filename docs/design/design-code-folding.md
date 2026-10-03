@@ -89,7 +89,7 @@ CM baseTheme 经 `Prec.lowest` 插 head.firstChild，app.css 文档序靠后同�
 | `src/renderer/src/components/shortcuts.ts` | 输入与视图组 + `scFoldCode` 行 |
 | `src/renderer/src/i18n/index.ts` | `scFoldCode` zh/en |
 | `src/renderer/src/components/code-view.test.tsx` | 折叠装配冒烟（JSON gutter 标记、foldEffect/unfoldEffect 折叠展开还原、纯文本无标记） |
-| `docs/design-code-view.md` | §2.3 装配更新；「不做的事」折叠行移除并引本文档 |
+| `docs/design/design-code-view.md` | §2.3 装配更新；「不做的事」折叠行移除并引本文档 |
 
 ## 4. 验收
 

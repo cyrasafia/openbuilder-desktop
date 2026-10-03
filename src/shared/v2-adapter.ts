@@ -1,5 +1,5 @@
 /**
- * v2 wire → 内部模型适配层（docs/plan-v2-protocol.md §模块策略）。
+ * v2 wire → 内部模型适配层（docs/plan/plan-v2-protocol.md §模块策略）。
  * 内部 Project/Session 沿用 v1 时代的字段名（worktree/directory），v2 的
  * canonical/location 映射进来（M6d 收敛后字段改名未做——收益小于触碰面，
  * 留待自然演进；本层是唯一映射点，改名时只动这里）。

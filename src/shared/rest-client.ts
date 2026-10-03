@@ -1,6 +1,6 @@
 /**
  * opencode **v2** REST client（renderer 直连，fetch 封装；v0.5 起唯一 client——
- * v1 面已删除，见 docs/plan-v2-protocol.md M6d）。契约以
+ * v1 面已删除，见 docs/plan/plan-v2-protocol.md M6d）。契约以
  * ../openbuilder/opencode_openapi_v2.json 为准（2.0.18 pin）。
  */
 import type {

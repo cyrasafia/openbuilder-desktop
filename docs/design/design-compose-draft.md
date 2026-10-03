@@ -131,7 +131,7 @@ ChatView / GuidePage 同一模式：
 | `src/renderer/src/store/app-store.test.ts` | store 级用例（读写往返/关 Tab 清/删会话清/关项目清引导页草稿）+ 磁盘层用例（去抖落盘/快照去重/关 Tab 落盘删除/teardown 冲刷/connect 播种） |
 | `src/shared/ipc.ts` | `StoreShape` 新增 `"drafts.state"` 键 |
 | `src/main/ipc.ts` | `will-quit` 同步写兜底（§5.2 退出路径） |
-| `docs/spec-v0.1.md` / `docs/design-layout.md` | 范围与引导页/输入区条目同步指向本文 |
+| `docs/spec/spec-v0.1.md` / `docs/design/design-layout.md` | 范围与引导页/输入区条目同步指向本文 |
 
 ## 9. 验证记录（2026-08-26）
 

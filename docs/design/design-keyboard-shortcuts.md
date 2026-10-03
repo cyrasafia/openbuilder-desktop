@@ -180,7 +180,7 @@ private closedTabs: ClosedTabEntry[] = []   // push 尾 / pop 尾，上限 20（
 | `src/renderer/src/components/workspace.tsx` | Tab 关闭按钮改经 tab-actions；§1.1 引导页磁贴快捷键 + 角标（Ctrl+1/2/3 监听在 GuidePage 内；Ctrl 按住态跟踪在 ctrl-held.ts 单例）；**§1.1b（2026-09-28）PermissionCard/QuestionCard 卡内 keydown 监听 + `.pending-key-badge` 角标（export 供测试）** |
 | `src/renderer/src/components/ctrl-held.ts` | Ctrl 按住态模块级单例跟踪 + `useCtrlHeld`（2026-09-06 修复：挂载晚于 keydown 的初始态） |
 | `src/renderer/src/styles/app.css` | `.tree-row.scope-cursor`（§3 修订）；§1.1 `.btn-tile` relative + `.btn-tile-badge` |
-| `docs/spec-v0.4.md` | 新增 #7（Alt 系重构范围行）+ 验收口径行；#6 设置页快捷键列表行同步 Alt 系键位（spec-v0.3 不回溯修订——Ctrl+O 随 v0.3 发布，v0.4 替换） |
+| `docs/spec/spec-v0.4.md` | 新增 #7（Alt 系重构范围行）+ 验收口径行；#6 设置页快捷键列表行同步 Alt 系键位（spec-v0.3 不回溯修订——Ctrl+O 随 v0.3 发布，v0.4 替换） |
 | 测试 | store（关闭栈入/弹/跳过/跨作用域/上限、cycleTab 循环、scopePreview 预览-提交/环游/no-op/作废/虚拟边界、Alt 域 requestWorktreeDelete/closeActiveEntry）；shortcuts（分发表 + begin/commit/cancel + 转发 up + Alt 域四键/overlay 闸门/code 匹配/AltGr 排除/Ctrl+O 移除/Ctrl+W 流式挂 pendingTabClose + overlay 闸门）；confirm-dialog（Enter/Esc）；terminal-view（live 归 pty/dead 释放/copy 例外修饰守卫）；workspace-guide（§1.1 分发/禁用态/角标/卸载）；**workspace-pending-shortcuts（§1.1b：两卡键位分发/守卫（Shift/Alt/repeat/IME/已消费/回复中/收起/overlay/A 与 Y 文本域让行）/角标含 ↵ 与 0/卸载）** |
 
 ## 7. 验收

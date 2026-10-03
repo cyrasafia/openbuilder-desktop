@@ -1,5 +1,5 @@
 /**
- * Tab 会话持久层——纯函数层（docs/design-tab-session-restore.md §2/§3/§5）。
+ * Tab 会话持久层——纯函数层（docs/design/design-tab-session-restore.md §2/§3/§5）。
  * 运行期 live tabs 唯一权威，本层是派生投影（与 tabs.memory 同模型），仅冷启动消费。
  * 记忆层（scope-tab-memory）管 chat 的集合/校验/补开；本层管非 chat 实体 +
  * 全局混排顺序 + 各作用域最后激活，chat 条目仅作顺序标记。

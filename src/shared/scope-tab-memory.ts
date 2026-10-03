@@ -1,5 +1,5 @@
 /**
- * worktree 级 Tab 记忆——纯函数层（docs/design-tab-memory.md §3/§5/§6/§7）。
+ * worktree 级 Tab 记忆——纯函数层（docs/design/design-tab-memory.md §3/§5/§6/§7）。
  * 运行期 live tabs 唯一权威，记忆是派生投影；仅重启/切入作用域时作为恢复输入。
  * 空记忆 ≠ 无记忆（tabs: [] 表示用户已收敛到零 Tab，必须保留，不触发首次打开）。
  */

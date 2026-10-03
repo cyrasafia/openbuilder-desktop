@@ -142,7 +142,7 @@ refreshAllOpenedProjects()（快照落地）
 | `src/preload/index.ts` / `src/renderer/src/browser-shim.ts` | expose/no-op browserViewDisposeAll |
 | `src/renderer/src/store/app-store.ts` | tabSession 加载/派生落盘（挂点 §5）/restoreTabSession/teardown 外科修剪/doInit disposeAll/connect 恢复段接线/loadFileContent 可选 directory 参数 |
 | `src/shared/tab-session.test.ts` / `src/renderer/src/store/app-store.test.ts` | 纯函数 + store 级用例 |
-| `docs/design-tab-memory.md` / `docs/design-tab-state-memory.md` / `docs/spec-v0.3.md` | 决策修订与范围同步 |
+| `docs/design/design-tab-memory.md` / `docs/design/design-tab-state-memory.md` / `docs/spec/spec-v0.3.md` | 决策修订与范围同步 |
 
 ## 11. 验证记录（2026-09-03）
 

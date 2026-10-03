@@ -1,5 +1,5 @@
 /**
- * RestClient 契约测试（docs/plan-v2-protocol.md M0）：
+ * RestClient 契约测试（docs/plan/plan-v2-protocol.md M0）：
  * URL 构建（deepObject/flat 双风格并存）、Basic 鉴权头、{data, cursor} envelope、
  * 空体容忍、错误分类（401 auth / 400 透传）。fetch 走构造注入，不依赖网络。
  */

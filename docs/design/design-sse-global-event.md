@@ -119,7 +119,7 @@
 | `src/shared/reconciler.ts` | 会话快照从无界 `Promise.all` 改 `runLimited`（3）+ 单目录失败跳过回调（保留旧值）——旧方案的隐式并发上限（订阅集 ≤5）随目录全集接线消失，须显式恢复（review 发现）；status/messages 限流按 1 SSE/5 槽口径校准（3/4）；`getStatusDirectories` 接口文档更新 |
 | `src/shared/api-types.ts` | GlobalEventEnvelope 类型 |
 | `src/shared/sse-subscriber.test.ts` | 信封化重写 + 新用例（sync 丢弃/缺省 global/非信封结构） |
-| `docs/spec-v0.1.md`、`docs/design-v0.1-implementation.md` | 事件端点与契约事实表同步（设计定稿时完成） |
+| `docs/spec/spec-v0.1.md`、`docs/design/design-v0.1-implementation.md` | 事件端点与契约事实表同步（设计定稿时完成） |
 
 session.status/session.idle 分支内的旧闸门删除（前置闸门已覆盖）；`getOpenedDirectories`/`getStatusDirectories` 均接 `openedDirectories()` 全集。
 

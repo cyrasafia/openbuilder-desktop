@@ -1,6 +1,6 @@
 # AGENTS.md
 
-opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录下的 Flutter 移动端 `../openbuilder`（绝对路径 `/home/cyrasafia/projects/my-tools/openbuilder`；若本地克隆缺失，从 `https://github.com/cyrasafia/openbuilder.git` 克隆）。**v0.1 已实现**（三栏布局/聊天/项目/工作区/文件树/对账，见 `docs/design-v0.1-implementation.md`）；终端/diff/markdown 渲染等在 v0.2+。
+opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录下的 Flutter 移动端 `../openbuilder`（绝对路径 `/home/cyrasafia/projects/my-tools/openbuilder`；若本地克隆缺失，从 `https://github.com/cyrasafia/openbuilder.git` 克隆）。**v0.1 已实现**（三栏布局/聊天/项目/工作区/文件树/对账，见 `docs/design/design-v0.1-implementation.md`）；终端/diff/markdown 渲染等在 v0.2+。
 
 ## 开发命令
 
@@ -13,10 +13,10 @@ opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录�
 ## 必读文档（写任何代码/文档前）
 
 - `PRINCIPLES.md`（根目录，设计原则）— 基本原则 Keep Lean（保持精简）+ 三条推论（服务用户/不做大而全/理念先行）+ 目标用户与工作流推导（产品定位、功能取向、三栏布局）+ 界面理念 Everything is a tab。**功能取舍与版本规划的判据源**，spec/design 文档与其冲突时先修订本文
-- `docs/design-architecture.md` — 技术栈与 4 条关键决策（D1–D4）及依据。**决策不可被隐式推翻**：Electron 而非 Tauri（GNOME/Wayland 性能）；自建而非 fork opencode-desktop（其内嵌 server 不发 npm，fork 即冻结）；React 19 而非 Solid；无中间服务层，renderer 直连 opencode server
-- `docs/spec-v0.5.md` — 当前版本（v2 契约）功能范围、API 映射表、SSE+REST 对账策略、验收口径。改功能范围必须同步此文件（v0.1–v0.4 的 spec 见 git 历史）
-- `docs/design-layout.md` — 主界面三栏布局、Tab 注册制、project-scoped 语义。布局/交互改动以此为准
-- `docs/design-v0.1-implementation.md` — v0.1 实现方案 + **联调实测的 API 契约事实**（prompt_async、file/content 包装、worktree API、浏览器连接池上限等，改通信层前必读）+ 三轮 code review 记录
+- `docs/design/design-architecture.md` — 技术栈与 4 条关键决策（D1–D4）及依据。**决策不可被隐式推翻**：Electron 而非 Tauri（GNOME/Wayland 性能）；自建而非 fork opencode-desktop（其内嵌 server 不发 npm，fork 即冻结）；React 19 而非 Solid；无中间服务层，renderer 直连 opencode server
+- `docs/spec/spec-v0.5.md` — 当前版本（v2 契约）功能范围、API 映射表、SSE+REST 对账策略、验收口径。改功能范围必须同步此文件（v0.1–v0.4 的 spec 见 git 历史）
+- `docs/design/design-layout.md` — 主界面三栏布局、Tab 注册制、project-scoped 语义。布局/交互改动以此为准
+- `docs/design/design-v0.1-implementation.md` — v0.1 实现方案 + **联调实测的 API 契约事实**（prompt_async、file/content 包装、worktree API、浏览器连接池上限等，改通信层前必读）+ 三轮 code review 记录
 - `DESIGN.md`（根目录，视觉设计）— 配色/i18n 沿用移动端 openbuilder 的 `../openbuilder/DESIGN.md`；排版密度按桌面习惯重设计。token 唯一权威落点 `src/renderer/src/styles/tokens.css`
 
 ## 设计前置约定
@@ -26,8 +26,8 @@ opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录�
 
 ## 硬约束（agent 最容易踩的）
 
-- **不用 `@opencode-ai/sdk`**——npm 发布滞后于 server，是过期契约。通信层自写（REST + SSE 直连），API 契约以 `../openbuilder/opencode_openapi_v2.json` 为准（v2，2.0.18 pin，与移动端同源；源 `anomalyco/opencode` `packages/protocol/openapi.json`）。**v0.5 起仅支持 v2 server**——v1（1.18.x）契约面已删除，连接 v1 server 报「版本不支持」（2026-09-28 裁定，见 docs/design-v2-migration.md）
-- 文档命名遵循移动端项目体系：`docs/design-*.md`（功能/技术设计）、`docs/plan-*.md`（计划）、`docs/review-*.md`（复盘）、`docs/spec-*.md`（版本范围）；根目录 `DESIGN.md` 专属视觉设计、`PRINCIPLES.md` 专属设计原则，**不得**用作其他用途
+- **不用 `@opencode-ai/sdk`**——npm 发布滞后于 server，是过期契约。通信层自写（REST + SSE 直连），API 契约以 `../openbuilder/opencode_openapi_v2.json` 为准（v2，2.0.18 pin，与移动端同源；源 `anomalyco/opencode` `packages/protocol/openapi.json`）。**v0.5 起仅支持 v2 server**——v1（1.18.x）契约面已删除，连接 v1 server 报「版本不支持」（2026-09-28 裁定，见 docs/design/design-v2-migration.md）
+- 文档按类型分子文件夹（2026-10-03 起）：`docs/design/design-*.md`（功能/技术设计）、`docs/plan/plan-*.md`（计划）、`docs/review/review-*.md`（复盘）、`docs/spec/spec-*.md`（版本范围）、`docs/ref/ref-*.md`（参考/调研）；文件名保留类型前缀，正文裸名提及（如 `design-terminal-tab §1.2`）继续有效。根目录 `DESIGN.md` 专属视觉设计、`PRINCIPLES.md` 专属设计原则，**不得**用作其他用途
 - 中文文档、中文 commit message，前缀惯例 `feat:` / `fix:` / `ui:` / `build:` / `chore:` / `docs:`（见 git log）；**commit 标题只用一句话讲最核心的信息**（范本 9d85f0e / c15cdff，实测 ≤76 字；至多带一处 `——`/`（）` 紧凑定位短语），根因、方案细节、review 修订、测试计数、文档同步一律放正文——按主题分段、约 60 字换行，不得把细节整段挤进标题单行（2026-09-23 增补）
 - 合并其他分支到 main 默认用普通合并（`git merge --no-ff`，保留分支提交历史，生成 merge commit；2026-08-31 修订，原 squash merge 单提交方案弃用）
 - 架构文档是"决策记录"性质：修订需在文档内改写决策及依据，而不是只改代码留文档过期

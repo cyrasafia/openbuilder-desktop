@@ -188,7 +188,7 @@ restoreScopeTabs(dir):
 | `src/shared/reconciler.ts` | 消息快照拉取 `runLimited` 并发受限 |
 | `src/renderer/src/styles/app.css` | tabbar 溢出两段式：`.tab` flex-shrink 1 挤压 + overflow 菜单样式（详见 design-tab-overflow §6） |
 | `src/renderer/src/components/workspace.tsx` | 溢出切片（容量公式 + 激活/拖拽保位）+ overflow 菜单（详见 design-tab-overflow） |
-| `docs/design-layout.md` | §4 自动开 Tab 规则改指向本文（同步修订） |
+| `docs/design/design-layout.md` | §4 自动开 Tab 规则改指向本文（同步修订） |
 
 ## 14. 文档同步说明
 

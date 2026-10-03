@@ -65,7 +65,7 @@
 | `src/renderer/src/components/file-view.test.tsx` | desktop/i18n/store 桩扩展 + 操作条用例（常驻/平台分支/浮层计数） |
 | `src/renderer/src/components/open-with-dialog.test.tsx` | useStore 桩 + 浮层计数用例 |
 | 修订标注 | design-image-preview §2.2、design-pdf-preview §1、design-code-view §2.5、design-markdown-preview §2.2、design-linux-open-with §1.3 |
-| `docs/spec-v0.4.md` | 范围表 #8 + 验收项 |
+| `docs/spec/spec-v0.4.md` | 范围表 #8 + 验收项 |
 
 ## 5. 验收
 

@@ -1,6 +1,6 @@
 # 调研：paseo
 
-> 产品调研（`docs/ref-product-research-*` 系列）。对象：[getpaseo/paseo](https://github.com/getpaseo/paseo)（v0.9.2，克隆于 `../paseo`，快照 2026-09-25）。
+> 产品调研（`docs/ref/ref-product-research-*` 系列）。对象：[getpaseo/paseo](https://github.com/getpaseo/paseo)（v0.9.2，克隆于 `../paseo`，快照 2026-09-25）。
 > **以 paseo 为主轴**的调研记录；与 openbuilder 的对比为辅（§1.4 对照、§2.1 共性、§2.9 借鉴裁决、§3 总结）。范围限定：设计原则、功能两个层面，不做代码实现层面的调研（协议细节、性能管线、测试体系等均不在此篇）。
 > 调研方式：文档 + git 考古为主，2026-09-25 起补充**实际上手使用**的验证（实测确认处以日期标注）。
 > 引用格式：`paseo:docs/xxx.md` 指 paseo 仓库内文档。

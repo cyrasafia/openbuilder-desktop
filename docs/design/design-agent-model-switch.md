@@ -233,7 +233,7 @@ defaults: Record<profileKey, { agent?: string; model?: ModelRef }>  // 持久化
 | `src/renderer/src/i18n/index.ts` | zh/en 词条（agent/模型/思考强度/隐式默认提示/加载失败等） | ✅ |
 | `src/renderer/src/styles/app.css` | 工具条/分段开关/popover/分组列表样式（token 复用 `--control-h`/`--radius-chip`/`--text-sm`） | ✅ |
 
-实现落地时同步 `docs/spec-v0.1.md` 之后的版本范围（v0.2 spec 建档时纳入本功能）。
+实现落地时同步 `docs/spec/spec-v0.1.md` 之后的版本范围（v0.2 spec 建档时纳入本功能）。
 
 ## 不做的事
 
