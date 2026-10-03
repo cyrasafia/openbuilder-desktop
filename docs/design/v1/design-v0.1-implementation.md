@@ -1,6 +1,6 @@
 # v0.1 实现方案（通信层 + 状态层 + UI）
 
-> 对应 [spec-v0.1.md](./spec-v0.1.md) 与 [design-layout.md](./design-layout.md)。
+> 对应 [spec-v0.1.md](../../spec/spec-v0.1.md) 与 [design-layout.md](../design-layout.md)。
 > 本文记录落地时的关键实现决策与联调中发现的契约事实。参考移动端：
 > design-sse-reconnect-recovery、design-message-accumulation、design-optimistic-messages、
 > design-sort-order-race、design-incremental-reconcile、design-network-error-handling。
@@ -47,7 +47,7 @@ src/
 | `GET /session?scope=project&directory=X` 一次返回**该项目全部目录**（worktree ∪ sandboxes；global 为全部会话目录）的会话——global 拆分的发现查询。裸 `GET /session`（无参）返回 **server cwd 所在 instance** 的会话，随启动目录漂移，不可用作 global 发现（openbuilder 用它是因为移动端场景 server cwd 固定） | `listProjectSessions()`；连接时 + 选择器打开时刷新 global 全量快照 |
 | global 项目（`id==="global"`，worktree `/`）持有全部非 git 目录会话，`Project.sandboxes` 恒空；同一目录可既有 git 项目又有 global 会话（先建会话后 init git 的历史目录）——选择器两行并存是正确呈现 | global 按目录拆 entry（键 `global\0<directory>`），openProject/closeProject 不适用于 global 整体；未打开 entry 的目录事件被事件闸门丢弃（单全局流收全量、按打开集合放行），新 global 目录只能靠 scope=project 快照发现 |
 | Electron renderer 的 `fetch` 是绑定 window 的包装，`const f = fetch; f(...)` 抛 `Illegal invocation` | rest-client 必须 `fetch.bind(globalThis)` |
-| `GET /global/event`（v1.0.66+）为 GlobalBus 无过滤直通：单条连接收全部 directory 事件，信封 `{directory, project?, workspace?, payload}`；`/event?directory=X` 是同一总线按 directory 过滤的子集 | 通信层已实施单全局流（见 [design-sse-global-event.md](design-sse-global-event.md)，含 durable 事件 sync 双发须忽略、SSE 帧无 id 字段 Last-Event-ID 无效等事实与 E2E 记录） |
+| `GET /global/event`（v1.0.66+）为 GlobalBus 无过滤直通：单条连接收全部 directory 事件，信封 `{directory, project?, workspace?, payload}`；`/event?directory=X` 是同一总线按 directory 过滤的子集 | 通信层已实施单全局流（见 [design-sse-global-event.md](../v2/design-sse-global-event.md)，含 durable 事件 sync 双发须忽略、SSE 帧无 id 字段 Last-Event-ID 无效等事实与 E2E 记录） |
 
 ## 3. 通信层
 
@@ -64,7 +64,7 @@ src/
 
 > **已迁移单全局流（2026-08-24）**：v0.1 期的"每打开项目一条 `GET /event?directory=`（上限 5）"方案已被
 > 单条 `GET /global/event` 全局流取代，重连状态机保留。背景、实测契约与 E2E 见
-> [design-sse-global-event.md](design-sse-global-event.md)。以下为历史方案记录。
+> [design-sse-global-event.md](../v2/design-sse-global-event.md)。以下为历史方案记录。
 
 - 每个打开项目一条订阅：`GET /event?directory=<dir>`；打开集合变化 = 全组重建
 - 重连状态机：退避 `1→2→4→8→16→30s`（clamp 30）；**建连总超时 15s**（覆盖 TCP 挂起）；
@@ -108,7 +108,7 @@ src/
 - 左栏两段：项目区（打开的，含活跃时间/关闭按钮）+ 工作区二级（主工作区 + sandboxes 列表）+ 会话区（当前作用域，归档折叠）
 - 工作区：Tab 条（busy 状态点）+ 聊天视图（user 气泡 / assistant 全宽块 + reasoning 斜体 chip + tool chip 四态色）+ 文件视图（纯文本 pre mono）
 - 消息流 markdown（assistant 文本 + reasoning 体 + user 文本，对齐移动端 app 的 TextPart 策略——user 也走 markdown 渲染）：streamdown L0——流式不完整语法修复与块级 memo 由其承担；**组件层全量覆写回语义元素**（其内置默认件是 Tailwind 样式件如 strong→span.font-semibold，本项目无 Tailwind），排版主体由 vendor/github-markdown-css 提供（按 [data-theme] 切明暗，vendor CSS 经 `scripts/regen-github-markdown-css.mjs` 加 `:root[data-theme]` 前缀），本地覆写收敛在 app.css `:root[data-theme] .markdown-body.md` 前缀、全部走 tokens 语义色；代码块带语言标签 + 复制按钮（沿用 chip 展开体 code-block 视觉）；链接 target=_blank 经 main 的 setWindowOpenHandler → shell.openExternal 走系统浏览器；无语法高亮（spec 范围外，shiki 留待后续）。**user 文本软换行**（2026-09-01，对齐移动端 `softLineBreak: user`）：单个 `\n` 渲染为 `<br>` 而非 CommonMark 折叠为空格——桌面输入框 Shift+Enter 是换行操作，回显丢失换行即"发出的和写的不一致"；`Markdown` 组件加 `softLineBreak` prop，经自写 remark 插件（等价 remark-breaks 的最小实现，~15 行，遍历 mdast text 节点拆 `\n` 为 break 节点；代码块/行内代码的值在 code/inlineCode 节点上、天然不触及；remarkPlugins 传入即整体替换默认集，需拼回 `defaultRemarkPlugins` 的 gfm/codeMeta）作用于 user 气泡三处（乐观回显/真实 text part/subtask 回显）；assistant/reasoning/文件预览维持标准 markdown 语义（移动端同口径）
-- 待处理卡片（授权/问题，2026-08-24）：ChatView 底部单卡队列 + 三处指示器 waiting 态；契约事实与踩坑对策集中在 [design-pending-cards.md](design-pending-cards.md)（reply 必带 directory、404 静默移除、按目录合并回填）
+- 待处理卡片（授权/问题，2026-08-24）：ChatView 底部单卡队列 + 三处指示器 waiting 态；契约事实与踩坑对策集中在 [design-pending-cards.md](../v2/design-pending-cards.md)（reply 必带 directory、404 静默移除、按目录合并回填）
 - 设置弹窗：profile CRUD + 激活（切换 = disconnect+connect 全量重对账）+ 测试连接 + 主题/语言
 - 服务器状态行（2026-08-24 修订，原全宽状态栏取消）：收入左栏底部与设置齿轮同行、置底常驻；streaming/degraded/对账中；connectionError 内联 lucide `TriangleAlert`（2026-09-08 订正，原 `⚠` 字形）+ 悬浮提示；不展示 server 版本
 - i18n：ts catalog（zh/en），key 与移动端 ARB 场景对齐；`session: 4` 式单复数不敏感句式

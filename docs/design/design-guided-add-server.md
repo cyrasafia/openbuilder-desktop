@@ -1,6 +1,6 @@
 # 添加服务器引导式（发现优先）设计
 
-对应 [spec-v0.4.md](./spec-v0.4.md) 功能 #2/③ 的补充交互修订（2026-09-05）：设置弹窗「添加服务器」从直开表单改为**先搜索、后手填**的引导式。依赖功能 #3 的扫描基础设施（[design-auto-scan.md](./design-auto-scan.md)，`scanServers`/`scanBinaries` IPC 面不变）；手动配置页为原 ProfileFormView 的改版（[design-managed-config.md](./design-managed-config.md) §1 分化规则不变）。
+对应 [spec-v0.4.md](../spec/spec-v0.4.md) 功能 #2/③ 的补充交互修订（2026-09-05）：设置弹窗「添加服务器」从直开表单改为**先搜索、后手填**的引导式。依赖功能 #3 的扫描基础设施（[design-auto-scan.md](design-auto-scan.md)，`scanServers`/`scanBinaries` IPC 面不变）；手动配置页为原 ProfileFormView 的改版（[design-managed-config.md](v2/design-managed-config.md) §1 分化规则不变）。
 
 ## 0. 动机与原则
 

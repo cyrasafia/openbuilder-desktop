@@ -4,7 +4,7 @@
 >
 > 参考来源（openbuilder 移动端，按 AGENTS.md 约定先行检索）：
 > - `openbuilder/lib/features/conversation/conversation_screen.dart` `_send()` —— **无 busy 守卫**，busy 中直接 `client.prompt`（行 1240 起）；compose bar `showStop = busy && ctl.text.isEmpty && pending.isEmpty`（行 4181）——有输入即回到发送
-> - `openbuilder/docs/review-optimistic-messages.md` OL 观察——"compose bar 未在 POST 进行中禁用发送，弱网下连发可达"：移动端事实上早已支持并发发送，乐观消息机制按此设计
+> - `openbuilder/docs/docs/review/review-optimistic-messages.md` OL 观察——"compose bar 未在 POST 进行中禁用发送，弱网下连发可达"：移动端事实上早已支持并发发送，乐观消息机制按此设计
 > - 本仓库 `message-merge.ts` sortEntries 注释预留："若未来放开并发发送，乐观按时间序排其下"——本次放开即其预言路径，比较器无需改动
 
 ## 1. 需求

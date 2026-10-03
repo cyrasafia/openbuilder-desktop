@@ -9,7 +9,7 @@
   **retry part 不入渲染部件列表，`error` 传播到所属消息 `info.error`（无错误时）**供错误卡呈现
 - `openbuilder/lib/features/conversation/conversation_screen.dart` `_extractErrorMessage`：
   NamedError 形态的人读文案提取顺序
-- `openbuilder/docs/design-agent-status-indicator.md`：状态模型 retrying（移动端为橙色旋转胶囊，
+- `openbuilder/docs/docs/design/design-agent-status-indicator.md`：状态模型 retrying（移动端为橙色旋转胶囊，
   桌面按既有 token 体系改用红点，见 §3 决策）
 
 ## 1. 问题

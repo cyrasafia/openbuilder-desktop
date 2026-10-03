@@ -7,7 +7,7 @@
 ## 1. 拖拽重排序（2026-08-29 修订：实时预览 + 所见即所得）
 
 > 初版为"命中半区 + 指示线"式（悬停目标缘亮 2px primary 线、drop 才落位）。
-> 左栏项目行拖拽（[design-project-drag-reorder.md](./design-project-drag-reorder.md)）
+> 左栏项目行拖拽（[design-project-drag-reorder.md](design-project-drag-reorder.md)）
 > 实测演进出**实时预览 + 所见即所得**模式后，Tab 条同日迁移到该模式：预览式消除
 > "指示线位置 ≠ 最终位置"的心智换算，交互与左栏统一。指示线式废弃。
 

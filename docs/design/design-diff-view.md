@@ -3,9 +3,9 @@
 > 目标：从新 Tab 引导页进入当前作用域的改动详情——三种来源：**上一轮**（最近会话最后一轮的改动）、**未提交**（工作区 vs HEAD）、**分支**（当前分支 vs 默认分支）。**三种来源集成于单个 diff Tab，页内 segment control 切换**（2026-08-25 修订，原为三入口三 Tab，见 §2 修订说明）。统一 unified diff 渲染：行号 + 语法高亮 + 增删底色，按文件分段、按 hunk 分节。
 >
 > 参考来源（按 AGENTS.md 约定先行检索）：
-> - `openbuilder/docs/design-diff-view.md` —— diff 详情页渲染总设计：`parseDiffHunks` 解析规则（第一个 `@@` 切文件头、内容行只做单字符前缀判定、多文件兜底停止）、**双路重建高亮**（new/old 各整段 tokenize 再映射回行）、底色为主标识 + token 保留语法色、单 gutter 行号策略、hunk 头部（序号 + 行范围 + 增删统计）
+> - `openbuilder/docs/docs/design/design-diff-view.md` —— diff 详情页渲染总设计：`parseDiffHunks` 解析规则（第一个 `@@` 切文件头、内容行只做单字符前缀判定、多文件兜底停止）、**双路重建高亮**（new/old 各整段 tokenize 再映射回行）、底色为主标识 + token 保留语法色、单 gutter 行号策略、hunk 头部（序号 + 行范围 + 增删统计）
 > - `openbuilder/lib/features/files/diff_list_screen.dart` —— **移动端正是单页 + `SegmentedButton<DiffMode>` 切换三来源**（默认 `uncommitted`、切换即重拉、重复点击不动作）；本修订（2026-08-25）即对齐该实证形态
-> - `openbuilder/docs/design-file-browsing-container.md` —— 移动端 diff 入口与文件浏览容器的关系（桌面端以 Tab 体系对应）
+> - `openbuilder/docs/docs/design/design-file-browsing-container.md` —— 移动端 diff 入口与文件浏览容器的关系（桌面端以 Tab 体系对应）
 > - 本仓库 `design-code-view.md` —— CodeMirror 6 基础设施（cm-lang 语言映射 / cm-theme class 化 HighlightStyle / --syntax-* 令牌），diff 行高亮直接复用
 > - `../openchamber` 的 `@pierre/diffs`（AGENTS.md 实证选型来源）**评估后不采用**：其接口要求整文件 original/modified 内容（本项目只有 patch），且 Shadow DOM 主题桥接成本高（openchamber 为此写了两层注入 CSS）；自研 DOM 渲染 + CM 生态 headless 高亮更薄
 

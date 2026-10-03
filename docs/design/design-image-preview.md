@@ -3,8 +3,8 @@
 > 目标：文件 Tab 打开图片文件（png/jpg/jpeg/gif/webp/avif/bmp/ico/svg）时渲染图片预览（点击切换 适应窗口 ↔ 原始尺寸）；非图片二进制文件不再把 base64 当文本灌进代码视图，改为占位提示。
 >
 > 参考来源（openbuilder 移动端，按 AGENTS.md 约定先行检索）：
-> - `openbuilder/docs/design-file-view.md`「图片 Mode」——格式集合（jpeg/png/gif/webp/svg）、自动预览、无导出入口；渲染分发决策 #3：**SVG 按扩展名判断，服务端对 SVG 返回 `type:"text"` 且无 mimeType**
-> - `openbuilder/docs/design-image-attachment-thumbnail.md`——消息附件图片的判定经验：图片性判定以「内容类型」为准（本功能落到 mimeType/扩展名），解码失败降级兜底而非卡死
+> - `openbuilder/docs/docs/design/design-file-view.md`「图片 Mode」——格式集合（jpeg/png/gif/webp/svg）、自动预览、无导出入口；渲染分发决策 #3：**SVG 按扩展名判断，服务端对 SVG 返回 `type:"text"` 且无 mimeType**
+> - `openbuilder/docs/docs/design/design-image-attachment-thumbnail.md`——消息附件图片的判定经验：图片性判定以「内容类型」为准（本功能落到 mimeType/扩展名），解码失败降级兜底而非卡死
 > - 移动端「捏合缩放 + 平移」在桌面对应为「滚轮缩放 + 拖动平移 + 点击快捷切换」（§2.4；2026-08-25 增补滚轮/拖动，初版仅点击二态）
 
 ## 1. 问题
@@ -35,7 +35,7 @@
 
 - 移动端格式集是 jpeg/png/gif/webp/svg（Flutter 引擎所限）；桌面 Chromium 原生解码 avif/bmp/ico，零成本纳入。
 - 分发只按扩展名（与 isMarkdownPath/isHtmlPath 一致），加载态即可确定分支；渲染时再按 §2.1 字段兜底（扩展名说图片但服务端返回 text/非 image mime → 回落代码视图/二进制占位，不硬渲染坏图）。
-- ~~**无工具条**~~（**2026-09-08 修订**：文件 Tab 全视图统一常驻操作条——open/open-with 入口（图片恰是系统级消费高频场景），见 [design-file-view-actions.md](./design-file-view-actions.md)；「无预览/源码切换」维持——位图源码无阅读价值，svg 源码想看可走代码文件路径打开，不为此加分支；移动端「无额外 action」对桌面不适用）。
+- ~~**无工具条**~~（**2026-09-08 修订**：文件 Tab 全视图统一常驻操作条——open/open-with 入口（图片恰是系统级消费高频场景），见 [design-file-view-actions.md](design-file-view-actions.md)；「无预览/源码切换」维持——位图源码无阅读价值，svg 源码想看可走代码文件路径打开，不为此加分支；移动端「无额外 action」对桌面不适用）。
 
 ### 2.3 图片渲染
 

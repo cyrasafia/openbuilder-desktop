@@ -1,7 +1,7 @@
 # 工作区切换的扩展状态记忆 — 设计文档
 
 > 需求：切换 worktree/项目作用域时，除已打开的 Tab（design-tab-memory 已实现：chat Tab 集合 + 顺序 + chat 激活）外，还需记住：**当前选中的 Tab（含 file/diff/引导页）**、**文件视图模式（预览/源码）**、**滚动位置（消息流/文件视图）**、**TOC 显隐选择与章节折叠**（2026-08-26 同日增补，§2.4）。
-> 参考先例：移动端 `../openbuilder/docs/design-file-browser-collapse.md`（浏览状态收起/恢复：模式与滚动偏移成对生效、恢复用内容落地后的 jump、非激活模式偏移不保留）。本文按桌面 Tab 模型移植其语义。
+> 参考先例：移动端 `../openbuilder/docs/docs/design/design-file-browser-collapse.md`（浏览状态收起/恢复：模式与滚动偏移成对生效、恢复用内容落地后的 jump、非激活模式偏移不保留）。本文按桌面 Tab 模型移植其语义。
 
 ## 1. 现状盘点（哪些已记住、哪些丢）
 
@@ -24,7 +24,7 @@ Tab 顺序无需新工作：运行期 live tabs 跨切换保留（全局数组�
 
 - 需求场景是"切换 worktree 再切回"（运行期内）；重启后 file Tab 本就不恢复（§3.2），其模式/滚动跨重启无意义
 - chat 滚动位置与任意 kind 激活若要跨重启，需持久化 + 与 §7 激活规则合流，属增量需求，不在本次
-- （**2026-09-03 修订**：任意 kind 激活已随 [design-tab-session-restore.md](./design-tab-session-restore.md) 跨重启——`scopeActiveKeys` 冷启动播种；模式/滚动/TOC/diff 折叠仍纯内存）
+- （**2026-09-03 修订**：任意 kind 激活已随 [design-tab-session-restore.md](design-tab-session-restore.md) 跨重启——`scopeActiveKeys` 冷启动播种；模式/滚动/TOC/diff 折叠仍纯内存）
 
 写入一律**不 emit**（高频滚动事件不触发整树重渲染，同草稿 §2.2）；视图挂载时读一次，无渲染订阅。
 
@@ -47,7 +47,7 @@ private scopeActiveKeys = new Map<string, string | null>()  // directory → 最
   ```
 - **与记忆 `active` 的关系**：记忆 `active` 仍只记 chat（冷启动恢复语义不变——file Tab 不跨重启，重启后规则 1.5 无记录自然走规则 2）；规则 1.5 命中时**不改写** `mem.active`（保持分支不回写，同 §7 末条实现约束）
 - 修订 design-tab-memory §7："激活 file Tab 不改写记忆"的**依据变化**——运行期切回不再回退到 chat，而是经规则 1.5 恢复原选中；记忆 chat-only 仅约束冷启动
-- **跨重启（2026-09-03 修订，[design-tab-session-restore.md](./design-tab-session-restore.md)）**：`scopeActive`（各作用域最后激活）随会话持久层 `tabs.session` 落盘，冷启动 `restoreTabSession` 播种进本 Map（仅已打开目录）——规则 1.5 的"任意 kind 激活/引导页跨重启"由此生效；运行期语义（记录点/不记录/消费规则）不变
+- **跨重启（2026-09-03 修订，[design-tab-session-restore.md](design-tab-session-restore.md)）**：`scopeActive`（各作用域最后激活）随会话持久层 `tabs.session` 落盘，冷启动 `restoreTabSession` 播种进本 Map（仅已打开目录）——规则 1.5 的"任意 kind 激活/引导页跨重启"由此生效；运行期语义（记录点/不记录/消费规则）不变
 
 ### 2.2 文件视图模式 + 滚动（app-store：`fileViewStates`）
 
@@ -149,7 +149,7 @@ private diffViewStates = new Map<string, { foldOpen: boolean; fileOpens: Readonl
 
 ## 5. 不做的事
 
-- ~~跨重启持久化（开篇决策；重启后 file/diff Tab 不存在，模式/滚动/折叠无宿主；激活/消息滚动留作增量）~~（**2026-09-03 修订**：激活经 [design-tab-session-restore.md](./design-tab-session-restore.md) 跨重启——scopeActive 随 `tabs.session` 落盘冷启动播种，且 file/diff/terminal/browser 实体重建后模式/滚动/折叠有了宿主，但其跨重启持久化仍不做，回默认态；消息滚动持久化仍留作增量）
+- ~~跨重启持久化（开篇决策；重启后 file/diff Tab 不存在，模式/滚动/折叠无宿主；激活/消息滚动留作增量）~~（**2026-09-03 修订**：激活经 [design-tab-session-restore.md](design-tab-session-restore.md) 跨重启——scopeActive 随 `tabs.session` 落盘冷启动播种，且 file/diff/terminal/browser 实体重建后模式/滚动/折叠有了宿主，但其跨重启持久化仍不做，回默认态；消息滚动持久化仍留作增量）
 - ~~DiffView~~ 滚动位置（**2026-08-27 修订**：已实现 §2.5 diff 视图状态——foldOpen + 文件折叠 + 滚动位置）
 - TOC / 侧栏滚动位置
 - html 沙箱 iframe 内部滚动（不可达）

@@ -2,7 +2,7 @@
 
 > 对应 spec-v0.3 #7。PDF 文件在文件 Tab 内预览，与图片预览同体系：仅预览态（无预览/源码切换）、随文件监听刷新。
 >
-> 参考先例（AGENTS.md 约定先行检索）：`../openbuilder/docs/design-file-view.md`（移动端 PDF 走系统打开/下载，无内嵌渲染——无移动端可借鉴）；本仓库 `design-image-preview.md`（分支入口/二进制判定/刷新链路同构）与 `design-browser-tab.md`（WebContentsView 基建复用）。
+> 参考先例（AGENTS.md 约定先行检索）：`../openbuilder/docs/docs/design/design-file-view.md`（移动端 PDF 走系统打开/下载，无内嵌渲染——无移动端可借鉴）；本仓库 `design-image-preview.md`（分支入口/二进制判定/刷新链路同构）与 `design-browser-tab.md`（WebContentsView 基建复用）。
 
 ## 0. 路线实测记录（2026-08-27，Electron 43 打包形态 CDP）
 
@@ -14,7 +14,7 @@
 
 ## 1. 终态方案
 
-- **分支入口**：`isPdfPath`（`.pdf` 扩展名，大小写不敏感）→ 仅预览态（无预览/源码切换——源码对 PDF 无意义，同图片先例；~~无工具条~~ **2026-09-08 修订**：操作条常驻带 open/open-with 入口，见 [design-file-view-actions.md](./design-file-view-actions.md)，选择器弹窗浮层计数同时修复本页被 PDFium 视图盖住的场景）
+- **分支入口**：`isPdfPath`（`.pdf` 扩展名，大小写不敏感）→ 仅预览态（无预览/源码切换——源码对 PDF 无意义，同图片先例；~~无工具条~~ **2026-09-08 修订**：操作条常驻带 open/open-with 入口，见 [design-file-view-actions.md](design-file-view-actions.md)，选择器弹窗浮层计数同时修复本页被 PDFium 视图盖住的场景）
 - **可用性判定先行**：`/file/content` 快照——错误 → 错误态；非 binary → 二进制占位（同图片分支模式）；通过才挂视图
 - **渲染**：`PdfFrameView`（pdf-frame-view.tsx）——文件 Tab 内嵌**专用 WebContentsView**：
   - 懒建（挂载首帧 `browser:view-create`，view 的 webPreferences 带 `plugins: true`——PDFium 必需）→ 注册进 store `browserViewIds`（key = `file:<绝对路径>`，与浏览器 Tab 同注册表）→ `browser:navigate(fileUrlOf(path))`

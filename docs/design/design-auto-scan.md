@@ -1,6 +1,6 @@
 # 自动扫描设计（managed 二进制 + attach server）
 
-对应 [spec-v0.4.md](./spec-v0.4.md) 功能 #3。为欢迎屏（#1）与 profile 表单（#2）共用的扫描基础设施；本文只覆盖扫描能力本身（main 进程 + IPC 面），UI 消费随 #1/#2 落地。
+对应 [spec-v0.4.md](../spec/spec-v0.4.md) 功能 #3。为欢迎屏（#1）与 profile 表单（#2）共用的扫描基础设施；本文只覆盖扫描能力本身（main 进程 + IPC 面），UI 消费随 #1/#2 落地。
 
 ## 1. 范围与原则
 

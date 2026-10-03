@@ -1,7 +1,7 @@
 # Tab 会话跨刷新/重启恢复 — 设计文档
 
 > 需求：打开的 Tab（全 kind）、选中状态、Tab 顺序在**刷新页面**（renderer 重载，main/server 存活）与**重启应用**（进程整体退出重进）后保留。
-> 前置：chat Tab 已有 worktree 级记忆（[design-tab-memory.md](./design-tab-memory.md)，`tabs.memory` 按作用域持久化 chat 集合+顺序+chat 激活）；本文补齐其余维度——非 chat Tab、任意 kind 激活、全 kind 混排顺序。
+> 前置：chat Tab 已有 worktree 级记忆（[design-tab-memory.md](design-tab-memory.md)，`tabs.memory` 按作用域持久化 chat 集合+顺序+chat 激活）；本文补齐其余维度——非 chat Tab、任意 kind 激活、全 kind 混排顺序。
 > 参考先例：openbuilder 无桌面 Tab 模型直接对应物，但其客户端本地态模式（`design-workspace-toggle.md`：按 profile 命名空间、内存态与持久态同源、load 先于使用）是 `tabs.memory` 已沿用的同源模式，本文继续沿用。
 
 ## 1. 现状盘点（刷新/重启时丢什么）

@@ -4,7 +4,7 @@
 > 状态：PC 端已实现（2026-09-29）；移动端 openbuilder 对齐中。AGENTS.md 已锁定
 > 语义 + spec-v0.5 已同步
 > 关联：`design-worktree-sync.md`（库存数据源与对账，本文只管分支）；移动端参考
-> `../openbuilder/docs/design-worktree-remove-cleanup.md`（删除时序与定向清理）
+> `../openbuilder/docs/docs/design/v2/design-worktree-remove-cleanup.md`（删除时序与定向清理）
 
 ## 0. 问题与调研结论
 

@@ -8,9 +8,9 @@
 > 合并语义（键控、waiting 投影、权威覆盖）不变。
 >
 > 参考移动端同类实现（AGENTS.md 设计前置约定）：
-> - `../openbuilder/docs/design-agent-status-indicator.md` — 状态归一与显示投影（waiting 优先于 busy、琥珀静态、底层事实独立保留）
-> - `../openbuilder/docs/design-question-card-reply.md` — question reply 的 404 语义（directory 路由是 v1 史，v2 已无）
-> - `../openbuilder/docs/review-permissions.md`、`review-question-cards.md`、`review-73dcfa6.md` — backfill 失败保留、ValueKey 键控、提交校验等已踩坑清单
+> - `../openbuilder/docs/docs/design/design-agent-status-indicator.md` — 状态归一与显示投影（waiting 优先于 busy、琥珀静态、底层事实独立保留）
+> - `../openbuilder/docs/docs/design/v1/design-question-card-reply.md` — question reply 的 404 语义（directory 路由是 v1 史，v2 已无）
+> - `../openbuilder/docs/docs/review/review-permissions.md`、`review-question-cards.md`、`review-73dcfa6.md` — backfill 失败保留、ValueKey 键控、提交校验等已踩坑清单
 > - `conversation_screen.dart` `_FooterPanel`/`_PermissionCard`/`_FormCard` — 单卡队列 + 计数、卡片视觉与交互结构
 
 ## 问题
@@ -66,7 +66,7 @@ v0.1 此前只有事件占位（spec 范围外），用户在桌面端无法应�
 - **授权卡**（primary 系配色）：盾牌图标 + "授权请求" + 类型标题（bash→执行命令 / external_directory→访问外部目录 / 兜底 type 原文，同移动端 permissionTitle 映射）+ mono 详情行（metadata.command > patterns > 派生路径）；按钮 拒绝 / 总是允许 / 允许一次；可折叠
 - **问题卡**（tertiary 系配色，v2 form 投影 M6a）：图标 + 表单 title + 步进 `i/N` + 队列计数；正文当前字段文本 + 描述小字；选项式字段（select/multiselect/boolean——boolean 合成是/否两项，value "true"/"false" 提交时还原布尔）渲染选项列表（radio/checkbox 视觉，label + description，**选中即 option.value**）；输入式字段（text/number）渲染输入框（占位提示，number 输入模式）；逐字段步进（下一步/提交）；**当前步未答不得前进**（review-question-cards Q-7——选项步未选恒禁，输入步 required 非空门控）；拒绝常驻；可折叠
 - 回复中全按钮禁用；失败在卡内右侧内联红字（桌面无 SnackBar）
-- **卡片快捷键（2026-09-28 增）**：授权卡 Ctrl+N/A/Y = 拒绝/总是允许/允许一次；问题卡 Ctrl+1..9 切换选项、Ctrl+0 拒绝、Ctrl+Enter 下一步/提交；Ctrl 按住期间按钮/选项显键位角标——键位守卫与冲突核查见 [design-keyboard-shortcuts §1.1b](./design-keyboard-shortcuts.md)
+- **卡片快捷键（2026-09-28 增）**：授权卡 Ctrl+N/A/Y = 拒绝/总是允许/允许一次；问题卡 Ctrl+1..9 切换选项、Ctrl+0 拒绝、Ctrl+Enter 下一步/提交；Ctrl 按住期间按钮/选项显键位角标——键位守卫与冲突核查见 [design-keyboard-shortcuts §1.1b](../design-keyboard-shortcuts.md)
 
 ### 指示器 waiting 态（三处联动）
 

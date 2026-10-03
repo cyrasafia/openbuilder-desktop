@@ -37,9 +37,9 @@ interface ScopeTabMemory {
 // 持久化：Record<profileKey, Record<directory, ScopeTabMemory>>
 ```
 
-- 只记 **chat Tab**。file Tab 虽作用域化（2026-08-25 修订，见 §18；原为跨作用域全局显示）但仍不参与记忆——只读视图重开成本为零，激活经 §7 回退。（**2026-09-03 修订**：file/diff/terminal/browser 实体经 [design-tab-session-restore.md](./design-tab-session-restore.md) 的**会话持久层**跨刷新/重启恢复；记忆结构不变、chat 语义不变，本节"不参与记忆"指不进 ScopeTabMemory）
+- 只记 **chat Tab**。file Tab 虽作用域化（2026-08-25 修订，见 §18；原为跨作用域全局显示）但仍不参与记忆——只读视图重开成本为零，激活经 §7 回退。（**2026-09-03 修订**：file/diff/terminal/browser 实体经 [design-tab-session-restore.md](design-tab-session-restore.md) 的**会话持久层**跨刷新/重启恢复；记忆结构不变、chat 语义不变，本节"不参与记忆"指不进 ScopeTabMemory）
 - 顺序 = Tab 条顺序。v0.1 无拖拽排序，顺序即打开顺序；记忆结构预留顺序语义，拖拽（v0.2+）落地后天然兼容
-- **运行期任意 kind 的最后选中态另经 `scopeActiveKeys` 内存记录**（2026-08-26，见 §7 规则 1.5 与 [design-tab-state-memory.md](./design-tab-state-memory.md) §2.1）——本记忆结构的 `active` 仍 chat-only，仅约束冷启动恢复
+- **运行期任意 kind 的最后选中态另经 `scopeActiveKeys` 内存记录**（2026-08-26，见 §7 规则 1.5 与 [design-tab-state-memory.md](design-tab-state-memory.md) §2.1）——本记忆结构的 `active` 仍 chat-only，仅约束冷启动恢复
 
 ### 3.3 关键不变量
 
@@ -109,7 +109,7 @@ restoreScopeTabs(dir):
 切入作用域后：
 
 1. 当前激活**属于目标作用域（任意 kind，按 `activeTab.directory` 判定）→ 保持**（覆盖两阶段恢复异步窗口内用户已在新作用域打开的 file/diff 或点选的 chat——不得被记忆解析顶替；2026-08-25 修订，原规则 1 为"激活是 file Tab → 保持"，file Tab 全局化后废除，见 §18）
-1.5. **作用域最后激活记录命中（2026-08-26 增补，见 [design-tab-state-memory.md](./design-tab-state-memory.md) §2.1）**：`scopeActiveKeys[dir]` 为纯内存记录（用户意图激活变更，任意 kind，含引导页 `null` 哨兵）——`null` → 落引导页；记录 Tab 仍存活且属本作用域 → 激活之；失效/无记录（冷启动恒无）→ 落规则 2
+1.5. **作用域最后激活记录命中（2026-08-26 增补，见 [design-tab-state-memory.md](design-tab-state-memory.md) §2.1）**：`scopeActiveKeys[dir]` 为纯内存记录（用户意图激活变更，任意 kind，含引导页 `null` 哨兵）——`null` → 落引导页；记录 Tab 仍存活且属本作用域 → 激活之；失效/无记录（冷启动恒无）→ 落规则 2
 2. 否则 `mem.active ∈ valid` → 激活之（回到切走时的位置）
 3. 否则 valid 末位 Tab（最右）
 4. 否则 null → 中栏会话列表视图
@@ -123,7 +123,7 @@ restoreScopeTabs(dir):
 `connect()` 在 `refreshAllOpenedProjects()` 成功后、`startSse()` 前：
 
 1. **逐作用域重建**：对每个打开项目的每个 directory（`worktree ∪ sandboxes`）有记忆条目的 → 按 §6 恢复分支补齐 live Tab（校验收缩），不改变激活
-2. **会话层恢复**（2026-09-03 增补，[design-tab-session-restore.md](./design-tab-session-restore.md) §3）：非 chat 实体重建 + 模板序合并 + scopeActive 播种
+2. **会话层恢复**（2026-09-03 增补，[design-tab-session-restore.md](design-tab-session-restore.md) §3）：非 chat 实体重建 + 模板序合并 + scopeActive 播种
 3. **当前作用域**再走一遍 `restoreScopeTabs`（含激活规则）——无记忆则首次打开；规则 1.5 在此消费播种记录（任意 kind 激活/引导页跨重启）
 4. 消息不预取：ChatView 激活即重拉（现状），恢复的 Tab 仅建 Tab 实体
 
@@ -293,7 +293,7 @@ restoreScopeTabs(dir):
 ## 19. 会话持久层增补（2026-09-03）
 
 file/diff/terminal/browser Tab、任意 kind 激活、全 kind 混排顺序的跨刷新/重启持久化由
-[design-tab-session-restore.md](./design-tab-session-restore.md) 承接（新持久层 `tabs.session`，
+[design-tab-session-restore.md](design-tab-session-restore.md) 承接（新持久层 `tabs.session`，
 与本文记忆分账：记忆管 chat 的集合/校验/补开，会话层管非 chat 实体 + 全局顺序 + 各作用域
 最后激活）。对本文的修订点：
 

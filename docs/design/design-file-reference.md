@@ -5,7 +5,7 @@
 
 > 对应 spec-v0.3 #4。把当前作用域的文件/目录**引用**进消息（`FilePartInput.source`，零字节、server 注入内容）。三入口：输入框 `@` 搜索浮层、文件树右键、文件树拖拽进输入框。
 >
-> 参考来源（按 AGENTS.md 约定先行检索）：`../openbuilder/docs/design-file-reference.md`——引用协议（FilePartInput + FileSource）与全部实测契约（absolute url 必需、mime 占位、source.text 留空、二进制回灌重写、目录注入 entries、发送守卫三处扩展、斜杠命令 parts 同样携带）均移植自该文档，本设计按桌面交互重组并注明差异。检索结论：移动端明确**不做** `@` 文本触发 picker（手机键盘场景），桌面端为用户明确需求——`@` 浮层为桌面新增设计。
+> 参考来源（按 AGENTS.md 约定先行检索）：`../openbuilder/docs/docs/design/design-file-reference.md`——引用协议（FilePartInput + FileSource）与全部实测契约（absolute url 必需、mime 占位、source.text 留空、二进制回灌重写、目录注入 entries、发送守卫三处扩展、斜杠命令 parts 同样携带）均移植自该文档，本设计按桌面交互重组并注明差异。检索结论：移动端明确**不做** `@` 文本触发 picker（手机键盘场景），桌面端为用户明确需求——`@` 浮层为桌面新增设计。
 
 ## 1. 契约事实（继承移动端实测 + 本轮 openapi 复核）
 
@@ -54,7 +54,7 @@ export interface FileRef {
 ### 3.3 文件树拖拽进输入框（2026-08-29 修订：实时预览 + 所见即所得）
 
 > 初版为"drag-over 高亮 + drop 落位"。左栏项目行拖拽
-> （[design-project-drag-reorder.md](./design-project-drag-reorder.md)）确立
+> （[design-project-drag-reorder.md](design-project-drag-reorder.md)）确立
 > **实时预览 + 所见即所得**模式后同日迁移：拖拽引用悬停 composer 即见将落位的
 > 占位 chip，松手落位与预览一致。初版整框 drop-active 高亮废弃（2026-08-31，
 > 占位 chip 已是落位指示，整框虚线冗余），落位判定从"松手才知道"变为"悬停即所见"。

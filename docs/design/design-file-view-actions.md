@@ -1,8 +1,8 @@
 # 文件预览操作条（open / open with）— 设计文档
 
-> 目标：文件 Tab 的所有预览视图统一常驻操作条——代码视图从无工具条到有操作条；全部文件视图（markdown/代码/图片/PDF/二进制占位，含加载/错误态）提供 open（系统默认应用打开）与 open with（指定应用打开）入口。动作语义与文件树右键菜单同源（[design-file-panel-context-menu](./design-file-panel-context-menu.md) §2.3/§2.4）。
+> 目标：文件 Tab 的所有预览视图统一常驻操作条——代码视图从无工具条到有操作条；全部文件视图（markdown/代码/图片/PDF/二进制占位，含加载/错误态）提供 open（系统默认应用打开）与 open with（指定应用打开）入口。动作语义与文件树右键菜单同源（[design-file-panel-context-menu](design-file-panel-context-menu.md) §2.3/§2.4）。
 >
-> 参考先例（AGENTS.md 约定先行检索）：`../openbuilder` 移动端文件消费走应用内渲染 + 系统分享面板（design-file-view.md），无桌面工具条先例；本仓库既有基建全部复用——右键菜单动作通道（shell:openPath / shell:openWith，零新增 IPC）、Linux 自建选择器（[design-linux-open-with](./design-linux-open-with.md)）、markdown 工具条常驻决策（[design-markdown-preview](./design-markdown-preview.md) §2.2）、浮层计数 z-order 对策（[design-browser-tab](./design-browser-tab.md) §1.2）。本设计只做接入与结构统一。
+> 参考先例（AGENTS.md 约定先行检索）：`../openbuilder` 移动端文件消费走应用内渲染 + 系统分享面板（design-file-view.md），无桌面工具条先例；本仓库既有基建全部复用——右键菜单动作通道（shell:openPath / shell:openWith，零新增 IPC）、Linux 自建选择器（[design-linux-open-with](design-linux-open-with.md)）、markdown 工具条常驻决策（[design-markdown-preview](design-markdown-preview.md) §2.2）、浮层计数 z-order 对策（[design-browser-tab](design-browser-tab.md) §1.2）。本设计只做接入与结构统一。
 
 ## 1. 问题
 
@@ -17,8 +17,8 @@
 |---|---|
 | markdown | TOC 钮（左，沿既有）+ open + open with + 预览/源码分段（右，沿既有） |
 | 代码（含 .mdx/无扩展名/.html 源码态） | open + open with（**新增操作条**——原无任何工具条） |
-| 图片 | open + open with（无模式切换，[design-image-preview](./design-image-preview.md) §2.2 决策维持） |
-| PDF | open + open with（同上，[design-pdf-preview](./design-pdf-preview.md) §1） |
+| 图片 | open + open with（无模式切换，[design-image-preview](design-image-preview.md) §2.2 决策维持） |
+| PDF | open + open with（同上，[design-pdf-preview](design-pdf-preview.md) §1） |
 | 二进制占位 / 加载 / 错误态 | open + open with（常驻——防内容落地时 ~32px 工具条弹入布局跳动，沿 markdown 工具条常驻决策；且 open/open-with 只依赖路径，加载态即可用；二进制占位恰是 open 的主场景——应用内不可预览）。注：markdown 文件在这些态下预览/源码分段仍随 `previewable` 常驻（文件监听重拉翻转为文本时无工具条跳动；二进制嗅探占位下两模式渲染同一占位，分段暂不动作属预期取舍） |
 
 - **FileView 重构为统一骨架**：`.file-view-wrap > .file-toolbar + content`（+ TOC 悬浮窗 / OpenWithDialog 挂点），各分支只产出 content。原实现 markdown 分支带 wrap、其余分支早退返回裸 div。

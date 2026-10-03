@@ -3,10 +3,10 @@
 > 目标：会话进行中（busy/retry）时，在消息流末尾展示"输入中"动效；**展示/隐藏提示不得引起已接收消息的任何位移**（提示位置必须预留）。
 >
 > 参考来源（openbuilder 移动端，按 AGENTS.md 约定先行检索）：
-> - `openbuilder/docs/design-session-status.md` — 状态来源双层修复 + 内存缓存按目录合并 + finish 推断规则
-> - `openbuilder/docs/review-session-status.md` — `_statusMap..clear()` 误清 busy 的回归坑（cdb0872 / SS-1）
-> - `openbuilder/docs/design-run-assembly.md` — footer 动态行（typing dots/retry）作为独立基底项的滚动数学
-> - `openbuilder/docs/design-frontend.md` — TypingDots 三点脉冲组件规格
+> - `openbuilder/docs/docs/design/v1/design-session-status.md` — 状态来源双层修复 + 内存缓存按目录合并 + finish 推断规则
+> - `openbuilder/docs/docs/review/review-session-status.md` — `_statusMap..clear()` 误清 busy 的回归坑（cdb0872 / SS-1）
+> - `openbuilder/docs/docs/design/design-run-assembly.md` — footer 动态行（typing dots/retry）作为独立基底项的滚动数学
+> - `openbuilder/docs/docs/design/design-frontend.md` — TypingDots 三点脉冲组件规格
 
 ## 1. 需求与核心不变式
 

@@ -1,6 +1,6 @@
 # V2 迁移实施计划 — 协议层（plan-v2-protocol） — 计划文档
 
-> 依据：`docs/design/design-v2-migration.md`（D1–D5 与双兼容已裁定，v0.5 起仅支持 v2）。
+> 依据：`docs/design/v2/design-v2-migration.md`（D1–D5 与双兼容已裁定，v0.5 起仅支持 v2）。
 > 范围：通信层（REST client / wire 类型 / SSE / 对账）与连接流程的 v2 切换。
 > 不在本文：消息渲染管线（plan-v2-chat）、worktree 交互（plan-v2-worktree）、终端（plan-v2-terminal）——协议层为其供给契约。
 > 契约参考源：`../openbuilder/opencode_openapi_v2.json`（官方 `packages/protocol/openapi.json` 2.0.18 拷贝，与移动端同源惯例）；源码核对锚 `anomalyco/opencode` `v2` 分支。
@@ -93,7 +93,7 @@
 
 - 删除 v1 面（rest-client.ts/api-types.ts 及 v1 测试）、`rest-client-v2.ts` 更名 `rest-client.ts`（或 import 统一改指），全局 grep `/session?`（根路径）/`/project`（非 /api 前缀）/`/global/event` 等无残留；
 - AGENTS.md（联调说明、契约约束换 pin 至 opencode_openapi_v2.json、归档锁定语义修订——D1 metadata.archivedAt）、spec-v0.5、版本号 0.5.0（package.json + PKGBUILD + spec 三落点）+ `git tag v0.5`；
-- 文档同步复核：`docs/design/design-pending-cards.md`（M6a 已改写 v2 契约，检查回填节 M6c 改动后是否仍一致）、其余 design 文档中残留的 v1 端点引用（grep `/session`、`/permission`、`/question` 等根路径）；
+- 文档同步复核：`docs/design/v2/design-pending-cards.md`（M6a 已改写 v2 契约，检查回填节 M6c 改动后是否仍一致）、其余 design 文档中残留的 v1 端点引用（grep `/session`、`/permission`、`/question` 等根路径）；
 - 验收：`npm run test`/`typecheck` 全绿；打包冒烟（`npm run package:linux`）。
 
 **已落地（M6 首批，`f9928f3`）**：createWorkspace v2 换绑丢失修复（M5 脚本中断）+ Reconciler 会话/消息快照换绑 v2（v1 listSessions/listMessages 在 v2 server 全 404——重连对账的消息恢复路径断裂）。

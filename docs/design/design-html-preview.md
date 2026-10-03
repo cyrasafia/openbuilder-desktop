@@ -5,7 +5,7 @@
 > 目标：`.html` / `.htm` 文件默认渲染预览（sandboxed iframe），工具条「预览 / 源码」二态与 markdown 预览对齐；源码态走 CodeMirror（lang-html，已具备）。
 >
 > 参考来源（openbuilder 移动端，按 AGENTS.md 约定先行检索）：
-> - `openbuilder/docs/design-html-preview.md` —— CSP meta 注入（`default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:`）、原样渲染不注入主题、不设 baseUrl、raw-text/注释/模板区段跳过的**严格单调单趟扫描器**规格
+> - `openbuilder/docs/docs/design/design-html-preview.md` —— CSP meta 注入（`default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:`）、原样渲染不注入主题、不设 baseUrl、raw-text/注释/模板区段跳过的**严格单调单趟扫描器**规格
 > - 本仓库 `design-markdown-preview.md` —— 预览/源码二态与工具条（markdown 已落地，html 复用同一交互）
 
 ## 1. 问题

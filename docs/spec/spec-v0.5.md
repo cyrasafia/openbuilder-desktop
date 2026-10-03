@@ -1,6 +1,6 @@
 # v0.5 功能范围
 
-主题：**v2 server 契约切换**——通信层（REST/SSE/对账）整体迁移到 opencode v2（GA，基线 2.0.18），v1（1.18.x）契约面删除。v0.5 起**仅支持 v2 server**（2026-09-28 裁定，双兼容不做：连接 v1 server 给出「版本不支持」明确报错，不做协议分派）。功能面承接 v0.1–v0.4 全量能力（除下列 server 侧概念消失的降级项）；迁移决策与契约映射全集见 [design-v2-migration.md](./design-v2-migration.md)，实施记录见 [plan-v2-protocol.md](./plan-v2-protocol.md)。
+主题：**v2 server 契约切换**——通信层（REST/SSE/对账）整体迁移到 opencode v2（GA，基线 2.0.18），v1（1.18.x）契约面删除。v0.5 起**仅支持 v2 server**（2026-09-28 裁定，双兼容不做：连接 v1 server 给出「版本不支持」明确报错，不做协议分派）。功能面承接 v0.1–v0.4 全量能力（除下列 server 侧概念消失的降级项）；迁移决策与契约映射全集见 [design-v2-migration.md](../design/v2/design-v2-migration.md)，实施记录见 [plan-v2-protocol.md](../plan/plan-v2-protocol.md)。
 
 ## 范围内
 

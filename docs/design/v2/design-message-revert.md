@@ -3,7 +3,7 @@
 > 目标：在会话中对某条用户消息「回滚到此」——server 暂存回滚点并**立即还原工作区文件**；回滚点之后的消息**从消息流中隐藏**待删，**发送下一条消息时提交**（server 删除这些消息）；期间可一键撤销回滚（unrevert，恢复文件与原状、消息重新显示）。
 >
 > 参考来源（按 AGENTS.md 约定先行检索）：
-> - `openbuilder/lib/data/api/opencode_client.dart` `revert()` —— 移动端已实现 `POST /session/:id/revert` 封装，但**仅接口、未进 UI**（`openbuilder/docs/plan-overview.md` Phase 2「revert 仅接口、未进菜单」）。本次桌面端补齐完整交互
+> - `openbuilder/lib/data/api/opencode_client.dart` `revert()` —— 移动端已实现 `POST /session/:id/revert` 封装，但**仅接口、未进 UI**（`openbuilder/docs/docs/plan/plan-overview.md` Phase 2「revert 仅接口、未进菜单」）。本次桌面端补齐完整交互
 > - `../opencode` 官方 app：`packages/session-ui/src/components/message-part.tsx` —— 回滚入口只在**用户消息** hover 动作行（`ui.message.revertMessage`，reset 图标）；`packages/app/src/pages/session.tsx` `revertMutation` —— busy 时先 halt（interrupt）再 stage、乐观回填 composer 草稿（`prompt.set(draft(messageID))`）；`session-revert-dock.tsx` —— composer 上方回滚条
 > - `../opencode` server：`packages/opencode/src/session/revert.ts`（revert/unrevert/cleanup 全部语义）、`session/prompt.ts:458`（下一条 prompt 时 cleanup 提交）
 

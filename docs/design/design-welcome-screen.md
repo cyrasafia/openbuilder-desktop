@@ -1,6 +1,6 @@
 # 欢迎屏（首次启动引导）设计
 
-对应 [spec-v0.4.md](./spec-v0.4.md) 功能 #1。从安装应用到第一次对话的完整闭环入口。依赖已合并的功能 #3（扫描）、#2（managed spawn/版本）。**2026-09-06 修订：流程与「添加服务器」引导式统一**（[design-guided-add-server.md](./design-guided-add-server.md)）——欢迎页只呈现「添加服务器」入口，点击后**同源复用**设置弹窗的引导式流程（DiscoverView 搜索 + ProfileFormView 手动配置，单一来源非复制）；provider/默认模型引导删除（连接成功直接进主界面的「打开项目」引导页）。
+对应 [spec-v0.4.md](../spec/spec-v0.4.md) 功能 #1。从安装应用到第一次对话的完整闭环入口。依赖已合并的功能 #3（扫描）、#2（managed spawn/版本）。**2026-09-06 修订：流程与「添加服务器」引导式统一**（[design-guided-add-server.md](design-guided-add-server.md)）——欢迎页只呈现「添加服务器」入口，点击后**同源复用**设置弹窗的引导式流程（DiscoverView 搜索 + ProfileFormView 手动配置，单一来源非复制）；provider/默认模型引导删除（连接成功直接进主界面的「打开项目」引导页）。
 
 ## 1. 触发与生命周期
 

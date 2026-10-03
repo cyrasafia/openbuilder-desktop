@@ -2,7 +2,7 @@
 
 > 对应 spec-v0.3 #6。main 进程 `WebContentsView` 内嵌浏览器（地址栏 + 前进/后退/刷新 + 打开本地文件），Tab 归作用域；**文件树点击 `.html/.htm` 默认在浏览器 Tab 打开（file:// URL）**，右键「查看源码」在文件 Tab 打开源码（FileView 的 iframe 预览分支废弃）。导航安全：远端页面禁跳 `file://`、外链走系统浏览器。
 >
-> 参考先例（AGENTS.md 约定先行检索）：`../openbuilder/docs/design-html-preview.md`（移动端 CSP 注入路线——桌面 WebContentsView 全能力渲染，不再需要 CSP 限制，但 iframe 预览方案在桌面被本设计**取代**）；`design-layout.md` Tab 表预研（browser = WebContentsView）。z-order 对策为本设计新增。
+> 参考先例（AGENTS.md 约定先行检索）：`../openbuilder/docs/docs/design/design-html-preview.md`（移动端 CSP 注入路线——桌面 WebContentsView 全能力渲染，不再需要 CSP 限制，但 iframe 预览方案在桌面被本设计**取代**）；`design-layout.md` Tab 表预研（browser = WebContentsView）。z-order 对策为本设计新增。
 
 ## 1. 架构
 

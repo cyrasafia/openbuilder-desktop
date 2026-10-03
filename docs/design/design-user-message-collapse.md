@@ -1,6 +1,6 @@
 # 高用户消息折叠/展开
 
-参考：`../openbuilder/docs/design-user-message-collapse.md`（移动端同名设计，历经四期：判定防振荡、气泡级 clamp 壳、反转列表滚动校正、两态手势统一）。桌面端 DOM + CSS 实现没有反转列表滚动几何与 widget 实例缓存问题，只借鉴其核心判定与交互结论，未重蹈其逐期修补的坑。
+参考：`../openbuilder/docs/docs/design/design-user-message-collapse.md`（移动端同名设计，历经四期：判定防振荡、气泡级 clamp 壳、反转列表滚动校正、两态手势统一）。桌面端 DOM + CSS 实现没有反转列表滚动几何与 widget 实例缓存问题，只借鉴其核心判定与交互结论，未重蹈其逐期修补的坑。
 
 ## 问题
 

@@ -3,8 +3,8 @@
 > 目标：消息流向上滚动接近顶部时自动加载更早的历史消息（每页 100 条），加载后视口锚定不跳动；顶部有加载指示，失败可点击/再次上滑重试；历史穷尽后不再请求。
 >
 > 参考来源（openbuilder 移动端，按 AGENTS.md 约定先行检索）：
-> - `openbuilder/docs/design-incremental-reconcile.md` —— 上滚触顶懒加载一页（`loadOnePage`）+ cursor 分页契约（`X-Next-Cursor`）+ 失败提示/链式加载（IR-1/IR-R4）+ 历史穷尽静默的完整设计
-> - `openbuilder/docs/design-message-accumulation.md` —— REST 快照与 SSE 增量合并原则（不清空重置、窗口区间删除严格内部）
+> - `openbuilder/docs/docs/design/v1/design-incremental-reconcile.md` —— 上滚触顶懒加载一页（`loadOnePage`）+ cursor 分页契约（`X-Next-Cursor`）+ 失败提示/链式加载（IR-1/IR-R4）+ 历史穷尽静默的完整设计
+> - `openbuilder/docs/docs/design/v1/design-message-accumulation.md` —— REST 快照与 SSE 增量合并原则（不清空重置、窗口区间删除严格内部）
 > - 本仓库 `message-merge.ts` `mergeSnapshotIntoMessages` 已实现「窗口区间删除严格内部」——更早分页消息天然在删除窗口之外，可安全累积
 
 ## 1. 问题

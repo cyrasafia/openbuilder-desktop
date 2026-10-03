@@ -3,12 +3,12 @@
 > **v2 迁移注记（2026-09-29，M6b）**：目录数据源换绑 `GET /api/model`（平铺 Model.Info[]，parseModelsV2）；`/config/providers` 拍平路径已删除。enabled/status 过滤对齐 v2 wire。详见 design-v2-migration.md。
 
 
-对应 [spec-v0.4.md](./spec-v0.4.md) 功能 #4 增补（2026-09-23）。设置弹窗新增「模型」页签：
+对应 [spec-v0.4.md](../../spec/spec-v0.4.md) 功能 #4 增补（2026-09-23）。设置弹窗新增「模型」页签：
 按 provider 分组列出**已配置供应商**的全部模型，每模型一个开/关——关 = 从模型选择列表
 （composer 工具条 / 默认值工具条）消失；开 = 恢复可选。开关状态**本地持久化、跟服务器
 （profile）走**，删除服务器时清理。
 
-> 参考移动端同类设计：`../openbuilder/docs/design-agent-model-switch.md` 三/四次评审
+> 参考移动端同类设计：`../openbuilder/docs/docs/design/v2/design-agent-model-switch.md` 三/四次评审
 > （LR-G2 `ModelHideStore` / LR-M1 模型管理页 / LR-M2 去长按交互）。移动端已实证：
 > server 无模型级启用信号，「隐藏」只能是客户端本地能力；管理页用 Switch、picker 只
 > 反映结果（无隐藏折叠区）。桌面端按同语义落地，存储通道换本项目 store.json。
