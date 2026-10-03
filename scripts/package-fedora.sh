@@ -28,19 +28,31 @@ cp -r build/icons "$STAGE/icons"
 tar -cJf "$FED_DIR/src/openbuilder-desktop-$VERSION.tar.xz" -C "$FED_DIR/src" \
   openbuilder-desktop-$VERSION openbuilder-desktop.desktop
 
+# _topdir 每次运行唯一：并发或残留构建若共用固定的 out/BUILD，一方收尾会删掉
+# 另一方正在打包的 BUILDROOT，中途文件消失即报
+# "cpio: open failed - No such file or directory"（resources.pak 等）。
+# _rpmdir 仍指向 out/RPMS，产物落点不变。
+RPMBUILD_TOPDIR="$FED_DIR/.rpmbuild.$$.$RANDOM"
+
 # 容器内 rpmbuild（挂载整个仓库；产物属主修正为当前用户）
 docker run --rm \
   -v "$PWD:/repo" \
   -w /repo/release/fedora \
   fedora:41 \
   bash -c '
-    set -euo pipefail
+    set -uo pipefail
     dnf install -y -q rpm-build >/dev/null
-    mkdir -p out/BUILD out/RPMS out/SOURCES out/SPECS out/SRPMS
-    rpmbuild --define "_topdir $PWD/out" \
+    topdir=/repo/'"$RPMBUILD_TOPDIR"'
+    mkdir -p "$topdir"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+    rpmbuild --define "_topdir $topdir" \
+             --define "_rpmdir $PWD/out/RPMS" \
              --define "_sourcedir $PWD/src" \
              -bb /repo/packaging/fedora/openbuilder-desktop.spec
-    chown -R '"$(id -u)"':'"$(id -g)"' out
+    rc=$?
+    # topdir 与产物属主由容器内 root 一并处理：宿主机 rm 会撞上 root 属主
+    chown -R '"$(id -u)"':'"$(id -g)"' "$PWD/out/RPMS"
+    rm -rf "$topdir"
+    exit $rc
   '
 
 ls -la "$FED_DIR"/out/RPMS/x86_64/*.rpm
