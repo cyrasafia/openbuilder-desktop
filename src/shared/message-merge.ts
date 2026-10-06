@@ -7,6 +7,7 @@
 import type { Attachment } from "./attachment-pipeline"
 import type { FileRef, Message, MessageWithParts, Part } from "./api-types"
 import { isSyntheticTextPart } from "./api-types"
+import type { SessionNotice } from "./session-notices"
 
 export interface OptimisticMessage {
   optimistic: true
@@ -22,6 +23,25 @@ export interface OptimisticMessage {
 export type ChatEntry =
   | { kind: "message"; data: MessageWithParts }
   | { kind: "optimistic"; data: OptimisticMessage }
+  | { kind: "notice"; data: SessionNotice }
+
+/** created 并列时的 kind 秩（design-subagent-background D5）：显式定义且反对称。
+ *  现有二值比较器加入第三种 kind 后会退化为非自洽（sort 结果未定义）。 */
+const KIND_RANK: Record<ChatEntry["kind"], number> = { message: 0, notice: 1, optimistic: 2 }
+
+/** 已落地条目（message/notice）的排序时间；乐观锚定另见 sortEntries 内闭包。
+ *  optimistic 由调用方排除（reduce 跳过、createdOf 先拦截），落 0 占位。 */
+function settledCreated(entry: ChatEntry): number {
+  if (entry.kind === "message") return entry.data.info.time.created
+  if (entry.kind === "notice") return entry.data.created
+  return 0
+}
+
+function entryId(entry: ChatEntry): string {
+  if (entry.kind === "message") return entry.data.info.id
+  if (entry.kind === "optimistic") return entry.data.localId
+  return entry.data.id
+}
 
 /**
  * 稳定排序：user 按 created；流式 assistant（time.completed 为空）排最后。
@@ -57,17 +77,15 @@ function isStreaming(m: Message): boolean {
  */
 export function sortEntries(entries: ChatEntry[]): ChatEntry[] {
   const maxCreated = entries.reduce(
-    (m, e) => (e.kind === "message" ? Math.max(m, e.data.info.time.created) : m),
+    (m, e) => (e.kind === "optimistic" ? m : Math.max(m, settledCreated(e))),
     0,
   )
+  // 乐观锚定 maxCreated+1（沿用旧语义，见上方注释）
   const createdOf = (e: ChatEntry): number =>
-    e.kind === "optimistic" ? maxCreated + 1 : e.data.info.time.created
+    e.kind === "optimistic" ? maxCreated + 1 : settledCreated(e)
   const streamingOf = (e: ChatEntry): boolean =>
     e.kind === "message" && isStreaming(e.data.info)
   return [...entries].sort((a, b) => {
-    if (a.kind === "optimistic" && b.kind === "optimistic") {
-      return a.data.createdAt - b.data.createdAt
-    }
     const sa = streamingOf(a)
     const sb = streamingOf(b)
     const ca = createdOf(a)
@@ -75,12 +93,17 @@ export function sortEntries(entries: ChatEntry[]): ChatEntry[] {
     if (sa && !sb && ca >= cb) return 1
     if (!sa && sb && cb >= ca) return -1
     if (ca !== cb) return ca - cb
-    // created 并列（含毫秒碰撞）：乐观视为最新排后；同为 message 再走稳定 tie-break
-    if (a.kind !== b.kind) return a.kind === "optimistic" ? 1 : -1
-    if (a.kind === "message" && b.kind === "message") {
-      return a.data.info.id < b.data.info.id ? -1 : 1
+    // created 并列（含毫秒碰撞）：先按 kind 秩（反对称，见 KIND_RANK），
+    // 同 kind 内乐观按 createdAt、其余按 id 字典序稳定 tie-break
+    const ra = KIND_RANK[a.kind]
+    const rb = KIND_RANK[b.kind]
+    if (ra !== rb) return ra - rb
+    if (a.kind === "optimistic" && b.kind === "optimistic") {
+      return a.data.createdAt - b.data.createdAt
     }
-    return 0
+    const ia = entryId(a)
+    const ib = entryId(b)
+    return ia < ib ? -1 : ia > ib ? 1 : 0
   })
 }
 
@@ -95,7 +118,9 @@ export function filterRevertedEntries(
   revertMessageID: string | null,
 ): ChatEntry[] {
   if (!revertMessageID) return entries
-  return entries.filter((e) => e.kind === "optimistic" || e.data.info.id < revertMessageID)
+  // 通知不参与回滚隐藏（design-subagent-background）：客户端 bg-start id 与服务端
+  // msg_ id 不可比，只隐藏消息；乐观消息亦恒显
+  return entries.filter((e) => e.kind !== "message" || e.data.info.id < revertMessageID)
 }
 
 /**

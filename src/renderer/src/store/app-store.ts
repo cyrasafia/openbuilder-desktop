@@ -57,6 +57,14 @@ import {
   type OptimisticMessage,
 } from "@shared/message-merge"
 import {
+  backgroundStartedNotice,
+  mergeNotices,
+  subagentSyntheticNotice,
+  toolFormChildIds,
+  withdrawToolFormStartNotices,
+  type SessionNotice,
+} from "@shared/session-notices"
+import {
   buildFormAnswer,
   mergePendingSnapshot,
   normalizeForm,
@@ -404,6 +412,17 @@ export class AppStore {
    */
   sessionPages = new Map<string, { nextCursor: string | null; exhausted: boolean; loading: boolean; error: boolean }>()
   /**
+   * 用户后台任务通知（design-subagent-background）：sessionID → 通知列表。
+   * 独立于 messagesBySession——通知 id 是客户端 `bg-start:<childID>` 或服务端
+   * `msg_…`，与消息混存会污染排序/回滚/空消息守卫/对账窗口删除。
+   */
+  private noticesBySession = new Map<string, SessionNotice[]>()
+  /** 子会话索引惰性缓存（parentID → 直系子会话 id 集）；由 sessionRegistryVersion 驱动重建 */
+  private childIndex = new Map<string, Set<string>>()
+  private childIndexVersion = -1
+  /** 会话注册表版本：任何 upsert/删除/整表替换/清空后自增，触发 childIndex 重建 */
+  private sessionRegistryVersion = 0
+  /**
    * 会话状态（busy/idle/retry）——纯客户端内存映射，单一事实源：
    * Tab 状态点、左栏指示器、消息流 TypingSlot 都消费它（design-typing-indicator §4）。
    * idle 不落 map（缺省即 idle）；来源见 setSessionStatus（事件驱动）
@@ -446,6 +465,9 @@ export class AppStore {
   // ---- UI 状态 ----
   tabs: TabEntity[] = []
   activeTabKey: string | null = null
+  /** 后台任务详情浮层请求版本（design-subagent-background D2/D4）：ChatView 按版本消费 */
+  taskDetailVersion = 0
+  private pendingTaskDetail: string | null = null
   /**
    * 关闭栈（design-keyboard-shortcuts §2，Ctrl+Shift+T 恢复）：仅用户主动关闭入栈
    * （pushClosed 选项），上限 20 弃最旧；纯内存不持久化（重启场景由 Tab 记忆覆盖）
@@ -1028,6 +1050,11 @@ export class AppStore {
     // 重新 refresh+list 载入）
     this.worktreeDirs.clear()
     this.sessionsByProject.clear()
+    this.sessionRegistryVersion++
+    this.childIndex.clear()
+    this.childIndexVersion = -1
+    this.noticesBySession.clear()
+    this.pendingTaskDetail = null
     this.messagesBySession.clear()
     this.syntheticDroppedBySession.clear()
     this.sessionPages.clear()
@@ -1155,6 +1182,7 @@ export class AppStore {
       }
     }
     this.sessionsByProject.set(projectId, mergeSessionsSnapshot(local, directory, filtered))
+    this.sessionRegistryVersion++
     this.snapshottedDirs.add(directory)
   }
 
@@ -1245,6 +1273,7 @@ export class AppStore {
       this.sessionsByProject.set(info.projectID, map)
     }
     map.set(info.id, info)
+    this.sessionRegistryVersion++
     // 同步更新已打开 chat Tab 的 title（会话重命名后 Tab 名跟随刷新）
     const tab = this.tabs.find((t) => t.kind === "chat" && t.key === `chat:${info.id}`)
     if (tab) tab.title = info.title || info.slug || ""
@@ -1487,21 +1516,21 @@ export class AppStore {
         // 缺失的字段从本地记录回填，事件显式携带（含 undefined 语义的
         // agent/model）以事件为准；本地无记录 = 他端/CLI 新建，骨架原样入。
         const local = this.findSession(p.sessionID)
-        this.applySessionEvent(
-          {
-            id: p.sessionID,
-            parentID: p.parentID ?? local?.parentID,
-            projectID: p.projectID,
-            directory,
-            slug: p.slug ?? local?.slug,
-            title: p.title ?? local?.title,
-            agent: p.agent ?? local?.agent,
-            model: p.model ?? local?.model,
-            metadata: p.metadata ?? local?.metadata,
-            time: { created: eventTime, updated: eventTime },
-          },
+        const child: Session = {
+          id: p.sessionID,
+          parentID: p.parentID ?? local?.parentID,
+          projectID: p.projectID,
           directory,
-        )
+          slug: p.slug ?? local?.slug,
+          title: p.title ?? local?.title,
+          agent: p.agent ?? local?.agent,
+          model: p.model ?? local?.model,
+          metadata: p.metadata ?? local?.metadata,
+          time: { created: eventTime, updated: eventTime },
+        }
+        this.applySessionEvent(child, directory)
+        // 新子会话 = 潜在后台任务：本地合成启动提示（D3；误判由 reconcileStartNotices 撤回）
+        if (child.parentID) this.onChildSessionCreated(child)
         return true
       }
       case "session.deleted": {
@@ -1510,7 +1539,10 @@ export class AppStore {
         const sid = String(ev.properties.sessionID ?? "")
         if (!sid) return false
         const local = this.findSession(sid)
-        if (local) this.sessionsByProject.get(local.projectID)?.delete(sid)
+        if (local) {
+          this.sessionsByProject.get(local.projectID)?.delete(sid)
+          this.sessionRegistryVersion++
+        }
         this.closeTab(`chat:${sid}`, { archive: false })
         this.cleanupSessionState(sid)
         this.setSessionStatus(sid, { type: "idle" })
@@ -1640,6 +1672,7 @@ export class AppStore {
         const info = ev.properties.info as Session
         if (!info) return
         this.sessionsByProject.get(info.projectID)?.delete(info.id)
+        this.sessionRegistryVersion++
         // 会话不存在了：对应 Tab 直接关 + 状态卸载
         this.closeTab(`chat:${info.id}`, { archive: false })
         this.cleanupSessionState(info.id)
@@ -1678,9 +1711,20 @@ export class AppStore {
         const { sessionID, inboxID, item } = ev.properties as {
           sessionID?: string
           inboxID?: string
-          item?: { type?: string }
+          item?: {
+            type?: string
+            time?: { created?: number }
+            payload?: { text?: string; description?: string; metadata?: Record<string, unknown> }
+          }
         }
         if (!sessionID || !inboxID) break
+        // 完成回执（D4，design-subagent-background）：synthetic + source=subagent
+        // → 物化系统提示；不与 user 路径混用（不消费回显标记、不重取尾部）
+        if (item?.type === "synthetic") {
+          const notice = subagentSyntheticNotice(inboxID, item.time?.created ?? Date.now(), item.payload)
+          if (notice) this.upsertNotices(sessionID, [notice])
+          break
+        }
         // inbox 含 user/synthetic/compaction/move 四类（移动端同过滤）——非 user
         // 项不消费命令回显标记、不触发重取（auto-compaction 入队在长命令执行期
         // 并不罕见，误消费标记会让回滚到回显消息时回填展开文本草稿）
@@ -1804,6 +1848,11 @@ export class AppStore {
             ...(this.pendingParts(sessionID).get(part.messageID) ?? []),
             part,
           ])
+        }
+        // D3 竞态收敛（design-subagent-background）：工具型 tool part 落地即可
+        // 按 toolFormChildIds（含 description 兜底）撤回误插的启动提示
+        if (part.type === "tool" && (part.tool === "task" || part.tool === "subagent")) {
+          this.reconcileStartNotices(sessionID)
         }
         break
       }
@@ -2370,6 +2419,7 @@ export class AppStore {
     }
     // 卸载该项目的会话状态（关闭 = 不展示 + 不更新）；状态随目录一并卸载（project-scoped）
     this.sessionsByProject.delete(projectId)
+    this.sessionRegistryVersion++
     const project = this.projects.find((p) => p.id === projectId)
     if (project) {
       const dirs = [project.worktree, ...(project.sandboxes ?? [])]
@@ -2889,6 +2939,9 @@ export class AppStore {
     this.pendingPartsMap.delete(sessionID)
     this.optimisticBySession.delete(sessionID)
     this.sessionPages.delete(sessionID)
+    // 后台任务通知随会话运行时卸载（design-subagent-background D3：重开不补启动提示；
+    // 完成提示经 REST synthetic 重建）。注意：不在此清 childIndex——关 Tab=归档不删会话
+    this.noticesBySession.delete(sessionID)
     this.revertDrafts.delete(sessionID)
     this.revertDraftConsumed.delete(sessionID)
     this.manualDraftSeeds.delete(sessionID)
@@ -3225,6 +3278,7 @@ export class AppStore {
       for (const [id, s] of map) {
         if (s.directory === directory) map.delete(id)
       }
+      this.sessionRegistryVersion++
     }
     this.purgeStatusForDirectories([directory])
     this.snapshottedDirs.delete(directory)
@@ -3521,6 +3575,7 @@ export class AppStore {
       const map = this.sessionsByProject.get(this.currentProject.id) ?? new Map()
       map.set(session.id, session)
       this.sessionsByProject.set(this.currentProject.id, map)
+      this.sessionRegistryVersion++
       if (opts.openTab !== false) this.openChatTab(session)
       this.emit()
       return session
@@ -3534,6 +3589,7 @@ export class AppStore {
   /** REST 页合并进会话 map（快照合并 + pending parts 回放），返回本页新增的消息条数 */
   private mergeMessagePage(sessionID: string, msgs: MessageWithParts[]) {
     this.noteSyntheticInSnapshot(sessionID, msgs)
+    this.extractSyntheticNotices(sessionID, msgs)
     const local = this.messagesBySession.get(sessionID) ?? new Map()
     const hadIds = new Set(local.keys())
     const merged = mergeSnapshotIntoMessages(local, msgs)
@@ -3551,6 +3607,9 @@ export class AppStore {
     }
     pending.clear()
     this.messagesBySession.set(sessionID, merged)
+    // 快照合并后补撤回（review 四轮 #1，同 onMessagesSnapshot）：REST 页
+    // 落地的 tool part 同样构成认领依据
+    this.reconcileStartNotices(sessionID)
     return msgs.filter((m) => !hadIds.has(m.info.id)).length
   }
 
@@ -3747,6 +3806,157 @@ export class AppStore {
     return candidates.sort((a, b) => (b.time.created ?? 0) - (a.time.created ?? 0))[0]
   }
 
+  // ============ 用户后台任务（design-subagent-background） ============
+
+  /**
+   * 子会话索引惰性重建：sessionsByProject 全量扫描一次，缓存直系子会话。
+   * 版本号在会话 upsert/删除/整表替换/清空时自增（sessionRegistryVersion）。
+   */
+  private ensureChildIndex() {
+    if (this.childIndexVersion === this.sessionRegistryVersion) return
+    const index = new Map<string, Set<string>>()
+    for (const map of this.sessionsByProject.values()) {
+      for (const s of map.values()) {
+        if (!s.parentID) continue
+        let set = index.get(s.parentID)
+        if (!set) {
+          set = new Set()
+          index.set(s.parentID, set)
+        }
+        set.add(s.id)
+      }
+    }
+    this.childIndex = index
+    this.childIndexVersion = this.sessionRegistryVersion
+  }
+
+  /** 直系子会话（`parentID == sessionID`） */
+  childSessionsOf(sessionID: string): Session[] {
+    this.ensureChildIndex()
+    const ids = this.childIndex.get(sessionID)
+    if (!ids || ids.size === 0) return []
+    const out: Session[] = []
+    for (const id of ids) {
+      const s = this.findSession(id)
+      if (s) out.push(s)
+    }
+    return out
+  }
+
+  /**
+   * 家族聚合状态（D6）：自身 + 全部后代子会话，retry 优先于 busy，全 idle 才 idle。
+   * 只服务指示器（dotStateFor）；composer 仍看本会话 statusOf（后台任务不锁输入）。
+   */
+  sessionActivity(sessionID: string): "busy" | "retry" | "idle" {
+    let retry = false
+    let busy = false
+    const visited = new Set<string>()
+    const stack = [sessionID]
+    while (stack.length > 0) {
+      const sid = stack.pop()!
+      if (visited.has(sid)) continue
+      visited.add(sid)
+      const type = this.sessionStatus.get(sid)?.type
+      if (type === "retry") retry = true
+      else if (type === "busy") busy = true
+      for (const child of this.childSessionsOf(sid)) stack.push(child.id)
+    }
+    return retry ? "retry" : busy ? "busy" : "idle"
+  }
+
+  /** 父会话消息流里的全部 part（toolFormChildIds 判据数据源） */
+  private parentParts(sessionID: string): Part[] {
+    const conv = this.messagesBySession.get(sessionID)
+    if (!conv) return []
+    const parts: Part[] = []
+    for (const m of conv.values()) parts.push(...m.parts)
+    return parts
+  }
+
+  /** 工具型子会话 id 集（task/subagent tool part 引用，含 description 兜底） */
+  toolFormChildIdsFor(sessionID: string): Set<string> {
+    return toolFormChildIds(this.parentParts(sessionID), this.childSessionsOf(sessionID))
+  }
+
+  /** 运行中的用户后台任务（D1 识别）：直系子会话 ∩ 家族运行中 ∩ 非工具型 */
+  runningBackgroundTasks(parentSessionID: string): Session[] {
+    const children = this.childSessionsOf(parentSessionID)
+    if (children.length === 0) return []
+    const toolIds = this.toolFormChildIdsFor(parentSessionID)
+    return children.filter(
+      (c) => this.sessionActivity(c.id) !== "idle" && !toolIds.has(c.id),
+    )
+  }
+
+  /** 会话通知（按 created 排序；chatEntries 混排消费） */
+  noticesForSession(sessionID: string): SessionNotice[] {
+    return this.noticesBySession.get(sessionID) ?? []
+  }
+
+  private upsertNotices(sessionID: string, incoming: SessionNotice[]) {
+    const merged = mergeNotices(this.noticesBySession.get(sessionID), incoming)
+    if (merged === null) return
+    this.noticesBySession.set(sessionID, merged)
+    this.emit()
+  }
+
+  /**
+   * 子会话创建（D3）：父会话已加载/已开 Tab 时本地合成「已启动后台任务」提示。
+   * 先查 toolFormChildIdsFor：tool part 可能先于 session.created 到达（反向时序），
+   * 已被认领的子会话直接不插（review 三轮 #2）。未被认领时插入，后续 tool part
+   * 到达由 reconcileStartNotices 撤回（正向时序）。
+   */
+  private onChildSessionCreated(child: Session) {
+    const parentID = child.parentID
+    if (!parentID) return
+    const parentLoaded =
+      this.messagesBySession.has(parentID) ||
+      this.tabs.some((t) => t.kind === "chat" && t.key === `chat:${parentID}`)
+    if (!parentLoaded) return
+    if (this.toolFormChildIdsFor(parentID).has(child.id)) return
+    this.upsertNotices(parentID, [backgroundStartedNotice(child)])
+  }
+
+  /** 撤回已被工具型 tool part 认领的启动提示（D3 竞态收敛，判据同 D1） */
+  private reconcileStartNotices(parentSessionID: string) {
+    const notices = this.noticesBySession.get(parentSessionID)
+    if (!notices || !notices.some((n) => n.kind === "background-started")) return
+    const kept = withdrawToolFormStartNotices(notices, this.toolFormChildIdsFor(parentSessionID))
+    if (kept === null) return
+    this.noticesBySession.set(parentSessionID, kept)
+  }
+
+  /**
+   * 从 REST 快照抽取完成提示（D4 重启/对账路径）。须在 mergeSnapshotIntoMessages
+   * 过滤合成 part 之前调用（否则拿不到 synthetic 文本）。
+   */
+  private extractSyntheticNotices(sessionID: string, msgs: MessageWithParts[]) {
+    const incoming: SessionNotice[] = []
+    for (const m of msgs) {
+      if (m.info.role !== "user") continue
+      const metadata = (m.info as { metadata?: Record<string, unknown> }).metadata
+      if (!metadata || metadata.source !== "subagent") continue
+      const text = (m.parts.find((p) => p.type === "text") as TextPart | undefined)?.text ?? ""
+      const notice = subagentSyntheticNotice(m.info.id, m.info.time.created, { text, metadata })
+      if (notice) incoming.push(notice)
+    }
+    if (incoming.length > 0) this.upsertNotices(sessionID, incoming)
+  }
+
+  /** 打开后台任务详情浮层（任务条「查看」/ 完成提示「查看结果」）：版本号驱动 ChatView 消费 */
+  requestTaskDetail(childSessionID: string) {
+    this.pendingTaskDetail = childSessionID
+    this.taskDetailVersion++
+    this.emit()
+  }
+
+  /** 取走并清除待处理的详情请求（消费后不重复消费；remount 不重放旧请求） */
+  consumeTaskDetailRequest(): string | null {
+    const childID = this.pendingTaskDetail
+    this.pendingTaskDetail = null
+    return childID
+  }
+
   async sendPrompt(
     sessionID: string,
     text: string,
@@ -3877,6 +4087,7 @@ export class AppStore {
         const map = this.sessionsByProject.get(forked.projectID) ?? new Map()
         map.set(forked.id, forked)
         this.sessionsByProject.set(forked.projectID, map)
+        this.sessionRegistryVersion++
         if (forked.directory === this.scopeDirectory()) this.openChatTabPassive(forked)
         this.emit()
       })
@@ -4204,15 +4415,17 @@ export class AppStore {
   }
 
   /**
-   * 会话状态点投影（design-agent-status-indicator + design-error-message §3/§3.4）：
-   * waiting > error（retry 退避，红呼吸）> running > failed（报错终局，红静态）> idle。
+   * 会话状态点投影（design-agent-status-indicator + design-error-message §3/§3.4 +
+   * design-subagent-background D6）：waiting > error（retry 退避）> running > failed > idle。
+   * 进行中/重试取**家族聚合**（自身 + 后代子会话）——后台任务运行时父会话点亮；
+   * 终局 failed 仍是本会话末条 assistant 派生（不受家族影响）。
    * waiting 显示时 busy 底层事实保留不覆写。
    * 终局是纯派生（无缓存/锁存）：idle 且末条消息为非中止错误的 assistant ⇒ failed——
    * 新 run 天然自愈（user/新 assistant 消息成为新末条），无事件清除路径的一致性风险；
-   * busy/retry 期间跳过派生（进行中状态优先，也无终局语义）。
+   * 家族 busy/retry 期间跳过派生（进行中状态优先，也无终局语义）。
    */
   dotStateFor(sessionID: string): SessionDotState {
-    const status = this.statusOf(sessionID).type
+    const status = this.sessionActivity(sessionID)
     let terminalError = false
     if (status === "idle") {
       const msgs = [...(this.messagesBySession.get(sessionID)?.values() ?? [])]
@@ -6213,9 +6426,13 @@ export class AppStore {
       onActiveSnapshot: (active, fetchedAt) => this.reconcileActiveSnapshot(active, fetchedAt),
       onMessagesSnapshot: (sessionID, msgs) => {
         this.noteSyntheticInSnapshot(sessionID, msgs)
+        this.extractSyntheticNotices(sessionID, msgs)
         const local = this.messagesBySession.get(sessionID) ?? new Map()
         const merged = mergeSnapshotIntoMessages(local, msgs)
         this.messagesBySession.set(sessionID, merged)
+        // 快照合并后补撤回（review 四轮 #1）：断线窗口丢 tool part 事件、
+        // 重连仅经 REST 落地时，事件侧钩子不会触发——此处兜底
+        this.reconcileStartNotices(sessionID)
         // 对账回填成功：清同形状 error 种子（挂载失败种子 vs 已回填内容的矛盾态，
         // review R3-P2）——回到无状态，重激活/上滚走正常种子
         const prev = this.sessionPages.get(sessionID)
@@ -6264,9 +6481,11 @@ export class AppStore {
         (m.parts.length === 0 && !synthDropped?.has(m.info.id)),
     )
     const optimistic = this.optimisticBySession.get(sessionID) ?? []
+    const notices = this.noticesBySession.get(sessionID) ?? []
     const entries: ChatEntry[] = [
       ...msgs.map((data): ChatEntry => ({ kind: "message", data })),
       ...optimistic.map((data): ChatEntry => ({ kind: "optimistic", data })),
+      ...notices.map((data): ChatEntry => ({ kind: "notice", data })),
     ]
     return sortEntries(entries)
   }

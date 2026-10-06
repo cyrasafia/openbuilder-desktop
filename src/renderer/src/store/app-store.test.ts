@@ -1011,7 +1011,7 @@ describe("busy 补充发送（design-supplement-send）", () => {
     expect(store.statusOf("s1").type).toBe("busy")
     // 排序：流式 assistant 之下追加乐观补充（锚定 maxCreated+1）
     const entries = store.chatEntries("s1")
-    expect(entries.map((e) => (e.kind === "optimistic" ? "opt" : e.data.info.id))).toEqual([
+    expect(entries.map((e) => (e.kind === "message" ? e.data.info.id : e.kind === "optimistic" ? "opt" : e.data.id))).toEqual([
       "msg_u1",
       "msg_a1",
       "opt",
@@ -6598,5 +6598,216 @@ describe("execution 生命周期状态（design-typing-indicator §4 来源 0；
     store.sessionsByProject.set("proj_other", sessionsOf(s1))
     dispatch({ type: "session.execution.started", properties: { sessionID: "s2" } })
     expect(store.statusOf("s2")).toEqual({ type: "idle" })
+  })
+})
+
+describe("用户后台任务（design-subagent-background）", () => {
+  function dispatch(ev: { type: string; properties: unknown }, dir = ROOT) {
+    ;(store as unknown as { handleEvent: (d: string, e: unknown) => void }).handleEvent(dir, ev)
+  }
+  function setStatus(sid: string, type: "busy" | "retry" | "idle") {
+    ;(store as unknown as { setSessionStatus: (s: string, v: unknown, d?: string) => void })
+      .setSessionStatus(sid, { type }, ROOT)
+  }
+  function child(id: string, created: number): Session {
+    return { ...session(id, ROOT, { created, updated: created }), parentID: "p", title: id }
+  }
+  function seedParent(...children: Session[]) {
+    store.sessionsByProject.set(
+      "proj1",
+      sessionsOf(session("p", ROOT, { created: 1, updated: 1 }), ...children),
+    )
+    seedMessages("p")
+  }
+  const toolPart = (tool: string, metadata: Record<string, unknown>) => ({
+    id: `prt_${tool}`,
+    sessionID: "p",
+    messageID: "msg_a",
+    type: "tool",
+    callID: `c_${tool}`,
+    tool,
+    state: { status: "running", input: {}, metadata },
+  })
+
+  it("sessionActivity 家族聚合：子会话 busy/retry 点亮父会话，retry 优先，全 idle 才 idle", () => {
+    seedParent(child("c1", 2))
+    expect(store.sessionActivity("p")).toBe("idle")
+    setStatus("c1", "busy")
+    expect(store.sessionActivity("p")).toBe("busy")
+    setStatus("c1", "retry")
+    expect(store.sessionActivity("p")).toBe("retry")
+    setStatus("c1", "idle")
+    expect(store.sessionActivity("p")).toBe("idle")
+  })
+
+  it("runningBackgroundTasks：仅运行中且非工具型；dotStateFor 因后台任务点亮", () => {
+    seedParent(child("bg", 2), child("tool", 3))
+    setStatus("bg", "busy")
+    setStatus("tool", "busy")
+    expect(store.dotStateFor("p")).toBe("running")
+    expect(store.runningBackgroundTasks("p").map((s) => s.id)).toEqual(["bg", "tool"])
+    // 工具型子会话被 task tool part 权威认领 → 排除
+    seedMessages("p", {
+      info: { id: "msg_a", sessionID: "p", role: "assistant", time: { created: 1 } },
+      parts: [toolPart("task", { sessionId: "tool" }) as Part],
+    })
+    expect(store.runningBackgroundTasks("p").map((s) => s.id)).toEqual(["bg"])
+  })
+
+  it("D3：session.created 合成启动提示；工具型 tool part 到达后按同判据撤回", () => {
+    seedParent()
+    dispatch({
+      type: "session.created",
+      properties: { sessionID: "c1", projectID: "proj1", parentID: "p", title: "Build docs" },
+    })
+    expect(store.noticesForSession("p").map((n) => n.id)).toEqual(["bg-start:c1"])
+    expect(store.chatEntries("p").some((e) => e.kind === "notice")).toBe(true)
+    // 工具型 tool part 认领（权威 metadata.sessionId）→ 撤回启动提示
+    seedMessages("p", {
+      info: { id: "msg_a", sessionID: "p", role: "assistant", time: { created: 1 } },
+      parts: [toolPart("task", { sessionId: "c1" }) as Part],
+    })
+    dispatch({ type: "message.part.updated", properties: { sessionID: "p", part: toolPart("task", { sessionId: "c1" }) } })
+    expect(store.noticesForSession("p")).toEqual([])
+  })
+
+  it("D3：父会话未加载/未开 Tab 时不合成启动提示", () => {
+    store.sessionsByProject.set("proj1", sessionsOf(session("p", ROOT, { created: 1, updated: 1 })))
+    dispatch({
+      type: "session.created",
+      properties: { sessionID: "c1", projectID: "proj1", parentID: "p", title: "x" },
+    })
+    expect(store.noticesForSession("p")).toEqual([])
+  })
+
+  it("D3 反向时序：tool part 先于 session.created 认领 → 不插启动提示（review 三轮 #2）", () => {
+    seedParent()
+    seedMessages("p", {
+      info: { id: "msg_a", sessionID: "p", role: "assistant", time: { created: 1 } },
+      parts: [toolPart("subagent", { sessionId: "c1" }) as Part],
+    })
+    dispatch({
+      type: "session.created",
+      properties: { sessionID: "c1", projectID: "proj1", parentID: "p", title: "x" },
+    })
+    expect(store.noticesForSession("p")).toEqual([])
+  })
+
+  it("D3 快照路径撤回：tool part 仅经 REST 落地（断线丢事件）也构成认领（review 四轮 #1）", async () => {
+    seedParent()
+    dispatch({
+      type: "session.created",
+      properties: { sessionID: "c1", projectID: "proj1", parentID: "p", title: "x" },
+    })
+    expect(store.noticesForSession("p")).toHaveLength(1)
+    clientV2Of().listMessagesPage = async () => ({
+      entries: [
+        {
+          info: { id: "msg_a", sessionID: "p", role: "assistant", time: { created: 1 } },
+          parts: [toolPart("subagent", { sessionId: "c1" }) as Part],
+        },
+      ],
+      nextCursor: null,
+    })
+    await store.loadSessionMessages("p", ROOT)
+    expect(store.noticesForSession("p")).toEqual([])
+  })
+
+  it("D4 契约钉：工具型 background 完成同样发 source=subagent synthetic → 通知照常渲染（不排除，同移动端）", () => {
+    seedParent(child("c1", 2))
+    // c1 被 task tool part 认领（工具型）
+    seedMessages("p", {
+      info: { id: "msg_a", sessionID: "p", role: "assistant", time: { created: 1 } },
+      parts: [toolPart("task", { sessionId: "c1" }) as Part],
+    })
+    dispatch({
+      type: "session.inbox.enqueued",
+      properties: {
+        sessionID: "p",
+        inboxID: "msg_s1",
+        item: {
+          type: "synthetic",
+          time: { created: 10 },
+          payload: {
+            metadata: { source: "subagent", childID: "c1", agent: "general", state: "completed" },
+          },
+        },
+      },
+    })
+    expect(store.noticesForSession("p")).toHaveLength(1)
+  })
+
+  it("D4：inbox synthetic 合成完成提示；REST 快照同 id 去重", async () => {
+    seedParent()
+    dispatch({
+      type: "session.inbox.enqueued",
+      properties: {
+        sessionID: "p",
+        inboxID: "msg_s1",
+        item: {
+          type: "synthetic",
+          time: { created: 10 },
+          payload: {
+            text: '<subagent sessionID="c1" state="completed" description="Build docs">done</subagent>',
+            metadata: { source: "subagent", childID: "c1", state: "completed" },
+          },
+        },
+      },
+    })
+    expect(store.noticesForSession("p").map((n) => [n.id, n.state, n.label])).toEqual([
+      ["msg_s1", "completed", "Build docs"],
+    ])
+    // REST 快照携带同一 id 的 synthetic → 去重不重复
+    clientV2Of().listMessagesPage = async () => ({
+      entries: [
+        {
+          info: {
+            id: "msg_s1",
+            sessionID: "p",
+            role: "user",
+            time: { created: 10 },
+            metadata: { source: "subagent", childID: "c1", state: "completed" },
+          },
+          parts: [
+            {
+              id: "msg_s1:text",
+              sessionID: "p",
+              messageID: "msg_s1",
+              type: "text",
+              text: '<subagent sessionID="c1" state="completed" description="Build docs">done</subagent>',
+              synthetic: true,
+            },
+          ],
+        },
+      ],
+      nextCursor: null,
+    })
+    await store.loadSessionMessages("p", ROOT)
+    expect(store.noticesForSession("p")).toHaveLength(1)
+  })
+
+  it("subagent tool part 也算工具型（与 task 同判据），且被排除出任务条", () => {
+    seedParent(child("tool2", 4))
+    setStatus("tool2", "busy")
+    seedMessages("p", {
+      info: { id: "msg_a", sessionID: "p", role: "assistant", time: { created: 1 } },
+      parts: [toolPart("subagent", { sessionID: "tool2" }) as Part],
+    })
+    expect(store.toolFormChildIdsFor("p").has("tool2")).toBe(true)
+    expect(store.runningBackgroundTasks("p")).toEqual([])
+  })
+
+  it("关闭父 Tab（cleanupSessionState）清通知，但不影响家族聚合索引", () => {
+    seedParent(child("c1", 2))
+    dispatch({
+      type: "session.created",
+      properties: { sessionID: "c1", projectID: "proj1", parentID: "p", title: "x" },
+    })
+    expect(store.noticesForSession("p")).toHaveLength(1)
+    setStatus("c1", "busy")
+    ;(store as unknown as { cleanupSessionState: (s: string) => void }).cleanupSessionState("p")
+    expect(store.noticesForSession("p")).toEqual([])
+    // 归档不删会话：家族聚合仍能看到运行中的子会话
+    expect(store.sessionActivity("p")).toBe("busy")
   })
 })

@@ -168,7 +168,15 @@ export function toInternalMessages(sessionID: string, entries: V2MessageEntry[])
       out.push({ info: { id: e.id, sessionID, role: "user", time: { created } }, parts })
     } else if (e.type === "synthetic") {
       out.push({
-        info: { id: e.id, sessionID, role: "user", time: { created } },
+        info: {
+          id: e.id,
+          sessionID,
+          role: "user",
+          time: { created },
+          // metadata 透传（design-subagent-background D4）：完成回执从 REST 快照
+          // 重建通知，需 `{source:"subagent", childID, agent, state}`。
+          ...(e.metadata != null ? { metadata: e.metadata as Record<string, unknown> } : {}),
+        },
         parts: [
           {
             id: `${e.id}:text`,

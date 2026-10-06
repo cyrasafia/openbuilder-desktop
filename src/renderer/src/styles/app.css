@@ -4818,3 +4818,179 @@
   color: var(--outline);
   user-select: none;
 }
+
+/* ==================== 用户后台任务（design-subagent-background） ==================== */
+
+/* 常驻任务条：composer 顶行（与 .revert-bar 同层），贴近输入区 */
+.bg-task-bar {
+  position: relative; /* 任务列表浮层的定位锚点 */
+  display: flex;
+  width: 100%;
+}
+
+.bg-task-bar-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px 10px;
+  border-radius: var(--radius-chip);
+  background: color-mix(in srgb, var(--primary-container) 45%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--primary) 35%, transparent);
+  font-size: var(--text-sm);
+  color: var(--on-surface);
+}
+
+.bg-task-bar-toggle:hover {
+  background: color-mix(in srgb, var(--primary-container) 65%, var(--surface));
+}
+
+.bg-task-bar-icon {
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.bg-task-bar-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 任务列表浮层：锚在任务条上沿，悬浮不占布局（同 .command-hints-slot 语义）；
+   z-index 压过 command-hints（无 z-index 的同位浮层），三者同开时详情在上 */
+.bg-task-popover {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  margin-bottom: 4px;
+  z-index: 30;
+  max-height: min(320px, 45vh);
+  overflow-y: auto;
+  background: var(--surface-container-high);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-chip);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  padding: 4px;
+}
+
+.bg-task-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 4px;
+}
+
+.bg-task-row:hover {
+  background: var(--surface-container-highest);
+}
+
+.bg-task-row-icon {
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.bg-task-row-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.bg-task-row-label {
+  font-size: var(--text-sm);
+  color: var(--on-surface);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bg-task-row-sub {
+  font-size: var(--text-xs);
+  color: var(--outline);
+}
+
+.bg-task-row-action {
+  flex-shrink: 0;
+}
+
+.bg-task-row-action.danger {
+  color: var(--status-error);
+}
+
+/* 系统提示行（D5）：低强调、行式、不画气泡底 */
+.system-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 2px;
+  font-size: var(--text-sm);
+  color: var(--outline);
+}
+
+.system-notice-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--outline);
+}
+
+.system-notice-text {
+  min-width: 0;
+}
+
+.system-notice-action {
+  flex-shrink: 0;
+  font-size: var(--text-sm);
+  color: var(--primary);
+  text-decoration: underline;
+}
+
+/* 后台任务详情浮层：composer 上沿嵌入子会话消息流（不占布局） */
+.task-detail-slot {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  padding: 0 24px 4px;
+  z-index: 30;
+}
+
+.task-detail {
+  display: flex;
+  flex-direction: column;
+  max-height: min(480px, 60vh);
+  background: var(--surface-container-high);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-card);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+
+.task-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--outline-variant);
+}
+
+.task-detail-title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-sm);
+  color: var(--on-surface);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-detail .subagent-body {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  max-height: none;
+}

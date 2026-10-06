@@ -316,6 +316,14 @@ const zh = {
   subagentCollapse: "收起子会话",
   subagentNoSession: "子会话未就绪",
   subagentLoading: "加载中…",
+  // 用户后台任务条 + 系统提示（design-subagent-background）
+  bgTaskRunning: "{count} 个后台任务运行中",
+  bgTaskStarted: "已启动后台任务：{label}",
+  bgTaskCompleted: "后台任务完成：{label}",
+  bgTaskFailed: "后台任务失败：{label}",
+  bgTaskCancelled: "后台任务取消：{label}",
+  bgTaskView: "查看",
+  bgTaskStop: "停止",
 }
 
 const en: typeof zh = {
@@ -591,6 +599,14 @@ const en: typeof zh = {
   subagentCollapse: "Collapse sub-session",
   subagentNoSession: "Sub-session not ready",
   subagentLoading: "Loading…",
+  // Background task bar + system notices (design-subagent-background)
+  bgTaskRunning: "{count} background task(s) running",
+  bgTaskStarted: "Background task started: {label}",
+  bgTaskCompleted: "Background task completed: {label}",
+  bgTaskFailed: "Background task failed: {label}",
+  bgTaskCancelled: "Background task cancelled: {label}",
+  bgTaskView: "View",
+  bgTaskStop: "Stop",
 }
 
 export type MessageKey = keyof typeof zh
