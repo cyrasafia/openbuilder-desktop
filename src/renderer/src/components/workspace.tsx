@@ -21,14 +21,17 @@ import {
   ChevronsRight,
   CircleCheck,
   CircleHelp,
+  CircleStop,
   CircleX,
   ExternalLink,
+  Eye,
   FileDiff,
   FolderGit2,
   Globe,
   ListTree,
   LoaderCircle,
   Plus,
+  Rocket,
   RotateCcw,
   ShieldAlert,
   SquareTerminal,
@@ -39,6 +42,7 @@ import { format, relativeTime } from "../i18n"
 import type { Catalog } from "../i18n"
 import { filterRevertedEntries, type ChatEntry } from "@shared/message-merge"
 import { extractErrorMessage, extractRetryMessage } from "@shared/message-error"
+import type { SessionNotice } from "@shared/session-notices"
 import type {
   CommandInfo,
   Part,
@@ -1293,6 +1297,19 @@ function ChatView({ sessionID }: { sessionID: string }) {
   const entries = store.chatEntries(sessionID)
   const status = store.statusOf(sessionID)
   const busy = status.type !== "idle"
+  // 用户后台任务（design-subagent-background D1）：运行中的命令型子会话 → 常驻任务条
+  const backgroundTasks = store.runningBackgroundTasks(sessionID)
+  // 任务详情浮层（D2/D4）：任务条「查看」或完成提示「查看结果」触发
+  const [taskDetail, setTaskDetail] = useState<{ childID: string; label: string } | null>(null)
+  const lastTaskDetailVersion = useRef(0)
+  useEffect(() => {
+    if (store.taskDetailVersion === lastTaskDetailVersion.current) return
+    lastTaskDetailVersion.current = store.taskDetailVersion
+    const childID = store.consumeTaskDetailRequest()
+    if (!childID) return
+    setTaskDetail({ childID, label: store.findSession(childID)?.title || childID })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store.taskDetailVersion, sessionID])
   // 回滚暂存态（design-message-revert）：回滚点起消息从消息流隐藏（对齐官方
   // timeline visibleUserMessages 过滤），撤销回滚恢复显示；发送即提交删除。
   // 乐观消息恒显（未达 server，不构成回滚对象）
@@ -1647,12 +1664,13 @@ function ChatView({ sessionID }: { sessionID: string }) {
       >
         <div className="message-list-inner">
           <HistoryRow sessionID={sessionID} onRetry={maybeLoadEarlier} />
-          {visibleEntries.map((entry) => (
-            <MessageBlock
-              key={entry.kind === "optimistic" ? entry.data.localId : entry.data.info.id}
-              entry={entry}
-            />
-          ))}
+          {visibleEntries.map((entry) =>
+            entry.kind === "notice" ? (
+              <NoticeRow key={chatEntryKey(entry)} notice={entry.data} />
+            ) : (
+              <MessageBlock key={chatEntryKey(entry)} entry={entry} />
+            ),
+          )}
           {/* 常驻固定高槽位（INV-1）：显隐只动槽内内容，消息流总高度不变（design-typing-indicator §3） */}
           <TypingSlot status={status} />
         </div>
@@ -1670,9 +1688,26 @@ function ChatView({ sessionID }: { sessionID: string }) {
         }}
         onDragLeave={refInput.dragProps.onDragLeave}
       >
+        {/* 后台任务条（design-subagent-background D1）：有运行中后台任务时显示，贴近输入区 */}
+        <BackgroundTaskBar
+          tasks={backgroundTasks}
+          onOpenDetail={(childID) =>
+            setTaskDetail({
+              childID,
+              label: store.findSession(childID)?.title || childID,
+            })
+          }
+        />
         {/* 回滚暂存条（design-message-revert §3.4）：composer 内常驻一行，撤销入口 */}
         {revertMessageID && <RevertBar sessionID={sessionID} count={revertedCount} busy={busy} />}
         {/* 覆盖层：锚在 composer 上沿悬浮于消息流（不占布局、不顶起消息） */}
+        {taskDetail && (
+          <TaskDetailOverlay
+            childID={taskDetail.childID}
+            label={taskDetail.label}
+            onClose={() => setTaskDetail(null)}
+          />
+        )}
         {cmdMode && (
           <CommandHints
             matches={matches}
@@ -2479,6 +2514,7 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
     )
   }
 
+  if (entry.kind !== "message") return null
   const { info, parts } = entry.data
   const texts = parts.filter((p) => p.type === "text") as Array<{
     id: string
@@ -2594,7 +2630,7 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
         <ReasoningChip key={p.id} part={p} />
       ))}
       {tools.map((p) => (
-        p.tool === "task" ? (
+        p.tool === "task" || p.tool === "subagent" ? (
           <SubagentPanel key={p.id} part={p} parentSessionID={info.sessionID} />
         ) : (
           <ToolChip key={p.id} part={p} />
@@ -2708,6 +2744,104 @@ function childSessionError(entries: ChatEntry[]): string | null {
   return null
 }
 
+/** ChatEntry 稳定 key（message/optimistic/notice 三 kind 共用） */
+function chatEntryKey(entry: ChatEntry): string {
+  if (entry.kind === "message") return entry.data.info.id
+  if (entry.kind === "optimistic") return entry.data.localId
+  return `notice:${entry.data.id}`
+}
+
+/**
+ * 子会话消息流嵌入块（design-subagent-status §D5 + design-subagent-background D2）：
+ * 独立滚动、滚动条隐藏、贴底跟随；SubagentPanel 展开态与后台任务详情浮层共用。
+ * `active=false` 时重置贴底，再激活恢复默认贴底。
+ */
+export function SubagentMessageList({
+  childSessionId,
+  entries,
+  active,
+}: {
+  childSessionId: string | null
+  entries: ChatEntry[]
+  active: boolean
+}) {
+  const { t } = useI18n()
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const bodyPinned = useRef(true)
+  const bodyPrevTop = useRef(0)
+
+  useEffect(() => {
+    if (!active) {
+      bodyPinned.current = true
+      bodyPrevTop.current = 0
+    }
+  }, [active])
+
+  useLayoutEffect(() => {
+    if (!active) return
+    const el = bodyRef.current
+    if (!el) return
+    // auto 瞬时贴底（同 ChatView 流式更新路径）；面板上限 400px，动画增益有限
+    if (bodyPinned.current) el.scrollTop = el.scrollHeight
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, entries])
+
+  const onBodyScroll = () => {
+    const el = bodyRef.current
+    if (!el) return
+    const gap = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (el.scrollTop > bodyPrevTop.current && gap < 8) bodyPinned.current = true
+    bodyPrevTop.current = el.scrollTop
+  }
+
+  const onBodyWheel = (e: WheelEvent) => {
+    // 不冒泡：面板内滚轮不得触发主消息流的上滚解跟（ChatView onWheel）
+    e.stopPropagation()
+    if (e.ctrlKey) return
+    const el = bodyRef.current
+    if (e.deltaY < 0 && el && el.scrollHeight - el.clientHeight > 0) bodyPinned.current = false
+  }
+
+  // 键盘上滚解除（同 ChatView onKeyScroll）：只认 body 自身聚焦的按键
+  const onBodyKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return
+    if (e.ctrlKey || e.metaKey || e.altKey) return
+    const up =
+      e.key === "ArrowUp" ||
+      e.key === "PageUp" ||
+      e.key === "Home" ||
+      (e.key === " " && e.shiftKey)
+    if (!up) return
+    const el = bodyRef.current
+    if (el && el.scrollHeight - el.clientHeight > 0) bodyPinned.current = false
+  }
+
+  return (
+    <div
+      className="subagent-body"
+      ref={bodyRef}
+      tabIndex={-1}
+      onScroll={onBodyScroll}
+      onWheel={onBodyWheel}
+      onKeyDown={onBodyKeyDown}
+    >
+      {!childSessionId ? (
+        <div className="subagent-empty">{t.subagentNoSession}</div>
+      ) : entries.length === 0 ? (
+        <div className="subagent-empty">{t.subagentLoading}</div>
+      ) : (
+        entries.map((entry) =>
+          entry.kind === "notice" ? (
+            <NoticeRow key={chatEntryKey(entry)} notice={entry.data} />
+          ) : (
+            <MessageBlock key={chatEntryKey(entry)} entry={entry} />
+          ),
+        )
+      )}
+    </div>
+  )
+}
+
 /**
  * subagent 工作状态面板（design-subagent-status）：
  * task 工具的专用渲染——替代 ToolChip，在主消息流中内嵌子会话消息流。
@@ -2813,66 +2947,6 @@ export function SubagentPanel({ part, parentSessionID }: { part: ToolPart; paren
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stopped, childSessionId])
 
-  // 独立滚动跟随（design-subagent-status §D5，ChatView 贴底语义同构）：
-  // 展开挂载即贴底；贴底时新消息/流式更新跟随。上滚解除：wheel deltaY<0 +
-  // 键盘上滚键（ArrowUp/PageUp/Home/Shift+Space——body tabIndex=-1 可被点击
-  // 聚焦，键盘滚动只产生 scroll 事件，不清 pinned 则流式更新拉回底部，§7.14）。
-  // 回底吸附带滞回（向下滚且距底 <8px 才恢复——防 smooth 动画帧间 gap 抖动
-  // 误吸附）。收起重置 pinned，再展开恢复默认贴底
-  const bodyRef = useRef<HTMLDivElement>(null)
-  const bodyPinned = useRef(true)
-  const bodyPrevTop = useRef(0)
-
-  useEffect(() => {
-    if (!open) {
-      bodyPinned.current = true
-      bodyPrevTop.current = 0
-    }
-  }, [open])
-
-  useLayoutEffect(() => {
-    if (!open) return
-    const el = bodyRef.current
-    if (!el) return
-    if (bodyPinned.current) {
-      // auto 瞬时贴底（同 ChatView 流式更新路径）；面板上限 400px，动画增益有限
-      el.scrollTop = el.scrollHeight
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, childEntries])
-
-  const onBodyScroll = () => {
-    const el = bodyRef.current
-    if (!el) return
-    const gap = el.scrollHeight - el.scrollTop - el.clientHeight
-    if (el.scrollTop > bodyPrevTop.current && gap < 8) bodyPinned.current = true
-    bodyPrevTop.current = el.scrollTop
-  }
-
-  const onBodyWheel = (e: WheelEvent) => {
-    // 不冒泡：面板内滚轮不得触发主消息流的上滚解跟（ChatView onWheel）
-    e.stopPropagation()
-    if (e.ctrlKey) return
-    const el = bodyRef.current
-    if (e.deltaY < 0 && el && el.scrollHeight - el.clientHeight > 0) bodyPinned.current = false
-  }
-
-  // 键盘上滚解除（同 ChatView onKeyScroll）：只认 body 自身聚焦的按键——
-  // 焦点在可滚后代（pre.code-block 自带 overflow:auto）时按键滚的是内层、
-  // body 不产生 scroll 事件，误清 pinned 会让跟随静默停摆
-  const onBodyKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.target !== e.currentTarget) return
-    if (e.ctrlKey || e.metaKey || e.altKey) return
-    const up =
-      e.key === "ArrowUp" ||
-      e.key === "PageUp" ||
-      e.key === "Home" ||
-      (e.key === " " && e.shiftKey)
-    if (!up) return
-    const el = bodyRef.current
-    if (el && el.scrollHeight - el.clientHeight > 0) bodyPinned.current = false
-  }
-
   return (
     <div className={"subagent-panel" + (open ? " open" : "")}>
       <button
@@ -2910,25 +2984,233 @@ export function SubagentPanel({ part, parentSessionID }: { part: ToolPart; paren
         {summary && <span className="chip-summary">{summary}</span>}
       </button>
       {open && (
-        <div
-          className="subagent-body"
-          ref={bodyRef}
-          tabIndex={-1}
-          onScroll={onBodyScroll}
-          onWheel={onBodyWheel}
-          onKeyDown={onBodyKeyDown}
+        <SubagentMessageList
+          childSessionId={childSessionId ?? null}
+          entries={childEntries}
+          active={open}
+        />
+      )}
+    </div>
+  )
+}
+
+/** 毫秒 → 紧凑时长（后台任务行/详情用）：45s / 3m12s / 1h02m */
+function formatDuration(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  if (total < 60) return `${total}s`
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  if (m < 60) return `${m}m${String(s).padStart(2, "0")}s`
+  const h = Math.floor(m / 60)
+  return `${h}h${String(m % 60).padStart(2, "0")}m`
+}
+
+/**
+ * 系统提示行（design-subagent-background D5）：低强调行式 notice，
+ * 承载后台任务启动/完成。可选 trailing「查看」（有 childID 时）。
+ */
+export function NoticeRow({ notice }: { notice: SessionNotice }) {
+  const store = useStore()
+  const { t } = useI18n()
+  let icon = <Rocket size={14} aria-hidden />
+  let text: string
+  if (notice.kind === "background-started") {
+    text = format(t.bgTaskStarted, { label: notice.label })
+  } else {
+    switch (notice.state) {
+      case "error":
+        icon = <CircleX size={14} aria-hidden />
+        text = format(t.bgTaskFailed, { label: notice.label })
+        break
+      case "cancelled":
+        icon = <CircleStop size={14} aria-hidden />
+        text = format(t.bgTaskCancelled, { label: notice.label })
+        break
+      default:
+        icon = <CircleCheck size={14} aria-hidden />
+        text = format(t.bgTaskCompleted, { label: notice.label })
+    }
+  }
+  return (
+    <div className={"system-notice " + notice.kind} role="status">
+      <span className="system-notice-icon">{icon}</span>
+      <span className="system-notice-text">{text}</span>
+      {notice.childID && (
+        <button
+          className="system-notice-action"
+          onClick={() => store.requestTaskDetail(notice.childID!)}
         >
-          {!childSessionId ? (
-            <div className="subagent-empty">{t.subagentNoSession}</div>
-          ) : childEntries.length === 0 ? (
-            <div className="subagent-empty">{t.subagentLoading}</div>
-          ) : (
-            childEntries.map((entry) => (
-              <MessageBlock key={entry.kind === "optimistic" ? entry.data.localId : entry.data.info.id} entry={entry} />
-            ))
-          )}
+          {t.bgTaskView}
+        </button>
+      )}
+    </div>
+  )
+}
+
+/**
+ * 常驻后台任务条（design-subagent-background D1/D2）：composer 顶行。
+ * 无运行中任务返回 null（全部完成后自动消失）。点击展开任务列表浮层：
+ * 逐项「查看」（嵌入详情）与「停止」（interrupt 该子会话）。
+ */
+export function BackgroundTaskBar({
+  tasks,
+  onOpenDetail,
+}: {
+  tasks: Session[]
+  onOpenDetail: (childID: string) => void
+}) {
+  const store = useStore()
+  const { t } = useI18n()
+  const [open, setOpen] = useState(false)
+  const [stopping, setStopping] = useState<string | null>(null)
+  // 展开期间 1s ticker 刷新已运行时长（关闭即停）
+  const [, tick] = useState(0)
+  useEffect(() => {
+    if (!open) return
+    const id = window.setInterval(() => tick((n) => n + 1), 1000)
+    return () => window.clearInterval(id)
+  }, [open])
+  // 全部结束后复位展开/停止态（review 四轮 #2）：条子消失期间残留 open，
+  // 下一个任务启动时浮层会直接展开——收起语义归位
+  useEffect(() => {
+    if (tasks.length === 0) {
+      setOpen(false)
+      setStopping(null)
+    }
+  }, [tasks.length])
+
+  if (tasks.length === 0) return null
+
+  const stop = async (childID: string) => {
+    if (stopping) return
+    setStopping(childID)
+    await store.abortSession(childID)
+    setStopping(null)
+  }
+
+  const now = Date.now()
+  return (
+    <div className="bg-task-bar">
+      <button
+        className="bg-task-bar-toggle"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+      >
+        <Rocket className="bg-task-bar-icon" size={14} aria-hidden />
+        <span className="bg-task-bar-text">{format(t.bgTaskRunning, { count: tasks.length })}</span>
+        {open ? (
+          <ChevronDown className="chip-chevron" size={12} aria-hidden />
+        ) : (
+          <ChevronUp className="chip-chevron" size={12} aria-hidden />
+        )}
+      </button>
+      {open && (
+        <div className="bg-task-popover">
+          {tasks.map((task) => (
+            <div className="bg-task-row" key={task.id}>
+              <Rocket className="bg-task-row-icon" size={14} aria-hidden />
+              <div className="bg-task-row-meta">
+                <span className="bg-task-row-label">{task.title || task.id}</span>
+                <span className="bg-task-row-sub">
+                  {task.agent ? `${task.agent} · ` : ""}
+                  {formatDuration(now - (task.time.created ?? now))}
+                </span>
+              </div>
+              <button
+                className="icon-btn bg-task-row-action"
+                title={t.bgTaskView}
+                aria-label={t.bgTaskView}
+                onClick={() => onOpenDetail(task.id)}
+              >
+                <Eye size={14} aria-hidden />
+              </button>
+              <button
+                className="icon-btn bg-task-row-action danger"
+                title={t.bgTaskStop}
+                aria-label={t.bgTaskStop}
+                disabled={stopping === task.id}
+                onClick={() => void stop(task.id)}
+              >
+                {stopping === task.id ? (
+                  <LoaderCircle size={14} className="spin" aria-hidden />
+                ) : (
+                  <CircleStop size={14} aria-hidden />
+                )}
+              </button>
+            </div>
+          ))}
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * 后台任务详情浮层（design-subagent-background D2/D4）：composer 上沿嵌入子会话
+ * 消息流（SubagentMessageList，独立滚动），不开独立 Tab/路由。任务结束后仍可用
+ * （完成提示「查看结果」按 childID 打开）。
+ */
+function TaskDetailOverlay({
+  childID,
+  label,
+  onClose,
+}: {
+  childID: string
+  label: string
+  onClose: () => void
+}) {
+  const store = useStore()
+  const { t } = useI18n()
+  const childSession = store.findSession(childID)
+  const entries = store.chatEntries(childID)
+  const loadedRef = useRef<string | null>(null)
+  // 加载探测是否已完成（review 四轮 #3）：childID 无法解析出会话且无目录可拉时，
+  // 不让浮层停在永久「加载中」——落一条空态。会话存在而 REST 失败仍走加载态
+  //（SubagentPanel 同款：重开是重试入口，不设错误态）
+  const [probed, setProbed] = useState(false)
+  useEffect(() => {
+    setProbed(false)
+    if (loadedRef.current === childID) {
+      setProbed(true)
+      return
+    }
+    loadedRef.current = childID
+    if (entries.length > 0) {
+      setProbed(true)
+      return
+    }
+    const dir = childSession?.directory ?? ""
+    if (dir) void store.loadSessionMessages(childID, dir)
+    setProbed(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [childID])
+  // Esc 关闭（review 三轮 #5）：焦点通常在 composer 而非浮层内，挂 window；
+  // overlayCount > 0 = 上层还有确认弹窗等，Esc 让位（scDismiss 语义）
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== "Escape" || e.isComposing) return
+      if (store.overlayCount > 0) return
+      onClose()
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  })
+  return (
+    <div className="task-detail-slot" role="dialog" aria-label={label}>
+      <div className="task-detail">
+        <div className="task-detail-header">
+          <Rocket className="bg-task-bar-icon" size={14} aria-hidden />
+          <span className="task-detail-title">{label}</span>
+          <button className="icon-btn" title={t.close} aria-label={t.close} onClick={onClose}>
+            <X size={14} aria-hidden />
+          </button>
+        </div>
+        {probed && !childSession && entries.length === 0 ? (
+          <div className="subagent-empty">{t.subagentNoSession}</div>
+        ) : (
+          <SubagentMessageList childSessionId={childID} entries={entries} active />
+        )}
+      </div>
     </div>
   )
 }

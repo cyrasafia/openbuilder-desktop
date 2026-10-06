@@ -91,7 +91,7 @@ describe("sortEntries（乐观消息）", () => {
     }
     const streaming: ChatEntry = { kind: "message", data: entry(assistantMsg("msg_a2", 450)) }
     const sorted = sortEntries([streaming, optimistic, done])
-    expect(sorted.map((e) => (e.kind === "optimistic" ? e.data.localId : e.data.info.id))).toEqual([
+    expect(sorted.map((e) => (e.kind === "message" ? e.data.info.id : e.kind === "optimistic" ? e.data.localId : e.data.id))).toEqual([
       "msg_a1",
       "msg_a2",
       "opt_1",
@@ -108,7 +108,7 @@ describe("sortEntries（乐观消息）", () => {
       data: { optimistic: true, localId: "opt_1", text: "hi", createdAt: 50 },
     }
     const sorted = sortEntries([done, optimistic, user, half])
-    expect(sorted.map((e) => (e.kind === "optimistic" ? e.data.localId : e.data.info.id))).toEqual([
+    expect(sorted.map((e) => (e.kind === "message" ? e.data.info.id : e.kind === "optimistic" ? e.data.localId : e.data.id))).toEqual([
       "msg_u1",
       "msg_a1",
       "msg_a2",
@@ -247,7 +247,7 @@ describe("filterRevertedEntries（回滚暂存隐藏边界，design-message-reve
     optimistic,
   ]
   const ids = (list: ChatEntry[]) =>
-    list.map((e) => (e.kind === "optimistic" ? "opt" : e.data.info.id))
+    list.map((e) => (e.kind === "message" ? e.data.info.id : e.kind === "optimistic" ? "opt" : e.data.id))
 
   it("无回滚点：原样返回", () => {
     expect(filterRevertedEntries(entries, null)).toBe(entries)
@@ -265,5 +265,46 @@ describe("filterRevertedEntries（回滚暂存隐藏边界，design-message-reve
   it("乐观消息恒显（未达 server，不构成回滚对象）", () => {
     expect(ids(filterRevertedEntries([optimistic], "msg_1"))).toEqual(["opt"])
     expect(ids(filterRevertedEntries([optimistic], null))).toEqual(["opt"])
+  })
+})
+
+describe("sortEntries / filterRevertedEntries（notice，design-subagent-background D5）", () => {
+  const notice = (id: string, created: number): ChatEntry => ({
+    kind: "notice",
+    data: { id, kind: "background-started", created, label: id, childID: id },
+  })
+
+  it("通知与消息按 created 混排", () => {
+    const sorted = sortEntries([
+      { kind: "message", data: entry(userMsg("msg_2", 200)) },
+      notice("bg-start:a", 100),
+      { kind: "message", data: entry(userMsg("msg_3", 300)) },
+    ])
+    expect(
+      sorted.map((e) => (e.kind === "message" ? e.data.info.id : e.kind === "notice" ? e.data.id : "opt")),
+    ).toEqual(["bg-start:a", "msg_2", "msg_3"])
+  })
+
+  it("created 并列：kind 秩 message < notice < optimistic（比较器反对称）", () => {
+    const withTie: ChatEntry[] = [
+      notice("bg-start:t", 100),
+      { kind: "message", data: entry(userMsg("msg_1", 100)) },
+      { kind: "optimistic", data: { optimistic: true, localId: "opt_1", text: "hi", createdAt: 100 } },
+    ]
+    const forward = sortEntries(withTie)
+    const backward = sortEntries([...withTie].reverse())
+    expect(forward.map((e) => e.kind)).toEqual(["message", "notice", "optimistic"])
+    // 输入顺序不影响结果 = 比较器自洽（旧二值比较器会因非反对称输出未定义）
+    expect(backward.map((e) => e.kind)).toEqual(forward.map((e) => e.kind))
+  })
+
+  it("回滚隐藏消息但保留通知", () => {
+    const entries: ChatEntry[] = [
+      { kind: "message", data: entry(userMsg("msg_1", 100)) },
+      notice("bg-start:t", 150),
+      { kind: "message", data: entry(userMsg("msg_2", 200)) },
+    ]
+    const kept = filterRevertedEntries(entries, "msg_2")
+    expect(kept.map((e) => e.kind)).toEqual(["message", "notice"])
   })
 })

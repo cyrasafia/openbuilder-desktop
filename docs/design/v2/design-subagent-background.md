@@ -44,6 +44,8 @@
 | `session.inbox.enqueued` | `item.type` ∈ `user/synthetic/compaction/move`；`Synthetic` 的 `item.payload` = `{text, description, metadata}`，`metadata` = `{source:"subagent", childID, agent, state}`，`state` 主枚举 `completed/error/cancelled`（wire 兼容别名见 D4），`item.time.created` 可信 | 现只消费 `user`（第 1677 行）；本次新增 `synthetic` 分支 |
 | `POST /api/session/{id}/interrupt` | 停止子会话 = 中断该子会话 | `abortSession(childID)`（`app-store.ts` 第 3889 行） |
 | `GET /api/session/{id}/message` | `synthetic` 条目的 `metadata` 同 inbox payload；`toInternalMessages` 现丢弃 `metadata` | `v2-adapter.ts` / `rest-client.ts#listMessagesPage` |
+| **完成 synthetic 的发件方**（2026-10-06 源码核实，tag v2.0.18） | `SubagentCompletion.deliver`（`packages/core/src/session/subagent-completion.ts`）统一产出 `metadata {source:"subagent", childID, agent, state}` + `<subagent …>` 文本。调用方：① 命令型 `subagent: true`（`config/plugin/command.ts` → `subagents.background`，恒发）；② 工具型 `subagent` tool `background:true`（`tool/plugin/subagent.ts` 同走 `subagents.background`，**也发**）；③ 工具型前台被"backgrounded"时经 `subagents.notify` 补发。工具型前台**正常完成不发**——结果内联在 tool part content | 桌面/移动端同判：一切 `source=subagent` synthetic 都渲染完成通知，不按工具型排除（移动端 `_noticeMessage` 同款） |
+| **v2 无 `task` tool**（2026-10-06 核实） | v2.0.18 工具名只有 `subagent`；`task` 是 v1 遗留。桌面 `task` 路由保留为存量数据兼容，新事件恒为 `subagent` | `MessageBlock` 分发 / `toolFormChildIds` 双认 |
 | `Session.parentID` | 子会话非空；`sessionsByProject` 保留全量（无移动端 64 条 LRU） | `findSession` / `findChildSession`（第 3718 / 3731 行） |
 
 ## 范围
@@ -163,6 +165,10 @@ runningBackgroundTasks(parentId) =
   `ChatView` 消费并打开 D2 的嵌入详情浮层（消费后即清，模式同
   `consumeFileReveal`）。任务已结束时任务条已消失，详情仍可按 childID 打开。
 - **留在原始接收位置**，不与任何任务条条目合并。
+- **不按工具型排除**（2026-10-06 裁定）：工具型 `subagent` tool `background:true` /
+  前台被 backgrounded 的完成 synthetic 与命令型同源（`SubagentCompletion.deliver`），
+  一并渲染为完成通知——移动端同款；工具型 tool part 呈现不变，通知只是流内历史。
+  工具型前台正常完成无 synthetic（结果在 tool part content），不受影响。
 
 ### D5 系统提示样式（统一）
 
@@ -303,6 +309,8 @@ chatEntries(sid)        = sort(message 条目 ∪ optimistic 条目 ∪ notice �
 - **`subagent` tool 现状缺口**：现存 `SubagentPanel` 只认 `task`；本设计把
   `subagent` 一并纳入工具型路由与 `toolFormChildIds`，否则其子会话会被误判成
   后台任务。载荷同构依据见「范围」表下注（移动端 `conversation_screen.dart:2006`）。
+  另：v2.0.18 无 `task` tool（2026-10-06 核实，见契约表）——`task` 路由仅为
+  v1 存量数据兼容，新事件恒为 `subagent`。
 - **家族聚合的瞬时窗口**：断连时 `sessionStatus.clear()` 会让运行中的后台任务
   短暂显示 idle/父亲族也灭，重连对账后恢复（与 typing dots 断连同语义，可接受）。
 - **完成 synthetic 的 `state`**：主枚举 `completed/error/cancelled`，防御性
@@ -336,3 +344,23 @@ chatEntries(sid)        = sort(message 条目 ∪ optimistic 条目 ∪ notice �
 | 5 | 🟢 nit | `state` 枚举前后不一致 | 统一为 `completed/error/cancelled` + 防御性别名 `failed`/`interrupted` |
 | 6 | 🟢 nit | 「父会话 idle 时指示器全灭」不准（waiting 仍亮） | 改为「running 不点亮」 |
 | — | ❓待确认 | `subagent` tool 是否存在及载荷形状 | 查证：移动端 `conversation_screen.dart:2006` 对 `task`/`subagent` 同走 `_SubagentPanel`，读同组字段；补注依据 |
+
+### 第三轮（实现后，2026-10-06）
+
+| # | 级别 | 问题 | 处置 |
+|---|---|---|---|
+| 1 | 🟠 | 完成回执未排除工具型；工具型 task 完成是否带 `source=subagent` 待证 | 源码核实（tag v2.0.18）：`background:true` / 前台被 backgrounded 的工具型**也发**、前台正常完成不发。裁定**不排除**（同移动端 `_noticeMessage`），契约表 + D4 补记，测试钉行为 |
+| 2 | 🟠 | D3 撤回只覆盖「创建早于 tool part」；反向时序 + 中断残留 | 已修：`onChildSessionCreated` 插入前先查 `toolFormChildIdsFor`，已认领直接不插；补反向时序用例 |
+| 3 | 🟢 nit | 任务条浮层 / 详情浮层 / command-hints 同位无叠放次序 | `.bg-task-popover` / `.task-detail-slot` 加 `z-index: 30` |
+| 4 | 🟢 nit | 完成通知 label 兜底链缺 childID，可能空名 | 兜底链补 `childID`，补用例 |
+| 5 | 🟢 nit | 详情浮层无 Esc 关闭 / aria | 挂 window Esc（`isComposing` + `overlayCount > 0` 让位），`role=dialog` + `aria-label` 已有 |
+
+### 第四轮（实现后，2026-10-06）
+
+| # | 级别 | 问题 | 处置 |
+|---|---|---|---|
+| 1 | 🟠 | 撤回钩子只在 `message.part.updated`；断线丢事件、REST-only 落地时不撤回 | `mergeMessagePage` / `onMessagesSnapshot` 合并后补调 `reconcileStartNotices`（无 background-started 时早退，零成本）；补 REST-only 用例 |
+| 2 | 🟠 | 任务条全部结束后 `open` 残留，新任务启动浮层直接展开 | `tasks.length === 0` 时 effect 复位 `open`/`stopping` |
+| 3 | 🟠 | 详情浮层对不可解析 childID 永久「加载中」 | 加载探测后 `!childSession && entries 空` 落 `subagentNoSession` 空态（会话在而 REST 失败仍走加载态——SubagentPanel 同款，重开是重试） |
+| — | 🟢 nit | `chatEntryKey` 与 ChatView 内联 key 两处维护 | ChatView 改用 `chatEntryKey` |
+| — | 🟢 nit | `entryCreated(e, 0)` 哑参 | 拆 `settledCreated`（模块级）+ `createdOf`（sortEntries 闭包） |

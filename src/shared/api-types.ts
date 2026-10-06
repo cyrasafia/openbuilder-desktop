@@ -79,6 +79,9 @@ export interface UserMessage {
   sessionID: string
   role: "user"
   time: { created: number }
+  /** 合成消息（synthetic）的服务端 metadata 透传（design-subagent-background D4）：
+   *  完成回执 `{source:"subagent", childID, agent, state}`；普通 user 消息为空 */
+  metadata?: Record<string, unknown>
   [k: string]: unknown
 }
 
