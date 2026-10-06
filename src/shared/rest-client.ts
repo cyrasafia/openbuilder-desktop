@@ -1,7 +1,9 @@
 /**
  * opencode **v2** REST client（renderer 直连，fetch 封装；v0.5 起唯一 client——
  * v1 面已删除，见 docs/plan/plan-v2-protocol.md M6d）。契约以
- * ../openbuilder/opencode_openapi_v2.json 为准（2.0.18 pin）。
+ * ../openbuilder/opencode_openapi_v2.json 为准（2.0.18 pin）；例外：credential/
+ * integration 面以 docs/design/v2/design-provider-config.md §1 实测表为准
+ * （2.0.23 生成的 openapi.json 滞后漏收 DELETE 等端点，源码+活体已核）。
  */
 import type {
   CursorPage,
@@ -15,6 +17,7 @@ import type {
   V2FileDiff,
   V2FormAnswer,
   V2FsEntry,
+  V2IntegrationInfo,
   V2ModelInfo,
   V2PermissionDecision,
   ShellInfo,
@@ -582,6 +585,44 @@ export class RestClient {
       `/api/model${this.locationQuery(directory)}`,
     )
     return res.data
+  }
+
+  /**
+   * GET /api/integration：integration 目录 + 连接状态（design-provider-config
+   * v2 恢复，A1）。全目录平铺（2.0.23 活体 229 项），面板取 connections 非空项。
+   * connections 每条存储凭据各一行（更换 key 不删旧凭据 → 多行）；env 连接由
+   * server 进程环境变量在场生成。目录不存在 → data 空数组。
+   */
+  async listIntegrations(directory: string): Promise<V2IntegrationInfo[]> {
+    const res = await this.fetchJson<{ data: V2IntegrationInfo[] }>(
+      `/api/integration${this.locationQuery(directory)}`,
+    )
+    return res.data
+  }
+
+  /**
+   * POST /api/integration/:id/connect/key：设置/更换 API key（body {key}，204）。
+   * 内部 = create credential 默认 activate——旧凭据置 inactive 但保留（core 源码
+   * 核对），单槽语义由调用方补 removeCredential 完成。2.0.18 起可用。
+   */
+  async connectIntegrationKey(integrationID: string, key: string, directory: string): Promise<void> {
+    await this.fetchResponse(
+      `/api/integration/${encodeURIComponent(integrationID)}/connect/key${this.locationQuery(directory)}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ key }),
+      },
+    )
+  }
+
+  /**
+   * DELETE /api/credential/:credentialID（204；不存在的 id 幂等 204）。
+   * **2.0.23 起**——2.0.18–22 路由不存在（404 经 ApiError 呈现）。
+   */
+  async removeCredential(credentialID: string): Promise<void> {
+    await this.fetchResponse(`/api/credential/${encodeURIComponent(credentialID)}`, {
+      method: "DELETE",
+    })
   }
 
   // ============ 文件系统（M6b：fs 组，deepObject location + Entry 模型） ============

@@ -10,8 +10,10 @@
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { ModelsSettings, SettingsDialog } from "./settings-dialog"
+import { ModelsSettings, ProviderKeyForm, ProviderSettings, SettingsDialog } from "./settings-dialog"
+import type { ProviderOps, ProviderKeyTarget } from "./settings-dialog"
 import type { ModelCatalog } from "@shared/model-catalog"
+import type { V2IntegrationInfo } from "@shared/api-v2-types"
 
 const scanBinaries = vi.fn(async () => [
   { path: "/usr/bin/opencode", version: "1.18.20" },
@@ -80,6 +82,22 @@ vi.mock("../app", () => ({
       modelsEmpty: "无可用模型",
       modelsEnableAll: "全部开启",
       modelsDisableAll: "全部关闭",
+      providerTitle: "Provider",
+      providerNoneConnected: "尚无已配置的 provider",
+      providerNoProject: "打开项目后可在此配置 provider",
+      providerModels: "模型 {count}",
+      providerKeyReplace: "更换 key",
+      providerKeyDelete: "删除",
+      providerKeyOn: "已配置凭据",
+      providerMethodKey: "key",
+      providerMethodOauth: "OAuth",
+      providerMethodEnv: "环境变量",
+      providerEnvHint: "由 server 环境变量 {name} 提供（只读）",
+      providerNeedsAuth: "需重新认证",
+      providerKeyFor: "{name} 的 API key",
+      providerKeyCleanupFailed: "key 已更新，但清理旧凭据失败：{error}",
+      providerKeyDeleteConfirmTitle: "删除 {name} 的凭据",
+      providerKeyDeleteConfirmBody: "删除后该 provider 的模型将不可用。",
       scGroupGlobal: "全局",
       scGroupInput: "输入与视图",
       newTab: "新建 Tab",
@@ -786,6 +804,312 @@ describe("ModelsSettings（模型页签）", () => {
     fireEvent.click(screen.getByText("模型"))
     expect(screen.getByText("请先连接服务器")).toBeTruthy()
     expect(screen.queryByText("设置")).toBeTruthy()
+  })
+})
+
+// ============ Provider 页签（design-provider-config v2 恢复，A1） ============
+
+describe("ProviderSettings（v2 credential/integration）", () => {
+  /** 活体形状（2.0.23）：connections 一行一条——key 凭据 / oauth 凭据 / env */
+  const integrations: V2IntegrationInfo[] = [
+    {
+      id: "deepseek",
+      name: "DeepSeek",
+      methods: [{ type: "key" }],
+      connections: [
+        { type: "credential", id: "cred_ds", label: "API key", method: "key" },
+      ],
+    },
+    {
+      id: "github-copilot",
+      name: "GitHub Copilot",
+      methods: [{ type: "oauth", id: "device", label: "Login" }],
+      connections: [
+        {
+          type: "credential",
+          id: "cred_gh",
+          label: "Login with GitHub Copilot",
+          method: "oauth",
+          status: { status: "needs_auth", message: "token expired" },
+        },
+      ],
+    },
+    {
+      id: "opencode",
+      name: "OpenCode",
+      methods: [{ type: "key" }, { type: "env", names: ["OPENCODE_KEY"] }],
+      connections: [{ type: "env", name: "OPENCODE_KEY" }],
+    },
+    { id: "302ai", name: "302.AI", methods: [{ type: "key" }], connections: [] },
+  ]
+
+  const mkOps = () => {
+    const list = vi.fn(async (): Promise<V2IntegrationInfo[]> => integrations)
+    const setKey = vi.fn(async () => {})
+    const removeCredential = vi.fn(async () => {})
+    const ops = { list, setKey, removeCredential } satisfies ProviderOps
+    return { ops, list, setKey, removeCredential }
+  }
+
+  /** 已连接 + 目录就绪（模型目录缓存给模型数列） */
+  const connectStore = () => {
+    storeState.current = {
+      ...storeState.current,
+      activeProfileId: "p1",
+      activeProfile: { id: "p1", name: "a", baseUrl: "http://x", mode: "attach" },
+      getActiveClient: () => ({}),
+      scopeQuery: { directory: "/repo" },
+      modelCatalogs: new Map([
+        [
+          "/repo",
+          {
+            agents: [],
+            models: [
+              { id: "m1", providerID: "deepseek", name: "DS1", variants: [] },
+              { id: "m2", providerID: "deepseek", name: "DS2", variants: [] },
+            ],
+          },
+        ],
+      ]),
+      modelCatalogFor: (dir: string) =>
+        (storeState.current.modelCatalogs as Map<string, ModelCatalog>).get(dir) ?? {
+          agents: [],
+          models: [],
+        },
+    }
+    return storeState.current.ensureModelCatalog as ReturnType<typeof vi.fn>
+  }
+
+  it("列表 = connections 非空项一行一条 connection；env 只读无按钮；未配置不出现", async () => {
+    connectStore()
+    const { ops, list } = mkOps()
+    render(<ProviderSettings ops={ops} onEditKey={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText("DeepSeek")).toBeTruthy())
+    expect(list).toHaveBeenCalledWith("/repo")
+    // 未配置 integration 不出现
+    expect(screen.queryByText("302.AI")).toBeNull()
+    // key 凭据行：更换 + 删除
+    expect(screen.getByText("更换 key")).toBeTruthy()
+    expect(screen.getAllByText("删除")).toHaveLength(2) // key 行 + oauth 行
+    // oauth 行：needs_auth 徽标（title 携带 message）、无更换按钮
+    expect(screen.getByText("需重新认证").getAttribute("title")).toBe("token expired")
+    // env 行：只读（无删除/更换），徽标 = 环境变量
+    expect(screen.getByText("环境变量")).toBeTruthy()
+    expect(screen.getAllByText("删除")).toHaveLength(2)
+    // 模型数列：deepseek 2 个模型；无匹配显示 —
+    expect(screen.getByText("模型 2")).toBeTruthy()
+  })
+
+  it("更换 key：onEditKey 携带 integrationID 与旧 credentialID", async () => {
+    connectStore()
+    const onEditKey = vi.fn()
+    const { ops } = mkOps()
+    render(<ProviderSettings ops={ops} onEditKey={onEditKey} />)
+    await waitFor(() => expect(screen.getByText("DeepSeek")).toBeTruthy())
+    fireEvent.click(screen.getByText("更换 key"))
+    expect(onEditKey).toHaveBeenCalledWith({
+      integrationID: "deepseek",
+      name: "DeepSeek",
+      oldCredentialID: "cred_ds",
+    })
+  })
+
+  it("删除：二次确认后 removeCredential + 重拉", async () => {
+    connectStore()
+    const { ops, list, removeCredential } = mkOps()
+    const onEditKey = vi.fn()
+    render(<ProviderSettings ops={ops} onEditKey={onEditKey} />)
+    await waitFor(() => expect(screen.getByText("DeepSeek")).toBeTruthy())
+    const callsBefore = list.mock.calls.length
+    // key 行的删除（第一个删除按钮；oauth 行是第二个）
+    fireEvent.click(screen.getAllByText("删除")[0]!)
+    await waitFor(() => expect(screen.getByText(/删除 DeepSeek 的凭据/)).toBeTruthy())
+    // 确认弹窗里的确认钮（btn-primary danger）——行内也有「删除」，取 confirm 弹窗内那个
+    const confirmBtn = screen
+      .getAllByText("删除")
+      .find((b) => (b as HTMLButtonElement).className.includes("btn-primary"))
+    expect(confirmBtn).toBeTruthy()
+    fireEvent.click(confirmBtn!)
+    await waitFor(() => expect(removeCredential).toHaveBeenCalledWith("cred_ds"))
+    await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(callsBefore))
+  })
+
+  it("多凭据多行（更换未清理残留）：同 integration 两条 connection 各自可删", async () => {
+    connectStore()
+    const doubled: V2IntegrationInfo[] = [
+      {
+        id: "deepseek",
+        name: "DeepSeek",
+        methods: [{ type: "key" }],
+        connections: [
+          { type: "credential", id: "cred_new", label: "API key", method: "key" },
+          { type: "credential", id: "cred_old", label: "API key", method: "key" },
+        ],
+      },
+    ]
+    const ops = { ...mkOps().ops, list: vi.fn(async () => doubled) }
+    render(<ProviderSettings ops={ops} onEditKey={vi.fn()} />)
+    await waitFor(() => expect(screen.getAllByText("DeepSeek")).toHaveLength(2))
+    expect(screen.getAllByText("更换 key")).toHaveLength(2)
+  })
+
+  it("无连接 / 无项目守卫态", async () => {
+    const { ops } = mkOps()
+    const { rerender } = render(<ProviderSettings ops={ops} onEditKey={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText("请先连接服务器")).toBeTruthy())
+    connectStore()
+    storeState.current.scopeQuery = { directory: null }
+    rerender(<ProviderSettings ops={ops} onEditKey={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText("打开项目后可在此配置 provider")).toBeTruthy())
+    expect(ops.list).not.toHaveBeenCalled()
+  })
+})
+
+describe("ProviderKeyForm（两段式保存）", () => {
+  const target: ProviderKeyTarget = {
+    integrationID: "deepseek",
+    name: "DeepSeek",
+    oldCredentialID: "cred_ds",
+  }
+  const baseStore = () => {
+    storeState.current = {
+      ...storeState.current,
+      activeProfileId: "p1",
+      activeProfile: { id: "p1", name: "a", baseUrl: "http://x", mode: "attach" },
+      getActiveClient: () => ({}),
+      scopeQuery: { directory: "/repo" },
+    }
+  }
+
+  it("保存：setKey 成功 → removeCredential 旧凭据 → onSaved", async () => {
+    baseStore()
+    const setKey = vi.fn(async () => {})
+    const removeCredential = vi.fn(async () => {})
+    const onSaved = vi.fn()
+    render(
+      <ProviderKeyForm
+        target={target}
+        ops={{ list: vi.fn(), setKey, removeCredential }}
+        onCancel={vi.fn()}
+        onSaved={onSaved}
+      />,
+    )
+    const input = screen.getByLabelText("DeepSeek 的 API key")
+    fireEvent.change(input, { target: { value: "sk-new" } })
+    fireEvent.click(screen.getByText("保存"))
+    await waitFor(() => expect(onSaved).toHaveBeenCalled())
+    expect(setKey).toHaveBeenCalledWith("deepseek", "sk-new", "/repo")
+    expect(removeCredential).toHaveBeenCalledWith("cred_ds")
+  })
+
+  it("清理旧凭据失败：key 已生效提示文案、不调 onSaved（可返回手动删）", async () => {
+    baseStore()
+    const setKey = vi.fn(async () => {})
+    const removeCredential = vi.fn(async () => {
+      throw new Error("HTTP 404")
+    })
+    const onSaved = vi.fn()
+    render(
+      <ProviderKeyForm
+        target={target}
+        ops={{ list: vi.fn(), setKey, removeCredential }}
+        onCancel={vi.fn()}
+        onSaved={onSaved}
+      />,
+    )
+    fireEvent.change(screen.getByLabelText("DeepSeek 的 API key"), {
+      target: { value: "sk-new" },
+    })
+    fireEvent.click(screen.getByText("保存"))
+    await waitFor(() =>
+      expect(screen.getByText(/清理旧凭据失败：HTTP 404/)).toBeTruthy(),
+    )
+    expect(onSaved).not.toHaveBeenCalled()
+  })
+
+  it("setKey 失败：错误内联、不进入清理段", async () => {
+    baseStore()
+    const setKey = vi.fn(async () => {
+      throw new Error("HTTP 500")
+    })
+    const removeCredential = vi.fn(async () => {})
+    render(
+      <ProviderKeyForm
+        target={target}
+        ops={{ list: vi.fn(), setKey, removeCredential }}
+        onCancel={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    )
+    fireEvent.change(screen.getByLabelText("DeepSeek 的 API key"), {
+      target: { value: "sk-new" },
+    })
+    fireEvent.click(screen.getByText("保存"))
+    await waitFor(() => expect(screen.getByText("HTTP 500")).toBeTruthy())
+    expect(removeCredential).not.toHaveBeenCalled()
+  })
+
+  it("空 key 禁用保存", () => {
+    baseStore()
+    render(
+      <ProviderKeyForm
+        target={target}
+        ops={{ list: vi.fn(), setKey: vi.fn(), removeCredential: vi.fn() }}
+        onCancel={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    )
+    expect((screen.getByText("保存") as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+describe("SettingsDialog Provider 接线（页签/视图/Esc 分层，评审 2026-10-07 P2）", () => {
+  const connectWithClient = () => {
+    storeState.current = {
+      ...storeState.current,
+      activeProfileId: "p1",
+      activeProfile: { id: "p1", name: "a", baseUrl: "http://x", mode: "attach" },
+      getActiveClient: () => ({
+        listIntegrations: vi.fn(async (): Promise<V2IntegrationInfo[]> => [
+          {
+            id: "deepseek",
+            name: "DeepSeek",
+            methods: [{ type: "key" }],
+            connections: [
+              { type: "credential", id: "cred_ds", label: "API key", method: "key" },
+            ],
+          },
+        ]),
+        connectIntegrationKey: vi.fn(async () => {}),
+        removeCredential: vi.fn(async () => {}),
+      }),
+      scopeQuery: { directory: "/repo" },
+      modelCatalogFor: () => ({ agents: [], models: [] }),
+    }
+  }
+
+  it("页签可达：点「Provider」进入，未连接显示 connectFirst（连接页签之后）", () => {
+    render(<SettingsDialog />)
+    fireEvent.click(screen.getByText("Provider"))
+    expect(screen.getByText("请先连接服务器")).toBeTruthy()
+    expect(screen.queryByText("设置")).toBeTruthy()
+  })
+
+  it("更换 key → 表单视图；Esc 两跳退回列表再关弹窗（providerEdit 分层）", async () => {
+    connectWithClient()
+    const { container } = render(<SettingsDialog />)
+    fireEvent.click(screen.getByText("Provider"))
+    await waitFor(() => expect(screen.getByText("DeepSeek")).toBeTruthy())
+    fireEvent.click(screen.getByText("更换 key"))
+    await waitFor(() => expect(screen.getByLabelText("DeepSeek 的 API key")).toBeTruthy())
+    // Esc 1：表单 → 列表（重挂自动重拉）
+    fireEvent.keyDown(container.querySelector(".dialog")!, { key: "Escape" })
+    await waitFor(() => expect(screen.getByText("更换 key")).toBeTruthy())
+    // Esc 2：列表 → 关弹窗
+    fireEvent.keyDown(container.querySelector(".dialog")!, { key: "Escape" })
+    await waitFor(() =>
+      expect(storeState.current.closeSettings).toHaveBeenCalled(),
+    )
   })
 })
 

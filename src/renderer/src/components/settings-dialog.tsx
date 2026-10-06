@@ -5,6 +5,7 @@ import type { BinaryCandidate, ConnectionProfile, ManagedNotice, ServerCandidate
 import { MIN_SERVER_VERSION_V2 } from "@shared/semver"
 import { RestClient } from "@shared/rest-client"
 import type { ModelInfo } from "@shared/api-types"
+import type { V2Connection, V2IntegrationInfo } from "@shared/api-v2-types"
 import { isModelDisabled } from "@shared/model-catalog"
 import { ConfirmDialog } from "./confirm-dialog"
 import { ConnectingDialog } from "./connecting-dialog"
@@ -52,7 +53,12 @@ export function SettingsDialog() {
   // 非空 = 弹窗内跳转到服务器子视图（丢弃 tabs 视图，草稿随视图卸载）
   const [editing, setEditing] = useState<EditingState | null>(null)
   // 非空 = 弹窗内跳转到 provider key 表单视图（review P2：与 profile 表单同层，
-  // Esc 退回列表、标题行返回钮、actions 钉底）
+  // Esc 退回列表、标题行返回钮、actions 钉底）。target 含旧 credentialID——
+  // v2 更换 key 是 connect/key（新凭据激活）+ DELETE 旧凭据两段（design-provider-config §2）
+  const [providerEdit, setProviderEdit] = useState<ProviderKeyTarget | null>(null)
+  // provider key 表单保存中（评审 2026-10-07 P1）：冻结 Esc/返回/关闭，防两段式
+  // 第二段失败的提示随卸载丢失（列表无手动刷新入口，用户将无感知）
+  const [providerSaving, setProviderSaving] = useState(false)
   const dialogRef = useRef<HTMLDivElement>(null)
 
   const close = () => {
@@ -120,13 +126,14 @@ export function SettingsDialog() {
   // 列表/发现视图聚焦弹窗容器（Esc keydown 有落脚点，review 第二轮：表单返回
   // 路径同样需要——否则焦点回落 body，Esc 分层最后一跳静默失效）。
   // 发现视图同样需要（guided review 修订）：它无 autoFocus 元素，进入时焦点
-  // 随「添加」按钮卸载回落 body。manual 表单由 autoFocus 输入框落焦点，不在
-  // 聚焦范围。挂起期弹窗隐藏（修订 3）焦点回落 body；失败收尾恢复显示
-  // 时拉回容器——Esc 分层在回退后即刻可用
+  // 随「添加」按钮卸载回落 body。manual/provider key 表单由 autoFocus 输入框
+  // 落焦点，不在聚焦范围（条件须含 !providerEdit——否则抢走 provider key 表单
+  // 焦点，v1 review 注记沿用）。挂起期弹窗隐藏（修订 3）焦点回落 body；失败
+  // 收尾恢复显示时拉回容器——Esc 分层在回退后即刻可用
   useEffect(() => {
     if (pendingNew) return
-    if (!editing || editing?.view === "discover") dialogRef.current?.focus()
-  }, [editing, pendingNew])
+    if ((!editing && !providerEdit) || editing?.view === "discover") dialogRef.current?.focus()
+  }, [editing, providerEdit, pendingNew])
 
   // 挂起新增的收尾（design-guided-add-server 修订 2/3，订阅驱动不经渲染）：
   // started 置位（= disconnect 完成）后：connecting → 记已见 + 清 connectError
@@ -203,11 +210,14 @@ export function SettingsDialog() {
             if (e.nativeEvent.isComposing) return
             // 挂起新增（连接中）：Esc 不关弹窗不退层（连接不可中断，UI 冻结在 loading）
             if (pendingNew) return
+            // provider key 保存中：同上冻结（两段式在途，离开丢失败提示）
+            if (providerEdit && providerSaving) return
             // Esc 分层（review P2 + design-guided-add-server §2）：manual（新增）
             // / provider 表单先退回上一层，其余退回列表
             if (e.key === "Escape") {
               if (editing?.view === "manual" && editing.isNew) setEditing({ view: "discover" })
               else if (editing) setEditing(null)
+              else if (providerEdit) setProviderEdit(null)
               else close()
             }
           }}
@@ -257,6 +267,38 @@ export function SettingsDialog() {
                 />
               )}
             </>
+          ) : providerEdit ? (
+            <>
+              <div className="dialog-title dialog-title-row">
+                <div className="dialog-title-side">
+                  <button
+                    className="icon-btn"
+                    title={t.back}
+                    aria-label={t.back}
+                    disabled={providerSaving}
+                    onClick={() => setProviderEdit(null)}
+                  >
+                    <ArrowLeft size={14} aria-hidden />
+                  </button>
+                  <span>{t.providerKeyFor.replace("{name}", providerEdit.name)}</span>
+                </div>
+                <button
+                  className="icon-btn"
+                  title={t.close}
+                  aria-label={t.close}
+                  disabled={providerSaving}
+                  onClick={close}
+                >
+                  <X size={14} aria-hidden />
+                </button>
+              </div>
+              <ProviderKeyForm
+                target={providerEdit}
+                onCancel={() => setProviderEdit(null)}
+                onSaved={() => setProviderEdit(null)}
+                onSavingChange={setProviderSaving}
+              />
+            </>
           ) : (
             <>
               <div className="dialog-title dialog-title-row">
@@ -284,6 +326,13 @@ export function SettingsDialog() {
                   onClick={() => setTab("connection")}
                 >
                   {t.connectionTitle}
+                </button>
+                <button
+                  className={tab === "providers" ? "active" : ""}
+                  disabled={!!pendingNew}
+                  onClick={() => setTab("providers")}
+                >
+                  {t.providerTitle}
                 </button>
                 <button
                   className={tab === "models" ? "active" : ""}
@@ -321,6 +370,8 @@ export function SettingsDialog() {
                     onEdit={setEditing}
                     onSwitch={(p) => void saveProfile(p, "switch")}
                   />
+                ) : tab === "providers" ? (
+                  <ProviderSettings onEditKey={setProviderEdit} />
                 ) : tab === "models" ? (
                   <ModelsSettings />
                 ) : tab === "appearance" ? (
@@ -714,6 +765,311 @@ export function ProfileFormView({
         )}
         <button className="btn-primary" disabled={busy} onClick={() => onSave(draft)}>
           {saveLabel ? saveLabel(draft.mode) : t.save}
+        </button>
+      </div>
+    </>
+  )
+}
+
+// ============ Provider 页签（design-provider-config v2 恢复，A1） ============
+
+/** 错误文案归一（评审 2026-10-07 P5）：Error 取 message（"not connected" 归一为
+ *  connectFirst），非 Error 抛出物字符串化（不吞真实错误） */
+function providerErrorText(e: unknown, connectFirst: string): string {
+  if (e instanceof Error) return e.message === "not connected" ? connectFirst : e.message || connectFirst
+  return String(e)
+}
+
+/** key 表单目标：integration 标识 + 展示名 + 待清理的旧 credentialID（更换场景） */
+export interface ProviderKeyTarget {
+  integrationID: string
+  name: string
+  /** 更换前的旧凭据 id（connect/key 只激活新凭据不删旧，表单保存成功后补删） */
+  oldCredentialID?: string
+}
+
+/** 数据操作注入（默认走 active client；jsdom 测试注入桩——v1 模式沿用） */
+export interface ProviderOps {
+  list: (directory: string) => Promise<V2IntegrationInfo[]>
+  setKey: (integrationID: string, key: string, directory: string) => Promise<void>
+  removeCredential: (credentialID: string) => Promise<void>
+}
+
+function defaultProviderOps(store: ReturnType<typeof useStore>): ProviderOps {
+  const client = () => {
+    const c = store.getActiveClient()
+    if (!c) throw new Error("not connected")
+    return c
+  }
+  return {
+    // 全 async 包装（v1 review 第二轮 P3）：client() 的同步 throw 若在调用点
+    // 直接冒出会逃逸 .catch 链（saving 卡死/静默失败）——async 化后走 rejection
+    list: async (directory) => client().listIntegrations(directory),
+    setKey: async (id, key, directory) => client().connectIntegrationKey(id, key, directory),
+    removeCredential: async (id) => client().removeCredential(id),
+  }
+}
+
+/**
+ * Provider 页签列表（v2）：数据源 GET /api/integration 的 connections——
+ * 一行一条 connection（每条存储凭据各一行，更换不删旧 → 可能多行；env 连接
+ * 只读）。列表 = 已配置项（v1 2026-09-23 裁定沿用：无全目录发现入口）。
+ */
+export function ProviderSettings({
+  ops,
+  onEditKey,
+}: {
+  ops?: ProviderOps
+  onEditKey: (target: ProviderKeyTarget) => void
+}) {
+  const store = useStore()
+  const { t } = useI18n()
+  const directory = store.scopeQuery.directory
+  const connected = !!store.getActiveClient()
+  const [integrations, setIntegrations] = useState<V2IntegrationInfo[] | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  // 删除二次确认（确认的是具体 credential 行）
+  const [confirming, setConfirming] = useState<ProviderKeyTarget | null>(null)
+  const realOps = ops ?? defaultProviderOps(store)
+  // 请求序号（v1 review P3）：作用域/连接态变化重拉时，迟到的旧响应不覆盖新结果
+  const reloadSeq = useRef(0)
+
+  const reload = async () => {
+    if (!connected || !directory) return
+    const seq = ++reloadSeq.current
+    setLoading(true)
+    setError(null)
+    try {
+      const next = await realOps.list(directory)
+      if (seq !== reloadSeq.current) return
+      setIntegrations(next)
+    } catch (e) {
+      if (seq !== reloadSeq.current) return
+      // 错误不清已渲染列表（v1 review P3：瞬态网络错误不白屏）
+      setError(providerErrorText(e, t.connectFirst))
+    } finally {
+      if (seq === reloadSeq.current) setLoading(false)
+    }
+  }
+
+  // 挂载/作用域变化拉列表 + 模型目录（模型数列复用 modelCatalogs 缓存）
+  useEffect(() => {
+    void reload()
+    if (connected && directory) void store.ensureModelCatalog(directory)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected, directory])
+
+  if (!connected) {
+    return (
+      <div className="settings-providers">
+        <div className="form-note">{t.connectFirst}</div>
+      </div>
+    )
+  }
+  if (!directory) {
+    // 已连接但未打开项目（v1 review 第二轮 P3：与未连接文案分开）
+    return (
+      <div className="settings-providers">
+        <div className="form-note">{t.providerNoProject}</div>
+      </div>
+    )
+  }
+
+  // 模型数（providerID 与 integration id 同 namespace，design-provider-config §1）
+  const modelCounts = new Map<string, number>()
+  for (const m of store.modelCatalogFor(directory).models) {
+    modelCounts.set(m.providerID, (modelCounts.get(m.providerID) ?? 0) + 1)
+  }
+
+  const rows: Array<{ integration: V2IntegrationInfo; connection: V2Connection }> = []
+  for (const it of integrations ?? []) {
+    for (const c of it.connections) rows.push({ integration: it, connection: c })
+  }
+
+  return (
+    <div className="settings-providers">
+      {error && <div className="form-note">{error}</div>}
+      {!loading && integrations && rows.length === 0 && (
+        <div className="form-note">{t.providerNoneConnected}</div>
+      )}
+      <div className="provider-list">
+        {rows.map(({ integration, connection }) => {
+          const isCredential = connection.type === "credential"
+          const keyRow = isCredential && connection.method === "key"
+          const envRow = connection.type === "env"
+          const count = modelCounts.get(integration.id) ?? 0
+          const methodLabel = envRow
+            ? t.providerMethodEnv
+            : isCredential && connection.method === "oauth"
+              ? t.providerMethodOauth
+              : t.providerMethodKey
+          return (
+            <div
+              key={isCredential ? connection.id : `${integration.id}\0${connection.name}`}
+              className="provider-row"
+            >
+              <span
+                className={"provider-key-dot " + (isCredential ? "on" : "env")}
+                title={
+                  envRow
+                    ? t.providerEnvHint.replace("{name}", connection.name)
+                    : t.providerKeyOn
+                }
+              />
+              <span className="tree-label">{integration.name}</span>
+              <span className="profile-mode">{methodLabel}</span>
+              {/* 凭据行显示 label；env 行显示变量名（评审 2026-10-07 P3：设计对齐） */}
+              {envRow ? (
+                <span className="tree-meta mono">{connection.name}</span>
+              ) : connection.label ? (
+                <span className="tree-meta mono">{connection.label}</span>
+              ) : null}
+              {connection.status && (
+                <span className="provider-warn" title={connection.status.message}>
+                  {t.providerNeedsAuth}
+                </span>
+              )}
+              <span className="tree-meta mono">
+                {count > 0 ? t.providerModels.replace("{count}", String(count)) : "—"}
+              </span>
+              {keyRow && (
+                <button
+                  onClick={() =>
+                    onEditKey({
+                      integrationID: integration.id,
+                      name: integration.name,
+                      oldCredentialID: connection.id,
+                    })
+                  }
+                >
+                  {t.providerKeyReplace}
+                </button>
+              )}
+              {isCredential && (
+                <button
+                  className="danger"
+                  onClick={() =>
+                    setConfirming({
+                      integrationID: integration.id,
+                      name: integration.name,
+                      oldCredentialID: connection.id,
+                    })
+                  }
+                >
+                  {t.providerKeyDelete}
+                </button>
+              )}
+            </div>
+          )
+        })}
+      </div>
+      {loading && <div className="form-note">{t.loading}</div>}
+      {confirming && (
+        <ConfirmDialog
+          title={t.providerKeyDeleteConfirmTitle.replace("{name}", confirming.name)}
+          message={t.providerKeyDeleteConfirmBody}
+          confirmLabel={t.providerKeyDelete}
+          cancelLabel={t.cancel}
+          danger
+          onConfirm={() => {
+            const target = confirming
+            setConfirming(null)
+            void realOps
+              .removeCredential(target.oldCredentialID ?? "")
+              .then(() => reload())
+              .catch((e: unknown) => setError(providerErrorText(e, t.connectFirst)))
+          }}
+          onClose={() => setConfirming(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * provider key 表单（SettingsDialog 层视图，同 ProfileFormView 结构；v1 review
+ * P2 沿用）。保存两段式（design-provider-config §2）：connect/key（新凭据自动
+ * 激活）→ 成功后 DELETE 旧凭据；清理失败不回滚——key 已生效，提示后留在表单
+ * 可返回列表手动删旧行。
+ */
+export function ProviderKeyForm({
+  target,
+  ops,
+  onCancel,
+  onSaved,
+  onSavingChange,
+}: {
+  target: ProviderKeyTarget
+  ops?: ProviderOps
+  onCancel: () => void
+  onSaved: () => void
+  /** saving 态上提（评审 2026-10-07 P1）：弹窗层据此冻结 Esc/返回/关闭——
+   *  两段式第二段失败的提示落在表单内，离开即丢失（卸载后 setState no-op） */
+  onSavingChange?: (saving: boolean) => void
+}) {
+  const store = useStore()
+  const { t } = useI18n()
+  const realOps = ops ?? defaultProviderOps(store)
+  const [keyDraft, setKeyDraft] = useState("")
+  const [saving, setSaving] = useState(false)
+  const [editError, setEditError] = useState<string | null>(null)
+
+  const save = () => {
+    const directory = store.scopeQuery.directory
+    setSaving(true)
+    onSavingChange?.(true)
+    setEditError(null)
+    void (async () => {
+      // 两段式（design-provider-config §2）：先 connect/key（新凭据自动激活），
+      // 成功后补删旧凭据；任一失败留在表单提示，两种失败文案分开
+      try {
+        await realOps.setKey(target.integrationID, keyDraft.trim(), directory ?? "")
+      } catch (e) {
+        setEditError(providerErrorText(e, t.connectFirst))
+        return
+      }
+      if (target.oldCredentialID) {
+        try {
+          await realOps.removeCredential(target.oldCredentialID)
+        } catch (e) {
+          // 清理失败不回滚——新 key 已激活生效，提示后可回列表手动删旧行
+          setEditError(
+            t.providerKeyCleanupFailed.replace(
+              "{error}",
+              e instanceof Error ? e.message : String(e),
+            ),
+          )
+          return
+        }
+      }
+      onSaved()
+    })().finally(() => {
+      setSaving(false)
+      onSavingChange?.(false)
+    })
+  }
+
+  return (
+    <>
+      <div className="dialog-body">
+        <label className="form-label">
+          {t.providerKeyFor.replace("{name}", target.name)}
+          <input
+            type="password"
+            autoFocus
+            value={keyDraft}
+            onChange={(e) => setKeyDraft(e.target.value)}
+          />
+        </label>
+        {editError && <div className="form-note">{editError}</div>}
+      </div>
+      <div className="dialog-actions">
+        <button disabled={saving} onClick={onCancel}>
+          {t.cancel}
+        </button>
+        <button className="btn-primary" disabled={saving || !keyDraft.trim()} onClick={save}>
+          {t.save}
         </button>
       </div>
     </>
