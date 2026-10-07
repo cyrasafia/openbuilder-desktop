@@ -108,6 +108,7 @@ import type {
   Project,
   RetryPart,
   Session,
+  SessionRevert,
   SessionStatusValue,
   TextPart,
   Workspace,
@@ -1652,6 +1653,53 @@ export class AppStore {
       this.emit()
       return
     }
+    // ---- 回滚三段式事件（design-sse-event-surface 层 1：事件驱动权威路径）----
+    // 信封 location 携带与否未活体验证（execution.* 家族实测无 location）——按
+    // sessionID 反查目录过闸门（旁路模式，两种情况都正确）。staged：跨端回滚
+    // 呈现（不回填草稿——跨端暂存不劫持输入框，design-message-revert §3.3）；
+    // cleared：清暂存 + 输入框语义（与 unrevertSession 共用判定）；
+    // committed：清暂存 + 按 to 确定性清缓存（§4.4 主路径）+ 尾部重取拉新轮次
+    if (
+      ev.type === "session.revert.staged" ||
+      ev.type === "session.revert.cleared" ||
+      ev.type === "session.revert.committed"
+    ) {
+      const p = ev.properties as {
+        sessionID?: unknown
+        revert?: { messageID?: unknown; partID?: string; snapshot?: string; files?: unknown[] }
+        to?: unknown
+      }
+      const sid = String(p.sessionID ?? "")
+      const session = sid ? this.findSession(sid) : undefined
+      if (!session || !this.isOpenedDirectory(session.directory)) return
+      if (ev.type === "session.revert.staged") {
+        const messageID = String(p.revert?.messageID ?? "")
+        if (messageID) {
+          this.mergeSessionUpdate({ ...session, revert: { ...p.revert, messageID } as SessionRevert })
+        }
+      } else if (ev.type === "session.revert.cleared") {
+        this.clearLocalRevertStaging(sid)
+        this.clearRevertDraftIfConsumed(sid)
+      } else {
+        this.clearLocalRevertStaging(sid)
+        // 提交终结回滚周期，摘除草稿记账（review 2026-10-07）：consumed 残留
+        // 会让后续跨端 cleared 误置空种子、清掉用户已改写的输入；未消费的
+        // 过期种子同样丢弃（防重开 Tab 时劫持输入框）。不置空种子——提交不
+        // 清输入框，内容是用户的（区别于撤销语义）
+        this.revertDrafts.delete(sid)
+        this.revertDraftConsumed.delete(sid)
+        const to = String(p.to ?? "")
+        // 确定性清缓存（§4.4 主路径）：id >= to 且 created < 事件时刻。新轮次
+        // 消息的 created 取自其后发布的 InboxEnqueued 事件（同 server 时钟），
+        // 恒 >= committed 时刻——不在清除列；本端回执路径先行合并的新消息同此
+        // 判别。无事件时刻（meta 缺失）则跳过——重取窗口删除自愈兜底
+        if (to && meta?.created != null) this.purgeRevertedMessages(sid, to, meta.created)
+        // 投影滞后时重取可能带回已删消息（server projector 异步落库）——窗口
+        // 开区间删除在下次重取自愈（§4.4 已知竞态，接受瞬时）
+        void this.refreshConversationTail(sid)
+      }
+      return
+    }
     // 前置闸门（design-sse-global-event §4.2）：单流收到 server 全部目录的事件，
     // 仅打开项目的目录全集（worktree ∪ sandboxes）放行——关闭项目 = 事件忽略。
     // 此前 message.*/session.created 等依赖"订阅集合即打开集合"隐式隔离，单流后必须显式过滤
@@ -1989,13 +2037,22 @@ export class AppStore {
    * 容错：重取失败保留乐观（下次对账/翻页收敛）；精确清除按 localId 唯一
    * 匹配（同毫秒并发的 createdAt 不可区分，评审 2026-09-28）。
    */
-  private async refreshMessagesAfterPrompt(sessionID: string, optimisticLocalId: string, optimisticCreatedAt: number) {
+  private async refreshMessagesAfterPrompt(
+    sessionID: string,
+    optimisticLocalId: string,
+    optimisticCreatedAt: number,
+    revertPurgeIds?: string[],
+  ) {
     const client = this.client
     const session = this.findSession(sessionID)
     if (!client || !session) return
     const page = await client.listMessagesPage(sessionID, { limit: 20 }).catch(() => null)
     if (this.client !== client || !page) return
     this.mergeMessagePage(sessionID, page.entries)
+    // 回滚提交的缓存清除（design-sse-event-surface §4.4）：合并后按发送前捕获
+    // 的精确集合一次清净——server projector 异步落库，重取页可能仍含已删消息
+    // （窗口删除依赖下次重取，这里即时收敛）；新消息不在集合，不受影响
+    if (revertPurgeIds) this.removeCachedMessages(sessionID, revertPurgeIds)
     // 投影 user 消息到达（created >= 乐观创建时刻）→ **精确**清除该条乐观
     // （评审 2026-09-28：全清会在 busy 补充发送（design-supplement-send）下误清
     // 并发在途的未确认乐观——第二条 prompt 的投影写入有延迟窗口，重取只证明
@@ -3995,13 +4052,33 @@ export class AppStore {
       for (const a of attachments ?? []) {
         files.push({ uri: a.dataUrl, name: a.filename })
       }
+      // 发送前捕获回滚清除目标（design-sse-event-surface 层 2）：必须在 POST
+      // 前——按边界事后扫会把 await 期间落地的新消息误删（id 同样 > 边界）
+      const revertPurgeIds = this.cachedRevertTargets(sessionID)
       // v2 text 必填且原样落库（fromUserMessage 直接入投影）：纯附件/纯引用
       // 发送以零宽空格占位——v1 语义是回显只有文件 chip，"." 会成为可见噪音
       // （评审 2026-09-28）
       await this.client!.prompt(sessionID, { text: text || "\u200b", files })
+      // 回滚提交回执兜底（design-sse-event-surface 层 2）：提交权威信号是
+      // session.revert.committed 事件（volatile 可丢）——POST 200 即 server 已
+      // 提交（prompt 前置 cleanup），本地无条件清暂存，不依赖事件时序。缓存
+      // 同步清一次（review 2026-10-07）：只挂重取之后的话，SSE 断线窗口内
+      // （committed 丢失、回执是唯一收敛源）过滤已解除而旧消息仍在——已删
+      // 消息复现到重取完成；重取失败（!page 早退）则清除整段丢失
+      if (revertPurgeIds) {
+        this.clearLocalRevertStaging(sessionID)
+        this.removeCachedMessages(sessionID, revertPurgeIds)
+      }
       // 回执驱动（plan M4）：v2 无 user 消息 SSE 事件——POST 200 准入后首页
-      // 重取拾取投影 user 消息（真实 id），乐观清除挂在其到达
-      void this.refreshMessagesAfterPrompt(sessionID, optimistic.localId, optimistic.createdAt)
+      // 重取拾取投影 user 消息（真实 id），乐观清除挂在其到达。缓存清除再挂
+      // 合并之后一次（幂等）：server projector 异步落库，重取页可能仍含已删
+      // 消息，合并后按集合清净（§4.4）
+      void this.refreshMessagesAfterPrompt(
+        sessionID,
+        optimistic.localId,
+        optimistic.createdAt,
+        revertPurgeIds ?? undefined,
+      )
       // 发送成功引用/附件即清（失败保留供重发，design-file-reference §2）
       this.clearFileRefs(sessionID)
       this.clearAttachments(sessionID)
@@ -4151,6 +4228,86 @@ export class AppStore {
   }
 
   /**
+   * 清本地回滚暂存（design-sse-event-surface 层 1/2 共用）：cleared/committed
+   * 事件与发送回执两路收敛。幂等——无暂存时 no-op（不 emit）。
+   */
+  private clearLocalRevertStaging(sessionID: string) {
+    const session = this.findSession(sessionID)
+    if (!session?.revert) return
+    this.mergeSessionUpdate({ ...session, revert: null })
+  }
+
+  /**
+   * 撤销回滚的输入框语义（design-sse-event-surface §4.1）：仅当输入框正承载本地
+   * 回填文本（种子已消费，revertDraftConsumed）时置空种子清空——跨端撤销/本端
+   * 未回填不得误清用户自输内容。REST unrevert 与 cleared 事件共用（原
+   * unrevertSession 内联逻辑提炼，行为不变）。
+   */
+  private clearRevertDraftIfConsumed(sessionID: string) {
+    this.revertDrafts.delete(sessionID)
+    if (this.revertDraftConsumed.has(sessionID)) {
+      this.revertDraftConsumed.delete(sessionID)
+      this.revertDrafts.set(sessionID, "")
+      this.revertDraftVersion++
+    }
+  }
+
+  /**
+   * 回滚提交的确定性缓存清除（design-sse-event-surface §4.4 主路径）：删除
+   * `id >= to` 的已加载消息——与 server projector 的 `seq >= boundary` 删除同
+   * 语义（消息 id 升序字典序可比）。v1 message.removed 逐条删除的 v2 等价物：
+   * 由边界一次算出，不经快照、无时序依赖。`beforeCreated` 下界（committed
+   * 事件时刻）排除新轮次消息——其 created 取自其后发布的 InboxEnqueued 事件
+   * （同 server 时钟，恒 >= committed 时刻）。顺带摘除回显/合成标记（旧
+   * message.removed 同款清理）。
+   */
+  private purgeRevertedMessages(sessionID: string, to: string, beforeCreated: number) {
+    const m = this.messagesBySession.get(sessionID)
+    if (!m) return
+    let removed = false
+    for (const msg of m.values()) {
+      if (msg.info.id >= to && msg.info.time.created < beforeCreated) {
+        m.delete(msg.info.id)
+        this.commandEchoMessages.get(sessionID)?.delete(msg.info.id)
+        this.syntheticDroppedBySession.get(sessionID)?.delete(msg.info.id)
+        removed = true
+      }
+    }
+    if (removed) this.emit()
+  }
+
+  /**
+   * 发送前捕获回滚清除目标（design-sse-event-surface 层 2 配套）：暂存中才
+   * 非 null；返回当前缓存里 `id >= 边界` 的消息 id 集合（**`[]` = 暂存中但
+   * 缓存无目标消息——仍须清暂存**，消费方不可按空数组短路）。**必须在 POST
+   * 前捕获**——新消息（含命令回显）可能在 await 期间经 inbox 链路落地，其 id
+   * 同样 > 边界，事后按边界扫会误删；精确集合无此歧义。
+   */
+  private cachedRevertTargets(sessionID: string): string[] | null {
+    const boundary = this.findSession(sessionID)?.revert?.messageID
+    if (!boundary) return null
+    return [...(this.messagesBySession.get(sessionID)?.values() ?? [])]
+      .filter((m) => m.info.id >= boundary)
+      .map((m) => m.info.id)
+  }
+
+  /** 按精确 id 集合删除缓存消息（回执路径的回滚清除；顺带摘回显/合成标记） */
+  private removeCachedMessages(sessionID: string, ids: string[]) {
+    if (ids.length === 0) return
+    const m = this.messagesBySession.get(sessionID)
+    if (!m) return
+    let removed = false
+    for (const id of ids) {
+      if (m.delete(id)) {
+        this.commandEchoMessages.get(sessionID)?.delete(id)
+        this.syntheticDroppedBySession.get(sessionID)?.delete(id)
+        removed = true
+      }
+    }
+    if (removed) this.emit()
+  }
+
+  /**
    * 回滚到指定消息（暂存）：立即还原工作区文件，消息删除延迟到下一条 prompt。
    * busy/retry 时先 abort 再回滚（官方 halt→stage）——UI 侧负责先 confirm。
    */
@@ -4203,16 +4360,11 @@ export class AppStore {
     try {
       // v2 三段式第二段：clear（204 无返回体——revert 状态本地清复合并）
       await client.revertClear(sessionID)
-      this.mergeSessionUpdate({ ...session, revert: null } as typeof session)
+      this.clearLocalRevertStaging(sessionID)
       // 撤销即清输入框：空种子 = 清空草稿（官方 restore→promptSession.reset 语义）。
       // 仅当输入框正承载本地回填文本（种子已消费）时清空——跨客户端回滚/无文本
-      // 回滚不得误清用户自输内容
-      this.revertDrafts.delete(sessionID)
-      if (this.revertDraftConsumed.has(sessionID)) {
-        this.revertDraftConsumed.delete(sessionID)
-        this.revertDrafts.set(sessionID, "")
-        this.revertDraftVersion++
-      }
+      // 回滚不得误清用户自输内容（cleared 事件路径共用同一判定）
+      this.clearRevertDraftIfConsumed(sessionID)
       this.emit()
       return { ok: true }
     } catch (e) {
@@ -4347,6 +4499,10 @@ export class AppStore {
     // 回显标记：SSE inbox.enqueued 转记（正常路径在 POST await 期间消费，
     // M6c：v2 事件源从 message.updated 换 inbox.enqueued）
     this.commandEchoPending.add(sessionID)
+    // 发送前捕获回滚清除目标（design-sse-event-surface 层 2）：命令回显在
+    // await 期间经 inbox 链路落地（同步端点实测），事后按边界扫会误删——精确
+    // 集合无此歧义
+    const revertPurgeIds = this.cachedRevertTargets(sessionID)
     try {
       // 斜杠命令同样携带引用/附件（移动端 6R-C；v2 files 契约同 prompt）
       const files: Array<{ uri: string; name?: string }> = [
@@ -4359,6 +4515,12 @@ export class AppStore {
         arguments_,
         files.length > 0 ? files : undefined,
       )
+      // 回滚提交回执兜底（design-sse-event-surface 层 2）：斜杠命令同样走
+      // server prompt、同样触发提交（prompt 前置 cleanup）——POST 成功即清
+      if (revertPurgeIds) {
+        this.clearLocalRevertStaging(sessionID)
+        this.removeCachedMessages(sessionID, revertPurgeIds)
+      }
       this.clearFileRefs(sessionID)
       this.clearAttachments(sessionID)
       // 同步端点返回即执行完毕：回显已在 await 期间到达并转记；SSE 断线窗口内未

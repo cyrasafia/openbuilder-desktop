@@ -3,7 +3,7 @@
  * contentText/errorMessage 纯函数。
  */
 import { describe, expect, it } from "vitest"
-import { contentText, errorMessage, toInternalMessages } from "./v2-adapter"
+import { contentText, errorMessage, toInternalMessages, toInternalSession } from "./v2-adapter"
 
 const U = { id: "msg_u1", time: { created: 100 }, type: "user", text: "看下这些", files: [], agents: [], skills: [] }
 const A = {
@@ -79,5 +79,29 @@ describe("contentText / errorMessage", () => {
     expect(errorMessage({ message: "boom" })).toBe("boom")
     expect(errorMessage({ name: "ExitError" })).toBe("ExitError")
     expect(errorMessage(undefined)).toBe("error")
+  })
+})
+
+// 回滚暂存映射（design-sse-event-surface 层 3）：快照整条替换不得抹 staged 态
+describe("toInternalSession revert 映射", () => {
+  const base = {
+    id: "ses_1",
+    projectID: "proj1",
+    time: { created: 1, updated: 2 },
+    location: { directory: "/repo" },
+  }
+
+  it("wire revert 透传（含 files），null/缺省归一 undefined", () => {
+    const s = toInternalSession({
+      ...base,
+      revert: { messageID: "msg_u2", snapshot: "sha", files: [{ file: "a.ts" }] },
+    } as Parameters<typeof toInternalSession>[0])
+    expect(s.revert).toEqual({ messageID: "msg_u2", snapshot: "sha", files: [{ file: "a.ts" }] })
+
+    expect(toInternalSession({ ...base } as Parameters<typeof toInternalSession>[0]).revert).toBeUndefined()
+    // wire 契约 revert 为可选字段（无 null 形态）；?? undefined 防御性归一
+    expect(
+      toInternalSession({ ...base, revert: undefined } as Parameters<typeof toInternalSession>[0]).revert,
+    ).toBeUndefined()
   })
 })

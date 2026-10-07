@@ -40,7 +40,7 @@
 | 探活/版本/扫描验证 | `GET /api/info`（managed 健康等待与发现扫描同源换绑；v2 版本前缀校验淘汰 v1 server） |
 | 会话列表/创建/改/删 | `GET/POST /api/session`（cursor envelope）、`PATCH/DELETE /api/session/:id`（级联删） |
 | 消息/prompt/中断 | `GET /api/session/:id/message`（typed union + cursor）、`POST .../prompt`（200 回执）、`POST .../interrupt` |
-| 回滚 | 三段式：`POST .../revert/stage`、`DELETE .../revert`、`POST .../revert/commit` |
+| 回滚 | 三段式：`POST .../revert/stage`、`DELETE .../revert`、`POST .../revert/commit`；提交由下一条 prompt 自动触发，事件收敛走 `session.revert.staged/cleared/committed` + 发送回执兜底 + 快照 `revert` 字段映射（design-sse-event-surface 三层策略） |
 | worktree | `GET/POST/DELETE /api/worktree` + `POST /api/worktree/refresh`（库存直连 + 对账，2026-09-29 起消费，见范围表 #3） |
 | shell | `POST /api/shell` + `GET /api/shell/:id`(/output) + `DELETE`（runShell 封装：一次性命令至终态，单命令 + exit code 判定跨登录 shell 可移植；分支挂载/清理通道，见范围表 #3） |
 | 文件 | `GET /api/fs/list|read/*|find`（deepObject location） |

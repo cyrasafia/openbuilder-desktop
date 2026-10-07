@@ -47,7 +47,7 @@ src/
 | `GET /session?scope=project&directory=X` 一次返回**该项目全部目录**（worktree ∪ sandboxes；global 为全部会话目录）的会话——global 拆分的发现查询。裸 `GET /session`（无参）返回 **server cwd 所在 instance** 的会话，随启动目录漂移，不可用作 global 发现（openbuilder 用它是因为移动端场景 server cwd 固定） | `listProjectSessions()`；连接时 + 选择器打开时刷新 global 全量快照 |
 | global 项目（`id==="global"`，worktree `/`）持有全部非 git 目录会话，`Project.sandboxes` 恒空；同一目录可既有 git 项目又有 global 会话（先建会话后 init git 的历史目录）——选择器两行并存是正确呈现 | global 按目录拆 entry（键 `global\0<directory>`），openProject/closeProject 不适用于 global 整体；未打开 entry 的目录事件被事件闸门丢弃（单全局流收全量、按打开集合放行），新 global 目录只能靠 scope=project 快照发现 |
 | Electron renderer 的 `fetch` 是绑定 window 的包装，`const f = fetch; f(...)` 抛 `Illegal invocation` | rest-client 必须 `fetch.bind(globalThis)` |
-| `GET /global/event`（v1.0.66+）为 GlobalBus 无过滤直通：单条连接收全部 directory 事件，信封 `{directory, project?, workspace?, payload}`；`/event?directory=X` 是同一总线按 directory 过滤的子集 | 通信层已实施单全局流（见 [design-sse-global-event.md](../v2/design-sse-global-event.md)，含 durable 事件 sync 双发须忽略、SSE 帧无 id 字段 Last-Event-ID 无效等事实与 E2E 记录） |
+| `GET /global/event`（v1.0.66+）为 GlobalBus 无过滤直通：单条连接收全部 directory 事件，信封 `{directory, project?, workspace?, payload}`；`/event?directory=X` 是同一总线按 directory 过滤的子集 | 通信层已实施单全局流（见 [design-sse-global-event.md](design-sse-global-event.md)，含 durable 事件 sync 双发须忽略、SSE 帧无 id 字段 Last-Event-ID 无效等事实与 E2E 记录） |
 
 ## 3. 通信层
 
@@ -64,7 +64,7 @@ src/
 
 > **已迁移单全局流（2026-08-24）**：v0.1 期的"每打开项目一条 `GET /event?directory=`（上限 5）"方案已被
 > 单条 `GET /global/event` 全局流取代，重连状态机保留。背景、实测契约与 E2E 见
-> [design-sse-global-event.md](../v2/design-sse-global-event.md)。以下为历史方案记录。
+> [design-sse-global-event.md](design-sse-global-event.md)。以下为历史方案记录。
 
 - 每个打开项目一条订阅：`GET /event?directory=<dir>`；打开集合变化 = 全组重建
 - 重连状态机：退避 `1→2→4→8→16→30s`（clamp 30）；**建连总超时 15s**（覆盖 TCP 挂起）；

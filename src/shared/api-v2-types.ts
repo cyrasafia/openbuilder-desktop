@@ -91,6 +91,17 @@ export interface SessionInfo {
   location: LocationRef
   subpath?: string
   metadata?: Record<string, unknown>
+  /** 回滚暂存态（wire Session.Info.revert，spec 证实；design-sse-event-surface 层 3） */
+  revert?: V2SessionRevert
+}
+
+/** v2 wire 回滚暂存（`session.revert.staged` 事件 data.revert 与 SessionInfo.revert 同构） */
+export interface V2SessionRevert {
+  messageID: string
+  partID?: string
+  snapshot?: string
+  /** FileDiff.Info[]——不消费，透传保形（重连快照不抹 staged 态） */
+  files?: unknown[]
 }
 
 /** v2 分页 envelope：游标在响应体（v1 是 X-Next-Cursor 响应头），双向 */

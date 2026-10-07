@@ -49,6 +49,8 @@ export interface SessionRevert {
   partID?: string
   snapshot?: string
   diff?: string
+  /** v2 wire 的 FileDiff[]（stage 响应/快照透传，不消费；design-sse-event-surface 层 3） */
+  files?: unknown[]
 }
 
 export interface Session {
@@ -458,6 +460,19 @@ export type OpencodeEvent =
       type: "message.part.removed"
       properties: { sessionID: string; messageID: string; partID: string }
     }
+  // ---- 回滚三段式事件（design-sse-event-surface；v2.0.18 定义且发布。信封
+  //  location 携带与否未活体验证——消费侧按 sessionID 旁路闸门（同 execution.*）。
+  //  v1.18.x 的旧名带 session.next. 中缀，v2 已移除 ----
+  | {
+      id: string
+      type: "session.revert.staged"
+      properties: {
+        sessionID: string
+        revert: { messageID: string; partID?: string; snapshot?: string; files?: unknown[] }
+      }
+    }
+  | { id: string; type: "session.revert.cleared"; properties: { sessionID: string } }
+  | { id: string; type: "session.revert.committed"; properties: { sessionID: string; to: string } }
   // ---- 文件监听（design-file-watcher）：server 侧 @parcel/watcher 磁盘变化广播 ----
   | {
       id: string
