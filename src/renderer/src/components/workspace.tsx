@@ -3048,8 +3048,9 @@ export function NoticeRow({ notice }: { notice: SessionNotice }) {
 }
 
 /**
- * 常驻后台任务条（design-subagent-background D1/D2）：composer 顶行。
- * 无运行中任务返回 null（全部完成后自动消失）。点击展开任务列表浮层：
+ * 常驻后台任务卡（design-subagent-background D1/D2）：composer 顶行。
+ * 无运行中任务返回 null（全部完成后自动消失）。通栏折叠卡（2026-10-07 修订：
+ * 复用 .pending-card 结构，同授权/问题卡；默认收起），展开体在卡内列出任务：
  * 逐项「查看」（嵌入详情）与「停止」（interrupt 该子会话）。
  */
 export function BackgroundTaskBar({
@@ -3070,8 +3071,8 @@ export function BackgroundTaskBar({
     const id = window.setInterval(() => tick((n) => n + 1), 1000)
     return () => window.clearInterval(id)
   }, [open])
-  // 全部结束后复位展开/停止态（review 四轮 #2）：条子消失期间残留 open，
-  // 下一个任务启动时浮层会直接展开——收起语义归位
+  // 全部结束后复位展开/停止态（review 四轮 #2）：卡片消失期间残留 open，
+  // 下一个任务启动时卡片会直接展开——收起语义归位
   useEffect(() => {
     if (tasks.length === 0) {
       setOpen(false)
@@ -3090,22 +3091,25 @@ export function BackgroundTaskBar({
 
   const now = Date.now()
   return (
-    <div className="bg-task-bar">
+    <div className="pending-card bg-task">
       <button
-        className="bg-task-bar-toggle"
+        className="pending-card-header"
         onClick={() => setOpen(!open)}
         aria-expanded={open}
       >
-        <Rocket className="bg-task-bar-icon" size={14} aria-hidden />
-        <span className="bg-task-bar-text">{format(t.bgTaskRunning, { count: tasks.length })}</span>
+        <Rocket className="pending-card-icon" size={16} aria-hidden />
+        <span className="pending-card-title">{t.bgTaskTitle}</span>
+        <span className="pending-card-sub">
+          {format(t.bgTaskRunning, { count: tasks.length })}
+        </span>
         {open ? (
-          <ChevronDown className="chip-chevron" size={12} aria-hidden />
+          <ChevronDown className="pending-card-chevron" size={16} aria-hidden />
         ) : (
-          <ChevronUp className="chip-chevron" size={12} aria-hidden />
+          <ChevronRight className="pending-card-chevron" size={16} aria-hidden />
         )}
       </button>
       {open && (
-        <div className="bg-task-popover">
+        <div className="pending-card-body">
           {tasks.map((task) => (
             <div className="bg-task-row" key={task.id}>
               <Rocket className="bg-task-row-icon" size={14} aria-hidden />
@@ -3199,7 +3203,7 @@ function TaskDetailOverlay({
     <div className="task-detail-slot" role="dialog" aria-label={label}>
       <div className="task-detail">
         <div className="task-detail-header">
-          <Rocket className="bg-task-bar-icon" size={14} aria-hidden />
+          <Rocket className="bg-task-icon" size={14} aria-hidden />
           <span className="task-detail-title">{label}</span>
           <button className="icon-btn" title={t.close} aria-label={t.close} onClick={onClose}>
             <X size={14} aria-hidden />
