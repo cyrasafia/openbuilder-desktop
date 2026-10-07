@@ -1,5 +1,7 @@
 # 回滚到指定消息（message revert）— 设计文档
 
+> **v2 迁移修订（2026-10-07，design-sse-event-surface）**：§2/§3 原按 v1（1.18.20）撰写，「提交时 `message.removed` 逐条删除、`session.updated` 携带 revert」的收敛前提在 v2 整体失效——v2 拆成细粒度专项事件（`session.revert.staged/cleared/committed`），提交删消息是 server projector 静默批量落库。客户端已按三层收敛补齐（事件驱动 + 发送回执 + 快照映射 revert），事件语义与审计矩阵以 design-sse-event-surface 为准；本文其余记载（交互、草稿回填、闸门、入口规则）不变。
+>
 > 目标：在会话中对某条用户消息「回滚到此」——server 暂存回滚点并**立即还原工作区文件**；回滚点之后的消息**从消息流中隐藏**待删，**发送下一条消息时提交**（server 删除这些消息）；期间可一键撤销回滚（unrevert，恢复文件与原状、消息重新显示）。
 >
 > 参考来源（按 AGENTS.md 约定先行检索）：
@@ -76,8 +78,8 @@ summary?: { additions: number; deletions: number; files: number }
 - `unrevertSession(sessionID): Promise<{ok, error?}>`：同上合并路径。
 - **草稿回填**（官方 `prompt.set(draft(messageID))` 语义）：成功后取回滚点 user 消息的 text parts 拼文本存 `revertDrafts: Map<sessionID,string>` 并 `revertDraftVersion++`；ChatView effect 消费（`takeRevertDraft`）置入输入框。**斜杠命令回显一律不回填**（2026-09-01 修订，原「无 text 不回填」语义升级）：subtask part 消息自包含可判（含跨端发送）；text 展开型回显（skill/init 等，服务端展开模板为 text part）与普通消息无结构差异，由 `sendCommand` 置 `commandEchoPending`、SSE 首条真实 user 消息到达转记 `commandEchoMessages`（与乐观清除同一触发点、同一不精确界）。依据：展开文本非用户原文、参数已被模板展开消费不可还原（server 只持久化展开结果），回填是噪音。无 text 且无 subtask（纯附件）同样不回填。
 - **撤销清输入框**（官方 `restore→promptSession.reset()` 语义）：仅当种子**已被消费**（`revertDraftConsumed` 集——输入框正承载本地回填文本）时置**空种子**（`""`），ChatView 消费即清空草稿。**跨客户端暂存**（本端从未回填）或无文本回滚不置种子——不得误清用户自输内容。空种子本身不记消费（防二次撤销误判）。
-- 清理：`teardownConnection` 与 `cleanupSessionState` 清 `revertDrafts`/`revertDraftConsumed`/`commandEchoMessages`（`commandEchoPending` 由 POST 两分支自清；**SSE 重连时失效清空**——断连窗口内错过的回显经对账快照补载、不走 `message.updated`，残留 pending 会误标重连后首条真实 user 消息，清空后该回显退化为误回填展开文本的既有接受边缘）；`message.removed` 顺带摘除对应回显标记。
-- 事件侧其余零改动：`session.updated` 已合并含 `revert` 的 info（跨客户端/重连一致）；提交时 `message.removed` 逐条删除已有处理；分页游标锚定最旧消息，尾部删除不影响。
+- 清理：`teardownConnection` 与 `cleanupSessionState` 清 `revertDrafts`/`revertDraftConsumed`/`commandEchoMessages`（`commandEchoPending` 由 POST 两分支自清；**SSE 重连时失效清空**——断连窗口内错过的回显经对账快照补载、不走 `message.updated`，残留 pending 会误标重连后首条真实 user 消息，清空后该回显退化为误回填展开文本的既有接受边缘）。
+- **事件收敛（v2 修订，design-sse-event-surface 三层策略）**：① SSE 三事件——`session.revert.staged`（跨端呈现，不回填草稿）/ `cleared`（清暂存 + 输入框判定与 unrevertSession 共用 `clearRevertDraftIfConsumed`）/ `committed`（清暂存 + 按 `to` 与事件时刻确定性清缓存 + 尾部重取；闸门按 sessionID 旁路）；② 发送回执——`sendPrompt`/`sendCommand` POST 成功即清本地暂存（volatile 事件可丢的兜底），缓存清除用**发送前预捕获的精确 id 集合**（await 期间落地的新消息 id 同样 > 边界，事后按边界扫会误删）；③ 快照映射——`toInternalSession` 透传 `revert`，防 60s 对账整条替换抹掉 staged 态。v1 时代的「`message.removed` 逐条删除」在 v2 无对应事件（projector 静默批量删），缓存收敛走上述确定性清除 + `mergeSnapshotIntoMessages` 窗口开区间删除兜底。
 
 ### 3.4 UI（`workspace.tsx` ChatView）
 

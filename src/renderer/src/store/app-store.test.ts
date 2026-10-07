@@ -2503,6 +2503,186 @@ describe("回滚到指定消息（design-message-revert）", () => {
   })
 })
 
+// 回滚 v2 事件收敛（design-sse-event-surface）：staged/cleared/committed 三事件 +
+// 发送回执兜底。v2 拆掉 session.updated 全量广播后漏接 committed，本地回滚态
+// 残留会把新消息按 id >= 边界整轮隐藏（2026-10-07 活体 bug 的根因）
+describe("回滚 v2 事件收敛（design-sse-event-surface）", () => {
+  function seedSessionWithRevert(): Session {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf({ ...s1, revert: { messageID: "msg_u2" } }))
+    return s1
+  }
+
+  /** msg_u1（保留）→ msg_u2（回滚点）→ msg_u9（回滚目标）；created 单调 */
+  function seedConversation() {
+    seedMessages(
+      "s1",
+      {
+        info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 10 } },
+        parts: [{ id: "prt_1", sessionID: "s1", messageID: "msg_u1", type: "text", text: "第一条" } as Part],
+      },
+      {
+        info: { id: "msg_u2", sessionID: "s1", role: "user", time: { created: 20 } },
+        parts: [{ id: "prt_2", sessionID: "s1", messageID: "msg_u2", type: "text", text: "回滚点" } as Part],
+      },
+      {
+        info: { id: "msg_u9", sessionID: "s1", role: "assistant", time: { created: 30, completed: 35 } },
+        parts: [{ id: "prt_9", sessionID: "s1", messageID: "msg_u9", type: "text", text: "回复" } as Part],
+      },
+    )
+  }
+
+  function dispatch(ev: unknown, meta?: unknown) {
+    ;(store as unknown as { handleEvent: (d: string, e: unknown, m?: unknown) => void }).handleEvent(ROOT, ev, meta)
+  }
+
+  it("session.revert.staged：跨端暂存呈现（合并 revert，不回填草稿）", () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    dispatch({
+      type: "session.revert.staged",
+      properties: { sessionID: "s1", revert: { messageID: "msg_u2", snapshot: "sha" } },
+    })
+    expect(store.findSession("s1")?.revert?.messageID).toBe("msg_u2")
+    // 跨端暂存不劫持输入框（design-message-revert §3.3：不回填）
+    expect(store.takeRevertDraft("s1")).toBeNull()
+  })
+
+  it("session.revert.cleared：清暂存；已回填会话空种子清输入框（与 unrevertSession 同判定）", () => {
+    seedSessionWithRevert()
+    ;(store as unknown as { revertDrafts: Map<string, string> }).revertDrafts.set("s1", "回填文本")
+    expect(store.takeRevertDraft("s1")).toBe("回填文本") // 消费 → revertDraftConsumed
+
+    dispatch({ type: "session.revert.cleared", properties: { sessionID: "s1" } })
+    expect(store.findSession("s1")?.revert).toBeNull()
+    expect(store.takeRevertDraft("s1")).toBe("")
+  })
+
+  it("session.revert.cleared 跨端暂存（本端未回填）：不置空种子", () => {
+    seedSessionWithRevert()
+    dispatch({ type: "session.revert.cleared", properties: { sessionID: "s1" } })
+    expect(store.findSession("s1")?.revert).toBeNull()
+    expect(store.takeRevertDraft("s1")).toBeNull()
+  })
+
+  it("session.revert.committed：清暂存 + 按 to 确定性清缓存（created < 事件时刻界）", async () => {
+    seedSessionWithRevert()
+    seedConversation()
+    // 回显标记随消息摘除（旧 message.removed 同款清理）
+    ;(store as unknown as { commandEchoMessages: Map<string, Set<string>> }).commandEchoMessages.set(
+      "s1",
+      new Set(["msg_u2"]),
+    )
+    // 新轮次消息已先行合并（回执路径竞态）：created >= committed 事件时刻，不得误删
+    seedMessages(
+      "s1",
+      {
+        info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 10 } },
+        parts: [{ id: "prt_1", sessionID: "s1", messageID: "msg_u1", type: "text", text: "第一条" } as Part],
+      },
+      {
+        info: { id: "msg_u2", sessionID: "s1", role: "user", time: { created: 20 } },
+        parts: [{ id: "prt_2", sessionID: "s1", messageID: "msg_u2", type: "text", text: "回滚点" } as Part],
+      },
+      {
+        info: { id: "msg_u9", sessionID: "s1", role: "assistant", time: { created: 30, completed: 35 } },
+        parts: [{ id: "prt_9", sessionID: "s1", messageID: "msg_u9", type: "text", text: "回复" } as Part],
+      },
+      {
+        info: { id: "msg_n1", sessionID: "s1", role: "user", time: { created: 150 } },
+        parts: [{ id: "prt_n1", sessionID: "s1", messageID: "msg_n1", type: "text", text: "新消息" } as Part],
+      },
+    )
+    clientV2Of().listMessagesPage = async () => ({ entries: [], nextCursor: null })
+
+    dispatch({ type: "session.revert.committed", properties: { sessionID: "s1", to: "msg_u2" } }, { created: 100 })
+    expect(store.findSession("s1")?.revert).toBeNull()
+    expect([...(store.messagesBySession.get("s1")?.keys() ?? [])]).toEqual(["msg_u1", "msg_n1"])
+    expect(
+      (store as unknown as { commandEchoMessages: Map<string, Set<string>> }).commandEchoMessages.get("s1")?.has(
+        "msg_u2",
+      ),
+    ).toBe(false)
+  })
+
+  it("session.revert.committed 无事件时刻（meta 缺失）：只清暂存，缓存交给重取兜底", () => {
+    seedSessionWithRevert()
+    seedConversation()
+    dispatch({ type: "session.revert.committed", properties: { sessionID: "s1", to: "msg_u2" } })
+    expect(store.findSession("s1")?.revert).toBeNull()
+    // 缓存未动——窗口删除/下次重取自愈（design-sse-event-surface §4.4）
+    expect([...(store.messagesBySession.get("s1")?.keys() ?? [])]).toEqual(["msg_u1", "msg_u2", "msg_u9"])
+  })
+
+  it("sendPrompt 回执：清本地暂存 + 合并后按预捕获集合清缓存（新消息不受影响）", async () => {
+    seedSessionWithRevert()
+    seedConversation()
+    clientV2Of().listMessagesPage = async () => ({
+      entries: [
+        {
+          info: { id: "msg_n1", sessionID: "s1", role: "user", time: { created: 200 } },
+          parts: [{ id: "prt_n1", sessionID: "s1", messageID: "msg_n1", type: "text", text: "新消息" } as Part],
+        },
+      ],
+      nextCursor: null,
+    })
+
+    const res = await store.sendPrompt("s1", "新消息")
+    expect(res.ok).toBe(true)
+    expect(store.findSession("s1")?.revert).toBeNull()
+    await vi.waitFor(() =>
+      expect([...(store.messagesBySession.get("s1")?.keys() ?? [])]).toEqual(["msg_u1", "msg_n1"]),
+    )
+  })
+
+  it("sendCommand 回执：斜杠命令同样清本地暂存与缓存", async () => {
+    seedSessionWithRevert()
+    seedConversation()
+    clientV2Of().sendCommand = async () => {}
+
+    const res = await store.sendCommand("s1", "init", "")
+    expect(res.ok).toBe(true)
+    expect(store.findSession("s1")?.revert).toBeNull()
+    expect([...(store.messagesBySession.get("s1")?.keys() ?? [])]).toEqual(["msg_u1"])
+  })
+
+  it("sendPrompt 回执：重取失败（SSE 断线窗口）缓存清除不丢失（review 2026-10-07）", async () => {
+    seedSessionWithRevert()
+    seedConversation()
+    clientV2Of().listMessagesPage = async () => {
+      throw new ApiError(500, "unknown", "HTTP 500")
+    }
+
+    const res = await store.sendPrompt("s1", "新消息")
+    expect(res.ok).toBe(true)
+    expect(store.findSession("s1")?.revert).toBeNull()
+    // refreshMessagesAfterPrompt 的 !page 早退不再丢清除——同步路径已清净
+    await vi.waitFor(() =>
+      expect([...(store.messagesBySession.get("s1")?.keys() ?? [])]).toEqual(["msg_u1"]),
+    )
+  })
+
+  it("session.revert.committed：终结草稿记账——后续跨端 cleared 不误清用户改写内容（review 2026-10-07）", () => {
+    seedSessionWithRevert()
+    // 本端回填种子已被消费（consumed 置位），随后本端发送提交（committed 到达）
+    ;(store as unknown as { revertDrafts: Map<string, string> }).revertDrafts.set("s1", "回填文本")
+    expect(store.takeRevertDraft("s1")).toBe("回填文本")
+    dispatch({ type: "session.revert.committed", properties: { sessionID: "s1", to: "msg_u2" } }, { created: 100 })
+    // 提交不清输入框（无空种子），但记账已摘
+    expect(store.takeRevertDraft("s1")).toBeNull()
+    // 用户此后自输的内容不被误清：跨端 cleared 无 consumed 可据
+    dispatch({ type: "session.revert.cleared", properties: { sessionID: "s1" } })
+    expect(store.takeRevertDraft("s1")).toBeNull()
+  })
+
+  it("session.revert.committed：未消费的过期种子一并丢弃", () => {
+    seedSessionWithRevert()
+    ;(store as unknown as { revertDrafts: Map<string, string> }).revertDrafts.set("s1", "过期种子")
+    dispatch({ type: "session.revert.committed", properties: { sessionID: "s1", to: "msg_u2" } }, { created: 100 })
+    expect(store.takeRevertDraft("s1")).toBeNull()
+  })
+})
+
 describe("输入草稿（design-compose-draft）", () => {
   it("chat 草稿：写读往返，空文本 = 删条目（发送成功即清语义）", () => {
     store.setChatDraft("s1", "未发送内容")

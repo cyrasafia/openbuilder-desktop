@@ -109,13 +109,13 @@ v1 靠「全量事件 + 覆盖」一层就够；v2 每项会话状态都要三�
 
 - `session.revert.staged`：`mergeSessionUpdate({ ...session, revert })`——跨端回滚实时呈现；
 - `session.revert.cleared`：清 revert + 输入框语义复用 `unrevertSession` 的 `revertDraftConsumed` 判定（提炼私有 helper，REST/事件两路共用——跨端撤销不得误清本端用户自输内容）；
-- `session.revert.committed`：清 revert + **按 `to`（边界消息 id）本地确定性清除 `id >= to` 的缓存消息**（与 server projector 的 `seq >= boundary` 删除同语义，id 升序字典序可比——无竞态，见 §4.4）+ `void refreshConversationTail(sessionID)`（拉取新轮次消息）。
+- `session.revert.committed`：清 revert + **终结草稿记账**（摘 `revertDrafts`/`revertDraftConsumed`——consumed 残留会让后续跨端 cleared 误清用户已改写的输入；不置空种子：提交不清输入框，区别于撤销语义。review 2026-10-07）+ **按 `to`（边界消息 id）本地确定性清除缓存**：`id >= to` 且 `created <` 事件时刻（见 §4.4——时间戳下界排除新轮次消息；无事件时刻则跳过清除，重取兜底）+ `void refreshConversationTail(sessionID)`（拉取新轮次消息）。
 
 **闸门注意**：三事件均 durable；信封 `location` 是否携带**需活体验证**（`execution.*` 家族实测无 location）。若无，照抄 execution 的旁路模式：按 `sessionID` 反查 `session.directory` 过 `isOpenedDirectory` 闸门。`credential.*`（`{global:true}` 发布）同理。
 
 ### 4.2 层 2：回执驱动（不依赖 SSE 时序）
 
-SSE 是 volatile 契约，事件可丢。`sendPrompt` 与 `sendCommand` 的 POST 成功后**无条件清本地 revert**（幂等 helper，无 revert 时 no-op）——斜杠命令同样走 server prompt、同样触发提交，两条路径都要。这与乐观消息的回执驱动同风格。
+SSE 是 volatile 契约，事件可丢。`sendPrompt` 与 `sendCommand` 的 POST 成功后**无条件清本地 revert + 同步按预捕获集合清一次缓存**（幂等；`sendPrompt` 在重取合并后再清一次，收敛 projector 滞后带回的已删消息——review 2026-10-07：只挂重取之后的话，SSE 断线窗口内过滤已解除而旧消息仍在，复现到重取完成；重取失败早退则清除整段丢失）——斜杠命令同样走 server prompt、同样触发提交，两条路径都要。这与乐观消息的回执驱动同风格。
 
 ### 4.3 层 3：快照适配（防状态抹除）
 
@@ -125,7 +125,10 @@ SSE 是 volatile 契约，事件可丢。`sendPrompt` 与 `sendCommand` 的 POST
 
 被删消息不做逐条事件（v2 无 `message.removed`）。两级机制：
 
-- **主路径（确定性）**：`committed` 事件携带 `to`（边界消息 id），本地按 `id >= to` 批量清除缓存——与 projector 的 `seq >= boundary` 删除同语义（id 升序字典序可比）。这是 v1 `message.removed` 逐条删除的 v2 等价物，只是由边界一次算出，不经快照、无时序依赖。
+- **主路径（确定性）**：两条实现路径，语义同为「清除提交时点已知会被删的旧消息」：
+  - **SSE committed 事件**：按 `id >= to` 且 `created <` 事件时刻清除——与 projector 的 `seq >= boundary` 删除同语义（id 升序字典序可比）。**时间戳下界是必要的**（实现期精化）：新轮次 user 消息的 `created` 取自 committed 之后发布的 `InboxEnqueued` 事件（`admit` 以 `event.created` 落库，同 server 时钟），恒 >= committed 时刻；本端发送时回执路径可能先于 committed 事件合并新消息——事后按边界裸扫会误删，`created <` 界精确排除。无事件时刻（meta 缺失）跳过清除，重取兜底。
+  - **发送回执（sendPrompt/sendCommand）**：**POST 前预捕获** `id >= 边界` 的缓存 id 集合，成功后按精确集合删除（sendPrompt 挂在重取合并之后，收敛 projector 滞后页带回的已删消息）。预捕获同样是防误删：命令回显在 await 期间经 inbox 链路落地，id 同样 > 边界。
+  这是 v1 `message.removed` 逐条删除的 v2 等价物，只是由边界一次算出，不经快照、无时序依赖。
 - **兜底（快照窗口开区间删除）**：`mergeSnapshotIntoMessages`（`message-merge.ts:143-156`）——覆盖事件丢失（volatile 契约）后靠重取收敛的场景：被删消息的 `created` 落在重取快照的 `(min, max)` 开区间内即清除。边界：快照 <2 条不开窗口（既有守卫）。
 
 **兜底路径的已知竞态（review 2026-10-07）**：窗口删除的 `max` 端依赖新消息已投影落地。若重取早于投影（POST 返回/committed 事件均可能早于落地——`refreshMessagesAfterPrompt` 自带投影落地判定即证明该窗口存在），快照 `max` = 最新保留消息的 `created` < 被删消息 `created`，窗口删除失配——若此刻 revert 已清、过滤已解除，被删消息**短暂幽灵复现**。自愈：投影落地触发 `session.inbox.enqueued` → `refreshConversationTail`（`app-store.ts:1742`），第二次重取 `max` 抬高后清除。主路径（确定性清除）不受此竞态影响——这也是它作为主路径的理由。
@@ -152,7 +155,7 @@ SSE 是 volatile 契约，事件可丢。`sendPrompt` 与 `sendCommand` 的 POST
 ### 4.7 测试
 
 - `v2-adapter.test.ts`：revert 映射（有/无/undefined）；
-- `app-store.test.ts`：三事件 case；两发送路径后本地 revert 清除；committed 按 `to` 确定性清除缓存（`id >= to`）并触发尾部重取；
+- `app-store.test.ts`：三事件 case（含 committed 不误删先行合并的新消息、meta 缺失跳过清除）；两发送路径后本地 revert 清除与预捕获集合清除；
 - `message-merge.test.ts`：既有 `filterRevertedEntries` 边界维持（无改动，回归）。
 
 ## 5. 维护实践：升 pin 审计流程

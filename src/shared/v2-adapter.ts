@@ -45,6 +45,9 @@ export function toInternalSession(s: SessionInfo): Session {
       archived: s.time.archived,
     },
     metadata: s.metadata,
+    // 回滚暂存映射（design-sse-event-surface 层 3）：快照整条替换不得抹 staged
+    // 态——否则 60s 对账把回滚条/隐藏态打回原形，与 server 真态背离
+    revert: s.revert ?? undefined,
   }
 }
 
