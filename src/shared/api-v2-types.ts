@@ -203,6 +203,55 @@ export interface V2ModelInfo {
   variants?: Array<{ id?: string } | Record<string, unknown>>
 }
 
+/**
+ * Integration.Method（wire 宽松化，design-provider-config v2）：
+ * key（API key 直填）/ env{names}（环境变量）/ oauth{id,label,form?}（浏览器登录流，范围外）
+ */
+export interface V2IntegrationMethod {
+  type: "key" | "env" | "oauth"
+  /** env 型：环境变量名列表 */
+  names?: string[]
+  /** oauth 型：方法 id（如 "device"/"pkce"）与展示名 */
+  id?: string
+  label?: string
+}
+
+/** Connection.Status：仅需重新认证时出现（枚举目前仅 needs_auth） */
+export interface V2ConnectionStatus {
+  status: "needs_auth"
+  message: string
+  url?: string
+}
+
+/** credential 连接（id = credentialID，DELETE /api/credential/:id 用） */
+export interface V2ConnectionCredential {
+  type: "credential"
+  id: string
+  label?: string
+  method: "key" | "oauth"
+  status?: V2ConnectionStatus
+}
+
+/** env 连接（server 进程环境变量在场生成，只读） */
+export interface V2ConnectionEnv {
+  type: "env"
+  name: string
+  status?: V2ConnectionStatus
+}
+
+export type V2Connection = V2ConnectionCredential | V2ConnectionEnv
+
+/**
+ * Integration.Info（GET /api/integration 的 data 项）：全目录平铺，connections
+ * 每条存储凭据各一行（更换 key 不删旧 → 可能多条）+ env 连接。
+ */
+export interface V2IntegrationInfo {
+  id: string
+  name: string
+  methods: V2IntegrationMethod[]
+  connections: V2Connection[]
+}
+
 /** GET /api/session query（flat 风格；与 location 组的 deepObject 风格并存，勿统一） */
 export interface ListSessionsInput {
   directory?: string

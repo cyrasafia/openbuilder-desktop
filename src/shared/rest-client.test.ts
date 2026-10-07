@@ -391,6 +391,68 @@ describe("agent / model 目录（M6b 补换绑）", () => {
   })
 })
 
+describe("Provider 凭据（design-provider-config v2 恢复，A1）", () => {
+  it("listIntegrations：deepObject location + envelope 解包", async () => {
+    const seen: string[] = []
+    const client = mkClient((url) => {
+      seen.push(url)
+      return new Response(
+        JSON.stringify({
+          location: { directory: "/r" },
+          data: [
+            {
+              id: "deepseek",
+              name: "DeepSeek",
+              methods: [{ type: "key" }],
+              connections: [
+                { type: "credential", id: "cred_1", label: "API key", method: "key" },
+              ],
+            },
+          ],
+        }),
+      )
+    })
+    const items = await client.listIntegrations("/r")
+    expect(seen).toEqual(["http://server/api/integration?location%5Bdirectory%5D=%2Fr"])
+    expect(items[0]?.connections[0]).toMatchObject({ type: "credential", id: "cred_1", method: "key" })
+  })
+
+  it("connectIntegrationKey：POST connect/key，body {key} + location query，204 容忍空体", async () => {
+    const seen: Array<{ url: string; init: RequestInit }> = []
+    const client = mkClient((url, init) => {
+      seen.push({ url, init })
+      return new Response(null, { status: 204 })
+    })
+    await client.connectIntegrationKey("deep seek", "sk-x", "/r")
+    expect(seen[0]?.url).toBe(
+      "http://server/api/integration/deep%20seek/connect/key?location%5Bdirectory%5D=%2Fr",
+    )
+    expect(seen[0]?.init.method).toBe("POST")
+    expect(JSON.parse(String(seen[0]?.init.body))).toEqual({ key: "sk-x" })
+  })
+
+  it("removeCredential：DELETE /api/credential/:id（无 location query），204", async () => {
+    const seen: Array<{ url: string; init: RequestInit }> = []
+    const client = mkClient((url, init) => {
+      seen.push({ url, init })
+      return new Response(null, { status: 204 })
+    })
+    await client.removeCredential("cred_1")
+    expect(seen[0]?.url).toBe("http://server/api/credential/cred_1")
+    expect(seen[0]?.init.method).toBe("DELETE")
+  })
+
+  it("removeCredential：404（2.0.18–22 无路由）按 not-found 分类抛 ApiError", async () => {
+    const client = mkClient(
+      () => new Response(JSON.stringify({ _tag: "NotFoundError", message: "not found" }), { status: 404 }),
+    )
+    await expect(client.removeCredential("cred_1")).rejects.toMatchObject({
+      status: 404,
+      kind: "not-found",
+    })
+  })
+})
+
 describe("文件系统（M6b）", () => {
   it("listFiles：Entry 相对 path + 响应 location 为基址拼 absolute；目录尾 / 剥离进 name；ignored 恒 false", async () => {
     // 活体形状（2.0.18）：location 回显**请求** location（不含 path 前缀），

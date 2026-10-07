@@ -206,3 +206,83 @@ v2 server 默认强制密码（移动端基线 §认证）。桌面端影响：
 ### 修复复审
 
 （文档为基线记录 + 已定决策，无代码改动。落地时按 plan 逐项 review，配套 `review-v2-*.md`；D1 的官方 API 回归核对点已入 plan-v2-protocol 复核清单。）
+
+---
+
+## 附录一：遗留待服务端更新项清单（2026-10-06 核对）
+
+> 核对基准：上游 `anomalyco/opencode` v2.0.19–v2.0.24 标签（`packages/protocol/openapi.json` 逐 tag diff + 源码 grep）与 GitHub PR 实时状态（API 查询）。来源：本文档 D1–D7/V2D-x 决策点、spec-v0.5 功能降级表、plan-v2-protocol 复核清单、`docs/ref/ref-pseudo-project-cleanup.md`、openbuilder `docs/todo/`（todo-large-file-download-bun-keepalive、todo-ghost-worktree-projects）。
+>
+> **版本事实**（按 openapi 契约口径）：v2.0.19–v2.0.20 与 2.0.18 完全一致；v2.0.21 仅 form 取消携带 message（#52137）；**其余全部契约增量集中在 v2.0.23 tag 首见**（openapi.json 为发布期统一再生成产物，源码合入时间早于 tag——如 credential #52139 代码 09-29 已入）；v2.0.24 契约零变化。整体为**纯增量**：无删除/改名端点，已有 schema 只加可选字段，对 2.0.18 客户端向后兼容。
+
+### 已解堵（服务端就绪，客户端可排期）
+
+| # | 遗留项 | 来源 | 服务端变化（v2.0.23） | 备注 |
+|---|--------|------|------------------------|------|
+| A1 | **Provider credential 体系**（spec 降级 #2：无 API key 写入端点、无连接状态） | spec-v0.5 降级表、M6d | 新增 `GET/POST /api/credential`（#52139）：`Credential.CreateInput{integrationID, value, activate?, label?}`，`value` 支持 `Credential.Key`（`{type:"key", key}`，API key 型）或 OAuth 型；`Integration.Info` 内 `Connection.CredentialInfo/EnvInfo` 增 `status`（`Connection.Status`：`needs_auth` + message + url） | Provider 页签恢复的服务端前提已满足。**2026-10-06 修正**：原记「无 DELETE 端点」有误——`PATCH /api/credential/:id`（label）、`POST :id/activate`、`DELETE /api/credential/:id` 在 v2.0.23 源码与二进制均在（活体实测 DELETE 204 幂等），仅**生成的 openapi.json 滞后未收录**；另有 `POST /api/integration/:id/connect/key`（2.0.18 起可用，设置 key 正道）。已落地恢复：design-provider-config v2 重写 |
+| A2 | **配对登录端点**（本文档 §认证层的设想） | §认证层、spec-v0.5 范围外 | 新增 `POST /api/pair`（`PairingCode{code, expires_in}`）+ `GET /auth/connect/{code}` | 客户端仍为范围外，按需另行 design |
+| A3 | **persistent-pty 能力上报**（spec 范围外「v2 新能力」） | spec-v0.5 范围外 | `ServerInfo.capabilities.persistentPty`（Windows false，其余 true，#52760）；重启不破坏 pty 移交（#52573）；bun-pty 0.4.9 修 spawn 首段输出丢失（#52960） | 终端 Tab 能力闸门可改读该字段，替代客户端平台判断 |
+| A4 | （间接）非 git 项目 git init | ref-pseudo-project-cleanup（伪项目成因） | 新增 `POST /api/vcs/init`（#51455） | 给非 git 目录伪项目行提供「转正」通道；**不是回收机制**，死目录燃料模型不变。**注意**：init 不建首提交——零提交 resolve 落 `ID.global` 桶（见附录二身份规则）。init 后主动 resolve+invalidate，转正即时生效 |
+| A5 | （顺带）location 目录缺失报错规范化 | ref-pseudo-project-cleanup §6「PATCH 死目录会话 500」 | #52668：location 目录缺失由 500 改 404（session-location 中间件 + 多端点 `declaredStatuses` 补 404） | D1 私约对死目录会话的 PATCH 应由 500 转 404；待活体复核后更新 ref 文档处置方式 |
+
+### 未解决（私约/兜底继续，证据为 2026-10-06 核对）
+
+| # | 遗留项 | 现行兜底 | 核对证据 |
+|---|--------|----------|----------|
+| B1 | **归档 API 回归**（D1 私约 `metadata.archivedAt` 的迁回触发点） | metadata 私约 + 识别层双源 | v2.0.24 PATCH `/api/session/{sessionID}` payload 仍只有 title/metadata/permissions；v2.0.18..24 零 archive 提交；PR #47848（unarchive）GitHub 实查 open/未合 |
+| B2 | **`GET /api/session/status` 完整状态端点**（retry 细节恢复，D7） | `GET /api/session/active` 双向 diff 对账 | v2.0.24 路径全集无此端点 |
+| B3 | **文件监听自动刷新**（spec 降级 #3：无 `file.watcher.updated` 事件、无 watch 端点） | 重开文件 Tab / 切作用域 / 重连对账重拉；链路代码保留 | v2.0.19–24 无 watch 路径；事件 schema 名单 v2.0.18→24 零变化 |
+| B4 | **大文件下载被 Bun keepAliveTimeout 截断**（openbuilder todo，🔴 >20MB 慢链路 100% 失败） | 无（客户端明确不做续传——server 不支持 Range） | PR #50507（4 行 `keepAliveTimeout=0`）实查 open/未合；v2.0.24 源码 grep 零命中 |
+| B5 | **worktree create 恒 detached**（上游 #26931 未合） | 本端 `POST /api/shell` 挂 `opencode/{name}` 分支 + 删除时 canonical 下 `branch -D`（design-worktree-branch-sync） | v2.0.24 `git.ts` `worktree add --detach` 仍硬编码 |
+| B6 | **伪项目回收机制**（server 只 upsert 不删、重启解析 cwd 复活、`project.sandboxes` 冻结列无写 API） | 客户端指纹过滤 + SQL 手工清理（ref-pseudo-project-cleanup） | v2.0.18..24 project 层仅 refactor（#51729），无回收机制；上游 issue 仍未提（ref §8 待办）。身份模型与解析时机核对见附录二——「upsert-only 无回收」是配套缺陷而非身份模型问题 |
+| B7 | **todo 概念回归**（spec 降级 #1：任务卡全链移除） | 无（消息流内计划文本不受影响） | 无端点无事件，概念仍在 server API 层面缺席 |
+| B8 | **文件树 ignored 弱化样式**（spec 降级 #4） | 无害降级（dot 文件仍展示） | `FileSystem.Entry` schema 无变化，仍无 gitignore 标记 |
+
+### 对复核清单的影响
+
+- plan-v2-protocol 复核清单「归档 API 回归（D1 迁移触发点）」**保留**，复核面收窄为：PATCH payload 扩字段 / 新归档端点 / PR #47848 合并状态。v2.0.19–24 上游零动作，复核周期可放宽（建议改为跟随 minor 版本升级评估，不再逐里程碑核对）。
+- A1/A2 就绪后，spec-v0.5「范围外 v2 新能力」中的 credential 体系与配对 UI 可进 v0.6+ 设计排期。
+- 若升级本机 server 至 ≥2.0.23：通信层无需改动（契约向后兼容）；可选消费 A3（persistentPty 闸门）与 A5（死目录 PATCH 由 500 转 404 的错误分类）。
+
+---
+
+## 附录二：项目身份模型与解析时机（2026-10-07 源码核对，v2.0.23）
+
+> 背景：A4（`/api/vcs/init`）调研延伸出的机制核对。与 ref-pseudo-project-cleanup（伪项目清理）互为表里：该 ref 记「怎么清」，本节记「身份怎么算、何时重算」。源码锚 `packages/core/src/project.ts`、`git.ts`、`location*.ts`。
+
+### 身份规则（`Project.resolve`，project.ts:337-380）
+
+| 仓库状态 | projectID | 说明 |
+|---|---|---|
+| 有 `origin` remote | `sha1("git-remote:" + 归一化URL)` | **只看 origin**，其他 remote（upstream/fork/backup）不参与；无 origin 但有其他 remote = 等同无 remote |
+| 无 origin、有 `.git/opencode` 文件 | 文件内容 | 身份缓存文件（可手工钉死 ID） |
+| 无 origin、有提交 | 根提交（root commit）哈希 | 无 remote 也有稳定身份；改写历史/重置首提交会换 ID |
+| **无 origin 且零提交** | `ID.global` | **陷阱**：所有空仓共享一个桶——`git init` 后必须至少 commit 一次才有独立身份（`/api/vcs/init` 也只跑裸 init 不建首提交） |
+
+URL 归一化（project.ts:273-291）：HTTPS/SSH/scp 语法归一为 `host/path`；host 转小写、剥 `.git` 尾；**path 保留大小写**（`User/Repo` ≠ `user/repo`，GitHub 实际不区分——潜在分裂点）；`file://` 显式拒绝（避免本地路径混入身份，等同无 remote）。
+
+### 多 clone 语义（"Clones share a project ID"，源码注释原话）
+
+同一 origin 的多份 clone = **同一行项目**：
+
+- **canonical 单值、先到先得**：`upsertProject` 冲突时只更新 vcs 列不碰 canonical（sql.ts:56-59）；替换唯一路径 = 旧 canonical 磁盘消失（persist 显式 UPDATE）→ 删除处理让位是自动的，但「谁是主」取决于解析顺序（任意性）。`PATCH /api/project/:id` 可手动改（D4 红利依据）
+- **每份 clone 目录都登记**进 `WorktreeTable`/`project_directory` → `GET /api/worktree?projectID=` 全部返回 → 本端左栏 = 同一项目下多个工作区条目
+- **删除影响面跨 clone**：删项目行级联物理删**全部 clone** 的会话（ref §4 危险点放大）；rm -rf 单份 clone 的库存死行由 refresh 清
+- fork（origin 不同）天然两项目，不合并
+
+### 解析时机（何时重算身份/转正）
+
+| 触发 | 机制 | 生效 |
+|---|---|---|
+| 该目录新建会话 | `Session.create` 每次直调 `projects.resolve()`（session.ts:271，无缓存） | 立即 |
+| location 缓存逐出后重建 | 服务栈按目录缓存在内存 LayerMap，构建时才 resolve（location.ts:24） | 逐出后下次触碰 |
+| ├ 空闲 60 分钟自动逐出 | location-activity TTL sweep（每分钟检查）。**TTL 到点会就地 interrupt 该 location 运行中会话**（reason `"inactivity"`），非只清空闲 | 最长 1 小时 |
+| ├ `POST /api/location/reload` | 逐出全部已加载 location | 手动即时 |
+| └ server 重启 | 内存缓存清空，按需重建 | 手动 |
+| `GET /api/project` | **纯 DB 读不触发解析** | — |
+
+`/api/vcs/init`（handlers/vcs.ts:46-52）与手动 `git init` 的差异：init 后主动 `resolve()` 落库 + `locations.invalidate()` + 发 `worktree.updated`——即时生效，不等触发时机。
+
+### 设计评估（一句话：认血统修了认位置的病，但没配销户流程）
+
+身份模型本身自洽（修 v1 目录身份的搬家断链之痛，跨端同仓同 ID）；不合理在配套四点：① **upsert-only 无回收**（伪项目根源，B6）；② canonical 先到先得的任意仲裁；③ 零提交落 global 桶无提示；④ URL 归一化大小写不对称。本端展示层兜底见 ref-pseudo-project-cleanup §8。

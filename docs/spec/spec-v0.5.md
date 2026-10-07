@@ -28,7 +28,7 @@
 | # | 降级项 | 原因 | 兜底 |
 |---|--------|------|------|
 | 1 | **任务卡（todo）**全链移除 | v2 无端点无事件（概念在 server API 层面消失） | 无（消息流内的计划文本不受影响；恢复等 server 侧概念回归另行设计） |
-| 2 | **Provider 页签**（API key 设置/删除/已配置列表）降级隐藏 | v2 credential/integration 是全新体系：无 API key 写入端点、Provider.Info 无 key/connected 状态 | 无（v0.6+ 评估 credential 体系设计；连接凭据配置不受影响——那是 server 密码/token 层） |
+| 2 | **Provider 页签**（API key 设置/删除/已配置列表）降级隐藏 | v2 credential/integration 是全新体系：无 API key 写入端点、Provider.Info 无 key/connected 状态 | 无（v0.6+ 评估 credential 体系设计；连接凭据配置不受影响——那是 server 密码/token 层）。（2026-10-06 注：已恢复，见 design-v2/design-provider-config——版本归属待 v0.6 范围确定） |
 | 3 | **文件监听自动刷新**失效（design-file-watcher） | 2.0.18 事件全集无 `file.watcher.updated`、无 watch 端点（M3 起静默失效，M6c 盘点确认） | 重开文件 Tab / 切作用域 / 重连对账触发重拉；链路代码保留待上游恢复 |
 | 4 | 文件树 ignored 弱化样式 | v2 `FileSystem.Entry` 无 gitignore 标记 | 无害降级（同移动端）；dot 文件仍展示 |
 | 5 | 命令集来源变化 | v2 注册制（无外部 skill 扫描） | `/api/skill` 合并对齐 v1 体验（命令集随 server 侧注册表自然变化） |
