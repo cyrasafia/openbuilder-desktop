@@ -31,7 +31,7 @@
 ## 通信层设计（自写，不用 SDK）
 
 - 依据契约：`openbuilder/opencode_openapi.json`（与移动端同源）；类型从 OpenAPI 生成或手写最小子集，锁定在 client 层单点
-- 基础设施：fetch 封装（baseUrl、basic auth、`x-opencode-directory` 头）+ SSE 订阅器（单条 `GET /global/event`，信封按 directory 客户端路由，见 [design-sse-global-event.md](../design/v2/design-sse-global-event.md)）
+- 基础设施：fetch 封装（baseUrl、basic auth、`x-opencode-directory` 头）+ SSE 订阅器（单条 `GET /global/event`，信封按 directory 客户端路由，见 [design-sse-global-event.md](../design/v1/design-sse-global-event.md)）
 
 ### API 映射
 
