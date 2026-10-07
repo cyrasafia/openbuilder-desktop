@@ -3600,28 +3600,55 @@ export class AppStore {
   async createSession(opts: { openTab?: boolean } = {}): Promise<Session | null> {
     if (!this.client || !this.currentProject) return null
     const { directory } = this.scopeQuery
+    // catalog 未就绪（无缓存或 models 空）→ 先等一次拉取再解析默认。server 实测
+    // 新 worktree 目录首次 /api/model、/api/agent 即时就绪（2026-10-07 本机三轮
+    // 15–30ms，与老目录基线 22ms 无差），等待代价可忽略；1.5s 超时兜底网络长尾，
+    // 超时/失败不阻塞发送——显式默认仍按原值直传（下方空列表语义）
+    const pre = this.modelCatalogs.get(directory)
+    if (!pre || pre.models.length === 0) {
+      // ensureModelCatalog 自身 catch + finally 清 timer：防超时胜出后迟到的
+      // rejection 无人接（unhandledrejection）与定时器滞留（输家 timer 对已
+      // settle 的 race 虽是 no-op，仍应即弃）
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const timeout = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, 1500)
+      })
+      try {
+        await Promise.race([this.ensureModelCatalog(directory).catch(() => {}), timeout])
+      } finally {
+        clearTimeout(timer)
+      }
+    }
     // 全局默认值（per-profile）应用到 POST /session body（D-AM-4）。
     // 有效性校验（AM-IMPL3-4）：POST /session 不校验 model（实测无效模型 200 落库，
     // 首条 prompt 才爆且无明确错误）——目录已加载时按目录解析生效默认值；
     // 未加载（如引导页首条消息先于目录拉取完成）不阻塞，按原值应用
     const def = getDefaults(this.defaults, this.profileKey())
     const catalog = this.modelCatalogs.get(directory)
+    // 校验的前提 = 相应列表非空：refreshModelCatalog 单侧失败（listAgents 成功 /
+    // listModels 失败）会缓存空列表目录，空列表无从校验有效性——显式默认按原值
+    // 应用，不得被空列表吞掉退回服务器默认（服务器默认链不受本端控制，实测落到
+    // opencode/exo-free 上游必失败；新建 worktree 首条消息必败，2026-10-07）
     const agent =
-      def.agent && (!catalog || catalog.agents.some((a) => a.name === def.agent))
+      def.agent &&
+      (!catalog || catalog.agents.length === 0 || catalog.agents.some((a) => a.name === def.agent))
         ? def.agent
         : undefined
     // 模型（隐式默认）：目录已加载 → effectiveDefaultModel 校验显式默认
     // （模型失效回退首项、variant 失效只丢 variant 保模型，AM-IMPL4-1），
     // 未手动选择时取列表首项；目录未加载 → 显式默认按原值应用（无则不传，服务器默认）。
     // 模型开关（design-model-list D-ML-4）：解析在过滤后列表上进行——被关闭的
-    // 默认/首项等同失效（回退首个开启模型；全部关闭 → 不带 model，服务器默认）
+    // 默认/首项等同失效（回退首个开启模型；全部关闭 → 不带 model，服务器默认）。
+    // 全关判定以源列表非空为前提：源列表空（单侧失败缓存）= 无从校验，显式默认
+    // 原值直传（同 agent 的空列表语义）
     const explicitModel = normalizeModelRef(def.model)
-    const model = catalog
-      ? effectiveDefaultModel(
-          explicitModel,
-          enabledModels(catalog.models, this.disabledModelsFor()),
-        )
-      : explicitModel
+    const model =
+      catalog && catalog.models.length > 0
+        ? effectiveDefaultModel(
+            explicitModel,
+            enabledModels(catalog.models, this.disabledModelsFor()),
+          )
+        : explicitModel
     try {
       const wire = await this.client.createSession({
         directory,
@@ -4830,9 +4857,14 @@ export class AppStore {
     return this.modelCatalogFailed.has(directory)
   }
 
-  /** 拉取目录数据（首次挂载工具条用：缓存命中且非失败态才跳过）。 */
+  /** 拉取目录数据（首次挂载工具条用：缓存命中、models 非空且非失败态才跳过）。
+   * models 空的缓存视为未就绪、须重拉：refreshModelCatalog 单侧失败（listAgents
+   * 成功 / listModels 失败）会缓存空 models 目录——旧逻辑 has() 即跳过，空列表
+   * 就此锁死，createSession 的显式默认校验与首项回退全部失效（2026-10-07 新建
+   * worktree 首条消息必败根因）。重拉有 in-flight 去重，失败不风暴。 */
   async ensureModelCatalog(directory: string): Promise<void> {
-    if (this.modelCatalogs.has(directory) && !this.modelCatalogFailed.has(directory)) return
+    const cached = this.modelCatalogs.get(directory)
+    if (cached && cached.models.length > 0 && !this.modelCatalogFailed.has(directory)) return
     await this.refreshModelCatalog(directory)
   }
 

@@ -1942,6 +1942,106 @@ describe("模型开关（design-model-list）", () => {
     await store.createSession({ openTab: false })
     expect(bodies[2]!.model).toBeUndefined()
   })
+
+  it("createSession：单侧失败缓存的空列表目录 → 显式默认原值直传，不被空列表吞掉", async () => {
+    // 场景（2026-10-07 新建 worktree 首条消息必败根因）：refreshModelCatalog
+    // 单侧失败（listAgents 成功 / listModels 失败）缓存空 models 目录——旧逻辑
+    // effectiveDefaultModel(x, []) 返回 undefined，显式默认被静默丢弃、POST 不带
+    // model，server 端 defaultModel() 兜底选中不可用模型
+    store.modelCatalogs.set(ROOT, { agents: [], models: [] })
+    const bodies: Array<{ agent?: string; model?: ModelRef }> = []
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    cv2.createSession = async (input: { directory: string; agent?: string; model?: ModelRef }) => {
+      bodies.push(input)
+      return {
+        id: `new${bodies.length}`,
+        projectID: "proj1",
+        agent: input.agent,
+        model: input.model,
+        time: { created: 9, updated: 9 },
+        location: { directory: input.directory },
+      }
+    }
+
+    store.disabledModels = {}
+    store.defaults = { default: { model: { id: "glm-5.3", providerID: "zai" }, agent: "build" } }
+    await store.createSession({ openTab: false })
+    // 空列表无从校验 = 显式默认/agent 按原值应用（同 catalog 未加载分支语义）
+    expect(bodies[0]!.model).toEqual({ id: "glm-5.3", providerID: "zai" })
+    expect(bodies[0]!.agent).toBe("build")
+
+    // 对照：源列表非空 + 用户全关（意图明确）→ 仍不带 model（服务器默认，现状保留）
+    store.modelCatalogs.set(ROOT, {
+      agents: [],
+      models: [{ id: "glm-5.3", providerID: "zai", name: "GLM", variants: [] }],
+    })
+    store.disabledModels = { default: { zai: ["glm-5.3"] } }
+    await store.createSession({ openTab: false })
+    expect(bodies[1]!.model).toBeUndefined()
+  })
+
+  it("createSession：catalog 未就绪时等待拉取，就绪后按列表解析显式默认", async () => {
+    // 等待逻辑（2026-10-07）：新 worktree 首条消息时 catalog 多数在途/空——
+    // 等一次 ensureModelCatalog（实测拉取 ~20ms），成功后 effectiveDefaultModel
+    // 正常校验显式默认（含 variant 失效丢弃），而非空列表直传
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    cv2.listAgents = async () => [] as AgentInfo[]
+    cv2.listModels = async () =>
+      [
+        { id: "glm-5.3", providerID: "zai", name: "GLM", variants: [] },
+        { id: "glm-4", providerID: "zai", name: "GLM4", variants: [] },
+      ] as V2ModelInfo[]
+    const bodies: Array<{ agent?: string; model?: ModelRef }> = []
+    cv2.createSession = async (input: { directory: string; agent?: string; model?: ModelRef }) => {
+      bodies.push(input)
+      return {
+        id: `new${bodies.length}`,
+        projectID: "proj1",
+        agent: input.agent,
+        model: input.model,
+        time: { created: 9, updated: 9 },
+        location: { directory: input.directory },
+      }
+    }
+
+    // 无缓存 → 触发等待拉取 → 就绪后列表内显式默认命中
+    store.modelCatalogs.delete(ROOT)
+    store.defaults = { default: { model: { id: "glm-5.3", providerID: "zai" } } }
+    await store.createSession({ openTab: false })
+    expect(store.modelCatalogs.get(ROOT)?.models.length).toBe(2)
+    expect(bodies[0]!.model).toEqual({ id: "glm-5.3", providerID: "zai" })
+
+    // 拉取持续失败（两请求都抛错）→ 等待立即结束（失败态），显式默认原值直传
+    cv2.listModels = async () => {
+      throw new Error("boom")
+    }
+    cv2.listAgents = async () => {
+      throw new Error("boom")
+    }
+    store.modelCatalogs.delete(ROOT)
+    ;(store as unknown as { modelCatalogFailed: Set<string> }).modelCatalogFailed.clear()
+    await store.createSession({ openTab: false })
+    expect(bodies[1]!.model).toEqual({ id: "glm-5.3", providerID: "zai" })
+  })
+
+  it("ensureModelCatalog：models 空的缓存视为未就绪须重拉（单侧失败缓存自愈）", async () => {
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    let pulls = 0
+    cv2.listAgents = async () => [] as AgentInfo[]
+    cv2.listModels = async () => {
+      pulls++
+      return [{ id: "glm-5.3", providerID: "zai", name: "GLM" } as V2ModelInfo]
+    }
+    // 单侧失败形状：agents 空 + models 空（refreshModelCatalog catch(null) 路径产物）
+    store.modelCatalogs.set(ROOT, { agents: [], models: [] })
+    await store.ensureModelCatalog(ROOT)
+    expect(pulls).toBe(1)
+    expect(store.modelCatalogs.get(ROOT)?.models.length).toBe(1)
+
+    // models 非空缓存 → 跳过（SWR 不重复拉）
+    await store.ensureModelCatalog(ROOT)
+    expect(pulls).toBe(1)
+  })
 })
 
 describe("diff Tab：每作用域单 Tab + segment 切换（design-diff-view §2/§3）", () => {
