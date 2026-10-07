@@ -147,6 +147,28 @@ value: Record<profileKey, { agent?: string; model?: { id: string; providerID: st
 不解析首项：显式默认按原值应用、无则不传 → 服务器自身默认（global config / provider
 default）兜底，两级默认自然叠加（agent 同此路径）。
 
+**空列表语义修订（2026-10-07，新建 worktree 首条消息必败修复）**：
+`effectiveDefaultModel` 空列表返回 undefined 的路径，只承认**过滤后为空**（用户手动
+全关，意图明确 → 不带 model、服务器默认，D-ML-4）；**源列表为空**——catalog 未加载，
+或 `refreshModelCatalog` 单侧失败（listAgents 成功 / listModels 失败的 `.catch(() => null)`
+路径）缓存的空 models 目录——= 无从校验有效性，显式默认与 agent 一律**原值直传**，
+不得被空列表吞掉退回服务器默认。依据：服务器默认链不受本端控制——v2 `defaultModel()`
+在无 cfg.model、无 recent（`model.json`）时取 providers 迭代第一（实测为 opencode/
+Console，其免费模型经 `exo-free` 上游 503 必败，自动重试 2 分钟后放弃，session 落库
+`model:null` 亦使会话详情页无模型可显）。agent 直传的安全性：server 对无效 agent 在
+prompt 时显式报 `Agent not found`（错误可见可诊断），优于静默兜底。
+
+同修订新增**等待拉取**：`createSession` 遇 catalog 未就绪（无缓存或 models 空）先
+`await ensureModelCatalog(directory)`（1.5s 超时兜底）再解析——server 对新 directory
+的 instance 是请求时懒构建（LayerMap 同步 await，并发请求共享同一次构建），实测
+新建 worktree 首次 `/api/model`/`/api/agent` 15–30ms 即就绪、与老目录基线无差，
+等待代价可忽略；超时/失败不阻塞发送（直传兜底如上）。已知取舍：真返回零模型的
+目录无法与单侧失败区分，每次 createSession 先等一轮拉取（上限 1.5s）；相应地
+`ensureModelCatalog` 的"缓存命中不重拉"改以 **models 非空**为前提——空 models
+缓存视为未就绪须重拉（重拉有 in-flight 去重，失败不风暴）。模型列表排序为
+`time.released` 降序（models.dev 数据更新即变首项），首项回退天然不稳定，显式
+默认是唯一可靠的默认来源。
+
 **写入点**（同一 store 字段）：
 
 1. **会话内手动切换**模型/思考强度（chat 视图 + 引导页 pendingSession 会话绑定）：
