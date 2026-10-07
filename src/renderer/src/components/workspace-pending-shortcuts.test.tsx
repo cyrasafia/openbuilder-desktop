@@ -1,9 +1,10 @@
 /**
  * 会话页待处理卡片快捷键测试（design-keyboard-shortcuts §1.1b，2026-09-28 增；
- * 同日授权卡改字母键）：授权卡 Ctrl+N/A/Y = 拒绝/总是允许/允许一次（Ctrl+A/Y
- * 文本域聚焦让行 全选/redo）；问题卡 Ctrl+1..9 切换选项（v2 form 输入步无选项
- * 可切，放行）、Ctrl+0 拒绝、Ctrl+Enter 下一步/末步提交（当前步未答不动作，
- * 同按钮禁用态）。
+ * 同日授权卡改字母键；2026-10-07 修订 A/Y 撤销文本域让行）：授权卡
+ * Ctrl+N/A/Y = 拒绝/总是允许/允许一次——卡存在且展开期间**焦点无关恒为卡
+ * 动作**（window capture 层消费 + stopPropagation 短路内层）；问题卡
+ * Ctrl+1..9 切换选项（v2 form 输入步无选项可切，放行）、Ctrl+0 拒绝、
+ * Ctrl+Enter 下一步/末步提交（当前步未答不动作，同按钮禁用态）。
  * 守卫：Shift/Alt/repeat/IME/已消费/回复中/收起/overlay 不动作；Ctrl 按住期间
  * 按钮/选项显示键位角标（禁用不显，Enter 显示 "↵"，选项超 9 项截断）；
  * 卸载后不再监听。角标跟踪是模块级单例（ctrl-held.ts）——afterEach 归零防
@@ -146,10 +147,11 @@ describe("授权卡快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增
     ])
   })
 
-  it("Ctrl+A/Y 文本域聚焦让行（全选/redo 默认行为不动作不消费），N 照常；焦点离开文本域后 Y 恢复动作", async () => {
+  it("Ctrl+A/Y 焦点无关恒为卡动作（2026-10-07 修订撤销文本域让行）：文本域聚焦照常动作，capture 层短路内层 onKeyDown", async () => {
+    const inner = vi.fn()
     render(
       <>
-        <textarea aria-label="draft" />
+        <textarea aria-label="draft" onKeyDown={inner} />
         <PermissionCard permission={makePermission()} queueTotal={1} />
       </>,
     )
@@ -168,21 +170,20 @@ describe("授权卡快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增
       return ev
     }
     const evA = fromTa("a", "KeyA")
-    expect(evA.defaultPrevented).toBe(false)
+    expect(evA.defaultPrevented).toBe(true)
+    await flush()
     const evY = fromTa("y", "KeyY")
-    expect(evY.defaultPrevented).toBe(false)
-    expect(storeStub.respondPermission).not.toHaveBeenCalled()
-    // 同场景下 N 无文本语义，照常动作（editable 让行仅限 A/Y）
+    expect(evY.defaultPrevented).toBe(true)
+    await flush()
     const evN = fromTa("n", "KeyN")
     expect(evN.defaultPrevented).toBe(true)
-    expect(storeStub.respondPermission).toHaveBeenCalledWith("s1", "reject")
     await flush()
-    // 焦点不在文本域（window 直发，target 非 Element）时 Y 恢复动作
-    const evY2 = press({ key: "y", code: "KeyY", ctrlKey: true })
-    expect(evY2.defaultPrevented).toBe(true)
+    // stopPropagation（window capture）：React onKeyDown（textarea 内层）不复发
+    expect(inner).not.toHaveBeenCalled()
     expect((storeStub.respondPermission as ReturnType<typeof vi.fn>).mock.calls).toEqual([
-      ["s1", "reject"],
+      ["s1", "always"],
       ["s1", "once"],
+      ["s1", "reject"],
     ])
   })
 

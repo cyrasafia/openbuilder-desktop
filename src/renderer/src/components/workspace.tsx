@@ -1480,7 +1480,9 @@ function ChatView({ sessionID }: { sessionID: string }) {
   //（代码块 md-pre/表格 md-table-wrap/subagent-body，均 tabIndex=-1 + overflow）
   // Chromium 原生就把 Ctrl+A 限在其内容内（select-all 作用域）——放行原生
   // 行为，保留"全选单个代码块再复制"的键盘路径（复制按钮 tabIndex=-1 不可
-  // 键盘达，这是唯一路径）
+  // 键盘达，这是唯一路径）。授权卡存在且展开期间，PermissionCard 在 window
+  // capture 层先行消费 Ctrl+A（stopPropagation，§1.1b 2026-10-07 修订）——
+  // 本层不达；卡收起/无卡时本语义照常
   const onKeySelectAll = (e: KeyboardEvent) => {
     if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return
     if (e.code !== "KeyA") return
@@ -1970,19 +1972,6 @@ function isCardShortcutEvent(e: globalThis.KeyboardEvent): boolean {
   )
 }
 
-/**
- * 文本域聚焦判定（KeyA/KeyY 让行守卫共用，design-keyboard-shortcuts §1.1b）：
- * target 为 HTMLElement 且自身 contenteditable 或位于 textarea/input 内——
- * 同 ChatView onKeySelectAll 的守卫先例。window/document 直发（测试）非
- * Element 落 false。
- */
-function isEditableTarget(e: globalThis.KeyboardEvent): boolean {
-  const t = e.target
-  return (
-    t instanceof HTMLElement && (t.isContentEditable || t.closest("textarea,input") !== null)
-  )
-}
-
 export function PermissionCard({
   permission,
   queueTotal,
@@ -2013,47 +2002,49 @@ export function PermissionCard({
     // 成功：卡片随 store 移除而卸载，不回设状态
   }
 
-  // 快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增；同日键位改字母）：
-  // Ctrl+N = 拒绝、Ctrl+A = 总是允许、Ctrl+Y = 允许一次（首字母语义），与按钮
-  // 点击同路径、同禁用态（回复中/收起/overlay 遮挡不动作）；A/Y 另设文本域
-  // 聚焦让行（保住全选/redo 打字语义，isEditableTarget）。监听挂卡片组件内
-  // 随卡挂载/卸载——卡片仅在激活 chat Tab 的 ChatView 内渲染，天然仅会话页生效，
-  // 不经全局 useShortcuts 分发（§1.1 引导页先例）。effect 不带依赖数组（每渲染
-  // 重挂）：闭包恒新，replying/collapsed 守卫不 stale（state 闭包过期会让
-  // "回复中不动作"失效）。按 code 匹配 Key*（布局无关，KeyB 先例）
+  // 快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增；同日键位改字母；
+  // 2026-10-07 修订：A/Y 撤销文本域让行，卡存在且展开期间焦点无关恒为卡动作）
+  // ：Ctrl+N = 拒绝、Ctrl+A = 总是允许、Ctrl+Y = 允许一次（首字母语义），与
+  // 按钮点击同路径、同禁用态（回复中/收起/overlay 遮挡不动作）。修订依据：
+  // 卡弹出时注意力优先处理它，此期间想全选草稿/redo 而无视卡的概率极低；
+  // 角标显示本就无条件（ctrl-held 物理按住跟踪），行为应与视觉提示对齐。
+  // 让行守卫 isEditableTarget 随修订删除（md-pre 代码块缝隙一并消失）。监听
+  // 挂 window **capture** 层——先于 React 根委托：消息区 onKeySelectAll 在
+  // 处理器内同步落选区，bubble 层事后 preventDefault 撤不掉已发生的选中，
+  // 必须 capture 先行 + stopPropagation 短路内层（onKeySelectAll/composer）
+  // 才能做到"卡存活期 A/Y 恒为卡动作"。effect 不带依赖数组（每渲染重挂）：
+  // 闭包恒新，replying/collapsed 守卫不 stale（state 闭包过期会让"回复中不
+  // 动作"失效）。按 code 匹配 Key*（布局无关，KeyB 先例）
   const ctrlHeld = useCtrlHeld()
   useEffect(() => {
     const onKeyDown = (e: globalThis.KeyboardEvent) => {
       if (!isCardShortcutEvent(e) || collapsed || replying || store.overlayCount > 0) return
-      // 拒绝 = Ctrl+N（文本域无语义，输入框聚焦照常动作）
+      // 三键焦点无关恒动作（§1.1b 2026-10-07 修订，含文本域聚焦）：capture
+      // 层消费后 stopPropagation 短路内层（消息区 onKeySelectAll 同步落选区
+      // 不可事后撤销、composer 亦不再收到），preventDefault 抑制原生全选/redo
+      const consume = (response: "reject" | "always" | "once") => {
+        e.preventDefault()
+        e.stopPropagation()
+        void respond(response)
+      }
+      // 拒绝 = Ctrl+N
       if (e.code === "KeyN") {
-        e.preventDefault()
-        void respond("reject")
+        consume("reject")
         return
       }
-      // 总是允许 = Ctrl+A：文本域聚焦时让行——保住 Chromium 全选草稿默认行为
-      //（同 ChatView onKeySelectAll 的守卫先例），防"想全选却持久授权"误触；
-      // 焦点在消息区时 onKeySelectAll 已先行消费（defaultPrevented 守卫跳过
-      // 本层），消息区全选语义同样不受扰
+      // 总是允许 = Ctrl+A（原文本域让行撤销——Windows redo 主键 Ctrl+Y 同理）
       if (e.code === "KeyA") {
-        if (isEditableTarget(e)) return
-        e.preventDefault()
-        void respond("always")
+        consume("always")
         return
       }
-      // 允许一次 = Ctrl+Y：文本域聚焦时同样让行——Chromium 文本框 redo 在
-      // Windows 上就是 Ctrl+Y（规范键而非变体，Linux/mac 变体主键 Ctrl+Shift+Z
-      // 不受影响），卡存活期劫持会打断打字流（2026-09-28 review 补，原判
-      // "罕见且低害不设守卫"低估了 Windows 语义）；非文本域聚焦照常动作
+      // 允许一次 = Ctrl+Y（Windows 文本框 redo 语义在卡存活期让位）
       if (e.code === "KeyY") {
-        if (isEditableTarget(e)) return
-        e.preventDefault()
-        void respond("once")
+        consume("once")
       }
     }
-    window.addEventListener("keydown", onKeyDown)
+    window.addEventListener("keydown", onKeyDown, true)
     return () => {
-      window.removeEventListener("keydown", onKeyDown)
+      window.removeEventListener("keydown", onKeyDown, true)
     }
   })
 
