@@ -1,6 +1,8 @@
 # Provider 面板设计（v2 credential 体系，A1 恢复）
 
-> **状态**：v2 恢复实施中（2026-10-06 起；spec-v0.6 #1）。v1 版本（`PUT/DELETE /auth/:provider`，API key 直写）随 M6d 降级移除，本文档整体改写为 v2 契约——credential/integration 体系（server ≥2.0.23，部分端点 2.0.18 起可用）。
+> **状态**：已落地（2026-10-06/07 实现 + 两轮评审闭环；版本归属待 v0.6 范围确定，暂不建 spec）。v1 版本（`PUT/DELETE /auth/:provider`，API key 直写）随 M6d 降级移除，本文档整体改写为 v2 契约——credential/integration 体系（server ≥2.0.23，部分端点 2.0.18 起可用）。
+>
+> 待验收（活体走查，App 内）：① Provider 页签列表/更换 key/删除全流程；② 删除凭据后重连不复活。
 >
 > v1 历史决策（2026-09-23 修订：仅显示已配置项、无搜索/手动刷新、明文 key 不展示）**整体沿用**，本文只记差异。
 
