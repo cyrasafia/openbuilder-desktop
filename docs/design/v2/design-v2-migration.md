@@ -94,6 +94,7 @@ v2 server 默认强制密码（移动端基线 §认证）。桌面端影响：
 - **global 发现改分页全量**：`scope=project&directory=/` 无对应 → 无过滤翻页拉全量按 `location.directory` 分组（cursor 翻页 + 去重）；`openedGlobalDirectories` 事件闸门语义可保留；
 - **会话状态对账改 active 双向 diff**（V2D-3 修复，2026-09-29）：`/session/status` 无 v2 对应（M3a 裁定仍成立），但 `GET /api/session/active`（全局 drain 集合，「absent = inactive」契约语义）提供双向收敛——重连/首连对账时与本地 `sessionStatus` diff：stale busy/retry 清 idle、丢失的 busy 补回、retry 细节降级等下一次事件自愈。详见 design-typing-indicator §4 来源表与 `reconcileActiveSnapshot`（app-store）。
 - **session.created 事件骨架做字段级合并**（2026-09-30 活体修复）：v2 事件 payload 是**增量字段**而非完整 Session.Info——本端 `createSession` 的 POST 响应（完整 SessionInfo，含 agent/model）先落地 map 后，随后到达的 SSE `session.created` 骨架（`applyV2SessionEvent` 构造、time 以事件时间播种）直接 `map.set` 整体覆盖，会把已写入的 agent/model 顶掉——**会话底部 model/variant 消失 bug 的根因**（活体复现：POST 与事件双路径竞态，引导页发首条消息即触发）。修复：构造骨架前 `findSession` 回读本地记录，事件缺失的字段（parentID/slug/title/agent/model/metadata）从本地回填，事件显式携带的字段以事件为准；本地无记录（他端/CLI 新建）骨架原样入。竞态双向安全：事件先到 → POST 响应字段更全，覆盖无损；POST 先到 → 字段回填保留。替代方案否决记录：移动端 openbuilder 的「selected 事件回源 `GET /api/session/:id` 刷新」（`server_store.dart` `_refreshSessionMeta`）多一次 REST 往返且不覆盖创建竞态——字段级合并是零成本收口。
+- **事件面全量审计与三层收敛策略（2026-10-07，design-sse-event-surface）**：M6c 盘点以活体抓包为基线，未比对 schema 定义全集——`session.revert.committed`（回滚提交信号）漏接，回滚暂存后发送新消息被本地残留回滚态整轮隐藏（60s 对账才自愈）。v2.0.18 全量审计矩阵（事件 × 发布者 × 客户端消费，分「应修 / 功能降级 / 无发布者勿接 / v1 死 case」四组，含「发布了但不在 ServerDefinitions 收不到」类陷阱）与「事件驱动 + 回执驱动 + 快照适配」三层收敛模式见 design-sse-event-surface；升 pin 事件面复核流程亦在该文档（审计基线必须是 schema 定义全集，不能是抓包）。
 
 ### 消息模型与渲染管线（最大工作量）
 
