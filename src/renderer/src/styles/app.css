@@ -4878,67 +4878,31 @@
 
 /* ==================== 用户后台任务（design-subagent-background） ==================== */
 
-/* 常驻任务条：composer 顶行（与 .revert-bar 同层），贴近输入区 */
-.bg-task-bar {
-  position: relative; /* 任务列表浮层的定位锚点 */
-  display: flex;
-  width: 100%;
+/* 常驻任务卡：composer 顶行（与 .revert-bar 同层）。2026-10-07 修订：原
+   pill + 上弹浮层改为通栏折叠卡（复用 .pending-card 结构，同授权/问题卡），
+   默认收起；展开体在卡内推高 composer，不再悬浮占消息区。
+   配色中性 surface-container 系（任务卡同判），图标 primary 表运行中 */
+.pending-card.bg-task {
+  background: color-mix(in srgb, var(--surface-container-high) 55%, var(--surface));
+  border-color: var(--outline-variant);
 }
 
-.bg-task-bar-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: fit-content;
-  max-width: 100%;
-  padding: 4px 10px;
-  border-radius: var(--radius-chip);
-  background: color-mix(in srgb, var(--primary-container) 45%, var(--surface));
-  border: 1px solid color-mix(in srgb, var(--primary) 35%, transparent);
-  font-size: var(--text-sm);
-  color: var(--on-surface);
+.pending-card.bg-task .pending-card-icon {
+  color: var(--primary);
 }
 
-.bg-task-bar-toggle:hover {
-  background: color-mix(in srgb, var(--primary-container) 65%, var(--surface));
-}
-
-.bg-task-bar-icon {
+/* 详情浮层头部图标（Rocket）：primary 运行信号（原任务条图标同色） */
+.bg-task-icon {
   color: var(--primary);
   flex-shrink: 0;
-}
-
-.bg-task-bar-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 任务列表浮层：锚在任务条上沿，悬浮不占布局（同 .command-hints-slot 语义）；
-   z-index 压过 command-hints（无 z-index 的同位浮层），三者同开时详情在上 */
-.bg-task-popover {
-  position: absolute;
-  bottom: 100%;
-  left: 0;
-  right: 0;
-  margin-bottom: 4px;
-  z-index: 30;
-  max-height: min(320px, 45vh);
-  overflow-y: auto;
-  background: var(--surface-container-high);
-  border: 1px solid var(--outline-variant);
-  border-radius: var(--radius-chip);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
-  padding: 4px;
 }
 
 .bg-task-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 8px;
-  border-radius: 4px;
+  padding: 6px 8px;
+  border-radius: var(--radius-chip);
 }
 
 .bg-task-row:hover {

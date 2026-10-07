@@ -1,4 +1,4 @@
-# 用户后台任务条 + 系统提示
+# 用户后台任务卡 + 系统提示
 
 > 参考移动端 `../openbuilder/docs/design/v2/design-subagent-background.md`。
 > 本文只覆盖**用户后台任务**——命令型 `subagent: true` 建立的异步子会话。
@@ -8,7 +8,8 @@
 >
 > 移动端把后台任务做成「按子会话启动注入消息流的 chip」后废弃并改为
 > 「常驻任务条 + 系统提示」；桌面端**从未实现过 chip**，本次是首次实现，
-> 直接采用任务条方案。桌面与移动端的主要结构差异见文末「与移动端的差异」。
+> 直接采用常驻任务指示方案（初版为任务条，2026-10-07 修订为通栏折叠卡，
+> 见 D1/D2）。桌面与移动端的主要结构差异见文末「与移动端的差异」。
 
 ## 背景与问题
 
@@ -53,7 +54,7 @@
 | | 命令型 `subagent: true`（用户后台任务） | 工具型 `task`/`subagent` tool part |
 |---|---|---|
 | 消息流呈现 | 启动/完成各一条**系统提示** | 保持 `SubagentPanel`（tool part 形态） |
-| 进行中指示 | **常驻任务条** | tool part 自身（运行态） |
+| 进行中指示 | **常驻任务卡**（通栏折叠，默认收起） | tool part 自身（运行态） |
 | 停止入口 | 任务列表内 | composer 停止（中断父会话连带取消） |
 
 即：**不动**的是 `design-subagent-status.md`；**新增**的是本文。
@@ -95,21 +96,28 @@ runningBackgroundTasks(parentId) =
 
 ## 设计
 
-### D1 常驻任务条
+### D1 常驻后台任务卡
 
 - 位置：`ChatView` 的 `.composer` 顶行（与 `RevertBar` 同层，见
-  `workspace.tsx` 第 1674 行），不遮消息区、贴近输入区。
-- 形态：单行 pill「N 个后台任务运行中」+ 展开箭头 + 运行图标。
+  `workspace.tsx` 第 1692 行），不遮消息区、贴近输入区。
+- 形态（**2026-10-07 修订**：原「单行 pill + 上弹浮层」改为通栏折叠卡）：
+  复用 `.pending-card` 结构（与授权/问题卡同款通栏折叠形态，用户裁定），
+  头部一行 = `Rocket` 图标 + 标题「后台任务」+ 计数「N 个运行中」+ 展开箭头；
+  **默认收起**，点击头部切换；展开体在卡内列出任务（D2）、推高 composer，
+  不再悬浮于消息区。配色中性 surface-container 系（原任务卡同判），
+  图标 primary 表运行中。
 - 可见性：**仅当 `runningBackgroundTasks(sessionID)` 非空时显示；全部完成后
   自动消失**。
-- 点击 → 打开任务列表浮层（D2）。
 - 组件：`BackgroundTaskBar`，消费 `store.runningBackgroundTasks`。
-- **不做**批量停止、不在任务条上直接放停止钮（停止入口只在列表内，防误触）。
+- **不做**批量停止、不在头部直接放停止钮（停止入口只在展开列表内，防误触）。
 
-### D2 任务列表（锚定浮层：查看 + 停止）
+### D2 任务列表（卡片展开体：查看 + 停止）
 
-桌面无 bottom sheet；沿用 composer 锚定浮层约定（`CommandHints` 的
-`.command-hints-slot` 同款），浮层出现在 composer 上沿、悬浮于消息流不占布局。
+**2026-10-07 修订**：任务列表由「composer 上沿锚定浮层（悬浮不占布局）」
+改为任务卡展开体（`.pending-card-body` 结构，320px 上限内滚动）——与授权/
+问题卡的折叠展开形态一致、默认收起。**「查看」的嵌入详情浮层不变**：仍是
+composer 上沿锚定（`CommandHints` 的 `.command-hints-slot` 同款约定），
+悬浮于消息流不占布局。
 
 - 列表逐项：agent 名 + `title` 描述 + 已运行时长。
 - 每项操作：
@@ -118,7 +126,7 @@ runningBackgroundTasks(parentId) =
     独立滚动 + 贴底跟随），避免重复实现。
   - **停止** → `store.abortSession(childID)`（= `interrupt`）；请求在途禁用该钮。
     停止后子会话 `session.execution.interrupted` → `sessionStatus` 归 idle →
-    任务条移除该项；子会话消息流仍可查看。
+    任务卡移除该项；子会话消息流仍可查看。
 - 已运行时长：取子会话 `time.created`（或首次观察到 busy 的时刻），列表/详情
   打开期间用 1s ticker 刷新；关闭即停。
 - **不做「停止全部」**：绝大多数情况只有一个后台任务，单条停止足够。
@@ -235,9 +243,9 @@ chatEntries(sid)        = sort(message 条目 ∪ optimistic 条目 ∪ notice �
 
 | 场景 | 预期 |
 |---|---|
-| 命令型后台任务运行中 | 任务条常驻「1 个后台任务运行中」；父会话 Tab/左栏点仍亮 running；继续对话/滚动不影响它 |
-| 点任务条 | 打开列表；「查看」浮层内嵌入子会话流；「停止」→ `execution.interrupted`，任务条移除该项 |
-| 全部完成 | 任务条消失；流内留下「已启动」「已完成」两条系统提示 |
+| 命令型后台任务运行中 | 任务卡常驻（默认收起，头部「后台任务 · N 个运行中」）；父会话 Tab/左栏点仍亮 running；继续对话/滚动不影响它 |
+| 点任务卡头部 | 展开任务列表（推高 composer）；「查看」浮层内嵌入子会话流；「停止」→ `execution.interrupted`，任务卡移除该项 |
+| 全部完成 | 任务卡消失；流内留下「已启动」「已完成」两条系统提示 |
 | 工具型 subagent 运行中 | **无任务条**；`SubagentPanel` 照旧；composer 停止可取消 |
 | 工具型 `background: true` | 仍为 tool part 形态（按范围不进任务条） |
 | 命令型完成后重启/对账 | 启动提示不补（已知边界）；完成提示经 REST `synthetic` 重建 |
@@ -289,9 +297,9 @@ chatEntries(sid)        = sort(message 条目 ∪ optimistic 条目 ∪ notice �
 | `src/shared/message-merge.ts` | `ChatEntry` 增 `{ kind: "notice"; data: SessionNotice }`；`sortEntries` 增三 kind 秩 `message < notice < optimistic` 的并列 tie-break；`filterRevertedEntries` 保留 notice（回滚不隐藏通知） |
 | `src/renderer/src/store/app-store.ts` | `noticesBySession`、`childrenByParent` 惰性缓存（版本号驱动）、`sessionActivity`、`childSessionsOf`/`toolFormChildIds`/`runningBackgroundTasks`、D3 合成与撤回、D4 inbox/REST 抽取与去重、`dotStateFor` 改家族聚合、`requestTaskDetail`/`consumeTaskDetailRequest`、`cleanupSessionState`（仅清通知）与 `teardownConnection` 挂点 |
 | `src/renderer/src/components/workspace.tsx` | 抽出 `SubagentBody`（`SubagentPanel` 复用）、`BackgroundTaskBar` + 任务列表/详情浮层、notice 渲染、`ChatView` 接线（D2 详情请求消费）、`task`/`subagent` 都路由 `SubagentPanel` |
-| `src/renderer/src/styles/app.css` | 任务条、任务行、系统提示行、锚定浮层、嵌入详情样式 |
+| `src/renderer/src/styles/app.css` | 任务卡（复用 .pending-card）、任务行、系统提示行、嵌入详情浮层样式 |
 | `src/renderer/src/i18n/index.ts` | 文案中/英（bgTaskRunning/Started/Completed/Failed/Cancelled/View/Stop/Done 等） |
-| `docs/spec/spec-v0.5.md` | 功能范围同步（新增后台任务条，改功能范围必须同步） |
+| `docs/spec/spec-v0.5.md` | 功能范围同步（新增后台任务卡，改功能范围必须同步） |
 
 ## 已知限制 / 坑
 

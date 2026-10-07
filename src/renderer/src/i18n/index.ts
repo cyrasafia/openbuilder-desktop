@@ -333,8 +333,9 @@ const zh = {
   subagentCollapse: "收起子会话",
   subagentNoSession: "子会话未就绪",
   subagentLoading: "加载中…",
-  // 用户后台任务条 + 系统提示（design-subagent-background）
-  bgTaskRunning: "{count} 个后台任务运行中",
+  // 用户后台任务卡 + 系统提示（design-subagent-background）
+  bgTaskTitle: "后台任务",
+  bgTaskRunning: "{count} 个运行中",
   bgTaskStarted: "已启动后台任务：{label}",
   bgTaskCompleted: "后台任务完成：{label}",
   bgTaskFailed: "后台任务失败：{label}",
@@ -633,8 +634,9 @@ const en: typeof zh = {
   subagentCollapse: "Collapse sub-session",
   subagentNoSession: "Sub-session not ready",
   subagentLoading: "Loading…",
-  // Background task bar + system notices (design-subagent-background)
-  bgTaskRunning: "{count} background task(s) running",
+  // Background task card + system notices (design-subagent-background)
+  bgTaskTitle: "Background tasks",
+  bgTaskRunning: "{count} running",
   bgTaskStarted: "Background task started: {label}",
   bgTaskCompleted: "Background task completed: {label}",
   bgTaskFailed: "Background task failed: {label}",
