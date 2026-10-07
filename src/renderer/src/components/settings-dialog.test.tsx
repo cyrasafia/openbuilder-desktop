@@ -1111,6 +1111,38 @@ describe("SettingsDialog Provider 接线（页签/视图/Esc 分层，评审 202
       expect(storeState.current.closeSettings).toHaveBeenCalled(),
     )
   })
+  it("保存中点遮罩不关弹窗（saving 冻结第四条离开路径，复审 2026-10-07）", async () => {
+    connectWithClient()
+    // setKey 悬挂直至手动释放——制造保存窗口
+    let release!: () => void
+    storeState.current.getActiveClient = () => ({
+      listIntegrations: vi.fn(async (): Promise<V2IntegrationInfo[]> => [
+        {
+          id: "deepseek",
+          name: "DeepSeek",
+          methods: [{ type: "key" }],
+          connections: [
+            { type: "credential", id: "cred_ds", label: "API key", method: "key" },
+          ],
+        },
+      ]),
+      connectIntegrationKey: () =>
+        new Promise<void>((resolve) => {
+          release = resolve
+        }),
+      removeCredential: vi.fn(async () => {}),
+    })
+    const { container } = render(<SettingsDialog />)
+    fireEvent.click(screen.getByText("Provider"))
+    await waitFor(() => expect(screen.getByText("DeepSeek")).toBeTruthy())
+    fireEvent.click(screen.getByText("更换 key"))
+    const input = await screen.findByLabelText("DeepSeek 的 API key")
+    fireEvent.change(input, { target: { value: "sk-x" } })
+    fireEvent.click(screen.getByText("保存"))
+    fireEvent.click(container.querySelector(".dialog-mask")!)
+    expect(storeState.current.closeSettings).not.toHaveBeenCalled()
+    release()
+  })
 })
 
 // ============ 快捷键页签（design-keyboard-shortcuts §8） ============

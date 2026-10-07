@@ -76,3 +76,11 @@
 | P4 | 🟢 | oauth 行删除钮缺 `danger` 类（与 key 行不一致） | 统一 `danger` |
 | P5 | 🟢 | 删除失败/重载的错误文案对非 Error 抛出物会误映射为 connectFirst（吞真实错误）；"not connected" 映射不统一 | 模块级 `providerErrorText` 归一，三处调用统一 |
 | P6 | 🟢 | rest-client 头注仍声明契约仅以 2.0.18 pin 为准，credential/integration 面不在 pin 内 | 头注补「credential/integration 面以本文档 §1 实测表为准」 |
+
+**复审（2026-10-07，subagent 对 commit 3915d2b，3 项当日闭环）**：
+
+| # | 级别 | 问题 | 处置 |
+|---|------|------|------|
+| R1 | 🟡 | saving 冻结漏遮罩点击路径——P1 修复的旁路（第四条离开路径） | 遮罩 onClick 同门控 `!pendingNew && !(providerEdit && providerSaving)` + 回归测试（悬挂 setKey 制造保存窗口） |
+| R2 | 🟢 | ConfirmDialog 关闭后焦点回落 body，弹窗容器 onKeyDown 收不到 Esc（本文件自述要防的形态） | `closeConfirm` 在确认/取消两条关闭路径上显式 `document.querySelector(".dialog")?.focus()` |
+| R3 | 🟢 | `removeCredential(target.oldCredentialID ?? "")` 空 id 死回退（confirming 恒有 id，`?? ""` 永不触发但真触发即请求空段路径） | confirming 类型收窄为 `{name, credentialID}`（credentialID 必填），删除复用 |

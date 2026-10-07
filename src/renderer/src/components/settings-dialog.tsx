@@ -197,7 +197,9 @@ export function SettingsDialog() {
       <div
         className={"dialog-mask" + (pendingNew ? " connecting-host-hidden" : "")}
         onClick={() => {
-          if (!pendingNew) close()
+          // 遮罩关闭与 Esc/返回/关闭同门控（复审 2026-10-07）：provider key
+          // 保存中离开会丢两段式失败提示——第四条离开路径一并冻结
+          if (!pendingNew && !(providerEdit && providerSaving)) close()
         }}
       >
         <div
@@ -829,8 +831,9 @@ export function ProviderSettings({
   const [integrations, setIntegrations] = useState<V2IntegrationInfo[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // 删除二次确认（确认的是具体 credential 行）
-  const [confirming, setConfirming] = useState<ProviderKeyTarget | null>(null)
+  // 删除二次确认（确认的是具体 credential 行；复审 nit 2：credentialID 必填，
+  // 不复用可选 oldCredentialID 的 ProviderKeyTarget——杜绝空 id 死回退）
+  const [confirming, setConfirming] = useState<{ name: string; credentialID: string } | null>(null)
   const realOps = ops ?? defaultProviderOps(store)
   // 请求序号（v1 review P3）：作用域/连接态变化重拉时，迟到的旧响应不覆盖新结果
   const reloadSeq = useRef(0)
@@ -859,6 +862,13 @@ export function ProviderSettings({
     if (connected && directory) void store.ensureModelCatalog(directory)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected, directory])
+
+  // 确认弹窗关闭（确认/取消任一路径）后焦点回落 body——弹窗容器 onKeyDown
+  // 收不到 Esc（复审 nit 1，同文件 :126 自述要防的形态），显式拉回容器
+  const closeConfirm = () => {
+    setConfirming(null)
+    document.querySelector<HTMLElement>(".dialog")?.focus()
+  }
 
   if (!connected) {
     return (
@@ -951,9 +961,8 @@ export function ProviderSettings({
                   className="danger"
                   onClick={() =>
                     setConfirming({
-                      integrationID: integration.id,
                       name: integration.name,
-                      oldCredentialID: connection.id,
+                      credentialID: connection.id,
                     })
                   }
                 >
@@ -974,13 +983,13 @@ export function ProviderSettings({
           danger
           onConfirm={() => {
             const target = confirming
-            setConfirming(null)
+            closeConfirm()
             void realOps
-              .removeCredential(target.oldCredentialID ?? "")
+              .removeCredential(target.credentialID)
               .then(() => reload())
               .catch((e: unknown) => setError(providerErrorText(e, t.connectFirst)))
           }}
-          onClose={() => setConfirming(null)}
+          onClose={closeConfirm}
         />
       )}
     </div>
