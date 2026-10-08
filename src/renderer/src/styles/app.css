@@ -3033,6 +3033,19 @@
   gap: 8px;
 }
 
+/* 后台任务槽位（design-subagent-background D1/D2，2026-10-08 修订）：分隔线上方、
+   与授权/问题卡同域（定位块同 chat-footer），详情窗与任务卡在此互斥切换 */
+.bg-task-slot {
+  padding: 8px 24px;
+  flex-shrink: 0;
+  background: var(--surface);
+  width: 100%;
+  max-width: calc(var(--chat-max) + 48px);
+  min-width: calc(var(--chat-min) + 48px);
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+
 /* 卡片自身无 padding：内边距归头部按钮/body——头部按钮占满整卡宽高
    （收起时整卡可点击，展开时整个头部可点击，padding 区域不再是死区）。
    overflow hidden 裁剪头部 hover 底色到圆角 */
@@ -3835,8 +3848,8 @@
   line-height: 1;
   padding: 3px 6px;
   border-radius: var(--radius-chip);
-  color: var(--on-error-container, #4a2c00);
-  background: var(--error-container, #ffdf9e);
+  color: var(--on-error-container);
+  background: var(--error-container);
   flex-shrink: 0;
 }
 
@@ -4878,12 +4891,12 @@
 
 /* ==================== 用户后台任务（design-subagent-background） ==================== */
 
-/* 常驻任务卡：composer 顶行（与 .revert-bar 同层）。2026-10-07 修订：原
-   pill + 上弹浮层改为通栏折叠卡（复用 .pending-card 结构，同授权/问题卡），
-   默认收起；展开体在卡内推高 composer，不再悬浮占消息区。
-   配色中性 surface-container 系（任务卡同判），图标 primary 表运行中 */
+/* 常驻任务卡：分隔线上方 .bg-task-slot 槽位（2026-10-08 修订）。通栏折叠卡
+   （复用 .pending-card 结构，同授权/问题卡），默认收起。
+   配色中性 surface-container 系（任务卡同判），图标 primary 表运行中；
+   tint 混合比例 45% 对齐授权/问题卡（原 55%，2026-10-08 卡片族样式对齐） */
 .pending-card.bg-task {
-  background: color-mix(in srgb, var(--surface-container-high) 55%, var(--surface));
+  background: color-mix(in srgb, var(--surface-container-high) 45%, var(--surface));
   border-color: var(--outline-variant);
 }
 
@@ -4891,27 +4904,34 @@
   color: var(--primary);
 }
 
-/* 详情浮层头部图标（Rocket）：primary 运行信号（原任务条图标同色） */
+/* 详情窗头部图标（Rocket）：primary 运行信号（原任务条图标同色） */
 .bg-task-icon {
   color: var(--primary);
   flex-shrink: 0;
+}
+
+/* 任务行无图标（2026-10-08 裁定：与卡头部 Rocket 重复，仅保留标题），
+   整行可点查看——详情窗替代任务列表（互斥渲染）。
+   行规格对齐问题卡选项（.pending-option 成法，2026-10-08 卡片族对齐）：
+   内边距 6/10、surface-container-high 实底与卡底区分、hover/:focus-visible
+   升一档（DESIGN.md 焦点即 hover）；行距 4px 同选项列表密度 */
+.pending-card.bg-task .pending-card-body {
+  gap: 4px;
 }
 
 .bg-task-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 8px;
+  padding: 6px 10px;
   border-radius: var(--radius-chip);
+  background: var(--surface-container-high);
+  cursor: pointer;
 }
 
-.bg-task-row:hover {
+.bg-task-row:hover,
+.bg-task-row:focus-visible {
   background: var(--surface-container-highest);
-}
-
-.bg-task-row-icon {
-  color: var(--primary);
-  flex-shrink: 0;
 }
 
 .bg-task-row-meta {
@@ -4922,7 +4942,7 @@
 }
 
 .bg-task-row-label {
-  font-size: var(--text-sm);
+  font-size: var(--text-md);
   color: var(--on-surface);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4970,16 +4990,8 @@
   text-decoration: underline;
 }
 
-/* 后台任务详情浮层：composer 上沿嵌入子会话消息流（不占布局） */
-.task-detail-slot {
-  position: absolute;
-  bottom: 100%;
-  left: 0;
-  right: 0;
-  padding: 0 24px 4px;
-  z-index: 30;
-}
-
+/* 后台任务详情窗：`.bg-task-slot` 槽位内流内渲染（2026-10-08 修订——原 composer
+   上沿锚定浮层悬浮于消息流，现与任务卡互斥替代，占布局） */
 .task-detail {
   display: flex;
   flex-direction: column;
@@ -4987,7 +4999,6 @@
   background: var(--surface-container-high);
   border: 1px solid var(--outline-variant);
   border-radius: var(--radius-card);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
   overflow: hidden;
 }
 

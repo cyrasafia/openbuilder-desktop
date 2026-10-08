@@ -24,7 +24,6 @@ import {
   CircleStop,
   CircleX,
   ExternalLink,
-  Eye,
   FileDiff,
   FolderGit2,
   Globe,
@@ -1299,8 +1298,19 @@ function ChatView({ sessionID }: { sessionID: string }) {
   const busy = status.type !== "idle"
   // 用户后台任务（design-subagent-background D1）：运行中的命令型子会话 → 常驻任务条
   const backgroundTasks = store.runningBackgroundTasks(sessionID)
-  // 任务详情浮层（D2/D4）：任务条「查看」或完成提示「查看结果」触发
+  // 任务详情窗（D2/D4，2026-10-08 修订）：任务行点击或完成提示「查看结果」触发；
+  // 与任务卡互斥渲染（详情替代任务列表，同槽位切换）
   const [taskDetail, setTaskDetail] = useState<{ childID: string; label: string } | null>(null)
+  // 任务列表展开态（受控，挂 ChatView 而非卡内，2026-10-08 裁定）：详情窗开合
+  // 会替代/恢复任务卡（组件随之卸载/重挂载），展开态活在卡外才能跨详情保留——
+  // 展开中点行查看、关闭详情后列表仍展开
+  const [taskListOpen, setTaskListOpen] = useState(false)
+  // 全部结束后复位展开态（review 四轮 #2；2026-10-08 归 ChatView）：卡片消失期间
+  // 残留展开态，下一个任务启动时直接展开——收起语义归位。必须挂 ChatView 而非
+  // 卡内：详情开着任务清零时卡已卸载，卡内 effect 够不着（review 指出漏网路径）
+  useEffect(() => {
+    if (backgroundTasks.length === 0) setTaskListOpen(false)
+  }, [backgroundTasks.length])
   const lastTaskDetailVersion = useRef(0)
   useEffect(() => {
     if (store.taskDetailVersion === lastTaskDetailVersion.current) return
@@ -1677,6 +1687,32 @@ function ChatView({ sessionID }: { sessionID: string }) {
           <TypingSlot status={status} />
         </div>
       </div>
+      {/* 后台任务槽位（design-subagent-background D1/D2，2026-10-08 修订）：
+          分隔线上方、与授权/问题卡同域（原 composer 顶行在分隔线下方）。
+          详情窗与任务卡互斥渲染：查看窗口替代任务列表，不同时存在 */}
+      {(taskDetail || backgroundTasks.length > 0) && (
+        <div className="bg-task-slot">
+          {taskDetail ? (
+            <TaskDetailPanel
+              childID={taskDetail.childID}
+              label={taskDetail.label}
+              onClose={() => setTaskDetail(null)}
+            />
+          ) : (
+            <BackgroundTaskBar
+              tasks={backgroundTasks}
+              open={taskListOpen}
+              onOpenChange={setTaskListOpen}
+              onOpenDetail={(childID) =>
+                setTaskDetail({
+                  childID,
+                  label: store.findSession(childID)?.title || childID,
+                })
+              }
+            />
+          )}
+        </div>
+      )}
       <ChatFooter sessionID={sessionID} />
       <div
         className="composer"
@@ -1690,26 +1726,8 @@ function ChatView({ sessionID }: { sessionID: string }) {
         }}
         onDragLeave={refInput.dragProps.onDragLeave}
       >
-        {/* 后台任务条（design-subagent-background D1）：有运行中后台任务时显示，贴近输入区 */}
-        <BackgroundTaskBar
-          tasks={backgroundTasks}
-          onOpenDetail={(childID) =>
-            setTaskDetail({
-              childID,
-              label: store.findSession(childID)?.title || childID,
-            })
-          }
-        />
         {/* 回滚暂存条（design-message-revert §3.4）：composer 内常驻一行，撤销入口 */}
         {revertMessageID && <RevertBar sessionID={sessionID} count={revertedCount} busy={busy} />}
-        {/* 覆盖层：锚在 composer 上沿悬浮于消息流（不占布局、不顶起消息） */}
-        {taskDetail && (
-          <TaskDetailOverlay
-            childID={taskDetail.childID}
-            label={taskDetail.label}
-            onClose={() => setTaskDetail(null)}
-          />
-        )}
         {cmdMode && (
           <CommandHints
             matches={matches}
@@ -2744,7 +2762,7 @@ function chatEntryKey(entry: ChatEntry): string {
 
 /**
  * 子会话消息流嵌入块（design-subagent-status §D5 + design-subagent-background D2）：
- * 独立滚动、滚动条隐藏、贴底跟随；SubagentPanel 展开态与后台任务详情浮层共用。
+ * 独立滚动、滚动条隐藏、贴底跟随；SubagentPanel 展开态与后台任务详情窗共用。
  * `active=false` 时重置贴底，再激活恢复默认贴底。
  */
 export function SubagentMessageList({
@@ -3039,37 +3057,38 @@ export function NoticeRow({ notice }: { notice: SessionNotice }) {
 }
 
 /**
- * 常驻后台任务卡（design-subagent-background D1/D2）：composer 顶行。
- * 无运行中任务返回 null（全部完成后自动消失）。通栏折叠卡（2026-10-07 修订：
- * 复用 .pending-card 结构，同授权/问题卡；默认收起），展开体在卡内列出任务：
- * 逐项「查看」（嵌入详情）与「停止」（interrupt 该子会话）。
+ * 常驻后台任务卡（design-subagent-background D1/D2）：分隔线上方 `.bg-task-slot`
+ * 槽位（2026-10-08 修订，原 composer 顶行）。无运行中任务返回 null（全部完成后
+ * 自动消失）。通栏折叠卡（2026-10-07 修订：复用 .pending-card 结构，同授权/
+ * 问题卡；默认收起），展开体在卡内列出任务：整行点击「查看」（嵌入详情，
+ * 与任务卡互斥渲染）、行尾「停止」（interrupt 该子会话，stopPropagation
+ * 防误触发行点击）。任务行不带图标（与卡头部 Rocket 重复，2026-10-08 裁定）。
  */
 export function BackgroundTaskBar({
   tasks,
+  open,
+  onOpenChange,
   onOpenDetail,
 }: {
   tasks: Session[]
+  /** 展开态受控（挂 ChatView，2026-10-08 裁定）：详情窗开合会替代/恢复任务卡
+      （组件随之卸载/重挂载），展开态活在卡外才能跨详情保留——展开中点行查看、
+      关闭详情后列表仍展开 */
+  open: boolean
+  onOpenChange: (open: boolean) => void
   onOpenDetail: (childID: string) => void
 }) {
   const store = useStore()
   const { t } = useI18n()
-  const [open, setOpen] = useState(false)
   const [stopping, setStopping] = useState<string | null>(null)
-  // 展开期间 1s ticker 刷新已运行时长（关闭即停）
+  // 展开期间 1s ticker 刷新已运行时长（关闭即停）。展开态复位归 ChatView
+  // （受控态，含详情开着任务清零的窗口——卡内 effect 够不着）
   const [, tick] = useState(0)
   useEffect(() => {
     if (!open) return
     const id = window.setInterval(() => tick((n) => n + 1), 1000)
     return () => window.clearInterval(id)
   }, [open])
-  // 全部结束后复位展开/停止态（review 四轮 #2）：卡片消失期间残留 open，
-  // 下一个任务启动时卡片会直接展开——收起语义归位
-  useEffect(() => {
-    if (tasks.length === 0) {
-      setOpen(false)
-      setStopping(null)
-    }
-  }, [tasks.length])
 
   if (tasks.length === 0) return null
 
@@ -3085,7 +3104,7 @@ export function BackgroundTaskBar({
     <div className="pending-card bg-task">
       <button
         className="pending-card-header"
-        onClick={() => setOpen(!open)}
+        onClick={() => onOpenChange(!open)}
         aria-expanded={open}
       >
         <Rocket className="pending-card-icon" size={16} aria-hidden />
@@ -3102,8 +3121,25 @@ export function BackgroundTaskBar({
       {open && (
         <div className="pending-card-body">
           {tasks.map((task) => (
-            <div className="bg-task-row" key={task.id}>
-              <Rocket className="bg-task-row-icon" size={14} aria-hidden />
+            <div
+              className="bg-task-row"
+              key={task.id}
+              role="button"
+              tabIndex={0}
+              onClick={() => onOpenDetail(task.id)}
+              onKeyDown={(e) => {
+                // 事件来自内层「停止」钮（keydown 冒泡）不劫持——Enter/Space 是
+                // 钮的激活键，行级 preventDefault 会吞掉激活，停止变开详情
+                //（review：键盘路径回归）
+                if (e.target !== e.currentTarget) return
+                // IME 组合中不触发（同 composer Enter 守卫）；Space 兼滚动页惯例
+                if (e.nativeEvent.isComposing) return
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault()
+                  onOpenDetail(task.id)
+                }
+              }}
+            >
               <div className="bg-task-row-meta">
                 <span className="bg-task-row-label">{task.title || task.id}</span>
                 <span className="bg-task-row-sub">
@@ -3112,19 +3148,14 @@ export function BackgroundTaskBar({
                 </span>
               </div>
               <button
-                className="icon-btn bg-task-row-action"
-                title={t.bgTaskView}
-                aria-label={t.bgTaskView}
-                onClick={() => onOpenDetail(task.id)}
-              >
-                <Eye size={14} aria-hidden />
-              </button>
-              <button
                 className="icon-btn bg-task-row-action danger"
                 title={t.bgTaskStop}
                 aria-label={t.bgTaskStop}
                 disabled={stopping === task.id}
-                onClick={() => void stop(task.id)}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  void stop(task.id)
+                }}
               >
                 {stopping === task.id ? (
                   <LoaderCircle size={14} className="spin" aria-hidden />
@@ -3141,11 +3172,13 @@ export function BackgroundTaskBar({
 }
 
 /**
- * 后台任务详情浮层（design-subagent-background D2/D4）：composer 上沿嵌入子会话
- * 消息流（SubagentMessageList，独立滚动），不开独立 Tab/路由。任务结束后仍可用
- * （完成提示「查看结果」按 childID 打开）。
+ * 后台任务详情窗（design-subagent-background D2/D4，2026-10-08 修订）：嵌入
+ * `.bg-task-slot` 槽位（分隔线上方，与任务卡互斥渲染——查看窗口替代任务列表，
+ * 关闭后回到任务卡）。内嵌子会话消息流（SubagentMessageList，独立滚动），
+ * 不开独立 Tab/路由。任务结束后仍可用（完成提示「查看结果」按 childID 打开，
+ * 此时可无任务卡，详情窗独立呈现）。
  */
-function TaskDetailOverlay({
+function TaskDetailPanel({
   childID,
   label,
   onClose,
@@ -3160,7 +3193,7 @@ function TaskDetailOverlay({
   const entries = store.chatEntries(childID)
   const loadedRef = useRef<string | null>(null)
   // 加载探测是否已完成（review 四轮 #3）：childID 无法解析出会话且无目录可拉时，
-  // 不让浮层停在永久「加载中」——落一条空态。会话存在而 REST 失败仍走加载态
+  // 不让详情窗停在永久「加载中」——落一条空态。会话存在而 REST 失败仍走加载态
   //（SubagentPanel 同款：重开是重试入口，不设错误态）
   const [probed, setProbed] = useState(false)
   useEffect(() => {
@@ -3179,7 +3212,7 @@ function TaskDetailOverlay({
     setProbed(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [childID])
-  // Esc 关闭（review 三轮 #5）：焦点通常在 composer 而非浮层内，挂 window；
+  // Esc 关闭（review 三轮 #5）：焦点通常在 composer 而非详情窗内，挂 window；
   // overlayCount > 0 = 上层还有确认弹窗等，Esc 让位（scDismiss 语义）
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
@@ -3191,21 +3224,19 @@ function TaskDetailOverlay({
     return () => window.removeEventListener("keydown", onKey)
   })
   return (
-    <div className="task-detail-slot" role="dialog" aria-label={label}>
-      <div className="task-detail">
-        <div className="task-detail-header">
-          <Rocket className="bg-task-icon" size={14} aria-hidden />
-          <span className="task-detail-title">{label}</span>
-          <button className="icon-btn" title={t.close} aria-label={t.close} onClick={onClose}>
-            <X size={14} aria-hidden />
-          </button>
-        </div>
-        {probed && !childSession && entries.length === 0 ? (
-          <div className="subagent-empty">{t.subagentNoSession}</div>
-        ) : (
-          <SubagentMessageList childSessionId={childID} entries={entries} active />
-        )}
+    <div className="task-detail" role="region" aria-label={label}>
+      <div className="task-detail-header">
+        <Rocket className="bg-task-icon" size={14} aria-hidden />
+        <span className="task-detail-title">{label}</span>
+        <button className="icon-btn" title={t.close} aria-label={t.close} onClick={onClose}>
+          <X size={14} aria-hidden />
+        </button>
       </div>
+      {probed && !childSession && entries.length === 0 ? (
+        <div className="subagent-empty">{t.subagentNoSession}</div>
+      ) : (
+        <SubagentMessageList childSessionId={childID} entries={entries} active />
+      )}
     </div>
   )
 }
