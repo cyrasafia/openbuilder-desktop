@@ -228,6 +228,46 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 - 一次交互只放一个主要钮；授权卡同排多钮从左到右 = 危险｜次要｜主要（once/always/reject 语义序）
 - 弹窗内无类按钮沿用 `.dialog-actions button` 灰底兜底（quiet 档），主要钮覆写见 app.css 该区块注释（特异性修复，2026-08-27）
 
+### 待处理卡片族（2026-10-08 收编）
+
+会话底部人机协同/进度卡片的共享视觉族——授权卡、问题卡、后台任务卡（todo
+任务卡已随 v2 迁移删除）。骨架收敛在 `.pending-card` 系共享类（实现落点
+app.css「待处理卡片」区块），新卡先复用骨架与 tint 公式，不另起样式。位置
+与共存/交互规则不在本文（design-pending-cards、design-subagent-background）。
+
+**骨架**（`.pending-card` + 头部/卡体共享类，padding 0、overflow hidden 裁
+头部 hover 底到圆角）：
+
+| 区 | 类名 | 规格 |
+|---|---|---|
+| 头部 | `.pending-card-header` | 整卡可点（收起态点击区 = 整卡）：图标 16 + 标题 `ui-md` 600 + 副题 `ui-sm` `onSurfaceVariant` + 计数 `ui-xs` `outline` + 折叠 chevron 16（卡片头档）；内边距 8×12；hover/`:focus-visible` 叠 4% `onSurface`（tree-row.active 加深 idiom） |
+| 卡体 | `.pending-card-body` | 左右 12 / 下 8 外边距（与头部水平同缘），块间距 10，上限 320px 内部滚动 |
+
+> 档位注记：本族标题取 `ui-md` 600 而非 `title-sm`——待处理卡是贴输入区的
+> 紧凑悬浮卡，非面板/独立卡片容器；与图标章「pending 卡片头 16（同排标题
+> `ui-md` 13px）」同口径。排版章 scale 的「卡片标题」用法指后者。
+
+**三变体**——tint 公式统一 `color-mix(容器色 45%, surface)`；色相分工：
+需用户动作的卡取 hue tint + hue 边框，纯信息卡取中性 surface 系：
+
+| 变体 | 语义 | 底 | 边框 | 头部图标 |
+|---|---|---|---|---|
+| 授权 `.permission` | 需动作（阻塞执行） | `primary-container` 45% 混 surface | `primary` 45% | `primary` |
+| 问题 `.question` | 需动作（表单应答） | `tertiary-container` 45% 混 surface | `tertiary` 45% | `tertiary` |
+| 后台任务 `.bg-task` | 纯信息（行内停止外无动作） | `surface-container-high` 45% 混 surface（中性） | `outline-variant` | `primary`（运行信号） |
+
+**卡内列表行**（问题卡选项 `.pending-option` / 任务卡行 `.bg-task-row` 同规格）：
+chip 圆角 + `surface-container-high` 实底（与卡 tint 拉开一档）+ 内边距 6×10 +
+行距 4（列表密度）；主文字 `ui-md`（列表正文基准）、次级行 `ui-xs` `outline`；
+hover/`:focus-visible` 升 `surface-container-highest`（焦点即 hover）。
+选中态（仅选项）`tertiary` 18% 混底 + `tertiary` 边。
+
+**卡内其他件**：命令/路径详情 = mono 块（`surface-container-lowest` 底 +
+`outline-variant` 边 + chip 圆角，代码块同 idiom）；自由输入框与选项行同框
+（6×10 + chip 圆角 + container-high 底，focus 边转 `tertiary`）；动作行 =
+右对齐按钮排（gap 8），序 = 危险｜次要｜主要（§按钮通用规则）；快捷键角标 =
+中性面 chip + mono 键名（design-keyboard-shortcuts §1.1b）。
+
 ## Agent 行为的呈现原则（参考 Agentic Design Patterns）
 
 设计原则级约定，先于具体组件规格——聊天组件设计以"忠实呈现 agent 行为模式"为准绳：
@@ -235,8 +275,9 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 1. **工具调用（tool use）= 可折叠 chip**：沿用移动端 chip 骨架概念，桌面版为行内折叠条（高 26 = `--row-tree`，chevron 12 + 工具名 `ui-sm` sans + 状态点）；展开体 = 输入/输出两个 mono 块（`appColors.codeBackground` + `border`），长输出内部滚动不撑高消息。（2026-09-08 订正：原写「高 28，chevron 16」两项均与实现不符——`.chip-header` 高取 `--row-tree`=26；chevron 按图标章「chip 行内 = 12 档、与同排 `ui-sm` 文字同尺寸」定为 12，16 会让图标盒超出同排文字 4px。实测依据见图标章「折叠 chevron」条）
 2. **推理/思考（reflection）= 弱化呈现**：斜体 + `outline` 色展开体，与正文明确区分"内部推理"地位
 3. **进行中的活动 = 状态可见**：running 态在 Tab、会话列表、chip 三处同步呈现（status 色 + 指示点），离屏也能从边缘感知
-4. **人机协同（human-in-the-loop）= 权限卡占位**：v0.1 仅占位呈现（拒绝/同意按钮置灰），v0.2 补交互
+4. **人机协同（human-in-the-loop）= 权限卡占位**：授权/问题卡完整交互已落地（见 §待处理卡片族）
 5. **错误（exception）不静默**：`errorContainer` 底色卡片 + onErrorContainer 文案，附重试入口（对账层联动）
+6. **后台任务（background task）= 常驻可见、完成留痕、不冒充前台**：进行中须有不被新消息冲走的常驻指示（现为折叠卡，§待处理卡片族）；完成须留痕，切走再回仍能辨认执行过（现为启动/完成系统提示留流）；呈现不得冒充前台任务——父会话不出 typing 提示、发送钮不变停止
 
 ## i18n
 

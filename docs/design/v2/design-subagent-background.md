@@ -7,8 +7,10 @@
 > 形态，默认收起，见「常驻任务卡」节）。
 >
 > 2026-10-03 首版；2026-10-08 经升格/对齐/重建三轮裁定后全文重写——历史
-> 推演与处置见文末 Review 记录（一至八轮）。工具型**前台**（同步阻塞）的
-> 呈现不在本文，见 [`design-subagent-status.md`](design-subagent-status.md)。
+> 推演与处置见文末 Review 记录（一至八轮）。**2026-10-08 交互修订**：卡位
+> 上移分隔线上方、任务行整行点击查看（键盘可达）、行图标删除行加底色、
+> 详情窗与任务卡互斥替代、展开态跨详情保留（见「常驻任务卡」节）。工具型
+> **前台**（同步阻塞）的呈现不在本文，见 [`design-subagent-status.md`](design-subagent-status.md)。
 
 ## 背景
 
@@ -102,7 +104,7 @@ kind 秧 `message < notice < optimistic` 稳定排序（三秧显式定义，防
 | `background-finished`（cancelled） | 取消 | `CircleStop` | 后台任务取消：{label} |
 
 - 样式：leading 图标 + 文本（`ui-sm` / `color-text-muted`）+ 可选 trailing
-  「查看」（有 childID 时 → 详情浮层）；行式、低对比、不画气泡底。这是桌面
+  「查看」（有 childID 时 → 详情）；行式、低对比、不画气泡底。这是桌面
   首个系统提示样式，后续 model/agent 切换等系统级通知可复用。
 - `label` 优先级：入列消息取子会话 `title`（回退 id）；完成消息优先解析
   synthetic 文本里的 `description`，回退 `payload.description` / `agent` /
@@ -113,24 +115,52 @@ kind 秧 `message < notice < optimistic` 稳定排序（三秧显式定义，防
 
 ### 常驻任务卡
 
-- 位置：`ChatView` 的 `.composer` 顶行（与 `RevertBar` 同层），不遮消息区。
+- 位置（**2026-10-08 修订**：由 `.composer` 顶行上移至分隔线上方独立
+  `.bg-task-slot` 槽位——与授权/问题卡同域，定位块同 `.chat-footer`；
+  用户裁定：任务卡不该落在输入区分隔线之下），不遮消息区、贴近输入区。
 - 形态（**2026-10-07 修订**：原「单行 pill + 上弹浮层」废弃）：复用
   `.pending-card` 结构的**通栏折叠卡**（与授权/问题卡同款形态）——头部一行
   = `Rocket` 图标 + 标题「后台任务」+ 计数「N 个运行中」+ 展开箭头，
-  **默认收起**，点击头部切换；展开体在卡内列出任务（320px 上限内滚动）、
+  **默认收起**，点击头部切换（**2026-10-08**：展开态受控挂 `ChatView`，
+  跨详情开合保留）；展开体在卡内列出任务（320px 上限内滚动）、
   推高 composer，不再悬浮于消息区。配色中性 surface-container 系，
   图标 primary 表运行中。
 - 可见性：`runningBackgroundTasks(sessionID)` 非空时常驻；全部完成后自动
   消失（展开态残留一并复位）。
-- 展开体逐项：agent 名 + title + 已运行时长（`time.created` 起算，1s ticker）。
-  - **查看** → 详情浮层内嵌入子会话消息流（复用 `SubagentBody`，独立滚动），
-    不开独立 Tab/路由；不可解析 childID 落空态（重开即重试）。详情浮层仍
-    composer 上沿锚定、悬浮不占布局（`CommandHints` 的 `.command-hints-slot`
-    同款约定，`z-index: 30`）。
-  - **停止** → `store.abortSession(childID)`（= `interrupt`）；请求在途禁用。
-    停止后 `execution.interrupted` → 状态归 idle → 任务卡移除该项，流仍可看。
+- 展开体逐项（**2026-10-08 修订**：任务行整行可点击查看（键盘可达）、
+  删除行内图标、行加底色表可点）：agent 名 + title + 已运行时长
+  （`time.created` 起算，1s ticker）。
+  - **查看**（整行点击/回车）→ **详情窗与任务卡同槽位互斥替代**
+    （`.bg-task-slot` 内切换，2026-10-08 裁定）：内嵌子会话消息流（复用
+    `SubagentBody`，独立滚动），不开独立 Tab/路由；Esc/× 关闭返回任务卡，
+    **列表展开态跨详情保留**（受控挂 `ChatView`）；不可解析 childID 落空态
+    （重开即重试）。
+  - **停止**（行内钮）→ `store.abortSession(childID)`（= `interrupt`）；
+    请求在途禁用。停止后 `execution.interrupted` → 状态归 idle →
+    任务卡移除该项，流仍可看。
 - 不做「停止全部」/批量停止端点；不在卡头部直接放停止（防误触）。
 - 关父会话 Tab 期间任务卡随 `ChatView` 卸载消失（停止入口空档，已知限制）。
+- **2026-10-08 交互修订**（五项，用户裁定）：
+  1. 逐项「查看」按钮删除——点击**整行**即查看（命中区更大；`role="button"`
+     + Enter/Space，键盘路径不因删按钮丢失；行 keydown 带 target 守卫，
+     内层「停止」钮的激活不被劫持——review 回归修复）；行尾仅留「停止」钮
+     （`stopPropagation` 防误触发行点击）。
+  2. 任务行图标删除——行内 `Rocket` 与卡头部图标重复，行内仅保留标题
+     （agent + 时长副行）。
+  3. 详情窗与任务列表**互斥渲染**——详情打开时整个任务卡被详情窗替代
+     （同 `.bg-task-slot` 槽位内切换），关闭后回到任务卡；两者不同时存在。
+     详情窗由「composer 上沿锚定浮层」改为槽位内**流内嵌入**（占布局，
+     推高消息区），不再叠加显示。任务已结束（卡已消失）时从完成通知
+     「查看」进入的详情窗独立呈现（槽位内无卡可替代，单独渲染）。
+  4. 任务行规格对齐问题卡选项 + 卡底 tint 统一（DESIGN.md 排版/焦点环
+     规范）——行内边距 `6px 10px`、标签 `ui-md`、行距 4px、hover/
+     `:focus-visible` 升 `surface-container-highest`（同 `.pending-option`）；
+     卡底 tint 混合比例 55% → 45%，与授权/问题卡一致。
+  5. 展开态受控挂 `ChatView`——详情替代任务卡时组件卸载，展开态活在卡外：
+     展开中点行查看、关闭详情后列表**保持展开**；复位（全部结束 → 收起）
+     同挂 ChatView（详情开着任务清零时卡已卸载，卡内 effect 够不着——
+     review 指出漏网路径）。回归测试 `workspace-bg-task.test.tsx`
+     覆盖用户实测路径（展开 → 详情 → 关闭仍展开）。
 
 ### 指示器（家族聚合）
 
@@ -142,7 +172,6 @@ kind 秧 `message < notice < optimistic` 稳定排序（三秧显式定义，防
 ## 契约事实（v2.0.18 实测/源码口径）
 
 | 来源 | 事实 | 落点 |
-|---|---|---|
 | `session.created`（v2） | 携带 `sessionID/projectID/parentID/title/...`；子会话与父同 `directory`，过目录闸门 | `applyV2SessionEvent` → `applySessionEvent`；`parentID` 非空不开 Tab，触发入列消息闸门 |
 | `session.execution.started/succeeded/failed/interrupted` | **旁路目录闸门**（信封无 location，按 sessionID 解析目录）；驱动 `sessionStatus` | 子会话 busy/idle 事实源（任务卡与家族聚合） |
 | `session.inbox.enqueued` | `item.type` ∈ `user/synthetic/compaction/move`；`synthetic` 的 `payload = {text, description, metadata}`，`metadata = {source:"subagent", childID, agent, state}`，`state` 主枚举 `completed/error/cancelled`，`item.time.created` 可信 | 完成提示实时合成；③的转换 synthetic（无 source）不渲染 |
@@ -258,7 +287,7 @@ runningBackgroundTasks(parent) =
 | ② 派发 | 「已启动」即插；派发完成后任务卡纳入；派发 part 留流内 |
 | ③ 转换 | 转换前无任务卡；转换后任务卡纳入 + 「已转后台」；完成提示照常 |
 | 前台（同步）运行中 | 无任务卡、无任何系统提示；`SubagentPanel` 照旧；composer 停止可取消 |
-| 点任务卡 | 「查看」嵌入子会话流；「停止」→ `execution.interrupted`，任务卡移除该项 |
+| 点任务卡头部 | 展开任务列表（占布局）；点任务行（整行可点，键盘可达）→ 详情窗替代任务卡（Esc/× 关闭返回，列表保持展开）；「停止」→ `execution.interrupted`，任务卡移除该项 |
 | 全部完成 | 任务卡消失；流内留下入列 + 完成两条系统提示 |
 | SSE 缺口吞 `tool.called` | ②③照常；前台子会话误插的启动提示在对账后撤回 |
 | 重启/重开 Tab/对账拉起 | 启动提示窗口内重建（权威时间）；完成提示重建；③转后台提示仅运行中恢复 |
@@ -277,18 +306,20 @@ runningBackgroundTasks(parent) =
    REST 重建（权威值校正）；③转后台受运行态判据所限仅运行中可恢复——
    彻底解决需上游给转换 synthetic 补 metadata（另行跟进）。
 5. **只提供单条停止**；终态由 `execution.interrupted` + 完成 synthetic 收敛。
-6. **详情用嵌入浮层**，不引入子会话独立 Tab/路由。
+6. **详情窗与任务卡互斥、流内嵌入**（**2026-10-08 修订**：原「嵌入浮层」
+   悬浮 composer 上沿、与任务卡叠加显示——用户裁定两者不同时存在，详情
+   改 `.bg-task-slot` 槽位内替代任务卡），不引入子会话独立 Tab/路由。
 7. **通知独立成表、不进消息容器**（见「数据与状态」）。
 
 ## 与移动端的差异
 
 | 维度 | 移动端 | 桌面端 |
 |---|---|---|
-| 状态容器 | `ServerStore` + `ConversationStore` 分离 | 单一 `AppStore`；通知表挂 store |
-| 通知存放 | 作为 `DisplayMessage` 进消息流，靠 metadata 显式保留 | 独立 `noticesBySession`，结构免疫窗口删除 |
+| 状态容器 | `ServerStore` + `ConversationStore` 分离 | 单一 `AppStore`；通知表 `noticesBySession` 挂 store |
+| 通知存放 | 作为 `DisplayMessage` 进消息流，靠 metadata 显式保留 | 独立 `noticesBySession`，不进 `messagesBySession`，结构免疫窗口删除 |
 | 判据 | 任意 task/subagent 认领即排除（旧模型，待跟进升格） | 前台认领/运行认领分层 + REST 重建 |
-| 详情展示 | `showModalBottomSheet` | composer 锚定浮层 |
-| 子会话索引 | `_childSessions` 64 条 LRU | `sessionsByProject` 全量 + 惰性缓存 |
+| 详情展示 | `showModalBottomSheet` | 槽位内嵌详情窗（与任务卡互斥替代，无 bottom sheet；2026-10-08 修订） |
+| 子会话索引 | `_childSessions` 64 条 LRU | `sessionsByProject` 全量 + `childrenByParent` 惰性缓存 |
 | 完成提示落地 | `onSynthetic` 物化 + inbox | inbox 直接物化；REST 抽取按 id 去重 |
 | 会话容器淘汰 | `_evictConversations` 豁免子会话 | `ensureConversation` 已豁免 |
 
@@ -308,9 +339,10 @@ runningBackgroundTasks(parent) =
 | `src/shared/session-notices.test.ts` | 判据分层/续跑认领/构造/合并用例 |
 | `src/shared/api-types.ts` + `src/shared/v2-adapter.ts` | REST synthetic `metadata` 透传 |
 | `src/shared/message-merge.ts` | `ChatEntry` notice kind、三 kind 秩排序、回滚不隐藏通知、parts 快照合并（参数正名见 Review 八轮附注） |
-| `src/renderer/src/store/app-store.ts` | `noticesBySession`、`childrenByParent` 惰性缓存、`sessionActivity`、`runningBackgroundTasks`、入列合成闸门（`onChildSessionCreated`）、撤回/重建/转后台三 reconcile、完成抽取、SSE tool.failed metadata 保留、`dotStateFor` 家族聚合、`requestTaskDetail`、清理挂点 |
-| `src/renderer/src/components/workspace.tsx` | `NoticeRow`（三 kind）、`BackgroundTaskBar` + 列表/详情浮层（`SubagentBody` 复用）、`task`/`subagent` 双认路由 |
-| `src/renderer/src/styles/app.css` | 任务卡/任务行/系统提示行/锚定浮层样式 |
+| `src/renderer/src/store/app-store.ts` | `noticesBySession`、`childrenByParent` 惰性缓存、`sessionActivity`、`runningBackgroundTasks`、入列合成闸门（`onChildSessionCreated`）、撤回/重建/转后台三 reconcile、完成抽取、SSE tool.failed metadata 保留、`dotStateFor` 家族聚合、`requestTaskDetail`/`consumeTaskDetailRequest`、清理挂点 |
+| `src/renderer/src/components/workspace.tsx` | `NoticeRow`（三 kind）、`BackgroundTaskBar` + 任务列表/详情窗（`.bg-task-slot` 槽位**互斥渲染**，整行点击查看、展开态受控挂 `ChatView`）、`SubagentBody` 复用、`task`/`subagent` 双认路由 |
+| `src/renderer/src/components/workspace-bg-task.test.tsx` | 任务卡交互回归（展开 → 详情 → 关闭仍展开等用户实测路径，2026-10-08 修订 5） |
+| `src/renderer/src/styles/app.css` | 任务卡（复用 .pending-card）、任务行（对齐问题卡选项规格）、系统提示行、`.bg-task-slot` 槽位与详情窗样式 |
 | `src/renderer/src/i18n/index.ts` | bgTaskRunning/Started/Converted/Completed/Failed/Cancelled/View/Stop 中英 |
 | `docs/spec/spec-v0.5.md` | 功能范围同步 |
 
