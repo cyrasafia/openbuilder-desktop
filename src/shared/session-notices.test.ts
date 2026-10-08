@@ -92,6 +92,27 @@ describe("foregroundClaimedChildIds（启动通知闸门/撤回判据，2026-10-
     expect(ids.size).toBe(0)
   })
 
+  it("续跑认领：input.sessionID 与 metadata 同为权威（任意 part 状态，REST 持久）", () => {
+    const running = foregroundClaimedChildIds(
+      [toolPart("subagent", { description: "别的描述", sessionID: "ses_task" })],
+      children,
+    )
+    expect([...running]).toEqual(["ses_task"])
+    const completed = foregroundClaimedChildIds(
+      [toolPart("subagent", { sessionID: "ses_task" }, undefined, "completed")],
+      children,
+    )
+    expect([...completed]).toEqual(["ses_task"])
+  })
+
+  it("续跑 + background:true：非前台认领（后台续跑照插/不撤）", () => {
+    const ids = foregroundClaimedChildIds(
+      [toolPart("subagent", { sessionID: "ses_bg", background: true })],
+      children,
+    )
+    expect(ids.size).toBe(0)
+  })
+
   it("input 为字符串（SSE 流式/缺口）：不构成前台认领（误插由对账纠正）", () => {
     const ids = foregroundClaimedChildIds([toolPart("subagent", '{"description":"Review')], children)
     expect(ids.size).toBe(0)

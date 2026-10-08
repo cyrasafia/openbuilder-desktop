@@ -45,11 +45,26 @@ function isBackgroundInput(part: ToolPart): boolean {
 }
 
 /**
+ * part 显式续跑的子会话（`subagent` tool 的 `input.sessionID`，2026-10-08 重建
+ * 修订补）——与 `metadata.sessionId` 同级的权威认领：progress 不持久化（REST
+ * Running 态 `metadata:{}`，live 侧经 mergePart 会被洗掉），续跑场景
+ * title≠description 使兜底失效，`input.sessionID` 是唯一持久认据（随 called
+ * 的 parsed input 落库）。
+ */
+function toolInputSessionId(part: ToolPart): string | undefined {
+  const input = (part.state as { input?: unknown }).input
+  if (!input || typeof input !== "object") return undefined
+  const sid = (input as { sessionID?: unknown }).sessionID
+  return typeof sid === "string" && sid.length > 0 ? sid : undefined
+}
+
+/**
  * 遍历父会话 tool part 对子会话的**认领**（design-subagent-background 2026-10-08
  * 升格修订）：
  * - 权威：part 的 `metadata.sessionId` / `sessionID`——progress 写入、success
  *   持久化（含 `background:true`，2026-10-07 活体证实）、REST 快照同带；任意
- *   part 状态可判；
+ *   part 状态可判。**续跑认领**：`input.sessionID`（显式指定续跑对象）——
+ *   progress 不持久化的补偿认据（见 toolInputSessionId）；
  * - 兜底：part 仍 pending/running 且 `input.description` 命中某子会话 title 前缀
  *   （metadata 未写入窗口；与 findChildSession 同口径）。
  */
@@ -62,7 +77,7 @@ function forEachClaim(
     if (part.type !== "tool") continue
     const tool = part as ToolPart
     if (!TOOL_FORM_TOOLS.has(tool.tool)) continue
-    const authoritative = toolMetadataSessionId(tool)
+    const authoritative = toolMetadataSessionId(tool) ?? toolInputSessionId(tool)
     if (authoritative) {
       visit(authoritative, tool)
       continue

@@ -6934,6 +6934,77 @@ describe("用户后台任务（design-subagent-background）", () => {
     expect(store.runningBackgroundTasks("p").map((s) => s.id)).toEqual(["fg5"])
   })
 
+  it("启动提示 REST 重建（2026-10-08 重建修订）：窗口内①②补 bg-start、前台认领不补、窗口外待翻页", async () => {
+    // ①cmd=命令型历史子（无 part）；②bg2=background:true 历史子；③fg6=前台完成子；old=更早的①
+    seedParent(child("old", 1), child("cmd", 10), child("bg2", 12), child("fg6", 14))
+    // REST 首页只覆盖 created >= 5（更早历史在未加载页）
+    const msg = (id: string, created: number, role: "user" | "assistant" = "user", parts: Part[] = []) =>
+      ({ info: { id, sessionID: "p", role, time: { created } }, parts }) as MessageWithParts
+    clientV2Of().listMessagesPage = async () => ({
+      entries: [
+        msg("m1", 5),
+        msg("m2", 11, "assistant", [subagentPart({ description: "bg2", background: true }, { sessionID: "bg2" }, "completed") as Part]),
+        msg("m3", 13, "assistant", [subagentPart({ description: "fg6" }, { sessionID: "fg6" }, "completed") as Part]),
+      ],
+      nextCursor: "c1",
+    })
+    await store.loadSessionMessages("p", ROOT)
+    expect(store.noticesForSession("p").map((n) => n.id)).toEqual(["bg-start:cmd", "bg-start:bg2"])
+    // 翻页下探：更早页合并（窗口下界降到 0）→ old 也补上；幂等不重复
+    clientV2Of().listMessagesPage = async () => ({ entries: [msg("m0", 0)], nextCursor: null })
+    ;(store as unknown as { mergeMessagePage: (sid: string, msgs: MessageWithParts[]) => number }).mergeMessagePage(
+      "p",
+      [msg("m0", 0)],
+    )
+    expect(store.noticesForSession("p").map((n) => n.id)).toEqual([
+      "bg-start:old",
+      "bg-start:cmd",
+      "bg-start:bg2",
+    ])
+  })
+
+  it("启动提示 REST 重建：created 取子会话行权威时间戳，与 live 插入同值（幂等无抖动）", async () => {
+    seedParent(child("cmd2", 1000))
+    dispatch({
+      type: "session.created",
+      properties: { sessionID: "cmd2", projectID: "proj1", parentID: "p", title: "cmd2" },
+    })
+    const live = store.noticesForSession("p")[0]
+    clientV2Of().listMessagesPage = async () => ({
+      entries: [
+        {
+          info: { id: "m1", sessionID: "p", role: "user", time: { created: 500 } },
+          parts: [],
+        },
+      ],
+      nextCursor: null,
+    })
+    await store.loadSessionMessages("p", ROOT)
+    expect(store.noticesForSession("p")).toEqual([live])
+  })
+
+  it("续跑认领：input.sessionID 持久认据——REST 合并洗掉 progress metadata 后前台续跑子会话不误插", async () => {
+    seedParent(child("c9", 10))
+    setStatus("c9", "busy")
+    // 运行中续跑 part：REST 态 metadata 为空（progress 不持久化），input.sessionID 是唯一认据
+    clientV2Of().listMessagesPage = async () => ({
+      entries: [
+        {
+          info: { id: "m1", sessionID: "p", role: "user", time: { created: 5 } },
+          parts: [],
+        },
+        {
+          info: { id: "m2", sessionID: "p", role: "assistant", time: { created: 11 } },
+          parts: [subagentPart({ description: "继续旧任务", sessionID: "c9" }) as Part],
+        },
+      ],
+      nextCursor: null,
+    })
+    await store.loadSessionMessages("p", ROOT)
+    expect(store.noticesForSession("p")).toEqual([])
+    expect(store.runningBackgroundTasks("p")).toEqual([])
+  })
+
   it("升格：SSE 缺口吞掉 tool.called——session.created 误插前台启动提示，REST 恢复后撤回", async () => {
     seedParent()
     // 缺口：part 缺失（或 input 为字符串），session.created 直达 → 误插

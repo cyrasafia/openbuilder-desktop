@@ -3617,8 +3617,10 @@ export class AppStore {
     pending.clear()
     this.messagesBySession.set(sessionID, merged)
     // 快照合并后补撤回（review 四轮 #1，同 onMessagesSnapshot）：REST 页
-    // 落地的 tool part 同样构成前台认领依据；③转后台提示缺口恢复同此
+    // 落地的 tool part 同样构成前台认领依据；③转后台提示缺口恢复同此；
+    // 启动提示 REST 重建（覆盖窗口内未认领子会话）
     this.reconcileStartNotices(sessionID)
+    this.rebuildStartNotices(sessionID)
     this.reconcileConvertedNotices(sessionID)
     return msgs.filter((m) => !hadIds.has(m.info.id)).length
   }
@@ -3967,6 +3969,34 @@ export class AppStore {
       const child = this.findSession(childID)
       if (!child) continue
       incoming.push(backgroundConvertedNotice(child, eventTime ?? Date.now()))
+    }
+    if (incoming.length > 0) this.upsertNotices(parentSessionID, incoming)
+  }
+
+  /**
+   * 启动提示 REST 重建（2026-10-08 重建修订——启动信号全程 REST 可得，用户
+   * 契约表核定）：已加载消息覆盖窗口（窗口下界 = 最早已加载消息的 created；
+   * 上不设界——尾部即当下）内的**非前台认领**子会话，逐个补 `bg-start`。
+   * `created` 取子会话行的服务端权威 `time.created`，与 live 插入同值——重建
+   * 幂等无抖动。窗口下界防翻页未及的更早历史误判：其认领 part 可能尚未加载，
+   * 未认领 ≠ 后台任务；翻页下探后窗口下界下移，再行补插。
+   */
+  private rebuildStartNotices(parentSessionID: string) {
+    const children = this.childSessionsOf(parentSessionID)
+    if (children.length === 0) return
+    const conv = this.messagesBySession.get(parentSessionID)
+    if (!conv || conv.size === 0) return
+    let minCreated = Infinity
+    for (const m of conv.values()) minCreated = Math.min(minCreated, m.info.time.created)
+    if (!Number.isFinite(minCreated)) return
+    const foreground = this.foregroundClaimedChildIdsFor(parentSessionID)
+    const notices = this.noticesBySession.get(parentSessionID) ?? []
+    const incoming: SessionNotice[] = []
+    for (const child of children) {
+      if (child.time.created < minCreated) continue
+      if (foreground.has(child.id)) continue
+      if (notices.some((n) => n.id === `bg-start:${child.id}`)) continue
+      incoming.push(backgroundStartedNotice(child))
     }
     if (incoming.length > 0) this.upsertNotices(parentSessionID, incoming)
   }
@@ -6477,8 +6507,9 @@ export class AppStore {
         this.messagesBySession.set(sessionID, merged)
         // 快照合并后补撤回（review 四轮 #1）：断线窗口丢 tool part 事件、
         // 重连仅经 REST 落地时，事件侧钩子不会触发——此处兜底；③转后台
-        // 提示的缺口恢复同此
+        // 提示的缺口恢复、启动提示的 REST 重建同此
         this.reconcileStartNotices(sessionID)
+        this.rebuildStartNotices(sessionID)
         this.reconcileConvertedNotices(sessionID)
         // 对账回填成功：清同形状 error 种子（挂载失败种子 vs 已回填内容的矛盾态，
         // review R3-P2）——回到无状态，重激活/上滚走正常种子

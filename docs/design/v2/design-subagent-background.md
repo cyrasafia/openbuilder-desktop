@@ -54,6 +54,7 @@
 | **② `background:true` 派发即完成**（2026-10-07 活体抓包） | 事件序：`tool.called`（parsed input，含 `background:true`）→ `session.created`（晚 ~44ms，title==description）→ `tool.progress`（`metadata:{sessionID,status:"running"}`）→ `tool.success`（created 后 ~30ms，part 转 completed，**事件与 REST 持久化都带 `metadata:{sessionID,status:"running",truncated:false}`**——源码初读会误判为不带，系框架层并入） | ②的后台运行态 = part completed + 子会话运行中；`input.background` 在 `session.created` 前即可读 |
 | **③ 前台转后台**（源码核实 v2.0.18） | `POST /api/session/{父}/background` → `Session.background` → `jobs.backgroundAll`：阻塞中的 tool 返回 `{type:"backgrounded"}` → `backgroundResult` 同②；父会话另发一条 synthetic（「User requested that active blocking work be moved to the background…」，**无 `source:subagent`**，不渲染为通知）。TUI/CLI 动作，桌面端未接该端点 | 转换信号 = 认领 part 转 completed + 子会话继续跑；完成 synthetic 经 `subagents.notify` 补发 |
 | **SSE volatile 缺口的时序影响**（2026-10-07 现场病灶） | v2 事件流断线丢事件、慢消费者被断流；远程客户端缺口可吞掉 `tool.called`（与 `session.created` 仅隔 ~44ms）或整个派发 part——`session.created` 到达时认领数据（metadata 未写、input 为流式字符串）缺席 | 缺口误插的纠正依赖对账（REST 快照可靠带 `metadata.sessionID`）；判据须区分「前台认领」（撤）与「后台派生」（不撤），见识别节 |
+| **启动信号全程 REST 可得**（2026-10-08 重建修订，用户契约表核定） | ①`session.created` 的等价物：会话行（子会话全量在列，`time.created`/`title` 服务端权威）；②`tool.called` 的 `input.background`：`part.state.input`（called 持久化 parsed input）；③`tool.success/failed` 的 `metadata.sessionID`：`part.state.metadata`（success 持久化、failed 经 failureSnapshot 并入；活体证实）；④part 状态：`part.state.status`；⑤子会话 busy：`GET /api/session/active`（V2D-3 已接）；⑥`tool.progress` **不持久化**（projector 显式跳过）——无影响：运行中 part 的 REST 态是 `Running({input, metadata:{}})`，input 是对象，兜底（desc 前缀 + `background` 标志）照样可判；**续跑**的持久认据是 `input.sessionID`（title≠desc 使兜底失效，2026-10-08 补入权威认领） | 启动提示可随 REST 对账重建（D3 重建段）——不再依赖 live 见证 |
 
 ## 范围
 
@@ -97,6 +98,7 @@
 claim(part, child) =
     part.tool ∈ {task, subagent}
       ├─ metadata.sessionId / metadata.sessionID（权威，任意状态）
+      ├─ input.sessionID（续跑认领，权威——progress 不持久化的补偿认据）
       └─ part pending/running ∧ input.description ↔ child.title 前缀（兜底）
 
 foregroundClaimedChildIds(parent) =
@@ -159,10 +161,16 @@ runningBackgroundTasks(parent) =
 - 存放：**独立通知表** `noticesBySession: Map<sessionID, SessionNotice[]>`，
   不写入 `messagesBySession`（**桌面关键取舍**，见「与移动端的差异」）：
   通知 id 为 `bg-start:<childID>`，`created = child.time.created`。
-- **已知边界**：仅当父会话消息流已加载或父会话有打开 Tab 时合成（用户正在/
-  曾打开该会话）；应用重启/对账拉起的历史会话不补启动提示（完成提示经 REST
-  仍在，任务条也不受影响）。关 Tab = 归档经 `cleanupSessionState` 清
-  `noticesBySession`（与消息容器同清理），重开 Tab 也不补启动提示。
+- **已知边界 → REST 重建（2026-10-08 重建修订）**：live 合成仍以「父会话
+  消息流已加载或父会话有打开 Tab」为前提；**不依赖 live 见证**——启动信号
+  全程 REST 可得（见契约表），`mergeMessagePage` / `onMessagesSnapshot`
+  合并后在**覆盖窗口**内补 `bg-start`：窗口下界 = 最早已加载消息的 created
+  （上不设界——尾部即当下），窗口内**非前台认领**的子会话逐个补插。
+  `created` 取子会话行服务端权威 `time.created`，与 live 插入同值——重建
+  幂等无抖动。重启/重开 Tab/对账拉起/未加载转加载均恢复；窗口外更早历史
+  的子会话不补（其认领 part 可能未加载，未认领 ≠ 后台任务），翻页下探后
+  窗口下界下移再补。关 Tab = 归档经 `cleanupSessionState` 清
+  `noticesBySession`（与消息容器同清理），重开 Tab 经重建恢复。
 - **误插纠正（判据缩窄）**：SSE volatile 缺口可吞掉 `tool.called`（与
   `session.created` 仅隔 ~44ms）或整个派发 part——`session.created` 到达时
   认领数据缺席会误插**前台**子会话的启动提示；`message.part.updated` 落
@@ -190,9 +198,11 @@ runningBackgroundTasks(parent) =
   转换仅隔毫秒）。文案「已转后台任务：<label>」，图标 `CornerUpRight`。
 - ③的子会话出生时无启动提示（D3 前台认领闸门），转后台提示是其对应的
   「入列」消息——三路径呈现对齐：启动（或转后台）/ 完成 / 任务条。
-- **已知边界**：与启动提示同为客户端瞬态——重启/关 Tab 后不补（任务条与
-  完成提示不受影响）；转换后瞬间完成（子会话在合成闸门检查前归 idle）则
-  只有完成提示，接受。
+- **已知边界**：转后台的判据（part completed ∧ 子会话仍在跑）是运行态——
+  ③终态后不可重建（前台正常完成与转换后跑完的终态同形；服务端落了一条
+  转换 synthetic 但无 metadata/childID，不解析文案，2026-10-08 裁定接受）。
+  运行中经 REST 对账可恢复（挂点即合并路径）；转换后瞬间完成（子会话在
+  合成闸门检查前归 idle）则只有完成提示，接受。
 
 ### D4 完成系统提示（服务端 synthetic）
 
@@ -291,7 +301,7 @@ chatEntries(sid)        = sort(message 条目 ∪ optimistic 条目 ∪ notice �
 | 工具型 `background: true` 派发 | 启动提示照插；派发完成后任务条纳入；派发 tool part 留流内（SubagentPanel 呈现派发记录） |
 | 工具型前台转后台（③） | 转换前无任务条；转换后任务条纳入 + 合成「已转后台」提示；完成通知照常 |
 | SSE 缺口吞掉 `tool.called` | ②③照插/照常；前台子会话误插的启动提示在对账（60s 周期/重连）后撤回 |
-| 命令型完成后重启/对账 | 启动提示不补（已知边界）；完成提示经 REST `synthetic` 重建 |
+| 完成后重启/对账/重开 Tab | 启动提示经 REST 重建（覆盖窗口内，`created` 用会话行权威时间）；完成提示经 REST `synthetic` 重建；③转后台提示仅运行中重建 |
 | 子会话内权限/问题 | 沿 `design-subagent-status` §D6 上浮父会话（既有路径不变） |
 | 后台任务运行 + 用户发下一条 | 不受阻（父会话不 busy，输入不锁） |
 
@@ -350,10 +360,9 @@ chatEntries(sid)        = sort(message 条目 ∪ optimistic 条目 ∪ notice �
 
 ## 已知限制 / 坑
 
-- **启动提示不补历史**：仅实时 `session.created` 合成；重启/对账拉起的后台任务
-  只有完成提示与任务条，无启动提示（同移动端边界）。关父会话 Tab（归档）再
-  重开同样不补启动提示（`noticesBySession` 随会话运行时状态清理；完成提示经
-  REST `synthetic` 重建，不受影响）。
+- **启动提示 REST 重建（2026-10-08 修订，替代原「不补历史」边界）**：live
+  `session.created` 合成 + REST 覆盖窗口重建（D3）；唯一残留：窗口外更早
+  历史待翻页下探后补。移动端仍为瞬态——双端边界不同，待移动端跟进。
 - **关父会话 Tab 期间无停止入口（已知空档）**：归档不改 `sessionsByProject`，
   子会话保留，左栏/Tab 家族聚合仍点亮（D6）；但任务条随 `ChatView` 卸载而消失，
   停止入口一并不可达。`closeChatTab` 只在本会话自身 `isSessionActive` 为真时
@@ -460,3 +469,15 @@ chatEntries(sid)        = sort(message 条目 ∪ optimistic 条目 ∪ notice �
 | 1 | 🟠 | ③转换在服务端无专用事件（仅 part completed + 父会话一条无 metadata 的 synthetic） | 客户端状态检测：前台认领 part 转 completed ∧ 子会话仍在跑（`jobs.block` 语义保证前台正常完成时子会话先归 idle，误报面为零）；`error` part 不算 |
 | 2 | 🟢 | 转换时间服务端不暴露 | `created` 取合成时刻（live 路径与转换毫秒级相邻）；id `bg-convert:<childID>` 幂等防抖动 |
 | 3 | 🟢 | 转换后瞬间完成的竞态 | 接受：子会话在合成闸门前归 idle 则只有完成提示（记入已知限制） |
+
+### 第七轮（2026-10-08 重建修订）
+
+**用户核定**：启动信号全部 REST 可得（契约表新增行的六项等价性），
+「事后不可反推」不成立——启动提示不应是瞬态。
+
+| # | 级别 | 问题 | 处置 |
+|---|---|---|---|
+| 1 | 🟠 | REST 重建的误判面：窗口外更早子会话的认领 part 可能未加载（未认领 ≠ 后台任务） | 覆盖窗口下界 = 最早已加载消息 created；翻页下探后窗口下移再补 |
+| 2 | 🟠 | 续跑（`input.sessionID` 续既有子会话）title≠desc 使兜底失效，且 REST 合并把 live 的 progress metadata 洗成 `{}`（`Running({input, metadata:{}})`） | `input.sessionID` 补入权威认领（随 called 的 parsed input 持久化） |
+| 3 | 🟢 | 重建的 created 抖动风险 | 取子会话行服务端权威 `time.created`（与 live 插入同值），幂等 |
+| 4 | 🟢 | ③终态后转后台提示仍不可重建 | 接受（判据是运行态；转换 synthetic 无 metadata 不解析），记入 D3b 已知边界 |
