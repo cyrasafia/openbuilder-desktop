@@ -1345,6 +1345,7 @@ export class AppStore {
           if (p.model != null) info.model = p.model
           if (info.finish === "tool-calls") delete info.finish
           this.messagesBySession.get(sessionID)!.set(messageID, { info, parts: existing.parts })
+          this.emit()
           return true
         }
         this.handleEvent(directory, {
@@ -1389,6 +1390,11 @@ export class AppStore {
             } as typeof msg.info,
             parts: msg.parts,
           })
+          // 直写后补 emit（review 2026-10-09，同 execution 分支 2026-10-01 先例）：
+          // applyV2StreamEvent 消费即提前 return，跳过 handleEvent 尾部 emit——
+          // 正常契约下 step.failed 恒有 execution.failed 收尾、重启恒有内容 part，
+          // 但游离/断尾事件下错误卡/终态徽标要等下一次任意 emit（最长 60s 对账）
+          this.emit()
         }
         return true
       }
@@ -1408,6 +1414,8 @@ export class AppStore {
             } as typeof msg.info,
             parts: msg.parts,
           })
+          // 直写后补 emit（同上，review 2026-10-09）
+          this.emit()
         }
         return true
       }

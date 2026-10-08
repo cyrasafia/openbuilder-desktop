@@ -43,8 +43,9 @@ REST 快照对照：重试成功后消息 `error=null, finish=stop`（服务端�
 
 ### 3.1 `session.step.failed` 接入（`applyV2StreamEvent`）
 
-- 消息已存在：写 `info.error = 事件 error` + `finish = 事件 finish ?? "error"` + `time.completed`（终态收敛，同 `step.ended` 形态）；事件 error 缺失/非对象时兜 `{message}` 规范化（同 openbuilder——保证 INV-1 的 error 恒非空，不静默空白）；消息缺失静默丢弃（壳只会经 `step.started` 建立，正常序列 `step.failed` 必在其后）。
+- 消息已存在：写 `info.error = 事件 error` + `finish = 事件 finish ?? "error"` + `time.completed`（终态收敛，同 `step.ended` 形态）；事件 error 缺失/非对象时兜 `{message}` 规范化（同 openbuilder——保证 INV-1 的 error 恒非空，不静默空白。兜底对象经 `extractErrorMessage` 走 JSON dump 分支呈现字面 `{"message":""}`——契约违约路径，接受：兜底目的是保 INV-1 与 failed 投影，非文案）；消息缺失静默丢弃（壳只会经 `step.started` 建立，正常序列 `step.failed` 必在其后）。
 - 不在事件到达时重取快照——事件即权威（openbuilder 同构，无 reload 依赖）。
+- **直写后补 emit**（review 2026-10-09，同 execution 分支 2026-10-01 先例）：`applyV2StreamEvent` 消费即提前 return、跳过 `handleEvent` 尾部 emit——正常契约下 `step.failed` 恒有 `execution.failed` 收尾、重启恒有内容 part 带回渲染，但游离/断尾事件下错误卡/终态徽标要等下一次任意 emit（最长 60s 对账）。`step.started` 合并 / `step.failed` / `step.ended` 三处直写后补 emit（同步通知，幂等成本低）。
 
 ### 3.2 retry part 丢弃（`message.part.updated` 前置分支）
 
