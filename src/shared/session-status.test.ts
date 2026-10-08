@@ -48,6 +48,20 @@ describe("inferFailedFromMessages（design-error-message §3.4）", () => {
     expect(inferFailedFromMessages([failedAssistant("MessageAbortedError", 1)])).toBe(false)
   })
 
+  it("中止标记在 v2 事件形态 type 键（{type,message}）同样不算失败（design-session-retry-recovery §2）", () => {
+    const eventShaped = {
+      ...assistant(null, 1),
+      error: { type: "MessageAbortedError", message: "Aborted" },
+    } as Message
+    expect(inferFailedFromMessages([eventShaped])).toBe(false)
+    // 非中止错误的 v2 事件形态照常投影 failed
+    const apiError = {
+      ...assistant(null, 2),
+      error: { type: "APIError", message: "overloaded" },
+    } as Message
+    expect(inferFailedFromMessages([apiError])).toBe(true)
+  })
+
   it("无错误 assistant / 末条 user / 空列表不触发", () => {
     const user = { id: "u", sessionID: "s", role: "user", time: { created: 2 } } as Message
     expect(inferFailedFromMessages([assistant("stop", 1)])).toBe(false)

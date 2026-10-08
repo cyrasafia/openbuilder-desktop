@@ -3097,7 +3097,7 @@ describe("报错消息与重试状态（design-error-message）", () => {
     return s1
   }
 
-  it("retry part：error 传播到所属消息 info.error，part 不入渲染部件列表", () => {
+  it("retry part：不传播 error（INV-1——消息级 error 只留 step.failed 终态），part 不入渲染部件列表", () => {
     seedSession()
     dispatch({
       type: "message.updated",
@@ -3123,11 +3123,9 @@ describe("报错消息与重试状态（design-error-message）", () => {
     })
 
     const entry = store.chatEntries("s1").find((e) => e.kind === "message")
-    expect(entry && entry.kind === "message" ? entry.data.info.error : null).toEqual({
-      name: "APIError",
-      data: { message: "rate limited", statusCode: 429 },
-    })
-    // part 被消费（隐藏），不进入 parts
+    // 重试期错误由会话级气泡承担（design-session-retry-recovery §3.1），消息无红字
+    expect(entry && entry.kind === "message" ? entry.data.info.error : "sentinel").toBeUndefined()
+    // part 被丢弃（隐藏），不进入 parts
     expect(
       entry && entry.kind === "message"
         ? entry.data.parts.map((p) => p.type)
@@ -3135,7 +3133,7 @@ describe("报错消息与重试状态（design-error-message）", () => {
     ).toEqual([])
   })
 
-  it("retry part 不覆写既有错误；消息未知（info 未到）静默丢弃不建容器", () => {
+  it("retry part 对既有终态错误无影响；消息未知（info 未到）静默丢弃不建容器", () => {
     seedSession()
     dispatch({
       type: "message.updated",
@@ -3181,54 +3179,13 @@ describe("报错消息与重试状态（design-error-message）", () => {
       },
     })
 
+    // 既有错误原样保留（不被 retry part 覆写，也无传播叠加）
     const entry = store.chatEntries("s1").find((e) => e.kind === "message")
     expect(entry && entry.kind === "message" ? entry.data.info.error : null).toEqual({
       name: "UnknownError",
       data: { message: "cert" },
     })
     expect(store.chatEntries("s2")).toHaveLength(0)
-  })
-
-  it("权威 message.updated 到达（重试成功后继续流式/完成）：传播的临时错误被清除", () => {
-    seedSession()
-    dispatch({
-      type: "message.updated",
-      properties: {
-        sessionID: "s1",
-        info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 100 } },
-      },
-    })
-    dispatch({
-      type: "message.part.updated",
-      properties: {
-        sessionID: "s1",
-        part: {
-          id: "prt_r1",
-          sessionID: "s1",
-          messageID: "msg_a1",
-          type: "retry",
-          attempt: 1,
-          error: { name: "APIError", data: { message: "rate limited" } },
-          time: { created: 101 },
-        },
-      },
-    })
-    // 重试成功 → server 权威 info（无 error）随 message.updated 到达
-    dispatch({
-      type: "message.updated",
-      properties: {
-        sessionID: "s1",
-        info: {
-          id: "msg_a1",
-          sessionID: "s1",
-          role: "assistant",
-          time: { created: 100, completed: 200 },
-          finish: "stop",
-        },
-      },
-    })
-    const entry = store.chatEntries("s1").find((e) => e.kind === "message")
-    expect(entry && entry.kind === "message" ? entry.data.info.error : "sentinel").toBeUndefined()
   })
 
   it("状态点投影：retry 退避 = error（红），busy = running，idle 兜底", () => {
@@ -3392,6 +3349,161 @@ describe("报错消息与重试状态（design-error-message）", () => {
       },
     })
     expect(store.dotStateFor("s1")).toBe("idle")
+  })
+})
+
+describe("重试收敛（design-session-retry-recovery，同 openbuilder）", () => {
+  /** 直驱 handleEvent（SSE 已 mock off）：事件信封 { type, properties } */
+  function dispatch(ev: { type: string; properties: unknown }) {
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, ev)
+  }
+
+  function seedSession() {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    return s1
+  }
+
+  function info(messageID: string) {
+    return store.messagesBySession.get("s1")?.get(messageID)?.info
+  }
+
+  /** v2.0.24 活体实测序列的重放骨架（design-session-retry-recovery §2.1） */
+  function retryScheduled(attempt: number, message: string) {
+    dispatch({
+      type: "session.retry.scheduled",
+      properties: {
+        sessionID: "s1",
+        assistantMessageID: "msg_a1",
+        attempt,
+        at: 5000,
+        error: { type: "APIError", message },
+      },
+    })
+  }
+
+  it("场景 1 退避期：retry.scheduled → 会话 retry + 红点；消息无 error（气泡独担）", () => {
+    seedSession()
+    dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a1", agent: "build" } })
+    retryScheduled(1, "rate limited")
+    expect(store.statusOf("s1")).toMatchObject({ type: "retry", attempt: 1, message: "rate limited" })
+    expect(store.dotStateFor("s1")).toBe("error")
+    // INV-1：消息级 error 只留 step.failed 终态——退避期无红字
+    expect(info("msg_a1")?.error ?? null).toBeNull()
+  })
+
+  it("场景 2/3 重试成功：step.started 同 mid 重启不清壳；内容 part 解除保持 → busy；step.ended + settle 收敛 idle，消息无 error 残留", () => {
+    seedSession()
+    dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a1", agent: "build" } })
+    retryScheduled(1, "rate limited")
+    // 重试重启：消息已存在——agent/model 合并更新，不清（此前整壳替换的收窄）
+    dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a1", agent: "plan" } })
+    expect(info("msg_a1")).toMatchObject({ role: "assistant", agent: "plan" })
+    expect(info("msg_a1")?.error ?? null).toBeNull()
+    // 桌面偏差（design-error-message §3.6）：保持锁存到真实流式进展才回落 busy
+    expect(store.statusOf("s1").type).toBe("retry")
+    dispatch({ type: "session.text.delta", properties: { sessionID: "s1", assistantMessageID: "msg_a1", ordinal: 0, delta: "好" } })
+    expect(store.statusOf("s1").type).toBe("busy")
+    expect(store.dotStateFor("s1")).toBe("running")
+    // 成功收敛：step.ended finish=stop → execution.succeeded 唯一 settle 信号
+    dispatch({ type: "session.text.ended", properties: { sessionID: "s1", assistantMessageID: "msg_a1", ordinal: 0, text: "好" } })
+    dispatch({ type: "session.step.ended", properties: { sessionID: "s1", assistantMessageID: "msg_a1", finish: "stop" } })
+    dispatch({ type: "session.execution.succeeded", properties: { sessionID: "s1" } })
+    expect(store.statusOf("s1").type).toBe("idle")
+    expect(info("msg_a1")).toMatchObject({ finish: "stop" })
+    expect(info("msg_a1")?.error ?? null).toBeNull()
+  })
+
+  it("场景 4 连续多重试：气泡文案始终为最新一次错误", () => {
+    seedSession()
+    retryScheduled(1, "rate limited")
+    retryScheduled(2, "overloaded")
+    expect(store.statusOf("s1")).toMatchObject({ type: "retry", attempt: 2, message: "overloaded" })
+  })
+
+  it("场景 5 重试耗尽：step.failed 写终态 error/finish；settle → idle + failed 静态红点", () => {
+    seedSession()
+    dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a1", agent: "build" } })
+    retryScheduled(1, "rate limited")
+    // 最后一轮：重启尝试 → 终态失败（step.failed 与 retry.scheduled 互斥，只收尾一次）
+    dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a1" } })
+    dispatch({
+      type: "session.step.failed",
+      properties: {
+        sessionID: "s1",
+        assistantMessageID: "msg_a1",
+        error: { name: "APIError", data: { message: "quota exhausted" } },
+      },
+    })
+    // INV-1：step.failed 是消息级终态错误的唯一合法来源
+    expect(info("msg_a1")).toMatchObject({
+      finish: "error",
+      error: { name: "APIError", data: { message: "quota exhausted" } },
+    })
+    expect((info("msg_a1")?.time as { completed?: number }).completed).toBeTruthy()
+    // settle 收敛 idle；末条非中止错误 → failed 静态红（§3.4 终局闭环）
+    dispatch({ type: "session.execution.failed", properties: { sessionID: "s1", error: { type: "APIError", message: "quota exhausted" } } })
+    expect(store.statusOf("s1").type).toBe("idle")
+    expect(store.dotStateFor("s1")).toBe("failed")
+  })
+
+  it("step.failed 消息缺失（壳未建）静默丢弃，不误建容器", () => {
+    seedSession()
+    dispatch({
+      type: "session.step.failed",
+      properties: { sessionID: "s1", assistantMessageID: "msg_ghost", error: { message: "x" } },
+    })
+    expect(store.chatEntries("s1")).toHaveLength(0)
+  })
+
+  it("step.failed error 载荷形态防御：v2 事件 {type,message} 原样落地；中止（type 键）不投影 failed；缺 error 兜 {message}", () => {
+    seedSession()
+    // v2 事件形态（同 execution.failed 的 error 形态，api-types 注）：原样落地，
+    // extractErrorMessage 顶层 message 兜底可出文案；failed 投影照常成立
+    dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a1" } })
+    dispatch({
+      type: "session.step.failed",
+      properties: { sessionID: "s1", assistantMessageID: "msg_a1", error: { type: "APIError", message: "overloaded" } },
+    })
+    expect(info("msg_a1")).toMatchObject({ finish: "error", error: { type: "APIError", message: "overloaded" } })
+    dispatch({ type: "session.execution.failed", properties: { sessionID: "s1", error: { type: "APIError", message: "overloaded" } } })
+    expect(store.dotStateFor("s1")).toBe("failed")
+
+    // 中止的 v2 事件形态（中止标记在 type 键）＝用户主动停止：不投影 failed
+    dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a2" } })
+    dispatch({
+      type: "session.step.failed",
+      properties: { sessionID: "s1", assistantMessageID: "msg_a2", error: { type: "MessageAbortedError", message: "Aborted" } },
+    })
+    dispatch({ type: "session.execution.interrupted", properties: { sessionID: "s1", reason: "user" } })
+    expect(store.dotStateFor("s1")).toBe("idle")
+
+    // server 违约缺 error：兜 {message:""}——INV-1 保持（error 恒非空），不静默空白
+    dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a3" } })
+    dispatch({ type: "session.step.failed", properties: { sessionID: "s1", assistantMessageID: "msg_a3" } })
+    expect(info("msg_a3")).toMatchObject({ finish: "error", error: { message: "" } })
+  })
+
+  it("step.started 防漂移（§3.3）：不清终态 error/finish；只复位 tool-calls 中间态并补 agent/model", () => {
+    seedSession()
+    dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a1", agent: "build" } })
+    dispatch({
+      type: "session.step.failed",
+      properties: { sessionID: "s1", assistantMessageID: "msg_a1", error: { message: "boom" } },
+    })
+    // 同 mid 游离 step.started（终态之后）：合法终态不得被洗掉
+    dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a1", agent: "plan", model: { id: "glm-5.3", providerID: "zai" } } })
+    expect(info("msg_a1")).toMatchObject({
+      agent: "plan",
+      model: { id: "glm-5.3", providerID: "zai" },
+      finish: "error",
+      error: { message: "boom" },
+    })
+    // tool-calls 中间态（多步续跑）复位为未收口
+    dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a2" } })
+    dispatch({ type: "session.step.ended", properties: { sessionID: "s1", assistantMessageID: "msg_a2", finish: "tool-calls" } })
+    dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a2" } })
+    expect(info("msg_a2")?.finish ?? null).toBeNull()
   })
 })
 

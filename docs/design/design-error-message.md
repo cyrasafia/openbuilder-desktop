@@ -5,8 +5,7 @@
 
 ## 0. 参考来源（openbuilder 同类设计）
 
-- `openbuilder/lib/core/session/conversation_store.dart` `onPartUpdated` 的 retry part 消费：
-  **retry part 不入渲染部件列表，`error` 传播到所属消息 `info.error`（无错误时）**供错误卡呈现
+- `openbuilder/docs/design/v2/design-session-retry-recovery.md`（2026-10-08）：重试/终态错误分离语义的权威裁定——retry 来源不写消息级 error，`step.failed` 是唯一合法终态来源（INV-1）；本仓库对应落点 `docs/design/v2/design-session-retry-recovery.md`
 - `openbuilder/lib/features/conversation/conversation_screen.dart` `_extractErrorMessage`：
   NamedError 形态的人读文案提取顺序
 - `openbuilder/docs/docs/design/design-agent-status-indicator.md`：状态模型 retrying（移动端为橙色旋转胶囊，
@@ -21,6 +20,8 @@
    报错退避重试在 Tab 点/左栏会话指示点上无差异化呈现，`--status-error` token 形同虚设。
 3. **retry part 无消费**：openapi Part 联合含 `RetryPart`（携带 APIError），此前类型未声明、
    事件路径直接透传忽略——若 server 发出，错误信息完全丢失（无错误卡）。
+   （2026-10-09 修订：消费方向已反转——见 §3.2 与 design-session-retry-recovery，retry part
+   整体丢弃，重试期错误由会话级气泡独担。）
 
 ## 2. 契约事实（本机 server 实测 + openapi 对齐）
 
@@ -65,23 +66,22 @@
   `extractRetryMessage`（TypingSlot retry 提示）同源消费同一清洗——纯展示层，
   store 数据保持忠实。
 
-### 3.2 retry part 消费（app-store `message.part.updated`）
+### 3.2 retry part 消费（app-store `message.part.updated`）——2026-10-09 修订
 
-- `part.type === "retry"`：**不入 parts 数组**、不进 pendingParts 缓存，消息容器不存在时静默
-  丢弃。**丢弃一轮的取舍如实记录**：openbuilder conversation_store 实测事实是 retry part 之后
-  到达的权威 `message.updated` **不携带** error（其 resolvedInfo 分支为此保留已传播错误），即
-  "info 到达会补上错误"不成立——丢弃的真实代价是该轮退避窗口无错误卡，直到后续 attempt 的
-  retry part（此时容器已建）或终态失败补上。接受的理由：server 在 run 起点即发 assistant
-  message.info、先于任何 part，info 后到只发生在事件重排；且当前 server（1.18.13）不发射
-  retry part，本消费整体就是防御式。若未来 server 开始发射且重排可观测，再对齐移动端的
-  按需建容器（`_findMessage ?? _ensureMessage`）语义。
-- 所属 assistant 消息 `info.error == null` 时，把 `part.error` 传播进 `info.error`（immutable
-  替换）——退避窗口内错误卡即可呈现错因；**不覆写既有错误**（先到的权威错误优先）。
-- **自愈语义（与移动端刻意不同）**：传播是临时补丁，后续任何权威 `message.updated`（重试
-  成功后继续流式/完成）以 server info 整体替换，临时错误即清除；REST 快照合并同理（info 取
-  REST 权威）。移动端在后续无 error 的 `message.updated` 到达时**保留**已传播错误（错误卡留到
-  重新加载）；桌面选择自愈——重试成功即恢复无错状态，不把已恢复的失败挂在界面上。重试成功后
-  的流式期内错误卡可能短暂残留至下一个权威 info，为已知可接受的窗口。
+**决策反转**（原「error 传播到 `info.error`（无错误时）」废止）：`part.type === "retry"`
+**整体丢弃**——不传播 error、不入 parts 数组、不进 pendingParts 缓存。
+
+依据（design-session-retry-recovery §3.2，同 openbuilder 修复后语义）：
+
+- **INV-1**：消息级 `info.error` 的唯一合法来源是 `step.failed` 终态（或 REST/缓存快照携带）；
+  retry 来源一律不写。重试期错误由会话级气泡独担（`status retry` → TypingSlot
+  「重试中：{错误}」），对应官方 GUI 的「重试横幅」；
+- 旧传播的实害形态即 openbuilder 根因 1：退避窗口消息挂红字，清除依赖下一个合成壳
+  （`step.started`）——SSE 断连丢事件即永久残留；
+- v2 pin 未观测到 retry part 发布（v1 1.18.13 实测亦不发），本分支整体防御式；若未来
+  发布，退避窗口也只有气泡，符合 INV-1/场景 1 期望；
+- 「openbuilder 也传播」的旧依据随其 retry-recovery 修复失效（其 `onRetryScheduled`
+  收敛为只驱动气泡，亦无 retry part 传播）。
 
 ### 3.3 状态点投影（pending-requests `sessionDotState`）
 
@@ -114,8 +114,10 @@ waiting（待输入，琥珀静态）> error（retry 退避重试，红）> runn
 idle 灰点无法表达"上次运行失败了"。retry 呼吸红 = 正在重试，failed 静态红 = 已死等你。
 
 **判定**（session-status.ts `inferFailedFromMessages`）：会话 idle 且末条消息为携带**非中止**
-错误的 assistant（中止 `MessageAbortedError` 是用户主动停止，不算失败）。`finish` 不可靠
-（halt 只置 error 不置 finish，§2），以 `info.error` 存在性为准。
+错误的 assistant（中止 `MessageAbortedError` 是用户主动停止，不算失败）。中止判定经
+`isAbortError`（message-error.ts）name/type 双键——v2 SSE 事件 error 形态为
+`{type, message}`，中止标记可落在 `type`（design-session-retry-recovery §2 待复核项）。
+`finish` 不可靠（halt 只置 error 不置 finish，§2），以 `info.error` 存在性为准。
 
 **实现**（app-store `dotStateFor` 纯派生，无缓存/锁存集合）：
 
@@ -136,10 +138,18 @@ idle 灰点无法表达"上次运行失败了"。retry 呼吸红 = 正在重试�
 
 ### 3.6 retry 保持锁存（红点防闪）
 
-**问题**：server 的 retry 实现在退避后的**每次尝试起点都发 busy**（processor 每轮首行
-`status.set({type:"busy"})`），尝试失败才回到 retry。忠实投影时事件序列为
-`busy(绿，零点几秒) → retry(红，退避 2s/4s/…) → busy → …`，状态点红绿交替闪烁
-（移动端 design-agent-status-indicator.md 也记录了 `working → retrying → working` 固有节奏）。
+**问题**：尝试起点事件会把投影从 retry 拉回 busy——v1 时代是 `session.status`（processor
+每轮尝试首行 `status.set({type:"busy"})`，往往零点几秒内失败回 retry，忠实投影红绿交替闪）；
+v2.0.18 起 `session.status` 无发布者（design-sse-event-surface 表 C），同形态闪烁源变为
+**REST 快照 busy 合并**（重连对账落在退避窗口内时）与 openbuilder 已跟进的
+`step.started` 回落 busy 语义（design-session-retry-recovery 改动 2——本端**有意不跟进**，
+见下）。锁存规则不变：保持到真实流式进展（首个内容 part）才恢复 busy。
+
+**与 openbuilder 改动 2 的偏差裁定（2026-10-09）**：openbuilder/官方在 `step.started`
+同 mid 重启时即回落 busy（红绿按尝试次数摆动，官方接受）；本端维持锁存到首个内容
+part——快失败类错误整个重试期稳定红点，代价是重启后首 token 前（TTFB 窗口）仍示
+「重试中」（信息仍准确：该尝试尚未产出）。依据与不变式见 design-session-retry-recovery
+§3.5/INV-2。
 
 **锁存规则**（app-store `retryHold: Set<sessionID>`，随 sessionStatus 生命周期）：
 
@@ -166,7 +176,8 @@ part 即恢复绿。中途失败类错误（已产出部分内容后断流）每
   复用 outline"），红色只进状态点，不双处示警。
 - 不按错误 `name` 分级配色/文案（MessageAbortedError 同样入卡）——错误分类学无 server 契约
   保障，`action`（Go upsell 等）交互留后续版本。
-- 不监听 `Session.Event.Error` 类 v2 事件——消息级错误已由 `info.error`/retry part 覆盖。
+- 不监听 `Session.Event.Error` 类 v1 遗留事件——消息级错误由 `session.step.failed`
+  （2026-10-09 接入，design-session-retry-recovery）与 REST/缓存快照 `info.error` 覆盖。
 
 ## 4. 改动落点
 
@@ -186,8 +197,11 @@ part 即恢复绿。中途失败类错误（已产出部分内容后断流）每
 
 - `message-error.test.ts`：NamedError 主路径/中止/多形态兜底/永不 `[object Object]`。
 - `session-status.test.ts`：`inferFailedFromMessages` 中止排除/末条非 assistant 排除。
-- `app-store.test.ts`（"报错消息与重试状态"）：retry part 传播+隐藏、不覆写既有错误、未知消息
-  丢弃不建容器、权威 info 清除临时错误、`dotStateFor` retry→error/busy→running/idle 链、
+- `app-store.test.ts`（"报错消息与重试状态"）：retry part 丢弃（不传播/不入 parts/未知消息
+  不建容器/既有终态错误无影响）、`dotStateFor` retry→error/busy→running/idle 链、
   保持锁存（busy 扣住/内容 part 解除/step-start 不解除/REST 快照改写与解除）、
   报错终局（failed 投影/中止不算/新末条消息自愈）。
+- `app-store.test.ts`（"重试收敛"，design-session-retry-recovery）：退避期气泡独担、
+  成功重放无 error 残留、连续重试最新错误、耗尽 `step.failed` 终态 + failed 红点闭环、
+  壳未建丢弃、`step.started` 防漂移（不清终态/复位 tool-calls）。
 - `pending-requests.test.ts`：retry 投影 error、idle+终局投影 failed，waiting 仍最高优先。

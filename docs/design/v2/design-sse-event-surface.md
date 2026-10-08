@@ -57,7 +57,8 @@ v2 消息 id = `msg_ + ascending()`（`packages/schema/src/identifier.ts`：时�
 | `session.revert.committed` | `{sessionID, to}` | **本次 bug**：提交后本地回滚态残留，新消息整轮隐藏 |
 | `session.agent.selected` / `session.model.selected` | `{sessionID, messageID, agent/model}` | 客户端仍监听 v1 旧名（`app-store.ts:1859/1865`）→ v2 上跨端切换补丁永不触发（他端/TUI 切 agent/model 本端不反映） |
 | `session.inbox.cancelled` | `{sessionID, inboxID}` | 排队消息被他端/CLI 取消（`session.inbox.cancel` RPC，`handlers/session.ts:543`）→ 无投影到达 → 乐观气泡悬挂（现有清除只在「新 user 消息出现」时触发） |
-| `session.step.failed` | `{sessionID, assistantMessageID, error, …}` | 客户端只接 `step.started/ended`；失败步不发 `ended`（`publish-llm-event.ts` 二者互斥）→ 流式骨架滞留 streaming 态，靠对账/重取自愈 |
+
+> 已修出表：`session.step.failed`（2026-10-09，design-session-retry-recovery）——原损害为客户端只接 `step.started/ended`、失败步不发 `ended`（`publish-llm-event.ts` 二者互斥），重试耗尽后错误卡缺失、流式骨架滞留 streaming 态；现接为消息级终态错误的唯一合法来源（写 `error` + `finish=error`）。
 
 ### 表 B：有发布者、未接、功能降级（按功能排期，不在本轮）
 
