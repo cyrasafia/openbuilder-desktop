@@ -58,10 +58,12 @@ import {
 } from "@shared/message-merge"
 import {
   backgroundStartedNotice,
+  backgroundConvertedNotice,
   mergeNotices,
   subagentSyntheticNotice,
   foregroundClaimedChildIds,
   activeClaimedChildIds,
+  convertedBackgroundChildIds,
   withdrawForegroundStartNotices,
   type SessionNotice,
 } from "@shared/session-notices"
@@ -1855,9 +1857,11 @@ export class AppStore {
           ])
         }
         // D3 误插纠正（design-subagent-background 2026-10-08 修订）：task/subagent
-        // tool part 落地即按前台认领（含 description 兜底）撤回误插的启动提示
+        // tool part 落地即按前台认领（含 description 兜底）撤回误插的启动提示；
+        // 前台 part 转 completed 而子会话仍在跑 = ③转后台，合成转后台提示
         if (part.type === "tool" && (part.tool === "task" || part.tool === "subagent")) {
           this.reconcileStartNotices(sessionID)
+          this.reconcileConvertedNotices(sessionID, meta?.created ?? Date.now())
         }
         break
       }
@@ -3613,8 +3617,9 @@ export class AppStore {
     pending.clear()
     this.messagesBySession.set(sessionID, merged)
     // 快照合并后补撤回（review 四轮 #1，同 onMessagesSnapshot）：REST 页
-    // 落地的 tool part 同样构成前台认领依据
+    // 落地的 tool part 同样构成前台认领依据；③转后台提示缺口恢复同此
     this.reconcileStartNotices(sessionID)
+    this.reconcileConvertedNotices(sessionID)
     return msgs.filter((m) => !hadIds.has(m.info.id)).length
   }
 
@@ -3940,6 +3945,30 @@ export class AppStore {
     )
     if (kept === null) return
     this.noticesBySession.set(parentSessionID, kept)
+  }
+
+  /**
+   * 转后台提示合成（③，2026-10-08 对齐裁定）：前台认领 part 已 completed 且
+   * 子会话仍在跑 → 本地合成「已转后台任务」。幂等：同 id 已存在不重插（created
+   * 取合成时刻，重复合成会抖动排序）。挂点与 D3 撤回一致：task/subagent part
+   * 事件 + REST 页合并（缺口经对账恢复）。
+   */
+  private reconcileConvertedNotices(parentSessionID: string, eventTime?: number) {
+    const converted = convertedBackgroundChildIds(
+      this.parentParts(parentSessionID),
+      this.childSessionsOf(parentSessionID),
+    )
+    if (converted.size === 0) return
+    const notices = this.noticesBySession.get(parentSessionID) ?? []
+    const incoming: SessionNotice[] = []
+    for (const childID of converted) {
+      if (this.sessionActivity(childID) === "idle") continue
+      if (notices.some((n) => n.id === `bg-convert:${childID}`)) continue
+      const child = this.findSession(childID)
+      if (!child) continue
+      incoming.push(backgroundConvertedNotice(child, eventTime ?? Date.now()))
+    }
+    if (incoming.length > 0) this.upsertNotices(parentSessionID, incoming)
   }
 
   /**
@@ -6447,8 +6476,10 @@ export class AppStore {
         const merged = mergeSnapshotIntoMessages(local, msgs)
         this.messagesBySession.set(sessionID, merged)
         // 快照合并后补撤回（review 四轮 #1）：断线窗口丢 tool part 事件、
-        // 重连仅经 REST 落地时，事件侧钩子不会触发——此处兜底
+        // 重连仅经 REST 落地时，事件侧钩子不会触发——此处兜底；③转后台
+        // 提示的缺口恢复同此
         this.reconcileStartNotices(sessionID)
+        this.reconcileConvertedNotices(sessionID)
         // 对账回填成功：清同形状 error 种子（挂载失败种子 vs 已回填内容的矛盾态，
         // review R3-P2）——回到无状态，重激活/上滚走正常种子
         const prev = this.sessionPages.get(sessionID)

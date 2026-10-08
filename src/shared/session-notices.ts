@@ -12,7 +12,7 @@ import type { Part, Session, ToolPart } from "./api-types"
 
 export type BackgroundTaskState = "completed" | "error" | "cancelled"
 
-export type SessionNoticeKind = "background-started" | "background-finished"
+export type SessionNoticeKind = "background-started" | "background-converted" | "background-finished"
 
 export interface SessionNotice {
   /** 启动 = `bg-start:<childID>`；完成 = synthetic 消息 id（`msg_…`） */
@@ -107,6 +107,21 @@ export function activeClaimedChildIds(parentParts: Part[], children: Session[]):
   return ids
 }
 
+/**
+ * **转后台检测集**（③，2026-10-08 对齐裁定）：被**前台**认领（`input.background
+ * !== true`）且 part 已 **completed** 的子会话。前台正常完成时子会话先于 part
+ * 归 idle（`jobs.block` 语义），调用方以「子会话仍在运行」为闸——命中即
+ * 前台阻塞被转后台（`tool.success` 携带 `backgroundResult` 与②同款）。
+ * `error` part 不算：前台失败/中断不是转后台。
+ */
+export function convertedBackgroundChildIds(parentParts: Part[], children: Session[]): Set<string> {
+  const ids = new Set<string>()
+  forEachClaim(parentParts, children, (id, part) => {
+    if (part.state?.status === "completed" && !isBackgroundInput(part)) ids.add(id)
+  })
+  return ids
+}
+
 function toolDescription(part: ToolPart): string {
   const input = (part.state as { input?: unknown }).input
   if (!input || typeof input !== "object") return ""
@@ -121,6 +136,22 @@ export function backgroundStartedNotice(child: Session): SessionNotice {
     id: `bg-start:${child.id}`,
     kind: "background-started",
     created: child.time.created,
+    label,
+    childID: child.id,
+  }
+}
+
+/**
+ * 转后台提示（③，2026-10-08 对齐裁定）：前台阻塞被 `POST /api/session/{父}/background`
+ * 转为后台时本地合成。created 取合成时刻（服务端不暴露转换时间；live 路径
+ * part completed 事件晚于转换仅毫秒级）。
+ */
+export function backgroundConvertedNotice(child: Session, created: number): SessionNotice {
+  const label = child.title || child.id
+  return {
+    id: `bg-convert:${child.id}`,
+    kind: "background-converted",
+    created,
     label,
     childID: child.id,
   }

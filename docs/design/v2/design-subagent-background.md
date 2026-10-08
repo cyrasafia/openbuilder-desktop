@@ -59,13 +59,14 @@
 
 | | 命令型 `subagent: true` | 工具型 `background: true` / 前台转后台 | 工具型前台（同步） |
 |---|---|---|---|
-| 消息流呈现 | 启动/完成各一条**系统提示** | 启动/完成各一条**系统提示** + 派发 tool part 留存（SubagentPanel 呈现派发记录） | 保持 `SubagentPanel`（tool part 运行态），无系统提示 |
+| 消息流呈现 | 启动/完成各一条**系统提示** | 启动（②）/ 转后台（③）+ 完成各一条**系统提示** + 派发 tool part 留存（SubagentPanel 呈现派发记录） | 保持 `SubagentPanel`（tool part 运行态），无系统提示 |
 | 进行中指示 | **常驻任务条** | **常驻任务条**（②派发完成后进入；③转换后进入） | tool part 自身（运行态） |
 | 停止入口 | 任务列表内 | 任务列表内 | composer 停止（中断父会话连带取消） |
 
-即：**按「异步」统一**（2026-10-08 升格裁定，见 Review 第五轮），不再按
-「命令型/工具型」划分前台之外的呈现；`design-subagent-status.md` 只剩
-工具型前台不动。
+即：**按「异步」统一**（2026-10-08 升格裁定，见 Review 第五轮；同日对齐
+补裁定：③转后台也合成转后台提示，三路径呈现一致——启动（或转后台）/
+完成/任务条），不再按「命令型/工具型」划分前台之外的呈现；
+`design-subagent-status.md` 只剩工具型前台不动。
 
 > 桌面补正：工具型判据与渲染都须同时认 `task` **与** `subagent` 两个 tool
 > （现存代码只把 `task` 路由到 `SubagentPanel`，`subagent` tool 落 `ToolChip`
@@ -174,6 +175,25 @@ runningBackgroundTasks(parent) =
   `mergeSnapshotIntoMessages` 的窗口删除影响（移动端需显式保留 metadata，
   桌面结构上免疫）。
 
+### D3b 转后台系统提示（③，客户端本地合成，2026-10-08 对齐补裁定）
+
+- 触发：`reconcileConvertedNotices`——前台认领 part（`input.background` 缺省）
+  转 **completed**，且其子会话 `sessionActivity !== "idle"`。挂点与 D3 撤回
+  一致：task/subagent part 事件（live）+ `mergeMessagePage` /
+  `onMessagesSnapshot`（REST 对账，SSE 缺口恢复）。
+- 判据语义：前台正常完成时子会话**先于** part 归 idle（`jobs.block` 语义，
+  服务端顺序 execution.succeeded → tool.success），「part completed + 子会话
+  仍在跑」唯一对应③转换（`tool.success` 携带 `backgroundResult`）。`error`
+  part 不算（失败/中断非转换）。
+- 形态：`kind: "background-converted"`，id `bg-convert:<childID>`（幂等，已
+  存在不重插）；`created` 取合成时刻（服务端不暴露转换时间；live 路径与
+  转换仅隔毫秒）。文案「已转后台任务：<label>」，图标 `CornerUpRight`。
+- ③的子会话出生时无启动提示（D3 前台认领闸门），转后台提示是其对应的
+  「入列」消息——三路径呈现对齐：启动（或转后台）/ 完成 / 任务条。
+- **已知边界**：与启动提示同为客户端瞬态——重启/关 Tab 后不补（任务条与
+  完成提示不受影响）；转换后瞬间完成（子会话在合成闸门检查前归 idle）则
+  只有完成提示，接受。
+
 ### D4 完成系统提示（服务端 synthetic）
 
 - 实时：`session.inbox.enqueued` 且 `item.type == "synthetic"` 且
@@ -206,6 +226,7 @@ runningBackgroundTasks(parent) =
 | kind | 触发 | 图标（lucide，14px） |
 |---|---|---|
 | 后台任务启动 | D3 | `Rocket` |
+| 转后台任务 | D3b（③） | `CornerUpRight` |
 | 后台任务完成 | D4（completed） | `CircleCheck` |
 | 后台任务失败 | D4（error/failed） | `CircleX` |
 | 后台任务取消 | D4（cancelled/interrupted） | `CircleStop` |
@@ -257,7 +278,7 @@ chatEntries(sid)        = sort(message 条目 ∪ optimistic 条目 ∪ notice �
 ```
 
 - `sessionActivity` 返回家族聚合；两个认领判据集见「识别」。
-- 通知 id：启动 `bg-start:<childID>`；完成 `<syntheticMsgID>`。去重按 id。
+- 通知 id：启动 `bg-start:<childID>`；转后台 `bg-convert:<childID>`；完成 `<syntheticMsgID>`。去重按 id。
 
 ## 场景验证
 
@@ -268,7 +289,7 @@ chatEntries(sid)        = sort(message 条目 ∪ optimistic 条目 ∪ notice �
 | 全部完成 | 任务条消失；流内留下「已启动」「已完成」两条系统提示 |
 | 工具型前台（同步）运行中 | **无任务条**；`SubagentPanel` 照旧；composer 停止可取消 |
 | 工具型 `background: true` 派发 | 启动提示照插；派发完成后任务条纳入；派发 tool part 留流内（SubagentPanel 呈现派发记录） |
-| 工具型前台转后台（③） | 转换前无任务条；转换后任务条纳入、无补启动提示；完成通知照常 |
+| 工具型前台转后台（③） | 转换前无任务条；转换后任务条纳入 + 合成「已转后台」提示；完成通知照常 |
 | SSE 缺口吞掉 `tool.called` | ②③照插/照常；前台子会话误插的启动提示在对账（60s 周期/重连）后撤回 |
 | 命令型完成后重启/对账 | 启动提示不补（已知边界）；完成提示经 REST `synthetic` 重建 |
 | 子会话内权限/问题 | 沿 `design-subagent-status` §D6 上浮父会话（既有路径不变） |
@@ -346,9 +367,10 @@ chatEntries(sid)        = sort(message 条目 ∪ optimistic 条目 ∪ notice �
   后台任务。载荷同构依据见「范围」表下注（移动端 `conversation_screen.dart:2006`）。
   另：v2.0.18 无 `task` tool（2026-10-06 核实，见契约表）——`task` 路由仅为
   v1 存量数据兼容，新事件恒为 `subagent`。
-- **③转后台无启动提示（残余不对称，接受）**：前台转后台的子会话出生时是
-  同步（running part 认领）→ 不插启动提示；转换后任务条出现是「变成后台
-  任务」的信号，不补历史。完成通知照常。
+- **③转后台提示为客户端瞬态（D3b）**：前台转后台的子会话出生时是同步
+  （running part 认领）→ 无启动提示，转后台时合成 `bg-convert` 提示（对齐
+  补裁定）；与启动提示同不补历史。转换后瞬间完成的竞态下只有完成提示，
+  接受。
 - **②派发窗口的瞬时排除（~30ms，接受）**：`background:true` 从 `tool.called`
   到 `tool.success` 之间 part 为 running，任务条按运行态判据短暂排除该子会话；
   success 落地即纳入。派发失败（part error 且子会话未起）则维持排除。
@@ -427,3 +449,14 @@ chatEntries(sid)        = sort(message 条目 ∪ optimistic 条目 ∪ notice �
 | 3 | 🟠 | 契约表漏记：`background:true` 的 `tool.success` 与 REST 持久化都带 `metadata.sessionID`（源码初读会误判为不带） | 契约表补记（2026-10-07 活体抓包 + 现场 REST 数据双证） |
 | 4 | 🟢 | ③转后台无启动提示的不对称 | 接受并记录（出生时是同步；任务条出现即转换信号，不补历史） |
 | 5 | 🟢 | ②派发窗口（~30ms）任务条瞬时排除 | 接受并记录（success 落地即纳入） |
+
+### 第六轮（2026-10-08 对齐补裁定）
+
+**用户裁定**：③转后台也应有系统通知。三路径呈现统一为「启动（或转后台）
+消息、完成消息、任务条」。
+
+| # | 级别 | 问题 | 处置 |
+|---|---|---|---|
+| 1 | 🟠 | ③转换在服务端无专用事件（仅 part completed + 父会话一条无 metadata 的 synthetic） | 客户端状态检测：前台认领 part 转 completed ∧ 子会话仍在跑（`jobs.block` 语义保证前台正常完成时子会话先归 idle，误报面为零）；`error` part 不算 |
+| 2 | 🟢 | 转换时间服务端不暴露 | `created` 取合成时刻（live 路径与转换毫秒级相邻）；id `bg-convert:<childID>` 幂等防抖动 |
+| 3 | 🟢 | 转换后瞬间完成的竞态 | 接受：子会话在合成闸门前归 idle 则只有完成提示（记入已知限制） |

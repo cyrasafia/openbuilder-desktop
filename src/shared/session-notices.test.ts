@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest"
 import type { Part, Session, ToolPart } from "./api-types"
 import {
   backgroundStartedNotice,
+  backgroundConvertedNotice,
   mergeNotices,
   normalizeBackgroundState,
   subagentSyntheticNotice,
   foregroundClaimedChildIds,
   activeClaimedChildIds,
+  convertedBackgroundChildIds,
   toolMetadataSessionId,
   withdrawForegroundStartNotices,
   type SessionNotice,
@@ -26,7 +28,8 @@ function child(id: string, title?: string): Session {
 function toolPart(tool: string, input: unknown, metadata?: Record<string, unknown>, status = "running"): Part {
   const base = { id: `prt_${tool}`, sessionID: "ses_parent", messageID: "msg_1", type: "tool" as const, callID: `c_${tool}`, tool }
   if (status === "completed") return { ...base, state: { status: "completed", input, output: "", title: tool, ...(metadata ? { metadata } : {}) } } as ToolPart
-  if (status === "error") return { ...base, state: { status: "error", input, error: "x" } } as ToolPart
+  if (status === "error")
+    return { ...base, state: { status: "error", input, error: "x", ...(metadata ? { metadata } : {}) } } as ToolPart
   return { ...base, state: { status, input, ...(metadata ? { metadata } : {}) } } as ToolPart
 }
 
@@ -137,6 +140,54 @@ describe("backgroundStartedNotice", () => {
       childID: "ses_x",
     })
     expect(backgroundStartedNotice(child("ses_y")).label).toBe("ses_y")
+  })
+})
+
+describe("backgroundConvertedNotice（③转后台提示）", () => {
+  it("id 稳定、kind 区分、created 取合成时刻", () => {
+    expect(backgroundConvertedNotice(child("ses_x", "Task A"), 1234)).toMatchObject({
+      id: "bg-convert:ses_x",
+      kind: "background-converted",
+      created: 1234,
+      label: "Task A",
+      childID: "ses_x",
+    })
+  })
+})
+
+describe("convertedBackgroundChildIds（③转后台检测）", () => {
+  const children = [child("ses_fg", "Build docs"), child("ses_bg", "Review changes")]
+
+  it("前台认领 + part completed：命中（调用方再以子会话运行中为闸）", () => {
+    const ids = convertedBackgroundChildIds(
+      [toolPart("subagent", { description: "Build docs" }, { sessionId: "ses_fg" }, "completed")],
+      children,
+    )
+    expect([...ids]).toEqual(["ses_fg"])
+  })
+
+  it("前台认领 + part 仍 running：不命中（还是前台阻塞，未转换）", () => {
+    const ids = convertedBackgroundChildIds(
+      [toolPart("subagent", { description: "Build docs" }, { sessionId: "ses_fg" })],
+      children,
+    )
+    expect(ids.size).toBe(0)
+  })
+
+  it("background:true + part completed：不命中（②派发完成的正常态）", () => {
+    const ids = convertedBackgroundChildIds(
+      [toolPart("subagent", { background: true }, { sessionId: "ses_bg" }, "completed")],
+      children,
+    )
+    expect(ids.size).toBe(0)
+  })
+
+  it("前台认领 + part error：不命中（失败/中断不是转后台）", () => {
+    const ids = convertedBackgroundChildIds(
+      [toolPart("subagent", { description: "Build docs" }, { sessionId: "ses_fg" }, "error")],
+      children,
+    )
+    expect(ids.size).toBe(0)
   })
 })
 

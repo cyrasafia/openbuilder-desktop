@@ -6867,6 +6867,73 @@ describe("用户后台任务（design-subagent-background）", () => {
     expect(store.runningBackgroundTasks("p").map((s) => s.id)).toEqual(["fg1"])
   })
 
+  it("转后台提示（③对齐裁定 2026-10-08）：part completed 事件合成 bg-convert；幂等不重插", () => {
+    seedParent(child("fg3", 2))
+    setStatus("fg3", "busy")
+    seedMessages("p", {
+      info: { id: "msg_a", sessionID: "p", role: "assistant", time: { created: 1 } },
+      parts: [subagentPart({ description: "fg3" }, { sessionID: "fg3" }) as Part],
+    })
+    // 转换前：无任何通知
+    expect(store.noticesForSession("p")).toEqual([])
+    // tool.success（转换）落地：part completed + 子会话仍在跑 → 合成转后台提示
+    dispatch({
+      type: "message.part.updated",
+      properties: {
+        sessionID: "p",
+        part: subagentPart({ description: "fg3" }, { sessionID: "fg3" }, "completed"),
+      },
+    })
+    const first = store.noticesForSession("p")
+    expect(first.map((n) => [n.id, n.kind])).toEqual([["bg-convert:fg3", "background-converted"]])
+    // 重复 part 事件（progress/其他 part 波动）：幂等，不重插不抖动
+    dispatch({
+      type: "message.part.updated",
+      properties: {
+        sessionID: "p",
+        part: subagentPart({ description: "fg3" }, { sessionID: "fg3" }, "completed"),
+      },
+    })
+    expect(store.noticesForSession("p")).toEqual(first)
+    expect(store.chatEntries("p").some((e) => e.kind === "notice")).toBe(true)
+  })
+
+  it("转后台提示：前台正常完成（子会话先归 idle）不合成——jobs.block 语义防误报", () => {
+    seedParent(child("fg4", 2))
+    seedMessages("p", {
+      info: { id: "msg_a", sessionID: "p", role: "assistant", time: { created: 1 } },
+      parts: [subagentPart({ description: "fg4" }, { sessionID: "fg4" }) as Part],
+    })
+    // 前台正常完成序：子会话 execution.succeeded（idle）先于 tool.success
+    setStatus("fg4", "idle")
+    dispatch({
+      type: "message.part.updated",
+      properties: {
+        sessionID: "p",
+        part: subagentPart({ description: "fg4" }, { sessionID: "fg4" }, "completed"),
+      },
+    })
+    expect(store.noticesForSession("p")).toEqual([])
+  })
+
+  it("转后台提示：SSE 缺口——REST 对账恢复 part completed + 子会话运行中，同样合成", async () => {
+    seedParent(child("fg5", 2))
+    setStatus("fg5", "busy")
+    // 缺口：无 SSE part 事件，session.created 亦缺席（重连不回放）
+    clientV2Of().listMessagesPage = async () => ({
+      entries: [
+        {
+          info: { id: "msg_a", sessionID: "p", role: "assistant", time: { created: 1 } },
+          parts: [subagentPart({ description: "fg5" }, { sessionID: "fg5" }, "completed") as Part],
+        },
+      ],
+      nextCursor: null,
+    })
+    await store.loadSessionMessages("p", ROOT)
+    expect(store.noticesForSession("p").map((n) => n.id)).toEqual(["bg-convert:fg5"])
+    expect(store.runningBackgroundTasks("p").map((s) => s.id)).toEqual(["fg5"])
+  })
+
   it("升格：SSE 缺口吞掉 tool.called——session.created 误插前台启动提示，REST 恢复后撤回", async () => {
     seedParent()
     // 缺口：part 缺失（或 input 为字符串），session.created 直达 → 误插
