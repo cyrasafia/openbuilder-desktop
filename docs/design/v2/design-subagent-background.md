@@ -1,10 +1,12 @@
 # 用户后台任务条 + 系统提示
 
 > 参考移动端 `../openbuilder/docs/design/v2/design-subagent-background.md`。
-> 本文只覆盖**用户后台任务**——命令型 `subagent: true` 建立的异步子会话。
-> 工具型 subagent（`task` tool part，以及 v2 的 `subagent` tool part）的呈现
-> 基本不变，仍按 [`design-subagent-status.md`](design-subagent-status.md)；
-> 其中 `subagent` tool part 的**现状缺口**一并补正（见「范围」表下注）。
+> 本文覆盖**用户后台任务**——异步建立的子会话，含三路径（识别见下）：
+> 命令型 `subagent: true`、工具型 `subagent` tool `background: true`、
+> 工具型前台运行中转后台（`POST /api/session/{id}/background`）。
+> 工具型**前台**（同步阻塞）的呈现基本不变，仍按
+> [`design-subagent-status.md`](design-subagent-status.md)；其中 `subagent`
+> tool part 的**现状缺口**一并补正（见「范围」表下注）。
 >
 > 移动端把后台任务做成「按子会话启动注入消息流的 chip」后废弃并改为
 > 「常驻任务条 + 系统提示」；桌面端**从未实现过 chip**，本次是首次实现，
@@ -14,10 +16,12 @@
 
 命令型 `subagent: true` 会建立异步子会话：父会话不被阻塞、用户可继续对话
 （服务端路径见移动端 `../openbuilder/docs/ref/ref-opencode-review-subagent.md` §3.4；
-`subagent` tool 的存在与语义见同文 §3.4/§5）。
+`subagent` tool 的存在与语义见同文 §3.4/§5）。工具型 `subagent` tool 的
+`background: true` 与「前台转后台」同样建立异步子会话（服务端语义见契约表）。
 
-桌面端当前只处理**工具型**子会话（`task` tool part → `SubagentPanel`，
-`workspace.tsx` 第 2597 行）。命令型子会话**三处不可见**：
+桌面端当前只处理**工具型前台**子会话（`task` tool part → `SubagentPanel`，
+`workspace.tsx` 第 2597 行）。异步子会话**三处不可见**（原命令型的缺口，
+工具型 `background:true` 同样命中——其 tool part 派发即完成，承载不了运行态）：
 
 - **消息流无指示**：没有 tool part，也没有任何 chip，父会话流里看不出任务在跑。
 - **状态不点亮**：`dotStateFor` 只看本会话 `sessionStatus`，父会话 idle 时
@@ -47,16 +51,21 @@
 | **完成 synthetic 的发件方**（2026-10-06 源码核实，tag v2.0.18） | `SubagentCompletion.deliver`（`packages/core/src/session/subagent-completion.ts`）统一产出 `metadata {source:"subagent", childID, agent, state}` + `<subagent …>` 文本。调用方：① 命令型 `subagent: true`（`config/plugin/command.ts` → `subagents.background`，恒发）；② 工具型 `subagent` tool `background:true`（`tool/plugin/subagent.ts` 同走 `subagents.background`，**也发**）；③ 工具型前台被"backgrounded"时经 `subagents.notify` 补发。工具型前台**正常完成不发**——结果内联在 tool part content | 桌面/移动端同判：一切 `source=subagent` synthetic 都渲染完成通知，不按工具型排除（移动端 `_noticeMessage` 同款） |
 | **v2 无 `task` tool**（2026-10-06 核实） | v2.0.18 工具名只有 `subagent`；`task` 是 v1 遗留。桌面 `task` 路由保留为存量数据兼容，新事件恒为 `subagent` | `MessageBlock` 分发 / `toolFormChildIds` 双认 |
 | `Session.parentID` | 子会话非空；`sessionsByProject` 保留全量（无移动端 64 条 LRU） | `findSession` / `findChildSession`（第 3718 / 3731 行） |
+| **② `background:true` 派发即完成**（2026-10-07 活体抓包） | 事件序：`tool.called`（parsed input，含 `background:true`）→ `session.created`（晚 ~44ms，title==description）→ `tool.progress`（`metadata:{sessionID,status:"running"}`）→ `tool.success`（created 后 ~30ms，part 转 completed，**事件与 REST 持久化都带 `metadata:{sessionID,status:"running",truncated:false}`**——源码初读会误判为不带，系框架层并入） | ②的后台运行态 = part completed + 子会话运行中；`input.background` 在 `session.created` 前即可读 |
+| **③ 前台转后台**（源码核实 v2.0.18） | `POST /api/session/{父}/background` → `Session.background` → `jobs.backgroundAll`：阻塞中的 tool 返回 `{type:"backgrounded"}` → `backgroundResult` 同②；父会话另发一条 synthetic（「User requested that active blocking work be moved to the background…」，**无 `source:subagent`**，不渲染为通知）。TUI/CLI 动作，桌面端未接该端点 | 转换信号 = 认领 part 转 completed + 子会话继续跑；完成 synthetic 经 `subagents.notify` 补发 |
+| **SSE volatile 缺口的时序影响**（2026-10-07 现场病灶） | v2 事件流断线丢事件、慢消费者被断流；远程客户端缺口可吞掉 `tool.called`（与 `session.created` 仅隔 ~44ms）或整个派发 part——`session.created` 到达时认领数据（metadata 未写、input 为流式字符串）缺席 | 缺口误插的纠正依赖对账（REST 快照可靠带 `metadata.sessionID`）；判据须区分「前台认领」（撤）与「后台派生」（不撤），见识别节 |
 
 ## 范围
 
-| | 命令型 `subagent: true`（用户后台任务） | 工具型 `task`/`subagent` tool part |
-|---|---|---|
-| 消息流呈现 | 启动/完成各一条**系统提示** | 保持 `SubagentPanel`（tool part 形态） |
-| 进行中指示 | **常驻任务条** | tool part 自身（运行态） |
-| 停止入口 | 任务列表内 | composer 停止（中断父会话连带取消） |
+| | 命令型 `subagent: true` | 工具型 `background: true` / 前台转后台 | 工具型前台（同步） |
+|---|---|---|---|
+| 消息流呈现 | 启动/完成各一条**系统提示** | 启动/完成各一条**系统提示** + 派发 tool part 留存（SubagentPanel 呈现派发记录） | 保持 `SubagentPanel`（tool part 运行态），无系统提示 |
+| 进行中指示 | **常驻任务条** | **常驻任务条**（②派发完成后进入；③转换后进入） | tool part 自身（运行态） |
+| 停止入口 | 任务列表内 | 任务列表内 | composer 停止（中断父会话连带取消） |
 
-即：**不动**的是 `design-subagent-status.md`；**新增**的是本文。
+即：**按「异步」统一**（2026-10-08 升格裁定，见 Review 第五轮），不再按
+「命令型/工具型」划分前台之外的呈现；`design-subagent-status.md` 只剩
+工具型前台不动。
 
 > 桌面补正：工具型判据与渲染都须同时认 `task` **与** `subagent` 两个 tool
 > （现存代码只把 `task` 路由到 `SubagentPanel`，`subagent` tool 落 `ToolChip`
@@ -65,29 +74,42 @@
 > 组字段 `input.description` / `input.subagent_type` / `metadata.sessionId`——
 > 载荷同构，可复用桌面现有 `SubagentPanel`。
 
-## 识别：哪些子会话算「用户后台任务」
+## 识别：哪些子会话算「后台任务」
 
 - 候选 = 当前会话的直系子会话（`parentID == 当前会话`）。
-- 其中**消息流里没有被 tool part 引用**的，才是后台任务：
-  - 优先 `metadata.sessionId`（兼容 `sessionID`）；
-  - tool part 尚在 `pending/running`、metadata 未写入窗口时，用
-    description ↔ title 前缀启发式兜底（`findChildSession` 同款，避免刚发起就
-    误判成后台任务）。
+- **认领**（claim）= 消息流里某 `task`/`subagent` tool part 引用了该子会话：
+  - 优先 `metadata.sessionId`（兼容 `sessionID`）；任意 part 状态可判
+    （progress 写入、success 持久化、REST 快照同带，见契约表）；
+  - part 尚在 `pending/running`、metadata 未写入窗口时，用
+    description ↔ title 前缀启发式兜底（`findChildSession` 同款）。
+- **两个判据集**（2026-10-08 升格修订，刻意不同、各司其职）：
+  - `foregroundClaimedChildIds`（启动通知插入闸门 + 撤回）：认领 part 未声明
+    `input.background === true`——被**前台** part 认领的子会话不插启动提示、
+    误插的撤回；后台派生（②的 `background:true`、③转换后 completed 认领）
+    不在集内，启动提示保留。
+  - `activeClaimedChildIds`（任务条排除）：被 **pending/running** part 认领——
+    前台阻塞运行中不进任务条；completed part 的认领不排除（②派发完成与
+    ③转换后的后台运行态正是 part completed + 子会话运行中）。
 - 取运行中：子会话 `sessionActivity(childID) !== "idle"`（即 busy/retry）。
-- 工具型即便用 `background: true`，仍保持 tool part 形态，**不进任务条**。
 
 ```
-toolFormChildIds(parentId) =
-    parentMessages 中 tool ∈ {task, subagent} 的 part
-      ├─ metadata.sessionId / metadata.sessionID（权威）
-      └─ input.description ↔ child.title 前缀且 part 处于 pending/running（兜底）
+claim(part, child) =
+    part.tool ∈ {task, subagent}
+      ├─ metadata.sessionId / metadata.sessionID（权威，任意状态）
+      └─ part pending/running ∧ input.description ↔ child.title 前缀（兜底）
 
-runningBackgroundTasks(parentId) =
-    childSessionsOf(parentId)
-      ∩ sessionActivity(childId) !== "idle"
-      ∩ childId ∉ toolFormChildIds(parentId)
+foregroundClaimedChildIds(parent) =
+    { child | ∃part: claim(part, child) ∧ part.input.background ≠ true }
 
-任务条可见 = runningBackgroundTasks(parentId).length > 0
+activeClaimedChildIds(parent) =
+    { child | ∃part: claim(part, child) ∧ part pending/running }
+
+runningBackgroundTasks(parent) =
+    childSessionsOf(parent)
+      ∩ sessionActivity(child) ≠ idle
+      ∩ child ∉ activeClaimedChildIds(parent)
+
+任务条可见 = runningBackgroundTasks(parent).length > 0
 ```
 
 `childSessionsOf` 由 D6 的 `childrenByParent` 惰性缓存提供（源 = `sessionsByProject`
@@ -101,7 +123,8 @@ runningBackgroundTasks(parentId) =
   `workspace.tsx` 第 1674 行），不遮消息区、贴近输入区。
 - 形态：单行 pill「N 个后台任务运行中」+ 展开箭头 + 运行图标。
 - 可见性：**仅当 `runningBackgroundTasks(sessionID)` 非空时显示；全部完成后
-  自动消失**。
+  自动消失**。覆盖三路径：①无 part、②派发完成（part completed）、③转换后
+  （part completed）；前台阻塞（part running）不进（2026-10-08 升格修订）。
 - 点击 → 打开任务列表浮层（D2）。
 - 组件：`BackgroundTaskBar`，消费 `store.runningBackgroundTasks`。
 - **不做**批量停止、不在任务条上直接放停止钮（停止入口只在列表内，防误触）。
@@ -127,8 +150,11 @@ runningBackgroundTasks(parentId) =
 
 - 触发：v2 `session.created` 且 `parentID` 命中某个**已加载/已开 Tab** 的
   会话时，在 `applyV2SessionEvent` 内调用 `onChildSessionCreated(child)`。
-- 判定为后台任务（D1 识别）且子会话未处于终态 → 本地合成一条系统提示
-  「已启动后台任务：<label>」，`label = child.title || child.id`。
+- 判定（2026-10-08 升格修订）：未被 `foregroundClaimedChildIds` 认领即合成
+  一条系统提示「已启动后台任务：<label>」，`label = child.title || child.id`。
+  三路径在此刻的可见性：①无 part → 插；②派发 part（`tool.called` 先于
+  `session.created`，`input.background:true`）→ 非前台认领 → 插；③前台
+  running part → 不插（转换后由任务条呈现，不补启动提示）。
 - 存放：**独立通知表** `noticesBySession: Map<sessionID, SessionNotice[]>`，
   不写入 `messagesBySession`（**桌面关键取舍**，见「与移动端的差异」）：
   通知 id 为 `bg-start:<childID>`，`created = child.time.created`。
@@ -136,13 +162,14 @@ runningBackgroundTasks(parentId) =
   曾打开该会话）；应用重启/对账拉起的历史会话不补启动提示（完成提示经 REST
   仍在，任务条也不受影响）。关 Tab = 归档经 `cleanupSessionState` 清
   `noticesBySession`（与消息容器同清理），重开 Tab 也不补启动提示。
-- **竞态收敛**：子会话注册可能早于其工具型 tool part 入流而误插；`message.part.updated`
-  落 `task`/`subagent` tool part 后，即按 `toolFormChildIds`（**与 D1 同一判据**，
-  含 description 兜底）撤回误插的启动提示。用同一判据是刻意选择：D1 已用兜底把
-  该子会话排除出任务条，D3 若只用权威 id，就会出现「有启动提示、无任务条、也不是
-  后台任务」的三方矛盾；且中断的 tool part 可能永不回写 `metadata.sessionId`
-  （`design-subagent-status` §坑），兜底是唯一撤回路径。代价 = description 前缀
-  误匹配的并发任务可能被误撤，风险面与 D1 相同（已接受）。
+- **误插纠正（判据缩窄）**：SSE volatile 缺口可吞掉 `tool.called`（与
+  `session.created` 仅隔 ~44ms）或整个派发 part——`session.created` 到达时
+  认领数据缺席会误插**前台**子会话的启动提示；`message.part.updated` 落
+  `task`/`subagent` tool part、`mergeMessagePage` / `onMessagesSnapshot` REST
+  合并后，按 `foregroundClaimedChildIds`（含 description 兜底）撤回。**后台
+  派生不撤**（旧判据按任意认领撤回，completed part 的认领把②的合法启动提示
+  一起撤掉——「启动通知过一会消失」现场病灶的根因，2026-10-07）。代价 =
+  description 前缀误匹配的并发**前台**任务可能被误撤（已接受，风险面收窄）。
 - **对账持久性**：启动提示本就不进 `messagesBySession`，天然不受
   `mergeSnapshotIntoMessages` 的窗口删除影响（移动端需显式保留 metadata，
   桌面结构上免疫）。
@@ -165,9 +192,10 @@ runningBackgroundTasks(parentId) =
   `ChatView` 消费并打开 D2 的嵌入详情浮层（消费后即清，模式同
   `consumeFileReveal`）。任务已结束时任务条已消失，详情仍可按 childID 打开。
 - **留在原始接收位置**，不与任何任务条条目合并。
-- **不按工具型排除**（2026-10-06 裁定）：工具型 `subagent` tool `background:true` /
-  前台被 backgrounded 的完成 synthetic 与命令型同源（`SubagentCompletion.deliver`），
-  一并渲染为完成通知——移动端同款；工具型 tool part 呈现不变，通知只是流内历史。
+- **三路径统一渲染**（2026-10-06 裁定「不按工具型排除」；2026-10-08 升格后
+  与「按异步统一」的模型自洽）：`background:true` / 前台被 backgrounded 的
+  完成 synthetic 与命令型同源（`SubagentCompletion.deliver`），一并渲染为
+  完成通知——移动端同款；派发 tool part 呈现不变，通知是流内历史。
   工具型前台正常完成无 synthetic（结果在 tool part content），不受影响。
 
 ### D5 系统提示样式（统一）
@@ -222,13 +250,13 @@ runningBackgroundTasks(parentId) =
 runningBackgroundTasks(parentId) =
     childSessionsOf(parentId)
       ∩ sessionActivity(childId) !== "idle"
-      ∩ childId ∉ toolFormChildIds(parentMessages)
+      ∩ childId ∉ activeClaimedChildIds(parentMessages)
 
 noticesForSession(sid) = noticesBySession.get(sid)  // 按 created 排序
 chatEntries(sid)        = sort(message 条目 ∪ optimistic 条目 ∪ notice 条目)
 ```
 
-- `sessionActivity` 返回家族聚合；`toolFormChildIds` 由父会话 tool part 计算。
+- `sessionActivity` 返回家族聚合；两个认领判据集见「识别」。
 - 通知 id：启动 `bg-start:<childID>`；完成 `<syntheticMsgID>`。去重按 id。
 
 ## 场景验证
@@ -238,19 +266,25 @@ chatEntries(sid)        = sort(message 条目 ∪ optimistic 条目 ∪ notice �
 | 命令型后台任务运行中 | 任务条常驻「1 个后台任务运行中」；父会话 Tab/左栏点仍亮 running；继续对话/滚动不影响它 |
 | 点任务条 | 打开列表；「查看」浮层内嵌入子会话流；「停止」→ `execution.interrupted`，任务条移除该项 |
 | 全部完成 | 任务条消失；流内留下「已启动」「已完成」两条系统提示 |
-| 工具型 subagent 运行中 | **无任务条**；`SubagentPanel` 照旧；composer 停止可取消 |
-| 工具型 `background: true` | 仍为 tool part 形态（按范围不进任务条） |
+| 工具型前台（同步）运行中 | **无任务条**；`SubagentPanel` 照旧；composer 停止可取消 |
+| 工具型 `background: true` 派发 | 启动提示照插；派发完成后任务条纳入；派发 tool part 留流内（SubagentPanel 呈现派发记录） |
+| 工具型前台转后台（③） | 转换前无任务条；转换后任务条纳入、无补启动提示；完成通知照常 |
+| SSE 缺口吞掉 `tool.called` | ②③照插/照常；前台子会话误插的启动提示在对账（60s 周期/重连）后撤回 |
 | 命令型完成后重启/对账 | 启动提示不补（已知边界）；完成提示经 REST `synthetic` 重建 |
 | 子会话内权限/问题 | 沿 `design-subagent-status` §D6 上浮父会话（既有路径不变） |
 | 后台任务运行 + 用户发下一条 | 不受阻（父会话不 busy，输入不锁） |
 
 ## 关键设计决策
 
-1. **工具型完全不动**：前台 tool part 已自洽，不引入任务条/启动提示。
+1. **按「异步」统一**（2026-10-08 升格，替代原「工具型完全不动」）：前台
+   tool part 已自洽不动；`background:true` 与前台转后台与命令型同权——启动/
+   完成提示 + 任务条。判据不依赖服务端新增字段：`input.background`（派发时）
+   + part 状态（运行态）。
 2. **后台任务「运行中」与消息流解耦**：常驻任务条承载进行中状态，消息流只留
    系统提示作为历史。
-3. **识别以「有无引用它的 tool part」为判据**：区分命令型与工具型，不依赖
-   服务端新增字段；`task` 与 `subagent` 两个 tool 都算工具型。
+3. **两个判据集刻意不同**：插入/撤回看 `input.background`（前台认领），任务条
+   看 part 运行态——单一判据覆盖不了③（`background` 缺省但运行中转后台）与
+   SSE 缺口（input 不可读时宁可误插、对账纠正）。
 4. **只提供单条停止** = `abortSession(childID)`：不做「停止全部」；终态由
    `execution.interrupted` + 完成 synthetic 收敛。
 5. **详情用嵌入浮层**，不引入子会话独立 Tab / 路由（延续 design-subagent-status）。
@@ -271,7 +305,7 @@ chatEntries(sid)        = sort(message 条目 ∪ optimistic 条目 ∪ notice �
 
 ## 不做的事
 
-- 不为工具型 subagent 引入任务条 / 启动提示（含 `background: true`）。
+- 不为**前台**工具型 subagent 引入任务条 / 启动提示（同步阻塞，chip 自洽）。
 - 不做子会话独立 Tab / 跳转页。
 - 不把完成 synthetic 合并进任务条条目（启动/完成提示与任务条各司其职）。
 - 不做「停止全部」；不做批量停止端点。
@@ -304,13 +338,20 @@ chatEntries(sid)        = sort(message 条目 ∪ optimistic 条目 ∪ notice �
   停止入口一并不可达。`closeChatTab` 只在本会话自身 `isSessionActive` 为真时
   abort，后台任务父会话 idle → 不 abort，子会话继续跑到完成。重开 Tab 即恢复
   任务条/停止入口。属可接受的行为空档；若要「关 Tab 询问是否停后台任务」，另立设计。
-- **启发式匹配局限**：`toolFormChildIds` 的 description 兜底在父会话并发多个
-  `task` 时可能挂错（`metadata.sessionId` 权威路径不受影响）。
+- **启发式匹配局限**：description 兜底在父会话并发多个 `task`/`subagent` 时
+  可能挂错（`metadata.sessionId` 权威路径不受影响）；2026-10-08 起误撤风险
+  收窄到**前台**认领（后台派生不撤）。
 - **`subagent` tool 现状缺口**：现存 `SubagentPanel` 只认 `task`；本设计把
-  `subagent` 一并纳入工具型路由与 `toolFormChildIds`，否则其子会话会被误判成
+  `subagent` 一并纳入工具型路由与认领判据，否则其子会话会被误判成
   后台任务。载荷同构依据见「范围」表下注（移动端 `conversation_screen.dart:2006`）。
   另：v2.0.18 无 `task` tool（2026-10-06 核实，见契约表）——`task` 路由仅为
   v1 存量数据兼容，新事件恒为 `subagent`。
+- **③转后台无启动提示（残余不对称，接受）**：前台转后台的子会话出生时是
+  同步（running part 认领）→ 不插启动提示；转换后任务条出现是「变成后台
+  任务」的信号，不补历史。完成通知照常。
+- **②派发窗口的瞬时排除（~30ms，接受）**：`background:true` 从 `tool.called`
+  到 `tool.success` 之间 part 为 running，任务条按运行态判据短暂排除该子会话；
+  success 落地即纳入。派发失败（part error 且子会话未起）则维持排除。
 - **家族聚合的瞬时窗口**：断连时 `sessionStatus.clear()` 会让运行中的后台任务
   短暂显示 idle/父亲族也灭，重连对账后恢复（与 typing dots 断连同语义，可接受）。
 - **完成 synthetic 的 `state`**：主枚举 `completed/error/cancelled`，防御性
@@ -364,3 +405,25 @@ chatEntries(sid)        = sort(message 条目 ∪ optimistic 条目 ∪ notice �
 | 3 | 🟠 | 详情浮层对不可解析 childID 永久「加载中」 | 加载探测后 `!childSession && entries 空` 落 `subagentNoSession` 空态（会话在而 REST 失败仍走加载态——SubagentPanel 同款，重开是重试） |
 | — | 🟢 nit | `chatEntryKey` 与 ChatView 内联 key 两处维护 | ChatView 改用 `chatEntryKey` |
 | — | 🟢 nit | `entryCreated(e, 0)` 哑参 | 拆 `settledCreated`（模块级）+ `createdOf`（sortEntries 闭包） |
+
+### 第五轮（2026-10-08 升格修订）
+
+**触发**：现场病灶「后台任务启动通知过一会消失，完成通知始终在」。根因定位
+（活体抓包 + 现场 REST 数据 + store 复现）：
+
+1. 症状来自工具型 `background:true`（agent 发起的异步任务），非命令型。
+2. SSE volatile 缺口吞掉 `tool.called`（与 `session.created` 仅隔 ~44ms）→
+   认领判据失明 → 误插启动提示。
+3. 60s 周期/重连对账经 REST 带回 `metadata.sessionID`（completed part 持久化
+   可靠携带）→ 旧判据「任意认领即撤」把**合法**的后台启动提示一并撤掉 → 闪现。
+
+**用户裁定**：按「异步即后台任务」统一——`background:true` 与前台转后台升格
+为完整后台任务（启动提示 + 任务条 + 完成通知）；前台（同步）保持纯 chip。
+
+| # | 级别 | 问题 | 处置 |
+|---|---|---|---|
+| 1 | 🔴 | 旧判据单一（任意 task/subagent 认领 = 排除 + 撤回），completed part 的认领把②的合法启动提示撤掉 | 拆两个判据集：`foregroundClaimedChildIds`（插入/撤回，`input.background ≠ true` 才算前台）+ `activeClaimedChildIds`（任务条排除，仅 pending/running part） |
+| 2 | 🟠 | `background:true` 是否可等价于异步 | 否——三路径（命令型 / `background:true` / 前台转后台），后者 `input.background` 缺省；组合判据覆盖（创建时读 input，运行时读 part 状态），契约表补记③与 background 端点 |
+| 3 | 🟠 | 契约表漏记：`background:true` 的 `tool.success` 与 REST 持久化都带 `metadata.sessionID`（源码初读会误判为不带） | 契约表补记（2026-10-07 活体抓包 + 现场 REST 数据双证） |
+| 4 | 🟢 | ③转后台无启动提示的不对称 | 接受并记录（出生时是同步；任务条出现即转换信号，不补历史） |
+| 5 | 🟢 | ②派发窗口（~30ms）任务条瞬时排除 | 接受并记录（success 落地即纳入） |

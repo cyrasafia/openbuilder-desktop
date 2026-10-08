@@ -1,9 +1,10 @@
 /**
- * 用户后台任务通知（design-subagent-background，2026-10-03）。
+ * 用户后台任务通知（design-subagent-background，2026-10-03；2026-10-08 升格）。
  *
- * 只服务命令型 `subagent: true` 的异步子会话：启动提示由客户端本地合成，
- * 完成提示由服务端 synthetic（inbox / REST）解析。工具型 `task`/`subagent`
- * tool part 不算后台任务。
+ * 服务异步子会话三路径：命令型 `subagent: true`、工具型 `subagent` tool
+ * `background: true`、工具型前台转后台。启动提示由客户端本地合成（前台认领
+ * 不插），完成提示由服务端 synthetic（inbox / REST）解析。工具型**前台**
+ * （同步阻塞）不算后台任务（判据见 foregroundClaimedChildIds）。
  *
  * 纯逻辑层：解析、状态归一、通知合并都放这里，便于单测；store 只做编排。
  */
@@ -36,23 +37,34 @@ export function toolMetadataSessionId(part: ToolPart): string | undefined {
   return typeof sid === "string" && sid.length > 0 ? sid : undefined
 }
 
+/** part 输入是否声明了后台模式（`subagent` tool 的 `background: true`） */
+function isBackgroundInput(part: ToolPart): boolean {
+  const input = (part.state as { input?: unknown }).input
+  if (!input || typeof input !== "object") return false
+  return (input as { background?: unknown }).background === true
+}
+
 /**
- * 工具型子会话 id 集合（design-subagent-background 识别）：
- * - 权威：tool part 的 `metadata.sessionId` / `sessionID`；
+ * 遍历父会话 tool part 对子会话的**认领**（design-subagent-background 2026-10-08
+ * 升格修订）：
+ * - 权威：part 的 `metadata.sessionId` / `sessionID`——progress 写入、success
+ *   持久化（含 `background:true`，2026-10-07 活体证实）、REST 快照同带；任意
+ *   part 状态可判；
  * - 兜底：part 仍 pending/running 且 `input.description` 命中某子会话 title 前缀
- *   （刚发起、metadata 未写入的窗口；与 findChildSession 同口径）。
- *
- * 备注：该判据同时被 D1（任务条排除）与 D3（启动提示撤回）消费，二者必须一致。
+ *   （metadata 未写入窗口；与 findChildSession 同口径）。
  */
-export function toolFormChildIds(parentParts: Part[], children: Session[]): Set<string> {
-  const ids = new Set<string>()
+function forEachClaim(
+  parentParts: Part[],
+  children: Session[],
+  visit: (childId: string, part: ToolPart) => void,
+) {
   for (const part of parentParts) {
     if (part.type !== "tool") continue
     const tool = part as ToolPart
     if (!TOOL_FORM_TOOLS.has(tool.tool)) continue
     const authoritative = toolMetadataSessionId(tool)
     if (authoritative) {
-      ids.add(authoritative)
+      visit(authoritative, tool)
       continue
     }
     const status = tool.state?.status
@@ -60,9 +72,38 @@ export function toolFormChildIds(parentParts: Part[], children: Session[]): Set<
     const desc = toolDescription(tool)
     if (!desc) continue
     for (const child of children) {
-      if (child.title && child.title.startsWith(desc)) ids.add(child.id)
+      if (child.title && child.title.startsWith(desc)) visit(child.id, tool)
     }
   }
+}
+
+/**
+ * **同步（前台）认领集**——启动通知的插入闸门与撤回判据：
+ * 被认领且认领 part 未声明 `background: true`。后台派生（`background:true`
+ * 或运行中转后台）不在此集——它们是合法后台任务，启动通知保留。
+ * 含 completed part（转换后/恢复对账后）的认领：SSE 缺口误插的前台启动
+ * 提示靠它撤回。
+ */
+export function foregroundClaimedChildIds(parentParts: Part[], children: Session[]): Set<string> {
+  const ids = new Set<string>()
+  forEachClaim(parentParts, children, (id, part) => {
+    if (!isBackgroundInput(part)) ids.add(id)
+  })
+  return ids
+}
+
+/**
+ * **运行中 part 认领集**——任务条排除判据：被 pending/running part 认领的
+ * 子会话正由前台 tool part 呈现（同步阻塞），不进任务条。completed part 的
+ * 认领不排除——`background:true` 派发完成与前台转后台（`POST …/background`）
+ * 都以 part completed + 子会话仍在跑为后台任务运行态。
+ */
+export function activeClaimedChildIds(parentParts: Part[], children: Session[]): Set<string> {
+  const ids = new Set<string>()
+  forEachClaim(parentParts, children, (id, part) => {
+    const status = part.state?.status
+    if (status === "pending" || status === "running") ids.add(id)
+  })
   return ids
 }
 
@@ -157,14 +198,15 @@ export function mergeNotices(
   return [...byId.values()].sort((a, b) => a.created - b.created || (a.id < b.id ? -1 : 1))
 }
 
-/** 从通知集合中剔除已被工具型 tool part 认领的启动提示（D3 竞态收敛）。 */
-export function withdrawToolFormStartNotices(
+/** 从通知集合中剔除被同步（前台）认领的启动提示——SSE 缺口误插的纠正路径。
+ *  后台派生（background:true / 转后台）的认领不在入参集合内，启动提示保留。 */
+export function withdrawForegroundStartNotices(
   notices: SessionNotice[],
-  toolFormIds: Set<string>,
+  foregroundIds: Set<string>,
 ): SessionNotice[] | null {
-  if (toolFormIds.size === 0) return null
+  if (foregroundIds.size === 0) return null
   const kept = notices.filter(
-    (n) => !(n.kind === "background-started" && n.childID && toolFormIds.has(n.childID)),
+    (n) => !(n.kind === "background-started" && n.childID && foregroundIds.has(n.childID)),
   )
   return kept.length === notices.length ? null : kept
 }

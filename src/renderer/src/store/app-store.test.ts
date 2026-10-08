@@ -6628,6 +6628,20 @@ describe("用户后台任务（design-subagent-background）", () => {
     tool,
     state: { status: "running", input: {}, metadata },
   })
+  /** subagent part（input/metadata/status 可控）：升格后判据分层的用例夹具 */
+  const subagentPart = (
+    input: Record<string, unknown>,
+    metadata?: Record<string, unknown>,
+    status: "running" | "completed" = "running",
+  ) => ({
+    id: "prt_sub_x",
+    sessionID: "p",
+    messageID: "msg_a",
+    type: "tool" as const,
+    callID: "c_sub_x",
+    tool: "subagent",
+    state: { status, input, ...(metadata ? { metadata } : {}) },
+  })
 
   it("sessionActivity 家族聚合：子会话 busy/retry 点亮父会话，retry 优先，全 idle 才 idle", () => {
     seedParent(child("c1", 2))
@@ -6786,15 +6800,93 @@ describe("用户后台任务（design-subagent-background）", () => {
     expect(store.noticesForSession("p")).toHaveLength(1)
   })
 
-  it("subagent tool part 也算工具型（与 task 同判据），且被排除出任务条", () => {
+  it("subagent tool part 也算前台认领（与 task 同判据），且被排除出任务条", () => {
     seedParent(child("tool2", 4))
     setStatus("tool2", "busy")
     seedMessages("p", {
       info: { id: "msg_a", sessionID: "p", role: "assistant", time: { created: 1 } },
       parts: [toolPart("subagent", { sessionID: "tool2" }) as Part],
     })
-    expect(store.toolFormChildIdsFor("p").has("tool2")).toBe(true)
+    expect(store.foregroundClaimedChildIdsFor("p").has("tool2")).toBe(true)
     expect(store.runningBackgroundTasks("p")).toEqual([])
+  })
+
+  it("升格（2026-10-08）：background:true 派生——启动提示照插、任务条纳入、对账后不撤", async () => {
+    seedParent(child("bg1", 2))
+    setStatus("bg1", "busy")
+    // 线上实测序：tool.called 先落地（running + input.background:true，metadata 未写）
+    seedMessages("p", {
+      info: { id: "msg_a", sessionID: "p", role: "assistant", time: { created: 1 } },
+      parts: [subagentPart({ description: "bg1", background: true }) as Part],
+    })
+    dispatch({
+      type: "session.created",
+      properties: { sessionID: "bg1", projectID: "proj1", parentID: "p", title: "bg1" },
+    })
+    // 非前台认领 → 插入启动提示（升格核心：路径②与命令型同权）
+    expect(store.noticesForSession("p").map((n) => n.id)).toEqual(["bg-start:bg1"])
+    // 派发窗口内（part 仍 running）短暂排除任务条
+    expect(store.runningBackgroundTasks("p")).toEqual([])
+    // tool.success 落地：part completed + metadata.sessionID，子会话仍在跑 → 任务条纳入
+    seedMessages("p", {
+      info: { id: "msg_a", sessionID: "p", role: "assistant", time: { created: 1 } },
+      parts: [subagentPart({ description: "bg1", background: true }, { sessionID: "bg1" }, "completed") as Part],
+    })
+    expect(store.runningBackgroundTasks("p").map((s) => s.id)).toEqual(["bg1"])
+    // REST 对账（60s 周期/重连兜底）带回同一 completed part → 启动提示保留
+    //（2026-10-07 现场病灶回归钉：旧判据 completed 认领即撤 → 闪现消失）
+    clientV2Of().listMessagesPage = async () => ({
+      entries: [
+        {
+          info: { id: "msg_a", sessionID: "p", role: "assistant", time: { created: 1 } },
+          parts: [subagentPart({ description: "bg1", background: true }, { sessionID: "bg1" }, "completed") as Part],
+        },
+      ],
+      nextCursor: null,
+    })
+    await store.loadSessionMessages("p", ROOT)
+    expect(store.noticesForSession("p").map((n) => n.id)).toEqual(["bg-start:bg1"])
+    expect(store.runningBackgroundTasks("p").map((s) => s.id)).toEqual(["bg1"])
+  })
+
+  it("升格：前台转后台——运行中前台 part 排除任务条，转换（part completed）后纳入", () => {
+    seedParent(child("fg1", 2))
+    setStatus("fg1", "busy")
+    // 前台阻塞运行：part running + input 无 background
+    seedMessages("p", {
+      info: { id: "msg_a", sessionID: "p", role: "assistant", time: { created: 1 } },
+      parts: [subagentPart({ description: "fg1" }, { sessionID: "fg1" }) as Part],
+    })
+    expect(store.runningBackgroundTasks("p")).toEqual([])
+    // POST /api/session/{p}/background：jobs.backgroundAll → tool.success → part completed
+    //（input.background 仍缺省）；子会话继续跑 → 后台运行态
+    seedMessages("p", {
+      info: { id: "msg_a", sessionID: "p", role: "assistant", time: { created: 1 } },
+      parts: [subagentPart({ description: "fg1" }, { sessionID: "fg1" }, "completed") as Part],
+    })
+    expect(store.runningBackgroundTasks("p").map((s) => s.id)).toEqual(["fg1"])
+  })
+
+  it("升格：SSE 缺口吞掉 tool.called——session.created 误插前台启动提示，REST 恢复后撤回", async () => {
+    seedParent()
+    // 缺口：part 缺失（或 input 为字符串），session.created 直达 → 误插
+    dispatch({
+      type: "session.created",
+      properties: { sessionID: "fg2", projectID: "proj1", parentID: "p", title: "fg2" },
+    })
+    expect(store.noticesForSession("p")).toHaveLength(1)
+    // 对账带回前台 part（running + background 缺省 + metadata.sessionID）→ 撤回
+    clientV2Of().listMessagesPage = async () => ({
+      entries: [
+        {
+          info: { id: "msg_a", sessionID: "p", role: "assistant", time: { created: 1 } },
+          parts: [subagentPart({ description: "fg2" }, { sessionID: "fg2" }) as Part],
+        },
+      ],
+      nextCursor: null,
+    })
+    await store.loadSessionMessages("p", ROOT)
+    expect(store.noticesForSession("p")).toEqual([])
   })
 
   it("关闭父 Tab（cleanupSessionState）清通知，但不影响家族聚合索引", () => {

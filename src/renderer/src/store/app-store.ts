@@ -60,8 +60,9 @@ import {
   backgroundStartedNotice,
   mergeNotices,
   subagentSyntheticNotice,
-  toolFormChildIds,
-  withdrawToolFormStartNotices,
+  foregroundClaimedChildIds,
+  activeClaimedChildIds,
+  withdrawForegroundStartNotices,
   type SessionNotice,
 } from "@shared/session-notices"
 import {
@@ -1464,6 +1465,10 @@ export class AppStore {
                     status: "error",
                     input: (existing as { state?: { input?: unknown } } | undefined)?.state?.input,
                     error: errorMessageOf(p.error),
+                    // v2 事件携带 failureSnapshot（progress 并入，2026-10-08 核）：
+                    // 保留认领依据——被中断的前台 subagent part 靠它维持前台认领，
+                    // 不必等对账恢复（与 REST 持久化一致）
+                    ...(p.metadata != null ? { metadata: p.metadata } : {}),
                   }
         this.streamPartUpsert(directory, sessionID, {
           id: String(p.id),
@@ -1849,8 +1854,8 @@ export class AppStore {
             part,
           ])
         }
-        // D3 竞态收敛（design-subagent-background）：工具型 tool part 落地即可
-        // 按 toolFormChildIds（含 description 兜底）撤回误插的启动提示
+        // D3 误插纠正（design-subagent-background 2026-10-08 修订）：task/subagent
+        // tool part 落地即按前台认领（含 description 兜底）撤回误插的启动提示
         if (part.type === "tool" && (part.tool === "task" || part.tool === "subagent")) {
           this.reconcileStartNotices(sessionID)
         }
@@ -3608,7 +3613,7 @@ export class AppStore {
     pending.clear()
     this.messagesBySession.set(sessionID, merged)
     // 快照合并后补撤回（review 四轮 #1，同 onMessagesSnapshot）：REST 页
-    // 落地的 tool part 同样构成认领依据
+    // 落地的 tool part 同样构成前台认领依据
     this.reconcileStartNotices(sessionID)
     return msgs.filter((m) => !hadIds.has(m.info.id)).length
   }
@@ -3864,7 +3869,7 @@ export class AppStore {
     return retry ? "retry" : busy ? "busy" : "idle"
   }
 
-  /** 父会话消息流里的全部 part（toolFormChildIds 判据数据源） */
+  /** 父会话消息流里的全部 part（认领判据数据源，见 session-notices） */
   private parentParts(sessionID: string): Part[] {
     const conv = this.messagesBySession.get(sessionID)
     if (!conv) return []
@@ -3873,18 +3878,23 @@ export class AppStore {
     return parts
   }
 
-  /** 工具型子会话 id 集（task/subagent tool part 引用，含 description 兜底） */
-  toolFormChildIdsFor(sessionID: string): Set<string> {
-    return toolFormChildIds(this.parentParts(sessionID), this.childSessionsOf(sessionID))
+  /** 同步（前台）认领集：启动通知插入闸门 + 撤回判据（2026-10-08 升格修订） */
+  foregroundClaimedChildIdsFor(sessionID: string): Set<string> {
+    return foregroundClaimedChildIds(this.parentParts(sessionID), this.childSessionsOf(sessionID))
   }
 
-  /** 运行中的用户后台任务（D1 识别）：直系子会话 ∩ 家族运行中 ∩ 非工具型 */
+  /** 运行中 part 认领集：任务条排除判据（completed part 认领的后台任务不排除） */
+  private activeClaimedChildIdsFor(sessionID: string): Set<string> {
+    return activeClaimedChildIds(this.parentParts(sessionID), this.childSessionsOf(sessionID))
+  }
+
+  /** 运行中的后台任务（升格后三路径统一）：直系子会话 ∩ 家族运行中 ∩ 非前台认领 */
   runningBackgroundTasks(parentSessionID: string): Session[] {
     const children = this.childSessionsOf(parentSessionID)
     if (children.length === 0) return []
-    const toolIds = this.toolFormChildIdsFor(parentSessionID)
+    const foregroundIds = this.activeClaimedChildIdsFor(parentSessionID)
     return children.filter(
-      (c) => this.sessionActivity(c.id) !== "idle" && !toolIds.has(c.id),
+      (c) => this.sessionActivity(c.id) !== "idle" && !foregroundIds.has(c.id),
     )
   }
 
@@ -3901,10 +3911,13 @@ export class AppStore {
   }
 
   /**
-   * 子会话创建（D3）：父会话已加载/已开 Tab 时本地合成「已启动后台任务」提示。
-   * 先查 toolFormChildIdsFor：tool part 可能先于 session.created 到达（反向时序），
-   * 已被认领的子会话直接不插（review 三轮 #2）。未被认领时插入，后续 tool part
-   * 到达由 reconcileStartNotices 撤回（正向时序）。
+   * 子会话创建（D3，2026-10-08 升格修订）：父会话已加载/已开 Tab 时本地合成
+   * 「已启动后台任务」提示。后台任务三路径（命令型 `subagent:true`、工具型
+   * `background:true`、前台转后台）在此刻的可见判据：未被**前台** part 认领
+   * 即插——`background:true` 的派发 part（先于 session.created 落地）不构成
+   * 前台认领，路径②照插；路径③转后台前是 running 前台 part，不插（转换后
+   * 由任务条呈现，不补启动提示）。SSE 缺口吞掉 tool.called 时误插，由
+   * reconcileStartNotices 撤回。
    */
   private onChildSessionCreated(child: Session) {
     const parentID = child.parentID
@@ -3913,15 +3926,18 @@ export class AppStore {
       this.messagesBySession.has(parentID) ||
       this.tabs.some((t) => t.kind === "chat" && t.key === `chat:${parentID}`)
     if (!parentLoaded) return
-    if (this.toolFormChildIdsFor(parentID).has(child.id)) return
+    if (this.foregroundClaimedChildIdsFor(parentID).has(child.id)) return
     this.upsertNotices(parentID, [backgroundStartedNotice(child)])
   }
 
-  /** 撤回已被工具型 tool part 认领的启动提示（D3 竞态收敛，判据同 D1） */
+  /** 撤回被前台认领的启动提示（SSE 缺口误插纠正；后台派生的认领不撤） */
   private reconcileStartNotices(parentSessionID: string) {
     const notices = this.noticesBySession.get(parentSessionID)
     if (!notices || !notices.some((n) => n.kind === "background-started")) return
-    const kept = withdrawToolFormStartNotices(notices, this.toolFormChildIdsFor(parentSessionID))
+    const kept = withdrawForegroundStartNotices(
+      notices,
+      this.foregroundClaimedChildIdsFor(parentSessionID),
+    )
     if (kept === null) return
     this.noticesBySession.set(parentSessionID, kept)
   }

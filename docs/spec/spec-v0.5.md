@@ -15,7 +15,7 @@
 | 7 | agent/model 目录与切换 | 数据源 `GET /api/agent` + `GET /api/model`（LR-1「/api/model 只返回一家」判断已过时，2.0.18 实测 65 模型跨 5 provider）；**wire id/name 错位映射**（id=标识符落 name 切换键、wire name 落 label 显示）；切换 `POST /api/session/:id/{agent,model}`（variant 条件包含） |
 | 8 | 斜杠命令 | `GET /api/command` ∪ `GET /api/skill` 合并（skill 斜杠触发保留，source 标记）；`POST /api/session/:id/command`（body `{name,text,files}`，**timeoutMs: 0** 不设超时——同步端点 SC-4 教训）；命令回显经 inbox.enqueued 转记（回滚不回填展开文本草稿） |
 | 9 | global 语义退役（D6/M1b） | v2 无 global 项目行（非 git 目录 = 目录哈希伪项目行以普通项目进左栏）；v1 `global\0<dir>` entry 模型删除，持久化旧键连接期迁移（`migrateLegacyGlobalState`）；新目录发现 = 项目列表刷新（连接/选择器/60s diff/project.updated） |
-| 10 | 用户后台任务条（design-subagent-background） | 命令型 `subagent: true` 异步子会话：常驻任务条（composer 顶行，运行中后台任务非空时显示）+ 锚定任务列表浮层（嵌入查看 / 单条 `interrupt` 停止）；启动提示客户端本地合成，完成提示取 `session.inbox.enqueued`/REST 的 `synthetic`（`metadata.source=subagent`）并按 id 去重；`sessionActivity` 家族聚合点亮父会话 Tab/左栏指示器；工具型 `task`/`subagent` tool part 保持 `SubagentPanel` 不变 |
+| 10 | 用户后台任务条（design-subagent-background，2026-10-08 升格按异步统一） | 异步子会话三路径统一：命令型 `subagent: true`、工具型 `subagent` tool `background:true`、工具型前台转后台（`POST /api/session/{id}/background`）——常驻任务条（composer 顶行，运行中后台任务非空时显示；前台 part 运行中不进）+ 锚定任务列表浮层（嵌入查看 / 单条 `interrupt` 停止）；启动提示客户端本地合成（前台认领不插，SSE 缺口误插由对账撤回），完成提示取 `session.inbox.enqueued`/REST 的 `synthetic`（`metadata.source=subagent`）并按 id 去重；`sessionActivity` 家族聚合点亮父会话 Tab/左栏指示器；工具型**前台** `task`/`subagent` tool part 保持 `SubagentPanel` 不变 |
 
 ## 范围外（明确不做）
 
@@ -65,6 +65,6 @@
 - [ ] 终端 Tab：创建/回放/live 输入/resize/主动退出（live 内 exit 自动关 Tab）/被动退出（连接已退出 pty 呈只读态）分流不变
 - [ ] 斜杠命令：`/` 菜单列出 server 命令 + skill；长命令（>15s）不误判失败；命令回显消息回滚不回填草稿
 - [ ] agent/model 切换：列表含全部 provider 模型；切换生效（会话回读正确）；label 显示友好名、切换键用 id
-- [ ] 用户后台任务（design-subagent-background）：命令型 `subagent: true` 运行中任务条常驻、父会话指示器点亮；任务列表可嵌入查看/停止；启动与完成系统提示落流；工具型 `task`/`subagent` 不走任务条
+- [ ] 用户后台任务（design-subagent-background，2026-10-08 升格）：命令型与 `background:true`/前台转后台运行中任务条常驻、父会话指示器点亮；任务列表可嵌入查看/停止；启动与完成系统提示落流（前台工具型不走任务条）
 - [ ] 降级项行为：无任务卡（无 todo 数据源）；设置无 Provider 页签；文件外部修改不自动刷新（重开 Tab 重拉）；文件树无 ignored 弱化
 - [ ] 打包冒烟：`npm run package:linux` 成功产出
