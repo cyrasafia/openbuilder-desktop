@@ -109,7 +109,6 @@ import type {
   OpencodeEvent,
   Part,
   Project,
-  RetryPart,
   Session,
   SessionRevert,
   SessionStatusValue,
@@ -1334,6 +1333,20 @@ export class AppStore {
     if (!sessionID || !messageID) return false
     switch (ev.type) {
       case "session.step.started": {
+        // 重试重启/多步续跑收敛（design-session-retry-recovery §3.3，同 openbuilder
+        // onStepStarted）：消息已存在时只补 agent/model + 复位 finish=='tool-calls'
+        // （多步中间态）——不清 error/终态 finish：终态错误由 step.failed 写入，
+        // 同 mid 游离 step.started 不得洗掉（防漂移）。不存在时合成 assistant 壳
+        // （message.updated 路径不变，含 pendingParts 回放）
+        const existing = this.messagesBySession.get(sessionID)?.get(messageID)
+        if (existing) {
+          const info = { ...existing.info } as typeof existing.info
+          if (p.agent != null) info.agent = p.agent
+          if (p.model != null) info.model = p.model
+          if (info.finish === "tool-calls") delete info.finish
+          this.messagesBySession.get(sessionID)!.set(messageID, { info, parts: existing.parts })
+          return true
+        }
         this.handleEvent(directory, {
           type: "message.updated",
           properties: {
@@ -1348,6 +1361,28 @@ export class AppStore {
             },
           },
         })
+        return true
+      }
+      case "session.step.failed": {
+        // 终态错误（design-session-retry-recovery §2.2/INV-1，同 openbuilder
+        // onStepFailed）：step.failed 只在不再重试时发出（与 retry.scheduled 互斥，
+        // 失败步不发 step.ended）——消息级 error + finish=error 的唯一合法来源。
+        // 此前未接：耗尽后错误卡缺失、流式骨架滞留、failed 终局红点不触发
+        // （design-sse-event-surface 表 A，2026-10-09 修复）。消息缺失时静默丢弃
+        // ——壳只会经 step.started 建立（正常序列 step.failed 必在其后）
+        const conv = this.messagesBySession.get(sessionID)
+        const msg = conv?.get(messageID)
+        if (msg) {
+          conv!.set(messageID, {
+            info: {
+              ...msg.info,
+              error: (p.error ?? null) as typeof msg.info.error,
+              finish: typeof p.finish === "string" ? p.finish : "error",
+              time: { ...msg.info.time, completed: eventTime },
+            } as typeof msg.info,
+            parts: msg.parts,
+          })
+        }
         return true
       }
       case "session.step.ended": {
@@ -1828,7 +1863,9 @@ export class AppStore {
       }
       case "message.updated": {
         // v2（M6c）：仅翻译层合成的 assistant 骨架走此路径（applyV2StreamEvent
-        // step.started）；v1 的 user 消息分支已由 session.inbox.enqueued 接管
+        // step.started 的**首见**合成——已存在消息走收窄合并，不清终态，
+        // design-session-retry-recovery §3.3）；v1 的 user 消息分支已由
+        // session.inbox.enqueued 接管
         const { sessionID, info } = ev.properties as { sessionID: string; info: Message }
         this.ensureConversation(sessionID)
         const m = this.messagesBySession.get(sessionID)
@@ -1849,20 +1886,11 @@ export class AppStore {
       }
       case "message.part.updated": {
         const { sessionID, part } = ev.properties as { sessionID: string; part: Part }
-        // retry part 消费（design-error-message §3.2，同 openbuilder）：error 传播到
-        // 所属消息 info.error（无错误时）供错误卡呈现，part 不入渲染部件列表
-        if (part.type === "retry") {
-          const msg = this.messagesBySession.get(sessionID)?.get(part.messageID)
-          if (msg && msg.info.role === "assistant" && msg.info.error == null) {
-            const err = (part as RetryPart).error
-            if (err) {
-              this.messagesBySession
-                .get(sessionID)!
-                .set(part.messageID, { info: { ...msg.info, error: err }, parts: msg.parts })
-            }
-          }
-          break
-        }
+        // retry part 丢弃（design-session-retry-recovery §3.1/INV-1，同 openbuilder
+        // 修复后）：重试期错误由会话级气泡承担（status retry → TypingSlot），
+        // 消息级 error 只留 step.failed 终态——不传播、不入渲染部件列表。v2 pin
+        // 未观测到发布（防御式）；若未来发布，退避窗口也只有气泡，消息无红字
+        if (part.type === "retry") break
         // 合成 text part 消费（design-file-reference §5，同 openbuilder 1351f32）：
         // server 注入的引用文件内容/Read 回显等（synthetic:true）不入渲染部件列表
         // ——回显只画用户文本 + 文件 chip。快照合并侧（mergeSnapshotIntoMessages）
@@ -1897,8 +1925,8 @@ export class AppStore {
           // 触发 immutable 更新
           conv!.set(part.messageID, { ...msg })
         } else if (conv) {
-          // 消息 info 未到，先缓存 part（retry part 不缓存——其错误在 info 到达时
-          // 已由权威 message.updated 携带，或随后 retry part 重发，缓存无消费方）
+          // 消息 info 未到，先缓存 part（retry part 已在前置分支整体丢弃，
+          // 不会到达此处）
           this.pendingParts(sessionID).set(part.messageID, [
             ...(this.pendingParts(sessionID).get(part.messageID) ?? []),
             part,
