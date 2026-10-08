@@ -166,10 +166,15 @@ runningBackgroundTasks(parent) =
   全程 REST 可得（见契约表），`mergeMessagePage` / `onMessagesSnapshot`
   合并后在**覆盖窗口**内补 `bg-start`：窗口下界 = 最早已加载消息的 created
   （上不设界——尾部即当下），窗口内**非前台认领**的子会话逐个补插。
-  `created` 取子会话行服务端权威 `time.created`，与 live 插入同值——重建
-  幂等无抖动。重启/重开 Tab/对账拉起/未加载转加载均恢复；窗口外更早历史
+  `created`/`label` 取会话行服务端权威值；live 插入的骨架值（信封时间/
+  缺省 title）经一次对账**校正**到权威值（mergeNotices 同 id 更新，reviewer
+  nit 1 收敛为不变量——不依赖「两个时间戳相等」假设），之后幂等无抖动。
+  重启/重开 Tab/对账拉起/未加载转加载均恢复；窗口外更早历史
   的子会话不补（其认领 part 可能未加载，未认领 ≠ 后台任务），翻页下探后
-  窗口下界下移再补。关 Tab = 归档经 `cleanupSessionState` 清
+  窗口下界下移再补。恢复时序（reviewer nit 2，接受）：重启恢复 Tab 时
+  `loadSessionMessages` 可能先于会话快照落地（children 未进注册表）→ 首轮
+  不产，下一拍（60s 对账/下一条消息）补——与完成提示同节拍。关 Tab = 归档
+  经 `cleanupSessionState` 清
   `noticesBySession`（与消息容器同清理），重开 Tab 经重建恢复。
 - **误插纠正（判据缩窄）**：SSE volatile 缺口可吞掉 `tool.called`（与
   `session.created` 仅隔 ~44ms）或整个派发 part——`session.created` 到达时
@@ -479,5 +484,15 @@ chatEntries(sid)        = sort(message 条目 ∪ optimistic 条目 ∪ notice �
 |---|---|---|---|
 | 1 | 🟠 | REST 重建的误判面：窗口外更早子会话的认领 part 可能未加载（未认领 ≠ 后台任务） | 覆盖窗口下界 = 最早已加载消息 created；翻页下探后窗口下移再补 |
 | 2 | 🟠 | 续跑（`input.sessionID` 续既有子会话）title≠desc 使兜底失效，且 REST 合并把 live 的 progress metadata 洗成 `{}`（`Running({input, metadata:{}})`） | `input.sessionID` 补入权威认领（随 called 的 parsed input 持久化） |
-| 3 | 🟢 | 重建的 created 抖动风险 | 取子会话行服务端权威 `time.created`（与 live 插入同值），幂等 |
+| 3 | 🟢 | 重建的 created 抖动风险 | 取子会话行服务端权威 `time.created`；live 骨架值经一次对账校正（第八轮 #1） |
 | 4 | 🟢 | ③终态后转后台提示仍不可重建 | 接受（判据是运行态；转换 synthetic 无 metadata 不解析），记入 D3b 已知边界 |
+
+### 第八轮（2026-10-08，reviewer 子代理审查 1646d7e）
+
+结论：可合入，无 blocking / non-blocking；两条 nit 与一条附注处置如下。
+
+| # | 级别 | 问题 | 处置 |
+|---|---|---|---|
+| 1 | 🟢 nit | live 插入的 `bg-start` 其 `created` 取 SSE 信封时间，重建取会话行权威时间——「与 live 插入同值」依赖两时间戳相等的假设，不等则既有 notice 永不校正（按 id 去重跳过） | 重建改为**不查重直推权威值**：mergeNotices 同 id 校正一次（created/label 均收敛），之后幂等——假设升级为不变量；补校正回归用例 |
+| 2 | 🟢 nit | 重启恢复 Tab 时 `loadSessionMessages` 先于会话快照落地（children 未进注册表）→ 首轮 merge 不产启动提示，下一拍才补 | 接受：与完成提示（synthetic 抽取）同节拍，对账哲学内既定行为；D3 重建段补记 |
+| — | 附注 | `message-merge.ts` 的 tool part 合并方向：调用点以（本地 SSE, REST 快照）传入而 mergePart 注释称「SSE 优先」——名义与实际相反，即「REST 把 live 的 progress metadata 洗成 `{}`」的根源 | 正名不改行为：参数更名 `localParts`/`snapshotParts`、注释改写为「快照非 pending 优先」并记录已知代价（认领由 `input.sessionID` 与持久化 metadata 兜住）；方向翻转属独立议题，超出本轮 |

@@ -6983,6 +6983,35 @@ describe("用户后台任务（design-subagent-background）", () => {
     expect(store.noticesForSession("p")).toEqual([live])
   })
 
+  it("启动提示 REST 重建：live 骨架值（信封时间）经一次对账校正到会话行权威时间（reviewer nit 1）", async () => {
+    seedParent(child("cmd3", 999))
+    // live：session.created 事件骨架 time.created = eventTime，与会话行权威 999 不等
+    dispatch({
+      type: "session.created",
+      properties: { sessionID: "cmd3", projectID: "proj1", parentID: "p", title: "cmd3" },
+    })
+    const live = store.noticesForSession("p")[0]
+    expect(live.created).not.toBe(999)
+    // 会话快照落地：注册表恢复权威行（time.created = 999）
+    store.sessionsByProject.set(
+      "proj1",
+      sessionsOf(session("p", ROOT, { created: 1, updated: 1 }), child("cmd3", 999)),
+    )
+    clientV2Of().listMessagesPage = async () => ({
+      entries: [
+        { info: { id: "m1", sessionID: "p", role: "user", time: { created: 500 } }, parts: [] },
+      ],
+      nextCursor: null,
+    })
+    await store.loadSessionMessages("p", ROOT)
+    expect(store.noticesForSession("p")).toEqual([
+      { ...live, created: 999 },
+    ])
+    // 再合并：幂等，不再变化
+    await store.loadSessionMessages("p", ROOT)
+    expect(store.noticesForSession("p")).toEqual([{ ...live, created: 999 }])
+  })
+
   it("续跑认领：input.sessionID 持久认据——REST 合并洗掉 progress metadata 后前台续跑子会话不误插", async () => {
     seedParent(child("c9", 10))
     setStatus("c9", "busy")

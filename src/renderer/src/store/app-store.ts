@@ -3976,10 +3976,15 @@ export class AppStore {
   /**
    * 启动提示 REST 重建（2026-10-08 重建修订——启动信号全程 REST 可得，用户
    * 契约表核定）：已加载消息覆盖窗口（窗口下界 = 最早已加载消息的 created；
-   * 上不设界——尾部即当下）内的**非前台认领**子会话，逐个补 `bg-start`。
-   * `created` 取子会话行的服务端权威 `time.created`，与 live 插入同值——重建
-   * 幂等无抖动。窗口下界防翻页未及的更早历史误判：其认领 part 可能尚未加载，
+   * 上不设界——尾部即当下）内的**非前台认领**子会话，逐个推送 `bg-start`
+   * 权威值（created/label 取会话行 `time.created`/`title`）。live 插入的骨架
+   * 值（信封时间/缺省 title）经一次对账校正到权威值，之后 mergeNotices 同 id
+   * 幂等无抖动（reviewer nit 1 收敛为不变量，不依赖时间戳相等的假设）。
+   * 窗口下界防翻页未及的更早历史误判：其认领 part 可能尚未加载，
    * 未认领 ≠ 后台任务；翻页下探后窗口下界下移，再行补插。
+   * 恢复时序（reviewer nit 2，接受）：重启恢复 Tab 时 loadSessionMessages
+   * 可能先于会话快照落地（children 未进注册表）→ 首轮不产，下一拍（60s
+   * 对账/下一条消息）补——与完成提示（synthetic 抽取）同节拍。
    */
   private rebuildStartNotices(parentSessionID: string) {
     const children = this.childSessionsOf(parentSessionID)
@@ -3990,12 +3995,13 @@ export class AppStore {
     for (const m of conv.values()) minCreated = Math.min(minCreated, m.info.time.created)
     if (!Number.isFinite(minCreated)) return
     const foreground = this.foregroundClaimedChildIdsFor(parentSessionID)
-    const notices = this.noticesBySession.get(parentSessionID) ?? []
     const incoming: SessionNotice[] = []
     for (const child of children) {
       if (child.time.created < minCreated) continue
       if (foreground.has(child.id)) continue
-      if (notices.some((n) => n.id === `bg-start:${child.id}`)) continue
+      // 不查重直接推权威值：live 插入的 created/label 来自事件骨架（信封时间
+      // /缺省 title），会话快照落地后经 mergeNotices 同 id 校正一次，之后幂等
+      //（reviewer nit 1 收敛：不依赖「两个时间戳相等」的假设）
       incoming.push(backgroundStartedNotice(child))
     }
     if (incoming.length > 0) this.upsertNotices(parentSessionID, incoming)
