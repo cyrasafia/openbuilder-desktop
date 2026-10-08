@@ -3456,6 +3456,34 @@ describe("重试收敛（design-session-retry-recovery，同 openbuilder）", ()
     expect(store.chatEntries("s1")).toHaveLength(0)
   })
 
+  it("step.failed error 载荷形态防御：v2 事件 {type,message} 原样落地；中止（type 键）不投影 failed；缺 error 兜 {message}", () => {
+    seedSession()
+    // v2 事件形态（同 execution.failed 的 error 形态，api-types 注）：原样落地，
+    // extractErrorMessage 顶层 message 兜底可出文案；failed 投影照常成立
+    dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a1" } })
+    dispatch({
+      type: "session.step.failed",
+      properties: { sessionID: "s1", assistantMessageID: "msg_a1", error: { type: "APIError", message: "overloaded" } },
+    })
+    expect(info("msg_a1")).toMatchObject({ finish: "error", error: { type: "APIError", message: "overloaded" } })
+    dispatch({ type: "session.execution.failed", properties: { sessionID: "s1", error: { type: "APIError", message: "overloaded" } } })
+    expect(store.dotStateFor("s1")).toBe("failed")
+
+    // 中止的 v2 事件形态（中止标记在 type 键）＝用户主动停止：不投影 failed
+    dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a2" } })
+    dispatch({
+      type: "session.step.failed",
+      properties: { sessionID: "s1", assistantMessageID: "msg_a2", error: { type: "MessageAbortedError", message: "Aborted" } },
+    })
+    dispatch({ type: "session.execution.interrupted", properties: { sessionID: "s1", reason: "user" } })
+    expect(store.dotStateFor("s1")).toBe("idle")
+
+    // server 违约缺 error：兜 {message:""}——INV-1 保持（error 恒非空），不静默空白
+    dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a3" } })
+    dispatch({ type: "session.step.failed", properties: { sessionID: "s1", assistantMessageID: "msg_a3" } })
+    expect(info("msg_a3")).toMatchObject({ finish: "error", error: { message: "" } })
+  })
+
   it("step.started 防漂移（§3.3）：不清终态 error/finish；只复位 tool-calls 中间态并补 agent/model", () => {
     seedSession()
     dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a1", agent: "build" } })

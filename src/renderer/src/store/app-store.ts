@@ -1373,10 +1373,17 @@ export class AppStore {
         const conv = this.messagesBySession.get(sessionID)
         const msg = conv?.get(messageID)
         if (msg) {
+          // error 兜底规范化（review nit，同 openbuilder {'message': …} 兜底）：
+          // server 违约缺 error 时包一层 {message}——保证 INV-1（error 恒非空），
+          // 否则消息既无错因也无骨架、静默空白
+          const error =
+            typeof p.error === "object" && p.error != null
+              ? p.error
+              : { message: String(p.error ?? "") }
           conv!.set(messageID, {
             info: {
               ...msg.info,
-              error: (p.error ?? null) as typeof msg.info.error,
+              error: error as typeof msg.info.error,
               finish: typeof p.finish === "string" ? p.finish : "error",
               time: { ...msg.info.time, completed: eventTime },
             } as typeof msg.info,

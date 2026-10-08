@@ -41,7 +41,7 @@ import { useI18n, useStore } from "../app"
 import { format, relativeTime } from "../i18n"
 import type { Catalog } from "../i18n"
 import { filterRevertedEntries, type ChatEntry } from "@shared/message-merge"
-import { extractErrorMessage, extractRetryMessage } from "@shared/message-error"
+import { extractErrorMessage, extractRetryMessage, isAbortError } from "@shared/message-error"
 import type { SessionNotice } from "@shared/session-notices"
 import type {
   CommandInfo,
@@ -2747,8 +2747,8 @@ function childSessionError(entries: ChatEntry[]): string | null {
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i]
     if (e.kind !== "message" || e.data.info.role !== "assistant") continue
-    const err = e.data.info.error as { name?: string } | null | undefined
-    if (err && err.name !== "MessageAbortedError") return extractErrorMessage(err)
+    const err = e.data.info.error
+    if (err && !isAbortError(err)) return extractErrorMessage(err)
     return null
   }
   return null

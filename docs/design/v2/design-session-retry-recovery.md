@@ -37,11 +37,13 @@ REST 快照对照：重试成功后消息 `error=null, finish=stop`（服务端�
 
 官方 GUI 语义（三实现一致）：`retry.scheduled` 只写消息 retry 标记（横幅行）、不写消息级 error；`step.failed` 是消息级错误的**唯一合法来源**；`step.started` 同 mid 重启即恢复 running；`execution.*` settle 时清 retry 标记。
 
+**待复核（升 pin 审计项，按 surface §5 流程）**：`step.failed` 的 error 载荷完整形态未活体核验——openbuilder 实测只记事件序列；本端 api-types 对 `execution.failed` 记 `{type, message}`，REST/快照 NamedError 为 `{name, data}`（实测契约）。防御式收敛：`step.failed` 写入保持事件载荷原样（REST 快照对账自然归一）；中止排除链按 name/type 双键判定（`isAbortError`，message-error.ts），v2 事件形态的中止标记落在 `type` 时不误投影 failed 红点。「用户中止是否走 `step.failed`」同样待核。
+
 ## 3. 设计
 
 ### 3.1 `session.step.failed` 接入（`applyV2StreamEvent`）
 
-- 消息已存在：写 `info.error = 事件 error` + `finish = 事件 finish ?? "error"` + `time.completed`（终态收敛，同 `step.ended` 形态）；消息缺失静默丢弃（壳只会经 `step.started` 建立，正常序列 `step.failed` 必在其后）。
+- 消息已存在：写 `info.error = 事件 error` + `finish = 事件 finish ?? "error"` + `time.completed`（终态收敛，同 `step.ended` 形态）；事件 error 缺失/非对象时兜 `{message}` 规范化（同 openbuilder——保证 INV-1 的 error 恒非空，不静默空白）；消息缺失静默丢弃（壳只会经 `step.started` 建立，正常序列 `step.failed` 必在其后）。
 - 不在事件到达时重取快照——事件即权威（openbuilder 同构，无 reload 依赖）。
 
 ### 3.2 retry part 丢弃（`message.part.updated` 前置分支）
@@ -83,14 +85,19 @@ openbuilder 改动 2（`step.started` 回落 busy）本端**不跟进**，维持
 | 4 | 重试耗尽（step.failed → execution.failed） | 消息 `finish=error` + 终态 error + completed；idle + failed 静态红点（§3.4 终局闭环） |
 | 5 | step.failed 壳未建 | 静默丢弃，不误建容器 |
 | 6 | 同 mid 游离 step.started | 终态 error/finish 不被洗掉；tool-calls 中间态复位；agent/model 补写 |
+| 7 | error 载荷形态防御 | v2 事件 `{type,message}` 原样落地；中止（type 键）不投影 failed；缺 error 兜 `{message}` |
 
 ## 6. 涉及文件
 
 | 文件 | 改动 |
 |------|------|
-| `src/renderer/src/store/app-store.ts` | `applyV2StreamEvent` 增 `step.failed` case；`step.started` 收窄为存在时合并；`message.part.updated` 的 retry part 改整体丢弃；移除 `RetryPart` 导入 |
-| `src/renderer/src/store/app-store.test.ts` | 「报错消息与重试状态」retry part 三用例改写（不传播/无影响）；新增「重试收敛」describe 六用例 |
-| `docs/design/design-error-message.md` | §0/§1/§3.2/§3.6/§3.7/§5 按 INV-1 修订 |
+| `src/renderer/src/store/app-store.ts` | `applyV2StreamEvent` 增 `step.failed` case（error 兜底规范化）；`step.started` 收窄为存在时合并；`message.part.updated` 的 retry part 改整体丢弃；移除 `RetryPart` 导入 |
+| `src/shared/message-error.ts` | 新增 `isAbortError`（中止判定 name/type 双键，review 2026-10-09） |
+| `src/shared/session-status.ts` / `src/renderer/src/components/workspace.tsx` | 中止排除链（`inferFailedFromMessages`/`childSessionError`）改经 `isAbortError` |
+| `src/shared/api-types.ts` | `RetryPart` 注释反转（整体丢弃语义，review 2026-10-09） |
+| `src/renderer/src/store/app-store.test.ts` | 「报错消息与重试状态」retry part 三用例改写（不传播/无影响）；新增「重试收敛」describe 七用例（含载荷形态防御） |
+| `src/shared/session-status.test.ts` / `src/shared/message-error.test.ts` | v2 事件形态中止排除 / `isAbortError` 双键单测 |
+| `docs/design/design-error-message.md` | §0/§1/§3.2/§3.4/§3.6/§3.7/§5 按 INV-1 修订 |
 | `docs/design/v2/design-sse-event-surface.md` | 表 A 移除 step.failed（已修出表注记） |
 
 ## 7. 不做的事

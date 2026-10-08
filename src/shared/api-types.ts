@@ -193,9 +193,11 @@ export interface SubtaskPart extends PartBase {
 
 /**
  * 重试 part（openapi 1.18.x Part 联合成员，design-error-message §2）：
- * 退避窗口期到达、error 携带 APIError。消费语义（同 openbuilder conversation_store）：
- * 不入渲染部件列表，error 传播到所属消息 info.error 供错误卡呈现。
- * 本地 server 1.18.13 实测未持久化（retry 仅走 session.status 事件），防御式消费。
+ * 退避窗口期到达、error 携带 APIError。消费语义（design-session-retry-recovery
+ * §3.2，同 openbuilder 修复后）：**整体丢弃**——不传播 error 到所属消息
+ * info.error（INV-1：消息级 error 只留 step.failed 终态）、不入渲染部件列表、
+ * 不入 pendingParts；重试期错误由会话级气泡承担。
+ * v1 1.18.13 与 v2 pin 实测均未观测到发布，防御式消费。
  */
 export interface RetryPart extends PartBase {
   type: "retry"

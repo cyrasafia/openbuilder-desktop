@@ -114,8 +114,10 @@ waiting（待输入，琥珀静态）> error（retry 退避重试，红）> runn
 idle 灰点无法表达"上次运行失败了"。retry 呼吸红 = 正在重试，failed 静态红 = 已死等你。
 
 **判定**（session-status.ts `inferFailedFromMessages`）：会话 idle 且末条消息为携带**非中止**
-错误的 assistant（中止 `MessageAbortedError` 是用户主动停止，不算失败）。`finish` 不可靠
-（halt 只置 error 不置 finish，§2），以 `info.error` 存在性为准。
+错误的 assistant（中止 `MessageAbortedError` 是用户主动停止，不算失败）。中止判定经
+`isAbortError`（message-error.ts）name/type 双键——v2 SSE 事件 error 形态为
+`{type, message}`，中止标记可落在 `type`（design-session-retry-recovery §2 待复核项）。
+`finish` 不可靠（halt 只置 error 不置 finish，§2），以 `info.error` 存在性为准。
 
 **实现**（app-store `dotStateFor` 纯派生，无缓存/锁存集合）：
 

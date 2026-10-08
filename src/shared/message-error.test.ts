@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { extractErrorMessage, extractRetryMessage } from "./message-error"
+import { extractErrorMessage, extractRetryMessage, isAbortError } from "./message-error"
 
 describe("extractErrorMessage", () => {
   it("NamedError 形态：文案在 data.message（实测契约主路径）", () => {
@@ -78,5 +78,24 @@ describe("extractRetryMessage（retry 提示文案清洗）", () => {
 
   it("内嵌 JSON 无可读字段：原文返回（不产出空文案）", () => {
     expect(extractRetryMessage('{"type":"server_error"}')).toBe('{"type":"server_error"}')
+  })
+})
+
+describe("isAbortError（中止判定，name/type 双形态键）", () => {
+  it("NamedError 形态：中止标记在 name", () => {
+    expect(isAbortError({ name: "MessageAbortedError", data: { message: "Aborted" } })).toBe(true)
+    expect(isAbortError({ name: "APIError", data: { message: "boom" } })).toBe(false)
+  })
+
+  it("v2 事件形态 {type,message}：中止标记在 type", () => {
+    expect(isAbortError({ type: "MessageAbortedError", message: "Aborted" })).toBe(true)
+    expect(isAbortError({ type: "APIError", message: "overloaded" })).toBe(false)
+  })
+
+  it("null/非对象/未知形态不算中止（防御式：宁可投影 failed 不错漏报错）", () => {
+    expect(isAbortError(null)).toBe(false)
+    expect(isAbortError(undefined)).toBe(false)
+    expect(isAbortError("MessageAbortedError")).toBe(false)
+    expect(isAbortError({})).toBe(false)
   })
 })

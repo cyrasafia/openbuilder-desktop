@@ -9,6 +9,7 @@
  * - "该目录来源"的判定基于来源索引（事件流目录 / REST 查询目录），不依赖会话元数据。
  */
 import type { Message, SessionStatusValue } from "./api-types"
+import { isAbortError } from "./message-error"
 
 /** 终态 finish 判定（D-SS-B：stop/error 是终态；tool-calls 中间步骤、null 生成中，均不触发） */
 export function isTerminalFinish(finish: unknown): boolean {
@@ -28,12 +29,12 @@ export function inferIdleFromMessages(messages: Message[]): boolean {
 /**
  * 报错终局推断（design-error-message §3.4）：末条消息是携带非中止错误的
  * assistant ⇒ 会话以报错结束（静态红点）。中止（MessageAbortedError）是用户
- * 主动停止，不算错误；错误名是 server NamedError 契约（processor halt 路径）。
+ * 主动停止，不算错误；错误名是 server NamedError 契约（processor halt 路径），
+ * v2 事件形态中止标记在 type 键——判定经 isAbortError 双键兼容。
  */
 export function inferFailedFromMessages(messages: Message[]): boolean {
   const last = messages[messages.length - 1]
   if (last?.role !== "assistant") return false
-  const err = last.error as { name?: string } | null | undefined
-  if (!err) return false
-  return err.name !== "MessageAbortedError"
+  if (!last.error) return false
+  return !isAbortError(last.error)
 }

@@ -18,6 +18,19 @@ export function extractErrorMessage(error: unknown): string {
   return stripEmbeddedJson(rawErrorMessage(error))
 }
 
+/**
+ * 中止错误判定（design-error-message §3.4 / design-session-retry-recovery §2）：
+ * REST/快照 NamedError 形态中止标记在 `name`；v2 SSE 事件 error 形态为
+ * `{type, message}`（api-types execution.failed 注），中止标记可能落在 `type`
+ * ——两键任一命中即中止（用户主动停止，不算报错终局）。载荷完整形态未活体
+ * 核验（升 pin 复核项），双键判定是防御式收敛。
+ */
+export function isAbortError(error: unknown): boolean {
+  if (error == null || typeof error !== "object") return false
+  const e = error as { name?: unknown; type?: unknown }
+  return e.name === "MessageAbortedError" || e.type === "MessageAbortedError"
+}
+
 function rawErrorMessage(error: unknown): string {
   if (error == null) return ""
   if (typeof error === "string") return error
