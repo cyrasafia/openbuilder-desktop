@@ -23,6 +23,7 @@ import {
   CircleHelp,
   CircleStop,
   CircleX,
+  CornerUpRight,
   ExternalLink,
   Eye,
   FileDiff,
@@ -2998,7 +2999,7 @@ function formatDuration(ms: number): string {
 
 /**
  * 系统提示行（design-subagent-background D5）：低强调行式 notice，
- * 承载后台任务启动/完成。可选 trailing「查看」（有 childID 时）。
+ * 承载后台任务启动/转后台/完成。可选 trailing「查看」（有 childID 时）。
  */
 export function NoticeRow({ notice }: { notice: SessionNotice }) {
   const store = useStore()
@@ -3007,6 +3008,9 @@ export function NoticeRow({ notice }: { notice: SessionNotice }) {
   let text: string
   if (notice.kind === "background-started") {
     text = format(t.bgTaskStarted, { label: notice.label })
+  } else if (notice.kind === "background-converted") {
+    icon = <CornerUpRight size={14} aria-hidden />
+    text = format(t.bgTaskConverted, { label: notice.label })
   } else {
     switch (notice.state) {
       case "error":

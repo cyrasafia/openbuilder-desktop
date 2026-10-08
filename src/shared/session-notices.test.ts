@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest"
 import type { Part, Session, ToolPart } from "./api-types"
 import {
   backgroundStartedNotice,
+  backgroundConvertedNotice,
   mergeNotices,
   normalizeBackgroundState,
   subagentSyntheticNotice,
-  toolFormChildIds,
+  foregroundClaimedChildIds,
+  activeClaimedChildIds,
+  convertedBackgroundChildIds,
   toolMetadataSessionId,
-  withdrawToolFormStartNotices,
+  withdrawForegroundStartNotices,
   type SessionNotice,
 } from "./session-notices"
 
@@ -25,7 +28,8 @@ function child(id: string, title?: string): Session {
 function toolPart(tool: string, input: unknown, metadata?: Record<string, unknown>, status = "running"): Part {
   const base = { id: `prt_${tool}`, sessionID: "ses_parent", messageID: "msg_1", type: "tool" as const, callID: `c_${tool}`, tool }
   if (status === "completed") return { ...base, state: { status: "completed", input, output: "", title: tool, ...(metadata ? { metadata } : {}) } } as ToolPart
-  if (status === "error") return { ...base, state: { status: "error", input, error: "x" } } as ToolPart
+  if (status === "error")
+    return { ...base, state: { status: "error", input, error: "x", ...(metadata ? { metadata } : {}) } } as ToolPart
   return { ...base, state: { status, input, ...(metadata ? { metadata } : {}) } } as ToolPart
 }
 
@@ -37,25 +41,114 @@ describe("toolMetadataSessionId", () => {
   })
 })
 
-describe("toolFormChildIds（D1/D3 同判据）", () => {
+describe("foregroundClaimedChildIds（启动通知闸门/撤回判据，2026-10-08 升格）", () => {
   const children = [child("ses_bg", "Build docs"), child("ses_task", "Review changes")]
 
-  it("权威 metadata.sessionId 命中，即便 part 已完成", () => {
-    const ids = toolFormChildIds([toolPart("task", {}, { sessionId: "ses_task" }, "completed")], children)
-    expect([...ids]).toEqual(["ses_task"])
+  it("权威 metadata.sessionId + 非 background 输入：命中（含 completed——转后台/对账后的撤回依据）", () => {
+    const running = foregroundClaimedChildIds(
+      [toolPart("task", { description: "Review changes" }, { sessionId: "ses_task" })],
+      children,
+    )
+    expect([...running]).toEqual(["ses_task"])
+    const completed = foregroundClaimedChildIds(
+      [toolPart("task", { description: "Review changes" }, { sessionId: "ses_task" }, "completed")],
+      children,
+    )
+    expect([...completed]).toEqual(["ses_task"])
   })
 
-  it("无 metadata 时按 description ↔ title 前缀兜底（仅 pending/running）", () => {
-    const running = toolFormChildIds([toolPart("task", { description: "Review" })], children)
-    expect([...running]).toEqual(["ses_task"])
-    // completed 且无 metadata：不兜底（metadata 权威路径本应已写入）
-    const completed = toolFormChildIds([toolPart("task", { description: "Review" }, undefined, "completed")], children)
+  it("权威 metadata.sessionId + background:true：不命中（后台派生，启动提示保留）", () => {
+    // running = 派发窗口（progress 已写 metadata、success 未到）；completed = 派发完成
+    const running = foregroundClaimedChildIds(
+      [toolPart("subagent", { background: true }, { sessionId: "ses_bg" })],
+      children,
+    )
+    expect(running.size).toBe(0)
+    const completed = foregroundClaimedChildIds(
+      [toolPart("subagent", { background: true }, { sessionId: "ses_bg" }, "completed")],
+      children,
+    )
     expect(completed.size).toBe(0)
   })
 
-  it("只认 task/subagent 两个 tool", () => {
-    const ids = toolFormChildIds([toolPart("bash", { description: "Review" })], children)
+  it("无 metadata 时按 description ↔ title 前缀兜底（仅 pending/running）", () => {
+    const running = foregroundClaimedChildIds([toolPart("task", { description: "Review" })], children)
+    expect([...running]).toEqual(["ses_task"])
+    // completed 且无 metadata：不兜底（权威路径本应已写入）
+    const completed = foregroundClaimedChildIds(
+      [toolPart("task", { description: "Review" }, undefined, "completed")],
+      children,
+    )
+    expect(completed.size).toBe(0)
+  })
+
+  it("兜底 + background:true：不命中（派发窗口即插启动提示，不等 metadata）", () => {
+    const ids = foregroundClaimedChildIds([toolPart("subagent", { description: "Build docs", background: true })], children)
     expect(ids.size).toBe(0)
+  })
+
+  it("只认 task/subagent 两个 tool", () => {
+    const ids = foregroundClaimedChildIds([toolPart("bash", { description: "Review" })], children)
+    expect(ids.size).toBe(0)
+  })
+
+  it("续跑认领：input.sessionID 与 metadata 同为权威（任意 part 状态，REST 持久）", () => {
+    const running = foregroundClaimedChildIds(
+      [toolPart("subagent", { description: "别的描述", sessionID: "ses_task" })],
+      children,
+    )
+    expect([...running]).toEqual(["ses_task"])
+    const completed = foregroundClaimedChildIds(
+      [toolPart("subagent", { sessionID: "ses_task" }, undefined, "completed")],
+      children,
+    )
+    expect([...completed]).toEqual(["ses_task"])
+  })
+
+  it("续跑 + background:true：非前台认领（后台续跑照插/不撤）", () => {
+    const ids = foregroundClaimedChildIds(
+      [toolPart("subagent", { sessionID: "ses_bg", background: true })],
+      children,
+    )
+    expect(ids.size).toBe(0)
+  })
+
+  it("input 为字符串（SSE 流式/缺口）：不构成前台认领（误插由对账纠正）", () => {
+    const ids = foregroundClaimedChildIds([toolPart("subagent", '{"description":"Review')], children)
+    expect(ids.size).toBe(0)
+  })
+})
+
+describe("activeClaimedChildIds（任务条排除判据）", () => {
+  const children = [child("ses_bg", "Build docs"), child("ses_task", "Review changes")]
+
+  it("pending/running part 认领（含 background:true 派发窗口）：排除", () => {
+    const ids = activeClaimedChildIds(
+      [
+        toolPart("task", { description: "Review changes" }, { sessionId: "ses_task" }),
+        toolPart("subagent", { background: true }, { sessionId: "ses_bg" }),
+      ],
+      children,
+    )
+    expect([...ids].sort()).toEqual(["ses_bg", "ses_task"])
+  })
+
+  it("completed part 认领不排除：background:true 派发完成与前台转后台都以 part completed + 子会话运行中为后台运行态", () => {
+    const ids = activeClaimedChildIds(
+      [toolPart("subagent", { background: true }, { sessionId: "ses_bg" }, "completed")],
+      children,
+    )
+    expect(ids.size).toBe(0)
+  })
+
+  it("兜底同口径：仅 pending/running", () => {
+    const running = activeClaimedChildIds([toolPart("task", { description: "Review" })], children)
+    expect([...running]).toEqual(["ses_task"])
+    const completed = activeClaimedChildIds(
+      [toolPart("task", { description: "Review" }, undefined, "completed")],
+      children,
+    )
+    expect(completed.size).toBe(0)
   })
 })
 
@@ -68,6 +161,54 @@ describe("backgroundStartedNotice", () => {
       childID: "ses_x",
     })
     expect(backgroundStartedNotice(child("ses_y")).label).toBe("ses_y")
+  })
+})
+
+describe("backgroundConvertedNotice（③转后台提示）", () => {
+  it("id 稳定、kind 区分、created 取合成时刻", () => {
+    expect(backgroundConvertedNotice(child("ses_x", "Task A"), 1234)).toMatchObject({
+      id: "bg-convert:ses_x",
+      kind: "background-converted",
+      created: 1234,
+      label: "Task A",
+      childID: "ses_x",
+    })
+  })
+})
+
+describe("convertedBackgroundChildIds（③转后台检测）", () => {
+  const children = [child("ses_fg", "Build docs"), child("ses_bg", "Review changes")]
+
+  it("前台认领 + part completed：命中（调用方再以子会话运行中为闸）", () => {
+    const ids = convertedBackgroundChildIds(
+      [toolPart("subagent", { description: "Build docs" }, { sessionId: "ses_fg" }, "completed")],
+      children,
+    )
+    expect([...ids]).toEqual(["ses_fg"])
+  })
+
+  it("前台认领 + part 仍 running：不命中（还是前台阻塞，未转换）", () => {
+    const ids = convertedBackgroundChildIds(
+      [toolPart("subagent", { description: "Build docs" }, { sessionId: "ses_fg" })],
+      children,
+    )
+    expect(ids.size).toBe(0)
+  })
+
+  it("background:true + part completed：不命中（②派发完成的正常态）", () => {
+    const ids = convertedBackgroundChildIds(
+      [toolPart("subagent", { background: true }, { sessionId: "ses_bg" }, "completed")],
+      children,
+    )
+    expect(ids.size).toBe(0)
+  })
+
+  it("前台认领 + part error：不命中（失败/中断不是转后台）", () => {
+    const ids = convertedBackgroundChildIds(
+      [toolPart("subagent", { description: "Build docs" }, { sessionId: "ses_fg" }, "error")],
+      children,
+    )
+    expect(ids.size).toBe(0)
   })
 })
 
@@ -142,18 +283,18 @@ describe("mergeNotices", () => {
   })
 })
 
-describe("withdrawToolFormStartNotices", () => {
+describe("withdrawForegroundStartNotices", () => {
   const start: SessionNotice = { id: "bg-start:ses_c", kind: "background-started", created: 1, label: "x", childID: "ses_c" }
   const done: SessionNotice = { id: "msg_s", kind: "background-finished", created: 2, label: "y", childID: "ses_c", state: "completed" }
 
-  it("认领的启动提示被移除，完成提示与无关提示保留", () => {
+  it("前台认领的启动提示被移除，完成提示与无关提示保留", () => {
     const other: SessionNotice = { ...start, id: "bg-start:ses_other", childID: "ses_other" }
-    const kept = withdrawToolFormStartNotices([start, done, other], new Set(["ses_c"]))
+    const kept = withdrawForegroundStartNotices([start, done, other], new Set(["ses_c"]))
     expect(kept?.map((n) => n.id)).toEqual(["msg_s", "bg-start:ses_other"])
   })
 
   it("无认领集返回 null（无变化）", () => {
-    expect(withdrawToolFormStartNotices([start], new Set())).toBeNull()
-    expect(withdrawToolFormStartNotices([start], new Set(["ses_z"]))).toBeNull()
+    expect(withdrawForegroundStartNotices([start], new Set())).toBeNull()
+    expect(withdrawForegroundStartNotices([start], new Set(["ses_z"]))).toBeNull()
   })
 })

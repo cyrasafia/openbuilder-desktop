@@ -1,331 +1,339 @@
 # 用户后台任务卡 + 系统提示
 
 > 参考移动端 `../openbuilder/docs/design/v2/design-subagent-background.md`。
-> 本文只覆盖**用户后台任务**——命令型 `subagent: true` 建立的异步子会话。
-> 工具型 subagent（`task` tool part，以及 v2 的 `subagent` tool part）的呈现
-> 基本不变，仍按 [`design-subagent-status.md`](design-subagent-status.md)；
-> 其中 `subagent` tool part 的**现状缺口**一并补正（见「范围」表下注）。
+> 桌面首次实现即采用「常驻任务指示 + 系统提示」方案（移动端废弃 chip 方案
+> 的结论直接继承，桌面从未实现过 chip）；**2026-10-07 形态修订**：原「单行
+> pill + 上弹浮层」改为**通栏折叠卡**（复用授权/问题卡的 `.pending-card`
+> 形态，默认收起，见「常驻任务卡」节）。
 >
-> 移动端把后台任务做成「按子会话启动注入消息流的 chip」后废弃并改为
-> 「常驻任务条 + 系统提示」；桌面端**从未实现过 chip**，本次是首次实现，
-> 直接采用常驻任务指示方案（初版为任务条，2026-10-07 修订为通栏折叠卡，
-> 见 D1/D2）。桌面与移动端的主要结构差异见文末「与移动端的差异」。
+> 2026-10-03 首版；2026-10-08 经升格/对齐/重建三轮裁定后全文重写——历史
+> 推演与处置见文末 Review 记录（一至八轮）。工具型**前台**（同步阻塞）的
+> 呈现不在本文，见 [`design-subagent-status.md`](design-subagent-status.md)。
 
-## 背景与问题
+## 背景
 
-命令型 `subagent: true` 会建立异步子会话：父会话不被阻塞、用户可继续对话
-（服务端路径见移动端 `../openbuilder/docs/ref/ref-opencode-review-subagent.md` §3.4；
-`subagent` tool 的存在与语义见同文 §3.4/§5）。
+异步建立的子会话（后台任务）此前三处不可见：
 
-桌面端当前只处理**工具型**子会话（`task` tool part → `SubagentPanel`，
-`workspace.tsx` 第 2597 行）。命令型子会话**三处不可见**：
+- **消息流无指示**：看不出任务在跑（②的 tool part 派发即完成，承载不了
+  运行态；①③根本没有运行态载体）。
+- **状态不点亮**：父会话 idle 时 Tab/左栏/项目的 running 不亮。
+- **完成不可见**：完成回执（synthetic）两头都丢——inbox 的非 user 项被
+  忽略，REST 的 synthetic part 被滤空后再被空消息守卫隐藏。
+- **不可停止**：无停止入口，中断父会话对后台子会话是 no-op。
 
-- **消息流无指示**：没有 tool part，也没有任何 chip，父会话流里看不出任务在跑。
-- **状态不点亮**：`dotStateFor` 只看本会话 `sessionStatus`，父会话 idle 时
-  Tab/左栏/项目指示器的 **running 不点亮**（子会话待授权的 waiting 仍会亮，
-  见 `pendingCountFor`），看不出后台有任务。
-- **完成不可见**：服务端完成回执走 `session.inbox.enqueued`（`item.type ==
-  "synthetic"`）或 REST 快照的 `synthetic` 消息。桌面端前者在
-  `item.type !== "user"` 处直接 `break`（`app-store.ts` 第 1687 行）；后者
-  `toInternalMessages` 把 synthetic 转成 `synthetic:true` 的 text part
-  （`v2-adapter.ts` 第 169 行），随后被 `mergeSnapshotIntoMessages` 的 part
-  过滤（`message-merge.ts` 第 113 行）滤空，再由空消息守卫隐藏
-  （`app-store.ts` 第 6260 行）——两头都丢。
-- **不可停止**：无停止入口；中断父会话对后台子会话是 no-op。
+工具型前台没有这些问题：前台阻塞调用，tool part 天然停在消息流尾部、
+伴随主会话 running、composer 停止连带取消。因此前台保持纯 chip（本文
+只负责把它与后台任务区分开，见认领模型）。
 
-工具型没有这些问题：它是前台阻塞调用，tool part 天然停在消息流尾部、伴随
-主会话 `running`、composer 的停止会连带取消。因此新交互**只服务用户后台任务**。
+## 三种后台任务（场景与区别）
 
-## 契约事实（桌面 v2 翻译层实测口径）
+异步子会话共有三条产生路径，全部经 `SubagentCompletion.deliver` 发完成
+synthetic（源码核实 tag v2.0.18）：
 
-| 来源 | 事实 | 桌面落点 |
-|---|---|---|
-| `session.created`（v2） | 携带 `sessionID/projectID/parentID/...`；子会话 `parentID` 指向父会话，与父同 `directory`，过目录闸门 | `applyV2SessionEvent` `session.created`（`app-store.ts` 第 1470 行） → `applySessionEvent`；`parentID` 非空时不开 Tab |
-| `session.execution.started/succeeded/failed/interrupted` | **旁路目录闸门**（信封无 location），目录按 `sessionID` 解析；驱动 `sessionStatus` | `handleEvent` 第 1584 行 —— 后台子会话的 busy/idle 事实源 |
-| `session.inbox.enqueued` | `item.type` ∈ `user/synthetic/compaction/move`；`Synthetic` 的 `item.payload` = `{text, description, metadata}`，`metadata` = `{source:"subagent", childID, agent, state}`，`state` 主枚举 `completed/error/cancelled`（wire 兼容别名见 D4），`item.time.created` 可信 | 现只消费 `user`（第 1677 行）；本次新增 `synthetic` 分支 |
-| `POST /api/session/{id}/interrupt` | 停止子会话 = 中断该子会话 | `abortSession(childID)`（`app-store.ts` 第 3889 行） |
-| `GET /api/session/{id}/message` | `synthetic` 条目的 `metadata` 同 inbox payload；`toInternalMessages` 现丢弃 `metadata` | `v2-adapter.ts` / `rest-client.ts#listMessagesPage` |
-| **完成 synthetic 的发件方**（2026-10-06 源码核实，tag v2.0.18） | `SubagentCompletion.deliver`（`packages/core/src/session/subagent-completion.ts`）统一产出 `metadata {source:"subagent", childID, agent, state}` + `<subagent …>` 文本。调用方：① 命令型 `subagent: true`（`config/plugin/command.ts` → `subagents.background`，恒发）；② 工具型 `subagent` tool `background:true`（`tool/plugin/subagent.ts` 同走 `subagents.background`，**也发**）；③ 工具型前台被"backgrounded"时经 `subagents.notify` 补发。工具型前台**正常完成不发**——结果内联在 tool part content | 桌面/移动端同判：一切 `source=subagent` synthetic 都渲染完成通知，不按工具型排除（移动端 `_noticeMessage` 同款） |
-| **v2 无 `task` tool**（2026-10-06 核实） | v2.0.18 工具名只有 `subagent`；`task` 是 v1 遗留。桌面 `task` 路由保留为存量数据兼容，新事件恒为 `subagent` | `MessageBlock` 分发 / `toolFormChildIds` 双认 |
-| `Session.parentID` | 子会话非空；`sessionsByProject` 保留全量（无移动端 64 条 LRU） | `findSession` / `findChildSession`（第 3718 / 3731 行） |
+### ① 命令型 `subagent: true`
 
-## 范围
+用户在输入框运行带 `subagent: true` 的命令（如 `/review`）。服务端
+（`config/plugin/command.ts`）建子会话（title = 命令 description 或名），
+模板展开后投给子会话执行，父 agent 不参与——父会话消息流里只有命令回显
+（subtask part），**没有 task/subagent tool part**。
 
-| | 命令型 `subagent: true`（用户后台任务） | 工具型 `task`/`subagent` tool part |
-|---|---|---|
-| 消息流呈现 | 启动/完成各一条**系统提示** | 保持 `SubagentPanel`（tool part 形态） |
-| 进行中指示 | **常驻任务卡**（通栏折叠，默认收起） | tool part 自身（运行态） |
-| 停止入口 | 任务列表内 | composer 停止（中断父会话连带取消） |
+### ② 工具型 `subagent` tool `background: true`
 
-即：**不动**的是 `design-subagent-status.md`；**新增**的是本文。
-
-> 桌面补正：工具型判据与渲染都须同时认 `task` **与** `subagent` 两个 tool
-> （现存代码只把 `task` 路由到 `SubagentPanel`，`subagent` tool 落 `ToolChip`
-> ——见「实现影响」）。依据：v2 存在 `subagent` 工具（移动端 ref §3.4/§5），
-> 移动端把二者统一走 `_SubagentPanel`（`conversation_screen.dart:2006`），读同一
-> 组字段 `input.description` / `input.subagent_type` / `metadata.sessionId`——
-> 载荷同构，可复用桌面现有 `SubagentPanel`。
-
-## 识别：哪些子会话算「用户后台任务」
-
-- 候选 = 当前会话的直系子会话（`parentID == 当前会话`）。
-- 其中**消息流里没有被 tool part 引用**的，才是后台任务：
-  - 优先 `metadata.sessionId`（兼容 `sessionID`）；
-  - tool part 尚在 `pending/running`、metadata 未写入窗口时，用
-    description ↔ title 前缀启发式兜底（`findChildSession` 同款，避免刚发起就
-    误判成后台任务）。
-- 取运行中：子会话 `sessionActivity(childID) !== "idle"`（即 busy/retry）。
-- 工具型即便用 `background: true`，仍保持 tool part 形态，**不进任务条**。
+主 agent 调 `subagent` tool 时传 `background: true`（`tool/plugin/subagent.ts`）。
+派发即返回：tool part 在 ~30ms 内转 completed（输出文案「working in the
+background…」），子会话后台跑。派发事件序（2026-10-07 活体抓包）：
 
 ```
-toolFormChildIds(parentId) =
-    parentMessages 中 tool ∈ {task, subagent} 的 part
-      ├─ metadata.sessionId / metadata.sessionID（权威）
-      └─ input.description ↔ child.title 前缀且 part 处于 pending/running（兜底）
-
-runningBackgroundTasks(parentId) =
-    childSessionsOf(parentId)
-      ∩ sessionActivity(childId) !== "idle"
-      ∩ childId ∉ toolFormChildIds(parentId)
-
-任务条可见 = runningBackgroundTasks(parentId).length > 0
+tool.called（parsed input，含 background:true）→ session.created（晚 ~44ms，
+title==description）→ tool.progress（metadata:{sessionID,…}）→ tool.success
+（part completed，metadata:{sessionID,status:"running",truncated:false}）
 ```
 
-`childSessionsOf` 由 D6 的 `childrenByParent` 惰性缓存提供（源 = `sessionsByProject`
-全量，同 `findChildSession` 口径）；`sessionActivity` 见 D6。
+### ③ 前台运行中转后台
 
-## 设计
+主 agent 前台调用（默认，同步阻塞）运行中，任一客户端调
+`POST /api/session/{父}/background`（TUI/CLI 动作；桌面端未接此端点，转换
+可来自他端）→ `jobs.backgroundAll`：阻塞中的 tool 返回
+`{type:"backgrounded"}` → part 转 completed（与②同款 `backgroundResult`），
+子会话继续后台跑。父会话另落一条 synthetic（「User requested that active
+blocking work be moved to the background…」，无 `source:subagent`，不渲染）。
 
-### D1 常驻后台任务卡
+### 区别一览
 
-- 位置：`ChatView` 的 `.composer` 顶行（与 `RevertBar` 同层，见
-  `workspace.tsx` 第 1692 行），不遮消息区、贴近输入区。
-- 形态（**2026-10-07 修订**：原「单行 pill + 上弹浮层」改为通栏折叠卡）：
-  复用 `.pending-card` 结构（与授权/问题卡同款通栏折叠形态，用户裁定），
-  头部一行 = `Rocket` 图标 + 标题「后台任务」+ 计数「N 个运行中」+ 展开箭头；
-  **默认收起**，点击头部切换；展开体在卡内列出任务（D2）、推高 composer，
-  不再悬浮于消息区。配色中性 surface-container 系（原任务卡同判），
+| | ① 命令型 | ② `background:true` | ③ 前台转后台 | 对照：前台（同步） |
+|---|---|---|---|---|
+| 发起方 | 用户（命令） | agent（传参） | agent 发起 + 他端转换 | agent（默认） |
+| 父会话 tool part | 无 | 有，派发即 completed | 有，转换时 completed | 有，运行中 |
+| `input.background` | 无此字段 | `true` | **缺省**（出生时是同步） | 缺省 |
+| 子会话 title | 命令 description | == `input.description` | == `input.description` | == `input.description` |
+| 出生时刻可判异步 | 是（无 part） | 是（called 先于 created） | 否（转换前是同步） | —（非后台） |
+| 运行态可判 | 无 part + 子会话 busy | part completed + 子会话 busy | 同② | part running |
+| 完成 synthetic | ✓ | ✓ | ✓（`subagents.notify` 补发） | ✗（结果内联 chip） |
+
+核心结论（判据设计的出发点）：**`background:true` 是异步的充分条件而非
+必要条件**——③的 `input.background` 缺省。单一标志覆盖不了三路径，须按
+时刻分层判（见认领模型）。
+
+## 前端呈现
+
+三路径呈现一致（2026-10-08 双裁定：按「异步即后台任务」升格 + ③转后台
+补提示）：每个后台任务有**入列消息（启动或转后台）+ 完成消息 + 运行中
+任务卡**；前台任务只有 chip。
+
+| | ① | ② | ③ | 前台（同步） |
+|---|---|---|---|---|
+| 入列消息 | 「已启动后台任务」 | 「已启动后台任务」 | 「已转后台任务」 | — |
+| 完成消息 | ✓ | ✓ | ✓ | —（结果在 chip 内联） |
+| 任务卡 | ✓ 出生即入 | ✓ 派发完成后入 | ✓ 转换后入 | ✗ |
+| chip（tool part） | — | 派发记录留存 | 运行态→完成态 | 运行态 |
+
+### 系统提示（流内低强调行）
+
+`ChatEntry` 增 `kind: "notice"`，与消息按 `created` 混排；`created` 并列时按
+kind 秧 `message < notice < optimistic` 稳定排序（三秧显式定义，防比较器
+非反对称），同 kind 再按 id 字典序。
+
+| kind | 触发 | 图标（lucide 14px） | 文案 |
+|---|---|---|---|
+| `background-started` | ①②出生 | `Rocket` | 已启动后台任务：{label} |
+| `background-converted` | ③转换 | `CornerUpRight` | 已转后台任务：{label} |
+| `background-finished`（completed） | 完成 | `CircleCheck` | 后台任务完成：{label} |
+| `background-finished`（error） | 失败 | `CircleX` | 后台任务失败：{label} |
+| `background-finished`（cancelled） | 取消 | `CircleStop` | 后台任务取消：{label} |
+
+- 样式：leading 图标 + 文本（`ui-sm` / `color-text-muted`）+ 可选 trailing
+  「查看」（有 childID 时 → 详情浮层）；行式、低对比、不画气泡底。这是桌面
+  首个系统提示样式，后续 model/agent 切换等系统级通知可复用。
+- `label` 优先级：入列消息取子会话 `title`（回退 id）；完成消息优先解析
+  synthetic 文本里的 `description`，回退 `payload.description` / `agent` /
+  `childID`。
+- 通知 id：启动 `bg-start:<childID>`、转后台 `bg-convert:<childID>`、完成
+  `<syntheticMsgID>`（与消息同 id 空间，SSE 与 REST 天然去重）。
+- 通知不参与回滚隐藏（回滚只作用于消息；`bg-` 前缀 id 与 `msg_` id 不可比）。
+
+### 常驻任务卡
+
+- 位置：`ChatView` 的 `.composer` 顶行（与 `RevertBar` 同层），不遮消息区。
+- 形态（**2026-10-07 修订**：原「单行 pill + 上弹浮层」废弃）：复用
+  `.pending-card` 结构的**通栏折叠卡**（与授权/问题卡同款形态）——头部一行
+  = `Rocket` 图标 + 标题「后台任务」+ 计数「N 个运行中」+ 展开箭头，
+  **默认收起**，点击头部切换；展开体在卡内列出任务（320px 上限内滚动）、
+  推高 composer，不再悬浮于消息区。配色中性 surface-container 系，
   图标 primary 表运行中。
-- 可见性：**仅当 `runningBackgroundTasks(sessionID)` 非空时显示；全部完成后
-  自动消失**。
-- 组件：`BackgroundTaskBar`，消费 `store.runningBackgroundTasks`。
-- **不做**批量停止、不在头部直接放停止钮（停止入口只在展开列表内，防误触）。
+- 可见性：`runningBackgroundTasks(sessionID)` 非空时常驻；全部完成后自动
+  消失（展开态残留一并复位）。
+- 展开体逐项：agent 名 + title + 已运行时长（`time.created` 起算，1s ticker）。
+  - **查看** → 详情浮层内嵌入子会话消息流（复用 `SubagentBody`，独立滚动），
+    不开独立 Tab/路由；不可解析 childID 落空态（重开即重试）。详情浮层仍
+    composer 上沿锚定、悬浮不占布局（`CommandHints` 的 `.command-hints-slot`
+    同款约定，`z-index: 30`）。
+  - **停止** → `store.abortSession(childID)`（= `interrupt`）；请求在途禁用。
+    停止后 `execution.interrupted` → 状态归 idle → 任务卡移除该项，流仍可看。
+- 不做「停止全部」/批量停止端点；不在卡头部直接放停止（防误触）。
+- 关父会话 Tab 期间任务卡随 `ChatView` 卸载消失（停止入口空档，已知限制）。
 
-### D2 任务列表（卡片展开体：查看 + 停止）
+### 指示器（家族聚合）
 
-**2026-10-07 修订**：任务列表由「composer 上沿锚定浮层（悬浮不占布局）」
-改为任务卡展开体（`.pending-card-body` 结构，320px 上限内滚动）——与授权/
-问题卡的折叠展开形态一致、默认收起。**「查看」的嵌入详情浮层不变**：仍是
-composer 上沿锚定（`CommandHints` 的 `.command-hints-slot` 同款约定），
-悬浮于消息流不占布局。
+`sessionActivity(sessionID)` 沿子会话树 BFS（自身 + 后代）聚合 busy/retry，
+`retry` 优先、全 idle 才 idle。`dotStateFor` 的进行中/重试投影消费它——后台
+任务运行中点亮父会话 Tab/左栏/项目行。**只改指示器不改输入锁**：composer
+仍看本会话状态，后台任务不锁输入、不出 typing dots。
 
-- 列表逐项：agent 名 + `title` 描述 + 已运行时长。
-- 每项操作：
-  - **查看** → 浮层内切换到**嵌入**该子会话消息流（独立滚动），不开独立 Tab/
-    路由。复用从 `SubagentPanel` 抽出的 `SubagentBody`（逐条 `MessageBlock` +
-    独立滚动 + 贴底跟随），避免重复实现。
-  - **停止** → `store.abortSession(childID)`（= `interrupt`）；请求在途禁用该钮。
-    停止后子会话 `session.execution.interrupted` → `sessionStatus` 归 idle →
-    任务卡移除该项；子会话消息流仍可查看。
-- 已运行时长：取子会话 `time.created`（或首次观察到 busy 的时刻），列表/详情
-  打开期间用 1s ticker 刷新；关闭即停。
-- **不做「停止全部」**：绝大多数情况只有一个后台任务，单条停止足够。
+## 契约事实（v2.0.18 实测/源码口径）
 
-### D3 启动系统提示（客户端本地合成）
-
-- 触发：v2 `session.created` 且 `parentID` 命中某个**已加载/已开 Tab** 的
-  会话时，在 `applyV2SessionEvent` 内调用 `onChildSessionCreated(child)`。
-- 判定为后台任务（D1 识别）且子会话未处于终态 → 本地合成一条系统提示
-  「已启动后台任务：<label>」，`label = child.title || child.id`。
-- 存放：**独立通知表** `noticesBySession: Map<sessionID, SessionNotice[]>`，
-  不写入 `messagesBySession`（**桌面关键取舍**，见「与移动端的差异」）：
-  通知 id 为 `bg-start:<childID>`，`created = child.time.created`。
-- **已知边界**：仅当父会话消息流已加载或父会话有打开 Tab 时合成（用户正在/
-  曾打开该会话）；应用重启/对账拉起的历史会话不补启动提示（完成提示经 REST
-  仍在，任务条也不受影响）。关 Tab = 归档经 `cleanupSessionState` 清
-  `noticesBySession`（与消息容器同清理），重开 Tab 也不补启动提示。
-- **竞态收敛**：子会话注册可能早于其工具型 tool part 入流而误插；`message.part.updated`
-  落 `task`/`subagent` tool part 后，即按 `toolFormChildIds`（**与 D1 同一判据**，
-  含 description 兜底）撤回误插的启动提示。用同一判据是刻意选择：D1 已用兜底把
-  该子会话排除出任务条，D3 若只用权威 id，就会出现「有启动提示、无任务条、也不是
-  后台任务」的三方矛盾；且中断的 tool part 可能永不回写 `metadata.sessionId`
-  （`design-subagent-status` §坑），兜底是唯一撤回路径。代价 = description 前缀
-  误匹配的并发任务可能被误撤，风险面与 D1 相同（已接受）。
-- **对账持久性**：启动提示本就不进 `messagesBySession`，天然不受
-  `mergeSnapshotIntoMessages` 的窗口删除影响（移动端需显式保留 metadata，
-  桌面结构上免疫）。
-
-### D4 完成系统提示（服务端 synthetic）
-
-- 实时：`session.inbox.enqueued` 且 `item.type == "synthetic"` 且
-  `item.payload.metadata.source == "subagent"` 时，读
-  `{childID, agent, state, text}`，合成通知
-  `{ id: inboxID, kind: "background-finished", state, childID }`。
-- 重启/对账：REST 快照的 `synthetic` 条目携带同一 `metadata`（本次令
-  `toInternalMessages` 保留它），在 `mergeMessagePage` / `onMessagesSnapshot`
-  抽取同一通知；**按 id 去重**——`inboxID` 即消息 id（移动端 ref §7 实测），
-  与 REST `msg_…` 同 id 空间，SSE 与 REST 不会重复。
-- 文案：「后台任务完成 / 失败 / 取消：<label>」。`state` 主枚举
-  `completed` / `error` / `cancelled`；防御性接受 wire 别名 `failed`→error、
-  `interrupted`→cancelled，未知值归 `completed` 样式。`label` 优先解析
-  synthetic `text` 里的 `description`，回退 `payload.description` / `agent`。
-- 可附「查看结果」：点击通知 → `store.requestTaskDetail(childID)`，由
-  `ChatView` 消费并打开 D2 的嵌入详情浮层（消费后即清，模式同
-  `consumeFileReveal`）。任务已结束时任务条已消失，详情仍可按 childID 打开。
-- **留在原始接收位置**，不与任何任务条条目合并。
-- **不按工具型排除**（2026-10-06 裁定）：工具型 `subagent` tool `background:true` /
-  前台被 backgrounded 的完成 synthetic 与命令型同源（`SubagentCompletion.deliver`），
-  一并渲染为完成通知——移动端同款；工具型 tool part 呈现不变，通知只是流内历史。
-  工具型前台正常完成无 synthetic（结果在 tool part content），不受影响。
-
-### D5 系统提示样式（统一）
-
-新增一种低强调行式系统提示，`ChatEntry` 增加 `kind: "notice"`，与消息一起
-按 `created` 排序渲染。
-
-| kind | 触发 | 图标（lucide，14px） |
+| 来源 | 事实 | 落点 |
 |---|---|---|
-| 后台任务启动 | D3 | `Rocket` |
-| 后台任务完成 | D4（completed） | `CircleCheck` |
-| 后台任务失败 | D4（error/failed） | `CircleX` |
-| 后台任务取消 | D4（cancelled/interrupted） | `CircleStop` |
+| `session.created`（v2） | 携带 `sessionID/projectID/parentID/title/...`；子会话与父同 `directory`，过目录闸门 | `applyV2SessionEvent` → `applySessionEvent`；`parentID` 非空不开 Tab，触发入列消息闸门 |
+| `session.execution.started/succeeded/failed/interrupted` | **旁路目录闸门**（信封无 location，按 sessionID 解析目录）；驱动 `sessionStatus` | 子会话 busy/idle 事实源（任务卡与家族聚合） |
+| `session.inbox.enqueued` | `item.type` ∈ `user/synthetic/compaction/move`；`synthetic` 的 `payload = {text, description, metadata}`，`metadata = {source:"subagent", childID, agent, state}`，`state` 主枚举 `completed/error/cancelled`，`item.time.created` 可信 | 完成提示实时合成；③的转换 synthetic（无 source）不渲染 |
+| `POST /api/session/{id}/interrupt` | 停止子会话 = 中断该子会话 | `abortSession(childID)`（任务列表「停止」） |
+| `GET /api/session/{id}/message` | `synthetic` 条目 `metadata` 同 inbox payload | 完成提示对账重建（`extractSyntheticNotices`） |
+| **完成 synthetic 发件方**（2026-10-06 源码核实） | `SubagentCompletion.deliver` 统一产出 `metadata {source:"subagent", childID, agent, state}` + `<subagent …>` 文本；①恒发、②也发、③经 `subagents.notify` 补发；**前台正常完成不发**（结果内联） | 一切 `source=subagent` synthetic 都渲染完成提示（不按路径排除，移动端同款） |
+| **② 派发即完成**（2026-10-07 活体抓包） | 事件序见「②」节；`tool.success` 事件与 REST 持久化**都带** `metadata:{sessionID,status:"running",truncated:false}`（源码初读会误判为不带——框架层并入） | ②的运行态 = part completed + 子会话 busy；`input.background` 在 `session.created` 前即可读 |
+| **③ 前台转后台**（源码核实） | `POST /api/session/{父}/background` → `jobs.backgroundAll` → 阻塞 tool 返回 `{type:"backgrounded"}` → part 转 completed（同②）；父会话另发无 `source` 的 synthetic | 转换检测 = 前台认领 part completed ∧ 子会话仍在跑 |
+| **SSE volatile 缺口**（2026-10-07 现场病灶） | 事件流断线丢事件、慢消费者被断流；缺口可吞掉 `tool.called`（与 `session.created` 仅隔 ~44ms）或整个派发 part——`session.created` 到达时认领数据缺席 | 缺口误插由对账纠正；判据须区分「前台认领」（撤）与「后台派生」（不撤） |
+| **启动信号全程 REST 可得**（2026-10-08 核定） | ①会话行（子会话全量在列，`time.created`/`title` 服务端权威）②`part.state.input`（called 持久化 parsed input，含 `background` 与续跑 `sessionID`）③`part.state.metadata`（success 持久化、failed 经 failureSnapshot 并入）④`part.state.status` ⑤`GET /api/session/active`（子会话 busy）⑥`tool.progress` **不持久化**（无影响：运行中 part 的 REST 态是 `Running({input, metadata:{}})`，兜底照样可判） | 入列提示可随 REST 对账重建，不依赖 live 见证 |
+| **v2 无 `task` tool**（2026-10-06 核实） | 工具名只有 `subagent`；`task` 是 v1 遗留 | 认领判据与渲染双认 `task`/`subagent`（存量数据兼容） |
 
-- **排序与并列 tie-break**：通知与消息按 `created` 混排；`created` 并列时按
-  kind 秩 `message < notice < optimistic` 稳定排序——现有 `message-merge.ts:79`
-  是二值比较器，加入第三种 kind 后会变成非反对称（`sort` 结果未定义），必须显式
-  定义三 kind 秩；同 kind 再按 id 字典序。
-- 样式：leading 图标 + 文本（`ui-sm`，`color-text-muted` / `outline`）+ 可选
-  trailing 操作（「查看」）；行式、低对比，不画气泡底。
-- 桌面现状**没有**系统提示样式（只有 `.error-card` 与 `.pending-card`）；
-  本样式是首个，后续 model/agent 切换等系统级通知可复用。
-- 图标遵循 `DESIGN.md`（lucide 线性、禁 Unicode 字形充当图标）；字号/颜色走
-  `tokens.css`。
-- **本设计不新增** model-switched / agent-switched 通知（桌面跨端切换现为静默
-  补丁），仅保留样式备用。
+## 实现方案
 
-### D6 主会话 running（家族聚合）
+### 1. 数据与状态
 
-- 新增 `sessionActivity(sessionID): "busy" | "retry" | "idle"`：沿子会话树
-  BFS（自身 + 全部后代），`retry` 优先于 `busy`，全 idle 才 idle。
-- 索引：`childSessionsOf` 维护 `childrenByParent` 缓存，由 `sessionRegistryVersion`
-  计数器驱动**惰性重建**（在会话 upsert / 删除 / 整表替换的漏斗里自增：
-  `applySessionEvent`、`applySessionsSnapshot`、`session.deleted`、项目关闭清空、
-  teardown），避免每次线性扫描全量会话。**不挂 `cleanupSessionState`**：关 Tab =
-  归档、不删会话，挂上会让仍在跑的后台任务淡出家族聚合（该函数还被关项目/删
-  worktree 调用）；只要会话仍在 `sessionsByProject`，索引即有效。
-- 消费口径（**只改指示器，不改输入锁**）：
-  - `dotStateFor(sessionID)` 的进行中/重试投影改用 `sessionActivity`（终局
-    `failed` 仍由本会话末条 assistant 派生）；→ 左栏 `SessionIndicator`、Tab
-    状态点、项目行随之后台任务运行中点亮。
-  - `pendingCountFor` 已含子会话待处理（`childPermissionFor` /
-    `childQuestionsFor`），维持不变。
-  - `ChatView` 的 composer 仍看本会话 `statusOf(sessionID)`：**后台任务不锁输入**，
-    typing dots 也不因后台任务出现。
-  - `isSessionActive` 保持「本会话自身」语义，不动（关 Tab 确认、composer 停止
-    等依赖本会话精确状态）。
+- `noticesBySession: Map<sessionID, SessionNotice[]>`——独立通知表，**不进
+  `messagesBySession`**（通知 id 与消息 id 混存会污染排序、回滚过滤、空消息
+  守卫与对账窗口删除；独立表结构免疫窗口删除）。随 `cleanupSessionState`
+  （关 Tab/删会话/关项目）与 `teardownConnection` 清理，经对账重建恢复。
+- `childrenByParent` 惰性缓存（`sessionRegistryVersion` 驱动重建；**不挂**
+  `cleanupSessionState`——关 Tab=归档不删会话，挂上会让运行中任务淡出
+  家族聚合）。
+- 纯逻辑层集中在 `session-notices.ts`（认领判据、通知构造、合并去重），
+  store 只做编排，便于单测。
 
-## 状态模型
+### 2. 认领模型
+
+**认领**（claim）= 父会话消息流里某 `task`/`subagent` tool part 引用了该
+子会话——区分「后台任务」与「前台工具调用」的唯一判据，不依赖服务端
+新增字段：
+
+- 权威（任意 part 状态可判）：`metadata.sessionId` / `sessionID`（progress
+  写入、success 持久化、REST 同带）；续跑认领 `input.sessionID`（显式指定
+  续跑对象，随 parsed input 持久化——progress 不持久化且 title≠desc 使
+  兜底失效时的补偿认据）。
+- 兜底（仅 part pending/running，metadata 未写入窗口）：`input.description`
+  ↔ 子会话 `title` 前缀（与 `findChildSession` 同口径；工具型 title==
+  description，天然命中）。
+
+三个判据集**刻意不同、各司其职**：
 
 ```
-runningBackgroundTasks(parentId) =
-    childSessionsOf(parentId)
-      ∩ sessionActivity(childId) !== "idle"
-      ∩ childId ∉ toolFormChildIds(parentMessages)
+claim(part, child) =
+    part.tool ∈ {task, subagent}
+      ├─ metadata.sessionId / sessionID（权威）
+      ├─ input.sessionID（续跑认领，权威）
+      └─ part pending/running ∧ input.description ↔ child.title 前缀（兜底）
 
-noticesForSession(sid) = noticesBySession.get(sid)  // 按 created 排序
-chatEntries(sid)        = sort(message 条目 ∪ optimistic 条目 ∪ notice 条目)
+foregroundClaimedChildIds = { child | claim ∧ part.input.background ≠ true }
+    // 入列消息的插入闸门与撤回判据：被前台 part 认领 = 同步调用
+
+activeClaimedChildIds = { child | claim ∧ part pending/running }
+    // 任务卡排除判据：part 仍运行 = 前台阻塞中；
+    // completed part 的认领不排除——②派发完成与③转换后的运行态
+
+convertedBackgroundChildIds = { child | claim ∧ part completed ∧ background ≠ true }
+    // ③转换检测：调用方再以「子会话仍在跑」为闸
+
+runningBackgroundTasks(parent) =
+    childSessionsOf(parent) ∩ sessionActivity ≠ idle ∩ ∉ activeClaimedChildIds
 ```
 
-- `sessionActivity` 返回家族聚合；`toolFormChildIds` 由父会话 tool part 计算。
-- 通知 id：启动 `bg-start:<childID>`；完成 `<syntheticMsgID>`。去重按 id。
+为何两个主判据集不能合一：单一判据覆盖不了③（`background` 缺省但运行中
+转换——任务卡须纳入）与 SSE 缺口（input 不可读——入列消息宁可误插、对账
+纠正）。
+
+### 3. SSE 实时路径
+
+| 事件 | 动作 |
+|---|---|
+| `session.created`（parentID 命中已加载/已开 Tab 的会话） | 入列闸门：未被 `foregroundClaimedChildIds` 认领 → 合成 `bg-start`（①②照插；③出生是同步，前台认领 → 不插） |
+| `message.part.updated`（task/subagent part） | ①按前台认领撤回误插的 `bg-start`；②`convertedBackgroundChildIds` 命中且子会话在跑 → 合成 `bg-convert`（幂等） |
+| `session.inbox.enqueued`（synthetic + `source=subagent`） | 合成 `background-finished` |
+| `session.execution.*`（子会话） | 驱动 `sessionStatus` → 任务卡/家族聚合 |
+| SSE `tool.failed` 分支 | 保留事件 `metadata`（failureSnapshot 并入 progress，与 REST 持久化一致——被中断的前台 part 靠它维持认领） |
+
+### 4. 对账恢复
+
+挂点：`mergeMessagePage`（loadSessionMessages / 翻页 / 尾部重取）与
+`onMessagesSnapshot`（60s 周期 + 重连对账），REST 页合并后依次执行：
+
+1. **完成提示抽取**（`extractSyntheticNotices`）：页内 `source=subagent`
+   synthetic → 通知，与 live 按 id（消息 id）去重。
+2. **撤回**（`reconcileStartNotices`）：前台认领的 `bg-start` 移除——SSE
+   缺口误插的纠正；后台派生（②的 completed+bg:true 认领）不撤。
+3. **启动提示重建**（`rebuildStartNotices`）：**覆盖窗口**（下界 = 最早已
+   加载消息 created，上不设界——尾部即当下）内非前台认领的子会话，逐个
+   **直推权威值**（`created`/`label` 取会话行）。live 插入的骨架值（信封
+   时间/缺省 title）经一次对账校正到权威值，之后 mergeNotices 同 id 幂等
+   无抖动。窗口下界防翻页未及的更早历史误判（其认领 part 可能未加载，
+   未认领 ≠ 后台任务）；翻页下探后窗口下移再补。
+4. **转后台提示恢复**（`reconcileConvertedNotices`）：③检测集命中且子会话
+   仍在跑 → 补 `bg-convert`（缺口恢复；id 幂等）。
+
+恢复时序节拍（接受）：重启恢复 Tab 时 `loadSessionMessages` 可能先于会话
+快照落地（children 未进注册表）→ 首轮不产，下一拍（60s 对账/下一条消息）
+补——与完成提示同节拍。关 Tab = 归档清通知表，重开经重建恢复。
+
+**三类提示的持久性终态**：
+
+| 提示 | live | REST 恢复 | 残留边界 |
+|---|---|---|---|
+| 启动（①②） | `session.created` | ✓ 窗口内，权威值校正后幂等 | 窗口外待翻页下探 |
+| 转后台（③） | part completed 事件 | ✓ 仅运行中 | **终态后不可重建**（前台正常完成与转换后跑完终态同形；转换 synthetic 无 metadata 不解析——接受） |
+| 完成 | inbox synthetic | ✓（既有） | 无 |
 
 ## 场景验证
 
 | 场景 | 预期 |
 |---|---|
-| 命令型后台任务运行中 | 任务卡常驻（默认收起，头部「后台任务 · N 个运行中」）；父会话 Tab/左栏点仍亮 running；继续对话/滚动不影响它 |
-| 点任务卡头部 | 展开任务列表（推高 composer）；「查看」浮层内嵌入子会话流；「停止」→ `execution.interrupted`，任务卡移除该项 |
-| 全部完成 | 任务卡消失；流内留下「已启动」「已完成」两条系统提示 |
-| 工具型 subagent 运行中 | **无任务条**；`SubagentPanel` 照旧；composer 停止可取消 |
-| 工具型 `background: true` | 仍为 tool part 形态（按范围不进任务条） |
-| 命令型完成后重启/对账 | 启动提示不补（已知边界）；完成提示经 REST `synthetic` 重建 |
-| 子会话内权限/问题 | 沿 `design-subagent-status` §D6 上浮父会话（既有路径不变） |
+| ① 运行中 | 任务卡常驻；父会话 Tab/左栏点亮；继续对话/滚动不受影响 |
+| ② 派发 | 「已启动」即插；派发完成后任务卡纳入；派发 part 留流内 |
+| ③ 转换 | 转换前无任务卡；转换后任务卡纳入 + 「已转后台」；完成提示照常 |
+| 前台（同步）运行中 | 无任务卡、无任何系统提示；`SubagentPanel` 照旧；composer 停止可取消 |
+| 点任务卡 | 「查看」嵌入子会话流；「停止」→ `execution.interrupted`，任务卡移除该项 |
+| 全部完成 | 任务卡消失；流内留下入列 + 完成两条系统提示 |
+| SSE 缺口吞 `tool.called` | ②③照常；前台子会话误插的启动提示在对账后撤回 |
+| 重启/重开 Tab/对账拉起 | 启动提示窗口内重建（权威时间）；完成提示重建；③转后台提示仅运行中恢复 |
+| 子会话内权限/问题 | 沿 `design-subagent-status` §D6 上浮父会话（既有路径） |
 | 后台任务运行 + 用户发下一条 | 不受阻（父会话不 busy，输入不锁） |
 
 ## 关键设计决策
 
-1. **工具型完全不动**：前台 tool part 已自洽，不引入任务条/启动提示。
-2. **后台任务「运行中」与消息流解耦**：常驻任务条承载进行中状态，消息流只留
-   系统提示作为历史。
-3. **识别以「有无引用它的 tool part」为判据**：区分命令型与工具型，不依赖
-   服务端新增字段；`task` 与 `subagent` 两个 tool 都算工具型。
-4. **只提供单条停止** = `abortSession(childID)`：不做「停止全部」；终态由
-   `execution.interrupted` + 完成 synthetic 收敛。
-5. **详情用嵌入浮层**，不引入子会话独立 Tab / 路由（延续 design-subagent-status）。
-6. **通知独立成表、不进消息容器**（桌面特化，理由见下）：通知 id 是客户端
-   `bg-start:<childID>` 或 server `msg_…`，与消息 id 混存会污染排序、回滚过滤、
-   空消息守卫与对账窗口删除；独立表让 D3 的对账持久性问题结构性消失。
+1. **按「异步」统一**：前台 tool part 自洽不动；②③与①同权——入列提示 +
+   任务卡 + 完成提示。判据全从既有 wire 数据推导（`input.background` +
+   part 状态 + 认领关系），不依赖服务端新增字段。
+2. **运行中与消息流解耦**：任务卡承载进行中状态，消息流只留系统提示作
+   历史。
+3. **两个判据集刻意不同**（见认领模型）。
+4. **入列/完成提示尽可能持久**：完成提示服务端落库天然持久；启动提示靠
+   REST 重建（权威值校正）；③转后台受运行态判据所限仅运行中可恢复——
+   彻底解决需上游给转换 synthetic 补 metadata（另行跟进）。
+5. **只提供单条停止**；终态由 `execution.interrupted` + 完成 synthetic 收敛。
+6. **详情用嵌入浮层**，不引入子会话独立 Tab/路由。
+7. **通知独立成表、不进消息容器**（见「数据与状态」）。
 
 ## 与移动端的差异
 
 | 维度 | 移动端 | 桌面端 |
 |---|---|---|
-| 状态容器 | `ServerStore`（会话/状态）+ `ConversationStore`（每会话消息）分离 | 单一 `AppStore`；通知表 `noticesBySession` 挂 store |
-| 通知存放 | 作为 `DisplayMessage` 进消息流，靠 `metadata.kind` 在对账窗口删除中显式保留 | 独立 `noticesBySession`，不进 `messagesBySession`，结构免疫窗口删除 |
-| 详情展示 | `showModalBottomSheet` | composer 锚定浮层（无 bottom sheet） |
-| 子会话索引 | `_childSessions` 64 条 LRU（只收子会话） | `sessionsByProject` 全量保留；无 LRU 约束，新增 `childrenByParent` 惰性缓存 |
-| 完成提示落地 | `onSynthetic` 物化 + inbox | inbox `synthetic` 直接物化；REST `synthetic` 抽取，按 id 去重 |
-| 会话容器淘汰 | `_evictConversations` 豁免子会话 | `ensureConversation` 已豁免子会话（第 1932 行），无需改 |
+| 状态容器 | `ServerStore` + `ConversationStore` 分离 | 单一 `AppStore`；通知表挂 store |
+| 通知存放 | 作为 `DisplayMessage` 进消息流，靠 metadata 显式保留 | 独立 `noticesBySession`，结构免疫窗口删除 |
+| 判据 | 任意 task/subagent 认领即排除（旧模型，待跟进升格） | 前台认领/运行认领分层 + REST 重建 |
+| 详情展示 | `showModalBottomSheet` | composer 锚定浮层 |
+| 子会话索引 | `_childSessions` 64 条 LRU | `sessionsByProject` 全量 + 惰性缓存 |
+| 完成提示落地 | `onSynthetic` 物化 + inbox | inbox 直接物化；REST 抽取按 id 去重 |
+| 会话容器淘汰 | `_evictConversations` 豁免子会话 | `ensureConversation` 已豁免 |
 
 ## 不做的事
 
-- 不为工具型 subagent 引入任务条 / 启动提示（含 `background: true`）。
-- 不做子会话独立 Tab / 跳转页。
-- 不把完成 synthetic 合并进任务条条目（启动/完成提示与任务条各司其职）。
-- 不做「停止全部」；不做批量停止端点。
-- 不在任务条上直接放停止（入口只在列表内）。
-- 不新增 model/agent 切换通知。
+- 不为前台工具型 subagent 引入任务卡/系统提示（同步阻塞，chip 自洽）。
+- 不做子会话独立 Tab/跳转页。
+- 不把完成 synthetic 合并进任务卡条目（各司其职）。
+- 不做「停止全部」/批量停止端点；不在任务卡上直接放停止。
+- 不新增 model/agent 切换通知（样式复用另行设计）。
 
-## 实现影响（涉及文件）
+## 实现影响（文件清单）
 
-| 文件 | 改动 |
+| 文件 | 内容 |
 |---|---|
-| `src/shared/session-notices.ts`（新） | `SessionNotice` 类型；`parseSubagentSynthetic(text, metadata)`；`state → kind/图标` 投影；启动提示构造（纯函数，便于测试） |
-| `src/shared/session-notices.test.ts`（新） | 解析/映射/去重用例 |
-| `src/shared/api-types.ts` | `UserMessage.metadata?`（保留 REST synthetic metadata） |
-| `src/shared/v2-adapter.ts` | `toInternalMessages` 的 `synthetic` 分支透传 `metadata` |
-| `src/shared/message-merge.ts` | `ChatEntry` 增 `{ kind: "notice"; data: SessionNotice }`；`sortEntries` 增三 kind 秩 `message < notice < optimistic` 的并列 tie-break；`filterRevertedEntries` 保留 notice（回滚不隐藏通知） |
-| `src/renderer/src/store/app-store.ts` | `noticesBySession`、`childrenByParent` 惰性缓存（版本号驱动）、`sessionActivity`、`childSessionsOf`/`toolFormChildIds`/`runningBackgroundTasks`、D3 合成与撤回、D4 inbox/REST 抽取与去重、`dotStateFor` 改家族聚合、`requestTaskDetail`/`consumeTaskDetailRequest`、`cleanupSessionState`（仅清通知）与 `teardownConnection` 挂点 |
-| `src/renderer/src/components/workspace.tsx` | 抽出 `SubagentBody`（`SubagentPanel` 复用）、`BackgroundTaskBar` + 任务列表/详情浮层、notice 渲染、`ChatView` 接线（D2 详情请求消费）、`task`/`subagent` 都路由 `SubagentPanel` |
-| `src/renderer/src/styles/app.css` | 任务卡（复用 .pending-card）、任务行、系统提示行、嵌入详情浮层样式 |
-| `src/renderer/src/i18n/index.ts` | 文案中/英（bgTaskRunning/Started/Completed/Failed/Cancelled/View/Stop/Done 等） |
-| `docs/spec/spec-v0.5.md` | 功能范围同步（新增后台任务卡，改功能范围必须同步） |
+| `src/shared/session-notices.ts` | 认领遍历（`forEachClaim`）与三判据集（`foregroundClaimedChildIds` / `activeClaimedChildIds` / `convertedBackgroundChildIds`）、通知构造（started/converted/finished）、`mergeNotices`（id 去重合并）、`withdrawForegroundStartNotices` |
+| `src/shared/session-notices.test.ts` | 判据分层/续跑认领/构造/合并用例 |
+| `src/shared/api-types.ts` + `src/shared/v2-adapter.ts` | REST synthetic `metadata` 透传 |
+| `src/shared/message-merge.ts` | `ChatEntry` notice kind、三 kind 秩排序、回滚不隐藏通知、parts 快照合并（参数正名见 Review 八轮附注） |
+| `src/renderer/src/store/app-store.ts` | `noticesBySession`、`childrenByParent` 惰性缓存、`sessionActivity`、`runningBackgroundTasks`、入列合成闸门（`onChildSessionCreated`）、撤回/重建/转后台三 reconcile、完成抽取、SSE tool.failed metadata 保留、`dotStateFor` 家族聚合、`requestTaskDetail`、清理挂点 |
+| `src/renderer/src/components/workspace.tsx` | `NoticeRow`（三 kind）、`BackgroundTaskBar` + 列表/详情浮层（`SubagentBody` 复用）、`task`/`subagent` 双认路由 |
+| `src/renderer/src/styles/app.css` | 任务卡/任务行/系统提示行/锚定浮层样式 |
+| `src/renderer/src/i18n/index.ts` | bgTaskRunning/Started/Converted/Completed/Failed/Cancelled/View/Stop 中英 |
+| `docs/spec/spec-v0.5.md` | 功能范围同步 |
 
 ## 已知限制 / 坑
 
-- **启动提示不补历史**：仅实时 `session.created` 合成；重启/对账拉起的后台任务
-  只有完成提示与任务条，无启动提示（同移动端边界）。关父会话 Tab（归档）再
-  重开同样不补启动提示（`noticesBySession` 随会话运行时状态清理；完成提示经
-  REST `synthetic` 重建，不受影响）。
-- **关父会话 Tab 期间无停止入口（已知空档）**：归档不改 `sessionsByProject`，
-  子会话保留，左栏/Tab 家族聚合仍点亮（D6）；但任务条随 `ChatView` 卸载而消失，
-  停止入口一并不可达。`closeChatTab` 只在本会话自身 `isSessionActive` 为真时
-  abort，后台任务父会话 idle → 不 abort，子会话继续跑到完成。重开 Tab 即恢复
-  任务条/停止入口。属可接受的行为空档；若要「关 Tab 询问是否停后台任务」，另立设计。
-- **启发式匹配局限**：`toolFormChildIds` 的 description 兜底在父会话并发多个
-  `task` 时可能挂错（`metadata.sessionId` 权威路径不受影响）。
-- **`subagent` tool 现状缺口**：现存 `SubagentPanel` 只认 `task`；本设计把
-  `subagent` 一并纳入工具型路由与 `toolFormChildIds`，否则其子会话会被误判成
-  后台任务。载荷同构依据见「范围」表下注（移动端 `conversation_screen.dart:2006`）。
-  另：v2.0.18 无 `task` tool（2026-10-06 核实，见契约表）——`task` 路由仅为
-  v1 存量数据兼容，新事件恒为 `subagent`。
-- **家族聚合的瞬时窗口**：断连时 `sessionStatus.clear()` 会让运行中的后台任务
-  短暂显示 idle/父亲族也灭，重连对账后恢复（与 typing dots 断连同语义，可接受）。
-- **完成 synthetic 的 `state`**：主枚举 `completed/error/cancelled`，防御性
-  接受 `failed`/`interrupted` 别名，wire 出现未知值时归「完成」样式（宽松兜底，
-  不误报失败）。
-- **通知与回滚**：通知不参与回滚隐藏（回滚只作用于消息）；这是桌面取舍，避免
-  客户端 `bg-start:` id 与服务端 `msg_` id 比较产生未定义顺序。
+- **③终态后转后台提示不可重建**：判据是运行态（part completed ∧ 子会话
+  在跑）；终态后与前台正常完成同形。服务端转换 synthetic 无 metadata/
+  childID，不解析文案。彻底解决需上游补 metadata。
+- **②派发窗口瞬时排除（~30ms）**：`background:true` 从 called 到 success
+  之间 part 为 running，任务卡短暂排除；success 落地即纳入。
+- **转换后瞬间完成**：子会话在合成闸门前归 idle 则只有完成提示。
+- **关父 Tab 期间无停止入口**：任务卡随 `ChatView` 卸载消失；归档不删
+  会话，家族聚合仍点亮。`closeChatTab` 不 abort idle 父会话，子会话跑到
+  完成。重开 Tab 即恢复。若要「关 Tab 询问是否停后台任务」，另立设计。
+- **desc 前缀兜底误匹配**：父会话并发多个 task/subagent 时可能挂错（权威
+  认领不受影响）；误撤风险已收窄到前台认领。
+- **`subagent` tool 渲染缺口**：`SubagentPanel` 原只认 `task`，本设计双认
+  （载荷同构，移动端 `conversation_screen.dart:2006` 同款）。
+- **家族聚合瞬时窗口**：断连 `sessionStatus.clear()` 让运行中任务短暂
+  idle，重连对账恢复（与 typing dots 同语义）。
+- **完成 state 宽松兜底**：未知 wire 值归「完成」样式，不误报失败。
+- **移动端判据仍是旧模型**：任意认领即排除、入列提示瞬态——双端行为
+  不同，待移动端跟进升格。
 
 ## Review 记录（2026-10-03）
 
@@ -347,7 +355,7 @@ chatEntries(sid)        = sort(message 条目 ∪ optimistic 条目 ∪ notice �
 |---|---|---|---|
 | 1 | 🟠 | D3 撤回只用权威 `metadata.sessionId`，与 D1 的 description 兜底不一致；中断的 tool part 永不回写 id 时启动提示残留 | D3 撤回改用与 D1 同一 `toolFormChildIds` 判据（含兜底），记录误撤代价 |
 | 2 | 🟠 | `sortEntries` 加第三种 kind 后 `created` 并列比较器非反对称 | D5 明确三 kind 秩 `message < notice < optimistic` |
-| 3 | 🟠 | 后台任务运行中关父 Tab → 任务条/停止入口消失（行为空档）未记录 | 补入「已知限制」，说明 `closeChatTab` 不 abort idle 父会话 |
+| 3 | 🟠 | 后台任务运行中关父 Tab → 任务卡/停止入口消失（行为空档）未记录 | 补入「已知限制」，说明 `closeChatTab` 不 abort idle 父会话 |
 | 4 | 🟢 nit | 背景对「REST 路径丢失」描述不精确（丢在 part 过滤 + 空消息守卫，非 `toInternalMessages`） | 改写为转 part → 滤空 → 空消息守卫三段 |
 | 5 | 🟢 nit | `state` 枚举前后不一致 | 统一为 `completed/error/cancelled` + 防御性别名 `failed`/`interrupted` |
 | 6 | 🟢 nit | 「父会话 idle 时指示器全灭」不准（waiting 仍亮） | 改为「running 不点亮」 |
@@ -359,7 +367,7 @@ chatEntries(sid)        = sort(message 条目 ∪ optimistic 条目 ∪ notice �
 |---|---|---|---|
 | 1 | 🟠 | 完成回执未排除工具型；工具型 task 完成是否带 `source=subagent` 待证 | 源码核实（tag v2.0.18）：`background:true` / 前台被 backgrounded 的工具型**也发**、前台正常完成不发。裁定**不排除**（同移动端 `_noticeMessage`），契约表 + D4 补记，测试钉行为 |
 | 2 | 🟠 | D3 撤回只覆盖「创建早于 tool part」；反向时序 + 中断残留 | 已修：`onChildSessionCreated` 插入前先查 `toolFormChildIdsFor`，已认领直接不插；补反向时序用例 |
-| 3 | 🟢 nit | 任务条浮层 / 详情浮层 / command-hints 同位无叠放次序 | `.bg-task-popover` / `.task-detail-slot` 加 `z-index: 30` |
+| 3 | 🟢 nit | 任务卡浮层 / 详情浮层 / command-hints 同位无叠放次序 | `.bg-task-popover` / `.task-detail-slot` 加 `z-index: 30` |
 | 4 | 🟢 nit | 完成通知 label 兜底链缺 childID，可能空名 | 兜底链补 `childID`，补用例 |
 | 5 | 🟢 nit | 详情浮层无 Esc 关闭 / aria | 挂 window Esc（`isComposing` + `overlayCount > 0` 让位），`role=dialog` + `aria-label` 已有 |
 
@@ -368,7 +376,62 @@ chatEntries(sid)        = sort(message 条目 ∪ optimistic 条目 ∪ notice �
 | # | 级别 | 问题 | 处置 |
 |---|---|---|---|
 | 1 | 🟠 | 撤回钩子只在 `message.part.updated`；断线丢事件、REST-only 落地时不撤回 | `mergeMessagePage` / `onMessagesSnapshot` 合并后补调 `reconcileStartNotices`（无 background-started 时早退，零成本）；补 REST-only 用例 |
-| 2 | 🟠 | 任务条全部结束后 `open` 残留，新任务启动浮层直接展开 | `tasks.length === 0` 时 effect 复位 `open`/`stopping` |
+| 2 | 🟠 | 任务卡全部结束后 `open` 残留，新任务启动浮层直接展开 | `tasks.length === 0` 时 effect 复位 `open`/`stopping` |
 | 3 | 🟠 | 详情浮层对不可解析 childID 永久「加载中」 | 加载探测后 `!childSession && entries 空` 落 `subagentNoSession` 空态（会话在而 REST 失败仍走加载态——SubagentPanel 同款，重开是重试） |
 | — | 🟢 nit | `chatEntryKey` 与 ChatView 内联 key 两处维护 | ChatView 改用 `chatEntryKey` |
 | — | 🟢 nit | `entryCreated(e, 0)` 哑参 | 拆 `settledCreated`（模块级）+ `createdOf`（sortEntries 闭包） |
+
+### 第五轮（2026-10-08 升格修订）
+
+**触发**：现场病灶「后台任务启动通知过一会消失，完成通知始终在」。根因定位
+（活体抓包 + 现场 REST 数据 + store 复现）：
+
+1. 症状来自工具型 `background:true`（agent 发起的异步任务），非命令型。
+2. SSE volatile 缺口吞掉 `tool.called`（与 `session.created` 仅隔 ~44ms）→
+   认领判据失明 → 误插启动提示。
+3. 60s 周期/重连对账经 REST 带回 `metadata.sessionID`（completed part 持久化
+   可靠携带）→ 旧判据「任意认领即撤」把**合法**的后台启动提示一并撤掉 → 闪现。
+
+**用户裁定**：按「异步即后台任务」统一——`background:true` 与前台转后台升格
+为完整后台任务（启动提示 + 任务卡 + 完成通知）；前台（同步）保持纯 chip。
+
+| # | 级别 | 问题 | 处置 |
+|---|---|---|---|
+| 1 | 🔴 | 旧判据单一（任意 task/subagent 认领 = 排除 + 撤回），completed part 的认领把②的合法启动提示撤掉 | 拆两个判据集：`foregroundClaimedChildIds`（插入/撤回，`input.background ≠ true` 才算前台）+ `activeClaimedChildIds`（任务卡排除，仅 pending/running part） |
+| 2 | 🟠 | `background:true` 是否可等价于异步 | 否——三路径（命令型 / `background:true` / 前台转后台），后者 `input.background` 缺省；组合判据覆盖（创建时读 input，运行时读 part 状态），契约表补记③与 background 端点 |
+| 3 | 🟠 | 契约表漏记：`background:true` 的 `tool.success` 与 REST 持久化都带 `metadata.sessionID`（源码初读会误判为不带） | 契约表补记（2026-10-07 活体抓包 + 现场 REST 数据双证） |
+| 4 | 🟢 | ③转后台无启动提示的不对称 | 接受并记录（出生时是同步；任务卡出现即转换信号，不补历史） |
+| 5 | 🟢 | ②派发窗口（~30ms）任务卡瞬时排除 | 接受并记录（success 落地即纳入） |
+
+### 第六轮（2026-10-08 对齐补裁定）
+
+**用户裁定**：③转后台也应有系统通知。三路径呈现统一为「启动（或转后台）
+消息、完成消息、任务卡」。
+
+| # | 级别 | 问题 | 处置 |
+|---|---|---|---|
+| 1 | 🟠 | ③转换在服务端无专用事件（仅 part completed + 父会话一条无 metadata 的 synthetic） | 客户端状态检测：前台认领 part 转 completed ∧ 子会话仍在跑（`jobs.block` 语义保证前台正常完成时子会话先归 idle，误报面为零）；`error` part 不算 |
+| 2 | 🟢 | 转换时间服务端不暴露 | `created` 取合成时刻（live 路径与转换毫秒级相邻）；id `bg-convert:<childID>` 幂等防抖动 |
+| 3 | 🟢 | 转换后瞬间完成的竞态 | 接受：子会话在合成闸门前归 idle 则只有完成提示（记入已知限制） |
+
+### 第七轮（2026-10-08 重建修订）
+
+**用户核定**：启动信号全部 REST 可得（契约表新增行的六项等价性），
+「事后不可反推」不成立——启动提示不应是瞬态。
+
+| # | 级别 | 问题 | 处置 |
+|---|---|---|---|
+| 1 | 🟠 | REST 重建的误判面：窗口外更早子会话的认领 part 可能未加载（未认领 ≠ 后台任务） | 覆盖窗口下界 = 最早已加载消息 created；翻页下探后窗口下移再补 |
+| 2 | 🟠 | 续跑（`input.sessionID` 续既有子会话）title≠desc 使兜底失效，且 REST 合并把 live 的 progress metadata 洗成 `{}`（`Running({input, metadata:{}})`） | `input.sessionID` 补入权威认领（随 called 的 parsed input 持久化） |
+| 3 | 🟢 | 重建的 created 抖动风险 | 取子会话行服务端权威 `time.created`；live 骨架值经一次对账校正（第八轮 #1） |
+| 4 | 🟢 | ③终态后转后台提示仍不可重建 | 接受（判据是运行态；转换 synthetic 无 metadata 不解析），记入 D3b 已知边界 |
+
+### 第八轮（2026-10-08，reviewer 子代理审查 1646d7e）
+
+结论：可合入，无 blocking / non-blocking；两条 nit 与一条附注处置如下。
+
+| # | 级别 | 问题 | 处置 |
+|---|---|---|---|
+| 1 | 🟢 nit | live 插入的 `bg-start` 其 `created` 取 SSE 信封时间，重建取会话行权威时间——「与 live 插入同值」依赖两时间戳相等的假设，不等则既有 notice 永不校正（按 id 去重跳过） | 重建改为**不查重直推权威值**：mergeNotices 同 id 校正一次（created/label 均收敛），之后幂等——假设升级为不变量；补校正回归用例 |
+| 2 | 🟢 nit | 重启恢复 Tab 时 `loadSessionMessages` 先于会话快照落地（children 未进注册表）→ 首轮 merge 不产启动提示，下一拍才补 | 接受：与完成提示（synthetic 抽取）同节拍，对账哲学内既定行为；D3 重建段补记 |
+| — | 附注 | `message-merge.ts` 的 tool part 合并方向：调用点以（本地 SSE, REST 快照）传入而 mergePart 注释称「SSE 优先」——名义与实际相反，即「REST 把 live 的 progress metadata 洗成 `{}`」的根源 | 正名不改行为：参数更名 `localParts`/`snapshotParts`、注释改写为「快照非 pending 优先」并记录已知代价（认领由 `input.sessionID` 与持久化 metadata 兜住）；方向翻转属独立议题，超出本轮 |

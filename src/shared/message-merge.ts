@@ -127,7 +127,8 @@ export function filterRevertedEntries(
  * REST 快照与本地 SSE 状态合并（不清空重置——openbuilder design-message-accumulation：
  * clear()+addAll() 会在 async gap 擦掉新到的 SSE 事件）。
  * - info 取 REST 权威
- * - parts 按 part-id 字段级并集：text 取更长者，tool 状态取非空者，其余 SSE 优先
+ * - parts 按 part-id 字段级并集：text 取更长者，tool 状态见 mergePart（快照
+ *   非 pending 优先），其余取快照
  */
 export function mergeSnapshotIntoMessages(
   local: Map<string, MessageWithParts>,
@@ -165,10 +166,14 @@ export function mergeSnapshotIntoMessages(
   return next
 }
 
-export function mergeParts(restParts: Part[], sseParts: Part[]): Part[] {
+/** parts 按 id 并集：第二参数（快照）覆盖/合并第一参数（本地）。
+ *  参数名正名（2026-10-08，reviewer 附注）：唯一调用点 mergeSnapshotIntoMessages
+ *  以（本地 SSE 累积, REST 快照页）传入——历史命名 restParts/sseParts 与实际
+ *  相反，行为不变，仅消除误导。 */
+export function mergeParts(localParts: Part[], snapshotParts: Part[]): Part[] {
   const byId = new Map<string, Part>()
-  for (const p of restParts) byId.set(p.id, p)
-  for (const p of sseParts) {
+  for (const p of localParts) byId.set(p.id, p)
+  for (const p of snapshotParts) {
     const prev = byId.get(p.id)
     byId.set(p.id, prev ? mergePart(prev, p) : p)
   }
@@ -188,12 +193,16 @@ function mergePart(a: Part, b: Part): Part {
     return (len(b) >= len(a) ? b : a) as Part
   }
   if (a.type === "tool" && b.type === "tool") {
-    // tool 状态：SSE 非 pending/空 优先（REST 可能是拉取时刻的旧状态）
-    const sseState = b.state as { status?: string; output?: unknown }
-    const restState = a.state as { status?: string; output?: unknown }
+    // tool 状态：b=快照（REST）非 pending 优先（快照 pending 视为拉取窗口
+    // 残影，回退本地）。已知代价（design-subagent-background 契约表，
+    // 2026-10-08 正名）：运行中 part 的 live progress metadata 会被快照的
+    // metadata:{} 覆盖——认领判据由 input.sessionID（续跑）与 success/failed
+    // 持久化 metadata 兜住，兜底 description 前缀不依赖 metadata
+    const bState = b.state as { status?: string; output?: unknown }
+    const aState = a.state as { status?: string; output?: unknown }
     const bBetter =
-      sseState.status !== "pending" ||
-      (sseState.output != null && restState.output == null)
+      bState.status !== "pending" ||
+      (bState.output != null && aState.output == null)
     return { ...b, state: bBetter ? b.state : a.state } as Part
   }
   return b
