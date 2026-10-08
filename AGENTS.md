@@ -27,7 +27,7 @@ opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录�
 ## 硬约束（agent 最容易踩的）
 
 - **不用 `@opencode-ai/sdk`**——npm 发布滞后于 server，是过期契约。通信层自写（REST + SSE 直连），API 契约以 `../openbuilder/opencode_openapi_v2.json` 为准（v2，2.0.18 pin，与移动端同源；源 `anomalyco/opencode` `packages/protocol/openapi.json`）。**v0.5 起仅支持 v2 server**——v1（1.18.x）契约面已删除，连接 v1 server 报「版本不支持」（2026-09-28 裁定，见 docs/design/v2/design-v2-migration.md）
-- 文档按类型分子文件夹（2026-10-03 起）：`docs/design/design-*.md`（功能/技术设计）、`docs/plan/plan-*.md`（计划）、`docs/review/review-*.md`（复盘）、`docs/spec/spec-*.md`（版本范围）、`docs/ref/ref-*.md`（参考/调研）；`docs/design/` 内再按所面向的 OpenCode 协议契约版分 `v1/`（面向 v1 契约、已被 v2 取代的历史设计）与 `v2/`（面向 v2 契约的设计），与协议无关的 UI/渲染/性能设计留在 `docs/design/` 根。文件名保留类型前缀，正文裸名提及（如 `design-terminal-tab §1.2`）继续有效。根目录 `DESIGN.md` 专属视觉设计、`PRINCIPLES.md` 专属设计原则，**不得**用作其他用途
+- 文档按类型分子文件夹（2026-10-03 起）：`docs/design/design-*.md`（功能/技术设计）、`docs/plan/plan-*.md`（计划：即将实施的较大改动的分步执行计划）、`docs/todo/todo-*.md`（待办：记录暂时不做、未来要做的工作项，实施时另开分支，2026-10-08 增）、`docs/review/review-*.md`（复盘）、`docs/spec/spec-*.md`（版本范围）、`docs/ref/ref-*.md`（参考/调研）；`docs/design/` 内再按所面向的 OpenCode 协议契约版分 `v1/`（面向 v1 契约、已被 v2 取代的历史设计）与 `v2/`（面向 v2 契约的设计），与协议无关的 UI/渲染/性能设计留在 `docs/design/` 根。文件名保留类型前缀，正文裸名提及（如 `design-terminal-tab §1.2`）继续有效。根目录 `DESIGN.md` 专属视觉设计、`PRINCIPLES.md` 专属设计原则，**不得**用作其他用途
 - 中文文档、中文 commit message，前缀惯例 `feat:` / `fix:` / `ui:` / `build:` / `chore:` / `docs:`（见 git log）；**commit 标题只用一句话讲最核心的信息**（范本 9d85f0e / c15cdff，实测 ≤76 字；至多带一处 `——`/`（）` 紧凑定位短语），根因、方案细节、review 修订、测试计数、文档同步一律放正文——按主题分段、约 60 字换行，不得把细节整段挤进标题单行（2026-09-23 增补）
 - 合并其他分支到 main 默认用普通合并（`git merge --no-ff`，保留分支提交历史，生成 merge commit；2026-08-31 修订，原 squash merge 单提交方案弃用）
 - 架构文档是"决策记录"性质：修订需在文档内改写决策及依据，而不是只改代码留文档过期
