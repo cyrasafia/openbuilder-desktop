@@ -60,8 +60,8 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 - 三组令牌：
   - `colorScheme` —— dark/light 两套语义色（primary、surface 阶梯、outline 系、inverse 系）
   - `appColors` —— colorScheme 未覆盖的语义扩展色（code/link/codeBackground/border/quoteBar/userBubble 系）
-  - `status` —— 工具四态色（completed/running/error/pending）
-- 三组取值逐值沿用 openbuilder v2，定义收敛到 `tokens.css` 单文件
+  - `status` —— 状态四色（completed/running/error/pending），亮暗两套（2026-10-09 修订，原单套沿用暗色值，见使用规范）
+- colorScheme/appColors 取值逐值沿用 openbuilder v2（`status` 亮色档为桌面端自定，见使用规范），定义收敛到 `tokens.css` 单文件
 - 实现载体：`:root[data-theme=…]` 两套 CSS 自定义属性（移动端为 Flutter `ColorScheme.fromSeed()` + `ThemeExtension`）；跟随系统（`prefers-color-scheme`）+ 手动切换
 - 深色为默认主题（开发者工具惯例，且主力环境 GNOME 多为深色）
 
@@ -77,7 +77,7 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 ### 使用规范
 
 - 优先语义角色，不硬编码 hex：`on-surface` 主文字、`on-surface-variant` 次级、`outline` 再次级、`surfaceContainer*` 容器背景
-- `status` 四色是唯一硬编码豁免（语义固定的状态指示，不随主题变化）
+- `status` 四色语义固定、不接 colorScheme 角色，但按亮暗主题分两套（2026-10-09 修订，原「不随主题变化」决策废止）：暗色为深底调的亮饱和色，亮色同色相压暗一档——运行绿 `#1dae4e→#15803d`（移动端亮色档）、错误红 `#e5484d→#cf222e`（= `--diff-del-fg` 亮色，红族同源）、空闲灰 `#8b949e→#6e7781`（dark/light fg.subtle 对）、待输入 `#fbbf24→#b8860b`（原已分开）；参照 openbuilder design-agent-status-indicator 的亮暗分开做法。原亮色沿用暗色值时绿 2.6:1/灰 2.7:1/红 3.4:1，idle 0.55 弱化点浅底近不可见；亮色档绿/红感知亮度 Y 拉平（16%↔15%），延续暗色 REC.709 对齐意图
 - 新增色必须先走令牌；确需扩展时加入 tokens.css 并定义深浅两态
 
 ## 字体

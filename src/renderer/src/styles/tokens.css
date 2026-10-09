@@ -211,11 +211,21 @@
   --color-user-code: #ec407a;
   --color-user-link: #2196f3;
 
-  /* 绿按感知亮度对齐红（见上方暗色注释） */
-  --status-running: #1dae4e;
-  /* 同深色主题：冷侧红消偏橙感（见上方暗色注释） */
-  --status-error: #e5484d;
-  --status-pending: #8b949e;
+  /* 状态四色亮暗两套（2026-10-09 修订，原亮色沿用暗色值——深底调的亮饱和色
+     上浅底对比不足：绿 2.6:1/灰 2.7:1/红 3.4:1，16% 淡染 chip 文字与
+     0.55 弱化 idle 点（~1.6:1 近不可见）均偏弱。参照 openbuilder
+     design-agent-status-indicator 的亮暗分开做法，同色相压暗一档） */
+  /* 运行绿：移动端亮色档 #15803d（hue 142°≈暗色 140°），浅底 4.4:1；
+     感知亮度 Y 与亮色红拉平（16%↔15%），延续暗色 REC.709 对齐意图
+     （见上方暗色注释） */
+  --status-running: #15803d;
+  /* 错误红：GitHub light danger #cf222e，与 --diff-del-fg 亮色同值（红族
+     取值同源），浅底 4.7:1；hue 356°保持暗色（358°）冷侧红的去偏橙感 */
+  --status-error: #cf222e;
+  /* 空闲灰：GitHub light fg.subtle #6e7781，与暗色 #8b949e（dark
+     fg.subtle）成对——同 --syntax-comment 的亮暗配对关系；浅底 4.0:1，
+     idle 0.55 弱化档 ~2:1 可辨 */
+  --status-pending: #6e7781;
   /* 待输入：与暗色 #fbbf24 同色相（≈43°）。原 #92400e 色相 23° 偏橙红，
      亮色下易与 --status-error 混淆；压暗方案（#916b0d/#956c04）该明度下
      琥珀读作土褐/灰绿，改提亮到金琥珀（dark goldenrod #b8860b）才成立，
