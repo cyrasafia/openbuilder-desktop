@@ -2718,12 +2718,16 @@ function ToolChip({ part }: { part: ToolPart }) {
   const [open, setOpen] = useState(false)
   const state = part.state
   const status = state.status
-  // v2 协议无有意义的 title，参考官方实现从 input 提取摘要
+  // v2 协议无有意义的 title，参考官方实现从 input 提取摘要。
+  // 中止（aborted 标记，design-error-message §3.1 修订）显示「已停止」
+  // 而非 server 英文原文（"Tool execution interrupted: …"）
   const summary =
     status === "completed"
       ? toolSummary(state.input)
       : status === "error"
-        ? state.error.slice(0, 120)
+        ? state.aborted
+          ? t.abortedNotice
+          : state.error.slice(0, 120)
         : ""
 
   return (
@@ -2743,7 +2747,13 @@ function ToolChip({ part }: { part: ToolPart }) {
           <pre className="code-block" tabIndex={-1}>{JSON.stringify(state.input, null, 2)}</pre>
           <div className="code-block-label">{t.outputLabel}</div>
           <pre className="code-block" tabIndex={-1}>
-            {status === "completed" ? state.output : status === "error" ? state.error : "…"}
+            {status === "completed"
+              ? state.output
+              : status === "error"
+                ? state.aborted
+                  ? t.abortedNotice
+                  : state.error
+                : "…"}
           </pre>
         </div>
       )}
@@ -2917,12 +2927,15 @@ export function SubagentPanel({ part, parentSessionID }: { part: ToolPart; paren
   // 残留 → 按「已停止」渲染（✗ 图标），不再转圈。冷启动/重连对账的瞬时无状态
   // 窗口里活跃会话可能暂缺条目（statusOf 缺省 idle），快照合并后即恢复转圈
   const partRunning = status === "pending" || status === "running"
+  // 中止的 error part（aborted 标记，design-error-message §3.1 修订 2026-10-09）
+  // 按停止投影：打断未结算的 subagent 工具失败非出错，与消息级中止同口径
+  const partAborted = status === "error" && state.aborted === true
   const sessionActive =
     store.isSessionActive(parentSessionID) ||
     (childSessionId != null && store.isSessionActive(childSessionId))
-  const errored = status === "error" || childErrorText != null
+  const errored = (status === "error" && !partAborted) || childErrorText != null
   const running = partRunning && sessionActive && !errored
-  const stopped = partRunning && !sessionActive && !errored
+  const stopped = (partRunning || partAborted) && !sessionActive && !errored
   const agentLabel = subagentType
     ? subagentType.charAt(0).toUpperCase() + subagentType.slice(1)
     : t.assistant
@@ -2930,7 +2943,11 @@ export function SubagentPanel({ part, parentSessionID }: { part: ToolPart; paren
     status === "completed"
       ? (("title" in state ? state.title : "") || description || "")
       : status === "error"
-        ? ("error" in state ? state.error.slice(0, 120) : "")
+        ? partAborted
+          ? description || t.abortedNotice
+          : "error" in state
+            ? state.error.slice(0, 120)
+            : ""
         : childErrorText != null
           ? childErrorText.slice(0, 120)
           : description || ""

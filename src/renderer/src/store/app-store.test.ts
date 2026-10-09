@@ -3859,6 +3859,29 @@ describe("v2 流式翻译层（M4a：assistant 事件 → v1 part 管线）", ()
     expect(part.state).toMatchObject({ status: "completed", output: "ok", title: "edit" })
   })
 
+  it("tool.failed 中止（type:aborted）置 aborted 标记；非中止 error 不置（design-error-message §3.1 修订）", () => {
+    dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a4" } })
+    dispatch({ type: "session.tool.input.started", properties: { sessionID: "s1", assistantMessageID: "msg_a4", id: "tool_a", name: "bash" } })
+    dispatch({ type: "session.tool.input.started", properties: { sessionID: "s1", assistantMessageID: "msg_a4", id: "tool_b", name: "edit" } })
+    // 打断未结算工具：v2 wire error {type:"aborted"}（活体核验，step.ts TOOLS_INTERRUPTED）
+    dispatch({
+      type: "session.tool.failed",
+      properties: { sessionID: "s1", assistantMessageID: "msg_a4", id: "tool_a", error: { type: "aborted", message: "Tool execution interrupted: bash" } },
+    })
+    dispatch({
+      type: "session.tool.failed",
+      properties: { sessionID: "s1", assistantMessageID: "msg_a4", id: "tool_b", error: { type: "unknown", message: "boom" } },
+    })
+    const parts = store.messagesBySession.get("s1")?.get("msg_a4")?.parts
+    expect(parts?.find((p) => p.id === "tool_a")).toMatchObject({
+      state: { status: "error", error: "Tool execution interrupted: bash", aborted: true },
+    })
+    expect(parts?.find((p) => p.id === "tool_b")).toMatchObject({
+      state: { status: "error", error: "boom" },
+    })
+    expect((parts?.find((p) => p.id === "tool_b") as { state: { aborted?: boolean } }).state.aborted).toBeUndefined()
+  })
+
   it("step.ended → finish/cost 终态收敛到消息 info", () => {
     dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a3" } })
     dispatch({ type: "session.text.ended", properties: { sessionID: "s1", assistantMessageID: "msg_a3", ordinal: 0, text: "x" } })

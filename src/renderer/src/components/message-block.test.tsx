@@ -12,7 +12,13 @@ import type { ChatEntry } from "@shared/message-merge"
 
 vi.mock("../app", () => ({
   useI18n: () => ({
-    t: { abortedNotice: "已停止", thinking: "思考中", toolCall: "工具" },
+    t: {
+      abortedNotice: "已停止",
+      thinking: "思考中",
+      toolCall: "工具",
+      inputLabel: "输入",
+      outputLabel: "输出",
+    },
     locale: "zh" as const,
   }),
   useStore: () => ({
@@ -86,5 +92,61 @@ describe("MessageBlock 中止/报错分流", () => {
     const { container } = render(<MessageBlock entry={assistantEntry(undefined)} />)
     expect(container.querySelector(".error-card")).toBeNull()
     expect(container.querySelector(".system-notice.interrupted")).toBeNull()
+  })
+
+  it("中止未结算工具 chip：摘要/输出显示「已停止」，不显示 server 英文原文", () => {
+    const entry = {
+      kind: "message",
+      data: {
+        info: {
+          id: "msg_a2",
+          sessionID: "s1",
+          role: "assistant",
+          time: { created: 1, completed: 2 },
+        },
+        parts: [
+          {
+            id: "prt_t1",
+            sessionID: "s1",
+            messageID: "msg_a2",
+            type: "tool",
+            callID: "call_t1",
+            tool: "bash",
+            state: { status: "error", input: {}, error: "Tool execution interrupted: bash", aborted: true },
+          },
+        ],
+      },
+    } as unknown as ChatEntry
+    const { container } = render(<MessageBlock entry={entry} />)
+    const summary = container.querySelector(".chip-summary")
+    expect(summary?.textContent).toBe("已停止")
+    expect(container.textContent).not.toContain("Tool execution interrupted")
+  })
+
+  it("非中止错误工具 chip：摘要显示 server 错误文案", () => {
+    const entry = {
+      kind: "message",
+      data: {
+        info: {
+          id: "msg_a3",
+          sessionID: "s1",
+          role: "assistant",
+          time: { created: 1, completed: 2 },
+        },
+        parts: [
+          {
+            id: "prt_t2",
+            sessionID: "s1",
+            messageID: "msg_a3",
+            type: "tool",
+            callID: "call_t2",
+            tool: "bash",
+            state: { status: "error", input: {}, error: "exit 1" },
+          },
+        ],
+      },
+    } as unknown as ChatEntry
+    const { container } = render(<MessageBlock entry={entry} />)
+    expect(container.querySelector(".chip-summary")?.textContent).toBe("exit 1")
   })
 })

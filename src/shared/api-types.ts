@@ -160,6 +160,9 @@ export interface ToolStateError {
   status: "error"
   input: unknown
   error: string
+  /** 工具因会话中止而失败（v2 wire error `type:"aborted"`，design-error-message
+   *  §3.1 修订 2026-10-09）：中断非出错——渲染层据此降级为「已停止」中性呈现 */
+  aborted?: boolean
 }
 export type ToolState = ToolStatePending | ToolStateRunning | ToolStateCompleted | ToolStateError
 

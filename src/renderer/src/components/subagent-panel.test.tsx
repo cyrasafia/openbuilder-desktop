@@ -139,6 +139,18 @@ describe("SubagentPanel 状态投影", () => {
     expect(spinning).toBe(false)
     expect(icon.getAttribute("aria-label")).toBe("出错")
   })
+
+  it("part error + aborted（打断未结算）：按停止渲染，摘要不显示英文原文（design-error-message §3.1 修订）", () => {
+    storeStub = makeStore([])
+    const part = taskPart("error")
+    ;(part.state as { aborted?: boolean }).aborted = true
+    const { icon, spinning, summary } = renderPanel(part)
+    expect(spinning).toBe(false)
+    expect(icon.getAttribute("aria-label")).toBe("已停止")
+    // 摘要回落到任务描述（同 running 停止投影），不显示 server 错误文案
+    expect(summary?.textContent).toContain("探查仓库结构")
+    expect(summary?.textContent).not.toContain("boom")
+  })
 })
 
 describe("SubagentPanel 报错上浮（§D6）", () => {

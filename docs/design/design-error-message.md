@@ -74,6 +74,13 @@
   错误卡只承载真错误。理由：红卡承载「出错」语义，用户主动停止不是错误，
   呈现强度对齐语义——与 §3.4 中止不计 failed 终局、§D6 子会话上浮排除中止
   同一口径。
+- **中止未结算工具同口径（2026-10-09 同日补）**：打断时 server 对 running 工具
+  发 `session.tool.failed`，error `{type:"aborted", message:"Tool execution
+  interrupted: …"}`（step.ts TOOLS_INTERRUPTED；REST 持久化同形态）。数据层在
+  `ToolStateError` 加 `aborted?: boolean` 标记（SSE 路径 `isAbortError` 判定、
+  REST 路径 wire `error.type`），error 文案保留忠实；渲染层据此降级——ToolChip
+  摘要/输出显示「已停止」而非英文原文，SubagentPanel 按停止投影（✗ 图标 +
+  任务描述摘要，不进 errored 分支）。
 - **内嵌 JSON 清洗（`stripEmbeddedJson`，两路统一）**：provider 错误原文（server
   retry.ts 透传 `error.data.message`）可内嵌 JSON body——如
   `Internal Server Error: {"error":{"message":"…","type":"server_error"}}`。提取内嵌
@@ -235,12 +242,26 @@ part 即恢复绿。中途失败类错误（已产出部分内容后断流）每
 | `src/renderer/src/i18n/index.ts` | `abortedNotice`（「已停止」/「Stopped」） |
 | `src/renderer/src/components/message-block.test.tsx`（新） | 分流渲染断言 |
 
+2026-10-09 同日补（中止未结算工具降级，§3.1）：
+
+| 文件 | 改动 |
+|------|------|
+| `src/shared/api-types.ts` | `ToolStateError` 增 `aborted?: boolean` |
+| `src/shared/v2-adapter.ts` | tool state error 映射按 wire `error.type === "aborted"` 置标记 |
+| `src/renderer/src/store/app-store.ts` | `session.tool.failed` 经 `isAbortError` 置标记 |
+| `src/renderer/src/components/workspace.tsx` | ToolChip 摘要/输出与 SubagentPanel 投影的中止降级 |
+
 ## 5. 测试
 
 - `message-error.test.ts`：NamedError 主路径/中止/多形态兜底/永不 `[object Object]`；
   `isAbortError` 含 v2 活体值 `type:"aborted"` 与近似非中止 type 排除（2026-10-09）。
 - `message-block.test.tsx`（新，2026-10-09）：中止（活体/防御两形态）呈系统提示行
-  不呈错误卡；非中止错误呈错误卡；无错误两者皆不呈。
+  不呈错误卡；非中止错误呈错误卡；无错误两者皆不呈；中止/非中止工具 chip 摘要分流。
+- `v2-adapter.test.ts`（2026-10-09）：中止 error（wire `type:"aborted"`）置
+  `aborted` 标记，error 文案保留；非中止不置。
+- `app-store.test.ts`（2026-10-09）：`session.tool.failed` 中止置标记、非中止不置。
+- `subagent-panel.test.tsx`（2026-10-09）：error + aborted 按停止投影（aria「已停止」、
+  摘要回落任务描述）。
 - `session-status.test.ts`：`inferFailedFromMessages` 中止排除（含活体
   `{type:"aborted"}` 形态）/末条非 assistant 排除。
 - `app-store.test.ts`（"报错消息与重试状态"）：retry part 丢弃（不传播/不入 parts/未知消息

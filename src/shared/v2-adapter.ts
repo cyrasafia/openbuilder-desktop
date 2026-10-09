@@ -106,11 +106,14 @@ function toToolPartState(name: string, state: { status?: string } & Record<strin
         ...(state.metadata != null ? { metadata: state.metadata as Record<string, unknown> } : {}),
       }
     case "error": {
-      const err = state.error as { message?: string; name?: string } | undefined
+      const err = state.error as { message?: string; name?: string; type?: string } | undefined
       return {
         status: "error",
         input: state.input,
         error: err?.message ?? err?.name ?? "tool error",
+        // 中止降级标记（design-error-message §3.1 修订）：打断未结算工具的
+        // failed 非出错——v2 wire error type:"aborted"（同 isAbortError 判定源）
+        ...(err?.type === "aborted" ? { aborted: true } : {}),
       }
     }
     default:
