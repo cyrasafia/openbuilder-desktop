@@ -6,6 +6,7 @@
  */
 import type { ProjectInfo, SessionInfo } from "./api-v2-types"
 import type { Project, Session } from "./api-types"
+import { isAbortError } from "./message-error"
 
 /** v2 ProjectInfo → 内部 Project：canonical → worktree 字段名（basename 展示/
  *  作用域键逻辑不变）；v2 无 initialized（active 取代），置 undefined。
@@ -112,8 +113,9 @@ function toToolPartState(name: string, state: { status?: string } & Record<strin
         input: state.input,
         error: err?.message ?? err?.name ?? "tool error",
         // 中止降级标记（design-error-message §3.1 修订）：打断未结算工具的
-        // failed 非出错——v2 wire error type:"aborted"（同 isAbortError 判定源）
-        ...(err?.type === "aborted" ? { aborted: true } : {}),
+        // failed 非出错——与 SSE 路径（app-store session.tool.failed）同用
+        // isAbortError 单一判定源（review 2026-10-09，不内联重复键集）
+        ...(isAbortError(err) ? { aborted: true } : {}),
       }
     }
     default:

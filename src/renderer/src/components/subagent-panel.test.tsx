@@ -151,6 +151,16 @@ describe("SubagentPanel 状态投影", () => {
     expect(summary?.textContent).toContain("探查仓库结构")
     expect(summary?.textContent).not.toContain("boom")
   })
+
+  it("part error + aborted + 父会话活跃（同会话新回合）：仍按停止渲染，不翻成已完成（review 2026-10-09 阻塞项）", () => {
+    storeStub = makeStore([PARENT])
+    const part = taskPart("error")
+    ;(part.state as { aborted?: boolean }).aborted = true
+    const { icon, spinning } = renderPanel(part)
+    expect(spinning).toBe(false)
+    expect(icon.getAttribute("aria-label")).toBe("已停止")
+    expect(icon.querySelector("svg")).not.toBeNull()
+  })
 })
 
 describe("SubagentPanel 报错上浮（§D6）", () => {

@@ -2928,14 +2928,17 @@ export function SubagentPanel({ part, parentSessionID }: { part: ToolPart; paren
   // 窗口里活跃会话可能暂缺条目（statusOf 缺省 idle），快照合并后即恢复转圈
   const partRunning = status === "pending" || status === "running"
   // 中止的 error part（aborted 标记，design-error-message §3.1 修订 2026-10-09）
-  // 按停止投影：打断未结算的 subagent 工具失败非出错，与消息级中止同口径
+  // 按停止投影：打断未结算的 subagent 工具失败非出错，与消息级中止同口径。
+  // partAborted 是 server 已结算的终态，不受 !sessionActive 停止证据门控
+  // （该门控是给 partRunning 卡死残留设计的）——否则同会话后续新回合（父
+  // busy）会把中止面板翻成绿✓「已完成」（review 2026-10-09 阻塞项修复）
   const partAborted = status === "error" && state.aborted === true
   const sessionActive =
     store.isSessionActive(parentSessionID) ||
     (childSessionId != null && store.isSessionActive(childSessionId))
   const errored = (status === "error" && !partAborted) || childErrorText != null
   const running = partRunning && sessionActive && !errored
-  const stopped = (partRunning || partAborted) && !sessionActive && !errored
+  const stopped = (partAborted || (partRunning && !sessionActive)) && !errored
   const agentLabel = subagentType
     ? subagentType.charAt(0).toUpperCase() + subagentType.slice(1)
     : t.assistant

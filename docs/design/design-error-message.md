@@ -78,9 +78,13 @@
   发 `session.tool.failed`，error `{type:"aborted", message:"Tool execution
   interrupted: …"}`（step.ts TOOLS_INTERRUPTED；REST 持久化同形态）。数据层在
   `ToolStateError` 加 `aborted?: boolean` 标记（SSE 路径 `isAbortError` 判定、
-  REST 路径 wire `error.type`），error 文案保留忠实；渲染层据此降级——ToolChip
-  摘要/输出显示「已停止」而非英文原文，SubagentPanel 按停止投影（✗ 图标 +
-  任务描述摘要，不进 errored 分支）。
+  REST 路径 wire `error.type`，review 后者同用 `isAbortError` 单一判定源），
+  error 文案保留忠实；渲染层据此降级——ToolChip 摘要/输出显示「已停止」而非
+  英文原文，SubagentPanel 按停止投影（✗ 图标 + 任务描述摘要，不进 errored
+  分支）。**partAborted 是 server 已结算终态，不受父会话活跃门控**
+  （`!sessionActive` 停止证据门控只服务 partRunning 卡死残留）——否则同会话
+  后续新回合（父 busy）会把中止面板翻成绿✓「已完成」（review 2026-10-09
+  阻塞项修复）。
 - **内嵌 JSON 清洗（`stripEmbeddedJson`，两路统一）**：provider 错误原文（server
   retry.ts 透传 `error.data.message`）可内嵌 JSON body——如
   `Internal Server Error: {"error":{"message":"…","type":"server_error"}}`。提取内嵌
