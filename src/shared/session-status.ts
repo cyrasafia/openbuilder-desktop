@@ -28,9 +28,9 @@ export function inferIdleFromMessages(messages: Message[]): boolean {
 
 /**
  * 报错终局推断（design-error-message §3.4）：末条消息是携带非中止错误的
- * assistant ⇒ 会话以报错结束（静态红点）。中止（MessageAbortedError）是用户
- * 主动停止，不算错误；错误名是 server NamedError 契约（processor halt 路径），
- * v2 事件形态中止标记在 type 键——判定经 isAbortError 双键兼容。
+ * assistant ⇒ 会话以报错结束（静态红点）。中止（isAbortError——v2.0.18
+ * 活体 type:"aborted"，v1 防御键 MessageAbortedError）是用户主动停止，
+ * 不算错误。
  */
 export function inferFailedFromMessages(messages: Message[]): boolean {
   const last = messages[messages.length - 1]
