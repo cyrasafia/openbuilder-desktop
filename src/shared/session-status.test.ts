@@ -54,6 +54,13 @@ describe("inferFailedFromMessages（design-error-message §3.4）", () => {
       error: { type: "MessageAbortedError", message: "Aborted" },
     } as Message
     expect(inferFailedFromMessages([eventShaped])).toBe(false)
+    // v2.0.18 活体值（2026-10-09 核验）：中止 type 是 "aborted" 而非
+    // "MessageAbortedError"——打断误投影 failed 红点的根因回归
+    const liveShaped = {
+      ...assistant(null, 1),
+      error: { type: "aborted", message: "Step interrupted" },
+    } as Message
+    expect(inferFailedFromMessages([liveShaped])).toBe(false)
     // 非中止错误的 v2 事件形态照常投影 failed
     const apiError = {
       ...assistant(null, 2),

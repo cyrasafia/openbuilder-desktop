@@ -3469,11 +3469,13 @@ describe("重试收敛（design-session-retry-recovery，同 openbuilder）", ()
     dispatch({ type: "session.execution.failed", properties: { sessionID: "s1", error: { type: "APIError", message: "overloaded" } } })
     expect(store.dotStateFor("s1")).toBe("failed")
 
-    // 中止的 v2 事件形态（中止标记在 type 键）＝用户主动停止：不投影 failed
+    // 中止的 v2 事件形态＝用户主动停止：不投影 failed。type 值用活体核验的
+    // "aborted"（2026-10-09，server to-session-error.ts/step.ts；防御键
+    // MessageAbortedError 的覆盖在 message-error.test/session-status.test）
     dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a2" } })
     dispatch({
       type: "session.step.failed",
-      properties: { sessionID: "s1", assistantMessageID: "msg_a2", error: { type: "MessageAbortedError", message: "Aborted" } },
+      properties: { sessionID: "s1", assistantMessageID: "msg_a2", error: { type: "aborted", message: "Step interrupted" } },
     })
     dispatch({ type: "session.execution.interrupted", properties: { sessionID: "s1", reason: "user" } })
     expect(store.dotStateFor("s1")).toBe("idle")

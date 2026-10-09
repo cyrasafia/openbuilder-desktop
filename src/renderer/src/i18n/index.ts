@@ -37,6 +37,8 @@ const zh = {
   send: "发送",
   sending: "发送中",
   abort: "停止",
+  // 中止系统提示行（design-error-message §3.1 修订，2026-10-09）
+  abortedNotice: "已停止",
   you: "你",
   assistant: "助手",
   thinking: "思考中",
@@ -373,6 +375,7 @@ const en: typeof zh = {
   send: "Send",
   sending: "Sending",
   abort: "Stop",
+  abortedNotice: "Stopped",
   you: "You",
   assistant: "Assistant",
   thinking: "Thinking",

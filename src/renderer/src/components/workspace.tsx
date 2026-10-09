@@ -2473,7 +2473,7 @@ export function UserBubble({ children }: { children: ReactNode }) {
   )
 }
 
-function MessageBlock({ entry }: { entry: ChatEntry }) {
+export function MessageBlock({ entry }: { entry: ChatEntry }) {
   const { t } = useI18n()
   const store = useStore()
   const [reverting, setReverting] = useState(false)
@@ -2535,7 +2535,11 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
   // 思考默认隐藏（设置开关控制，同移动端 showThinking；数据保留，仅不渲染）
   const reasonings = store.showThinking ? parts.filter((p) => p.type === "reasoning") : []
   const tools = parts.filter((p) => p.type === "tool") as ToolPart[]
-  const errored = info.role === "assistant" && info.error
+  // 中止/报错分流（2026-10-09 修订，推翻 design-error-message §3.7「中止同样
+  // 入卡」）：中止（isAbortError，v2 wire `type:"aborted"`，活体核验见该文档 §2）
+  // 是用户主动停止/会话关闭，非出错——呈低强调系统提示行，错误卡只留真错误
+  const failure = info.role === "assistant" ? info.error ?? null : null
+  const aborted = failure != null && isAbortError(failure)
   // user 气泡 chip（design-file-reference §5）：引用回灌（source 型，可点）+
   // 二进制/图片附件回灌（无 source，server 以 data: 附件替换原 part，仅文件名）
   // ——构造收敛在 userFileChipItems（file-ref.tsx，纯函数）
@@ -2651,11 +2655,21 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
           <Markdown>{p.text}</Markdown>
         </div>
       ))}
-      {errored && (
+      {aborted && (
+        <div className="system-notice interrupted" role="status">
+          {/* 中止呈系统提示行（2026-10-09 修订）：低强调、不示警；文案固定本地化，
+              server 原始 message（"Session interrupted by user" 等）不展示 */}
+          <span className="system-notice-icon">
+            <CircleStop size={14} aria-hidden />
+          </span>
+          <span className="system-notice-text">{t.abortedNotice}</span>
+        </div>
+      )}
+      {failure != null && !aborted && (
         <div className="error-card">
           {/* NamedError 形态解析 + 内嵌 JSON 清洗（design-error-message §3.1）：
               样式（红卡）已承载出错语义，正文只显示错误信息本身 */}
-          {extractErrorMessage(info.error)}
+          {extractErrorMessage(failure)}
         </div>
       )}
     </div>

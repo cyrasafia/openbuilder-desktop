@@ -20,15 +20,21 @@ export function extractErrorMessage(error: unknown): string {
 
 /**
  * 中止错误判定（design-error-message §3.4 / design-session-retry-recovery §2）：
- * REST/快照 NamedError 形态中止标记在 `name`；v2 SSE 事件 error 形态为
- * `{type, message}`（api-types execution.failed 注），中止标记可能落在 `type`
- * ——两键任一命中即中止（用户主动停止，不算报错终局）。载荷完整形态未活体
- * 核验（升 pin 复核项），双键判定是防御式收敛。
+ * v2.0.18 活体核验（2026-10-09，修复打断误投影 failed 红点）：中止 error 是
+ * SessionError `{type, message}` 形态，`type` 值为 `"aborted"`——用户打断
+ * （server to-session-error.ts 的 UserInterruptedError 映射，message
+ * "Session interrupted by user"）、步骤/工具打断（step.ts STEP_INTERRUPTED /
+ * TOOLS_INTERRUPTED，"Step interrupted" / "Tool execution interrupted: …"）
+ * 全用该值，SSE 事件与 REST 持久化同形态（活体 ses_ee3e3c79… 实测）。
+ * `name`/`type` 键的 `"MessageAbortedError"` 为 v1 NamedError 存量防御保留
+ * （v2 core 无此字符串）。
  */
 export function isAbortError(error: unknown): boolean {
   if (error == null || typeof error !== "object") return false
   const e = error as { name?: unknown; type?: unknown }
-  return e.name === "MessageAbortedError" || e.type === "MessageAbortedError"
+  return (
+    e.name === "MessageAbortedError" || e.type === "MessageAbortedError" || e.type === "aborted"
+  )
 }
 
 function rawErrorMessage(error: unknown): string {

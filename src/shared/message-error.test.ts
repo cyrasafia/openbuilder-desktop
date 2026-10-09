@@ -81,7 +81,7 @@ describe("extractRetryMessage（retry 提示文案清洗）", () => {
   })
 })
 
-describe("isAbortError（中止判定，name/type 双形态键）", () => {
+describe("isAbortError（中止判定，name/type 双形态键 + v2 活体值 aborted）", () => {
   it("NamedError 形态：中止标记在 name", () => {
     expect(isAbortError({ name: "MessageAbortedError", data: { message: "Aborted" } })).toBe(true)
     expect(isAbortError({ name: "APIError", data: { message: "boom" } })).toBe(false)
@@ -92,10 +92,21 @@ describe("isAbortError（中止判定，name/type 双形态键）", () => {
     expect(isAbortError({ type: "APIError", message: "overloaded" })).toBe(false)
   })
 
+  it("v2.0.18 活体值（2026-10-09 核验，server to-session-error.ts/step.ts）：type 为 aborted", () => {
+    // 用户打断 / 步骤打断 / 工具打断三种 message 均用 type:"aborted"
+    expect(isAbortError({ type: "aborted", message: "Session interrupted by user" })).toBe(true)
+    expect(isAbortError({ type: "aborted", message: "Step interrupted" })).toBe(true)
+    expect(isAbortError({ type: "aborted", message: "Tool execution interrupted: bash" })).toBe(true)
+    // 相近非中止 type 不误判
+    expect(isAbortError({ type: "compaction.interrupted", message: "…" })).toBe(false)
+    expect(isAbortError({ type: "unknown", message: "…" })).toBe(false)
+  })
+
   it("null/非对象/未知形态不算中止（防御式：宁可投影 failed 不错漏报错）", () => {
     expect(isAbortError(null)).toBe(false)
     expect(isAbortError(undefined)).toBe(false)
     expect(isAbortError("MessageAbortedError")).toBe(false)
+    expect(isAbortError("aborted")).toBe(false)
     expect(isAbortError({})).toBe(false)
   })
 })

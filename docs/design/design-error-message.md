@@ -36,6 +36,15 @@
   ```
 
   顶层**无** `message` 字段；`MessageAbortedError`（用户停止）同形态。
+- **v2.0.18 wire error 实为 SessionError `{type, message, status?}` 扁平形态**（2026-10-09
+  活体核验）：本机 server 持久化消息实测 `error: {type:"aborted", message:"Step
+  interrupted"}`（openbuilder 项目 ses_ee3e3c79…/msg_11c1cb8fb…）；schema 权威
+  `SessionError.Error`。中止 `type` 值为 `"aborted"`——用户打断
+  （server to-session-error.ts 的 UserInterruptedError 映射，message
+  "Session interrupted by user"）、步骤/工具打断（step.ts STEP_INTERRUPTED /
+  TOOLS_INTERRUPTED，"Step interrupted" / "Tool execution interrupted: …"）全用
+  该值；`"MessageAbortedError"` 字符串在 v2 core 不存在（v1 NamedError 时代的
+  名）。`extractErrorMessage` 顶层 `message` 兜底已覆盖该形态（错误卡文案可出）。
 - **finish 不可靠**：halt 路径只置 `error` 不置 `finish`（实测错误消息 `finish: null`，仅
   ContextOverflow 分支置 `finish: "error"`）——错误判定只能依赖 `info.error` 存在性。
 - **RetryPart**（openapi 1.18.x）：`{type: "retry", attempt, error: APIError, time: {created}}`。
@@ -58,6 +67,13 @@
   `error-container`（深色下 #93000a 底 + #ffdad6 字对比过强刺眼，2026-08-26 修订
   弱化，对齐 session-count 等淡染惯例）；不加「出错了/Something went wrong」
   前缀（i18n `errorTitle` 已移除）。
+- **中止不入卡（2026-10-09 修订，推翻 §3.7 原裁定「MessageAbortedError 同样入卡」）**：
+  中止（`isAbortError`）呈 `.system-notice.interrupted` 系统提示行——CircleStop
+  图标 + i18n `abortedNotice`（「已停止」/「Stopped」），复用 system-notice
+  低强调行式（design-subagent-background D5），不显示 server 原始 message；
+  错误卡只承载真错误。理由：红卡承载「出错」语义，用户主动停止不是错误，
+  呈现强度对齐语义——与 §3.4 中止不计 failed 终局、§D6 子会话上浮排除中止
+  同一口径。
 - **内嵌 JSON 清洗（`stripEmbeddedJson`，两路统一）**：provider 错误原文（server
   retry.ts 透传 `error.data.message`）可内嵌 JSON body——如
   `Internal Server Error: {"error":{"message":"…","type":"server_error"}}`。提取内嵌
@@ -130,8 +146,9 @@ idle 灰点无法表达"上次运行失败了"。retry 呼吸红 = 正在重试�
 
 **判定**（session-status.ts `inferFailedFromMessages`）：会话 idle 且末条消息为携带**非中止**
 错误的 assistant（中止 `MessageAbortedError` 是用户主动停止，不算失败）。中止判定经
-`isAbortError`（message-error.ts）name/type 双键——v2 SSE 事件 error 形态为
-`{type, message}`，中止标记可落在 `type`（design-session-retry-recovery §2 待复核项）。
+`isAbortError`（message-error.ts）：`name`/`type` 键的 `"MessageAbortedError"`（v1
+NamedError 防御）+ v2.0.18 活体值 `type === "aborted"`（2026-10-09 核验，见 §2——
+原双键猜测值过期，曾致打断误投影 failed 红点）。
 `finish` 不可靠（halt 只置 error 不置 finish，§2），以 `info.error` 存在性为准。
 
 **实现**（app-store `dotStateFor` 纯派生，无缓存/锁存集合）：
@@ -189,8 +206,9 @@ part 即恢复绿。中途失败类错误（已产出部分内容后断流）每
 
 - **TypingSlot retry 呈现保持 outline 中性色**（design-typing-indicator §5 已决策"次级提示语义，
   复用 outline"），红色只进状态点，不双处示警。
-- 不按错误 `name` 分级配色/文案（MessageAbortedError 同样入卡）——错误分类学无 server 契约
-  保障，`action`（Go upsell 等）交互留后续版本。
+- 不按错误 `name` 分级配色/文案——错误分类学无 server 契约保障，`action`（Go upsell
+  等）交互留后续版本。（2026-10-09 修订：中止改为系统提示行，见 §3.1——这是
+  中止/错误二分，不是按 name 分级。）
 - 不监听 `Session.Event.Error` 类 v1 遗留事件——消息级错误由 `session.step.failed`
   （2026-10-09 接入，design-session-retry-recovery）与 REST/缓存快照 `info.error` 覆盖。
 
@@ -208,10 +226,23 @@ part 即恢复绿。中途失败类错误（已产出部分内容后断流）每
 | `src/renderer/src/i18n/index.ts` | `sessionIndicatorTitle` 增 `{error}`/`{failed}` |
 | `src/renderer/src/styles/app.css` | `session-error`（红呼吸）/`session-failed`（红静态）/`session-waiting`（琥珀静态）变体共用 12px 盒 + `--session-dot-color`；`.session-count.error`/`.session-count.failed` |
 
+2026-10-09 修订（中止判定活体核验 + 中止改系统提示行，§2/§3.1/§3.4）：
+
+| 文件 | 改动 |
+|------|------|
+| `src/shared/message-error.ts` | `isAbortError` 增 `type === "aborted"`（v2.0.18 活体值） |
+| `src/renderer/src/components/workspace.tsx` | `MessageBlock` 中止/报错分流：中止呈 `.system-notice.interrupted`，导出供测试 |
+| `src/renderer/src/i18n/index.ts` | `abortedNotice`（「已停止」/「Stopped」） |
+| `src/renderer/src/components/message-block.test.tsx`（新） | 分流渲染断言 |
+
 ## 5. 测试
 
-- `message-error.test.ts`：NamedError 主路径/中止/多形态兜底/永不 `[object Object]`。
-- `session-status.test.ts`：`inferFailedFromMessages` 中止排除/末条非 assistant 排除。
+- `message-error.test.ts`：NamedError 主路径/中止/多形态兜底/永不 `[object Object]`；
+  `isAbortError` 含 v2 活体值 `type:"aborted"` 与近似非中止 type 排除（2026-10-09）。
+- `message-block.test.tsx`（新，2026-10-09）：中止（活体/防御两形态）呈系统提示行
+  不呈错误卡；非中止错误呈错误卡；无错误两者皆不呈。
+- `session-status.test.ts`：`inferFailedFromMessages` 中止排除（含活体
+  `{type:"aborted"}` 形态）/末条非 assistant 排除。
 - `app-store.test.ts`（"报错消息与重试状态"）：retry part 丢弃（不传播/不入 parts/未知消息
   不建容器/既有终态错误无影响）、`dotStateFor` retry→error/busy→running/idle 链、
   保持锁存（busy 扣住/内容 part 解除/step-start 不解除/REST 快照改写与解除）、
