@@ -3469,11 +3469,13 @@ describe("重试收敛（design-session-retry-recovery，同 openbuilder）", ()
     dispatch({ type: "session.execution.failed", properties: { sessionID: "s1", error: { type: "APIError", message: "overloaded" } } })
     expect(store.dotStateFor("s1")).toBe("failed")
 
-    // 中止的 v2 事件形态（中止标记在 type 键）＝用户主动停止：不投影 failed
+    // 中止的 v2 事件形态＝用户主动停止：不投影 failed。type 值用活体核验的
+    // "aborted"（2026-10-09，server to-session-error.ts/step.ts；防御键
+    // MessageAbortedError 的覆盖在 message-error.test/session-status.test）
     dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a2" } })
     dispatch({
       type: "session.step.failed",
-      properties: { sessionID: "s1", assistantMessageID: "msg_a2", error: { type: "MessageAbortedError", message: "Aborted" } },
+      properties: { sessionID: "s1", assistantMessageID: "msg_a2", error: { type: "aborted", message: "Step interrupted" } },
     })
     dispatch({ type: "session.execution.interrupted", properties: { sessionID: "s1", reason: "user" } })
     expect(store.dotStateFor("s1")).toBe("idle")
@@ -3855,6 +3857,29 @@ describe("v2 流式翻译层（M4a：assistant 事件 → v1 part 管线）", ()
     dispatch({ type: "session.tool.success", properties: { sessionID: "s1", assistantMessageID: "msg_a2", id: "tool_9", content: [{ type: "text", text: "ok" }], executed: true } })
     part = store.messagesBySession.get("s1")?.get("msg_a2")?.parts.find((p) => p.id === "tool_9") as unknown as { state: { input?: unknown; output?: string; title?: string } }
     expect(part.state).toMatchObject({ status: "completed", output: "ok", title: "edit" })
+  })
+
+  it("tool.failed 中止（type:aborted）置 aborted 标记；非中止 error 不置（design-error-message §3.1 修订）", () => {
+    dispatch({ type: "session.step.started", properties: { sessionID: "s1", assistantMessageID: "msg_a4" } })
+    dispatch({ type: "session.tool.input.started", properties: { sessionID: "s1", assistantMessageID: "msg_a4", id: "tool_a", name: "bash" } })
+    dispatch({ type: "session.tool.input.started", properties: { sessionID: "s1", assistantMessageID: "msg_a4", id: "tool_b", name: "edit" } })
+    // 打断未结算工具：v2 wire error {type:"aborted"}（活体核验，step.ts TOOLS_INTERRUPTED）
+    dispatch({
+      type: "session.tool.failed",
+      properties: { sessionID: "s1", assistantMessageID: "msg_a4", id: "tool_a", error: { type: "aborted", message: "Tool execution interrupted: bash" } },
+    })
+    dispatch({
+      type: "session.tool.failed",
+      properties: { sessionID: "s1", assistantMessageID: "msg_a4", id: "tool_b", error: { type: "unknown", message: "boom" } },
+    })
+    const parts = store.messagesBySession.get("s1")?.get("msg_a4")?.parts
+    expect(parts?.find((p) => p.id === "tool_a")).toMatchObject({
+      state: { status: "error", error: "Tool execution interrupted: bash", aborted: true },
+    })
+    expect(parts?.find((p) => p.id === "tool_b")).toMatchObject({
+      state: { status: "error", error: "boom" },
+    })
+    expect((parts?.find((p) => p.id === "tool_b") as { state: { aborted?: boolean } }).state.aborted).toBeUndefined()
   })
 
   it("step.ended → finish/cost 终态收敛到消息 info", () => {

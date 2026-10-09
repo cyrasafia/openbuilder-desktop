@@ -67,6 +67,7 @@ import {
   withdrawForegroundStartNotices,
   type SessionNotice,
 } from "@shared/session-notices"
+import { isAbortError } from "@shared/message-error"
 import {
   buildFormAnswer,
   mergePendingSnapshot,
@@ -1518,6 +1519,9 @@ export class AppStore {
                     status: "error",
                     input: (existing as { state?: { input?: unknown } } | undefined)?.state?.input,
                     error: errorMessageOf(p.error),
+                    // 中止降级标记（design-error-message §3.1 修订）：打断未结算
+                    // 工具的 failed 非出错——渲染层按「已停止」中性呈现
+                    ...(isAbortError(p.error) ? { aborted: true } : {}),
                     // v2 事件携带 failureSnapshot（progress 并入，2026-10-08 核）：
                     // 保留认领依据——被中断的前台 subagent part 靠它维持前台认领，
                     // 不必等对账恢复（与 REST 持久化一致）

@@ -31,6 +31,14 @@ const A = {
       state: { status: "error", input: {}, error: { name: "ExitError", message: "exit 1" } },
       time: { created: 230 },
     },
+    {
+      type: "tool",
+      id: "tool_3",
+      name: "bash",
+      // v2.0.18 活体：打断未结算工具持久化为 error + {type:"aborted"}
+      state: { status: "error", input: {}, error: { type: "aborted", message: "Tool execution interrupted: bash" } },
+      time: { created: 240 },
+    },
   ],
 }
 
@@ -43,21 +51,31 @@ describe("toInternalMessages", () => {
 
     expect(a.info).toMatchObject({ id: "msg_a1", role: "assistant", finish: "stop", agent: "build" })
     const kinds = a.parts.map((p) => p.type)
-    expect(kinds).toEqual(["reasoning", "text", "tool", "tool"])
+    expect(kinds).toEqual(["reasoning", "text", "tool", "tool", "tool"])
     // text/reasoning 铸稳定 id（与流式翻译层同规则）；tool 用自身 id
     expect(a.parts[0]).toMatchObject({ id: "msg_a1:c:0", text: "想想" })
     expect(a.parts[1]).toMatchObject({ id: "msg_a1:c:1", text: "答案" })
     expect(a.parts[2]).toMatchObject({ id: "tool_1", tool: "read", callID: "tool_1" })
   })
 
-  it("ToolState 映射：completed 展平 content 为 output + title=name；error 取 message", () => {
+  it("ToolState 映射：completed 展平 content 为 output + title=name；error 取 message；中止 error 置 aborted 标记", () => {
     const out = toInternalMessages("ses_1", [A])
     expect(out).toHaveLength(1)
     const a = out[0]!
+    expect(a.parts).toHaveLength(5)
     const done = a.parts[2] as unknown as { state: { status: string; output: string; title: string } }
     expect(done.state).toMatchObject({ status: "completed", output: "file body", title: "read" })
-    const failed = a.parts[3] as unknown as { state: { status: string; error: string } }
+    const failed = a.parts[3] as unknown as { state: { status: string; error: string; aborted?: boolean } }
     expect(failed.state).toMatchObject({ status: "error", error: "exit 1" })
+    expect(failed.state.aborted).toBeUndefined()
+    // 打断未结算工具（design-error-message §3.1 修订）：error 文案保留忠实 +
+    // aborted 标记驱动渲染层「已停止」中性呈现
+    const aborted = a.parts[4] as unknown as { state: { status: string; error: string; aborted?: boolean } }
+    expect(aborted.state).toMatchObject({
+      status: "error",
+      error: "Tool execution interrupted: bash",
+      aborted: true,
+    })
   })
 
   it("synthetic → user + synthetic:true text part（渲染层既有过滤规则生效）；无对应类型跳过", () => {

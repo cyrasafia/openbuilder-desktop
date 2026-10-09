@@ -37,7 +37,7 @@ REST 快照对照：重试成功后消息 `error=null, finish=stop`（服务端�
 
 官方 GUI 语义（三实现一致）：`retry.scheduled` 只写消息 retry 标记（横幅行）、不写消息级 error；`step.failed` 是消息级错误的**唯一合法来源**；`step.started` 同 mid 重启即恢复 running；`execution.*` settle 时清 retry 标记。
 
-**待复核（升 pin 审计项，按 surface §5 流程）**：`step.failed` 的 error 载荷完整形态未活体核验——openbuilder 实测只记事件序列；本端 api-types 对 `execution.failed` 记 `{type, message}`，REST/快照 NamedError 为 `{name, data}`（实测契约）。防御式收敛：`step.failed` 写入保持事件载荷原样（REST 快照对账自然归一）；中止排除链按 name/type 双键判定（`isAbortError`，message-error.ts），v2 事件形态的中止标记落在 `type` 时不误投影 failed 红点。「用户中止是否走 `step.failed`」同样待核。
+**已核验（2026-10-09，本机 server 活体 + v2.0.18 tag 源码）**：`step.failed` 的 error 载荷为 SessionError `{type, message, status?}` 扁平形态（schema `SessionError.Error`）；用户中止走 `step.failed`，`type` 值为 `"aborted"`（server to-session-error.ts 的 UserInterruptedError 映射，message "Session interrupted by user"；步骤/工具打断同值——step.ts STEP_INTERRUPTED / TOOLS_INTERRUPTED）。持久化消息同形态（ses_ee3e3c79…/msg_11c1cb8fb… 实测：`{type:"aborted", message:"Step interrupted"}`）；`"MessageAbortedError"` 字符串在 v2 core 不存在。处置：`isAbortError`（message-error.ts）增 `type === "aborted"` 判定——原双键猜测值过期，曾致打断误投影 failed 红点（已修，见 design-error-message §2/§3.4 修订）；`step.failed` 写入保持事件载荷原样不变。
 
 ## 3. 设计
 

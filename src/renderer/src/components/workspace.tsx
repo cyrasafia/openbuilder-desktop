@@ -2473,7 +2473,7 @@ export function UserBubble({ children }: { children: ReactNode }) {
   )
 }
 
-function MessageBlock({ entry }: { entry: ChatEntry }) {
+export function MessageBlock({ entry }: { entry: ChatEntry }) {
   const { t } = useI18n()
   const store = useStore()
   const [reverting, setReverting] = useState(false)
@@ -2535,7 +2535,11 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
   // 思考默认隐藏（设置开关控制，同移动端 showThinking；数据保留，仅不渲染）
   const reasonings = store.showThinking ? parts.filter((p) => p.type === "reasoning") : []
   const tools = parts.filter((p) => p.type === "tool") as ToolPart[]
-  const errored = info.role === "assistant" && info.error
+  // 中止/报错分流（2026-10-09 修订，推翻 design-error-message §3.7「中止同样
+  // 入卡」）：中止（isAbortError，v2 wire `type:"aborted"`，活体核验见该文档 §2）
+  // 是用户主动停止/会话关闭，非出错——呈低强调系统提示行，错误卡只留真错误
+  const failure = info.role === "assistant" ? info.error ?? null : null
+  const aborted = failure != null && isAbortError(failure)
   // user 气泡 chip（design-file-reference §5）：引用回灌（source 型，可点）+
   // 二进制/图片附件回灌（无 source，server 以 data: 附件替换原 part，仅文件名）
   // ——构造收敛在 userFileChipItems（file-ref.tsx，纯函数）
@@ -2651,11 +2655,21 @@ function MessageBlock({ entry }: { entry: ChatEntry }) {
           <Markdown>{p.text}</Markdown>
         </div>
       ))}
-      {errored && (
+      {aborted && (
+        <div className="system-notice interrupted" role="status">
+          {/* 中止呈系统提示行（2026-10-09 修订）：低强调、不示警；文案固定本地化，
+              server 原始 message（"Session interrupted by user" 等）不展示 */}
+          <span className="system-notice-icon">
+            <CircleStop size={14} aria-hidden />
+          </span>
+          <span className="system-notice-text">{t.abortedNotice}</span>
+        </div>
+      )}
+      {failure != null && !aborted && (
         <div className="error-card">
           {/* NamedError 形态解析 + 内嵌 JSON 清洗（design-error-message §3.1）：
               样式（红卡）已承载出错语义，正文只显示错误信息本身 */}
-          {extractErrorMessage(info.error)}
+          {extractErrorMessage(failure)}
         </div>
       )}
     </div>
@@ -2704,12 +2718,16 @@ function ToolChip({ part }: { part: ToolPart }) {
   const [open, setOpen] = useState(false)
   const state = part.state
   const status = state.status
-  // v2 协议无有意义的 title，参考官方实现从 input 提取摘要
+  // v2 协议无有意义的 title，参考官方实现从 input 提取摘要。
+  // 中止（aborted 标记，design-error-message §3.1 修订）显示「已停止」
+  // 而非 server 英文原文（"Tool execution interrupted: …"）
   const summary =
     status === "completed"
       ? toolSummary(state.input)
       : status === "error"
-        ? state.error.slice(0, 120)
+        ? state.aborted
+          ? t.abortedNotice
+          : state.error.slice(0, 120)
         : ""
 
   return (
@@ -2729,7 +2747,13 @@ function ToolChip({ part }: { part: ToolPart }) {
           <pre className="code-block" tabIndex={-1}>{JSON.stringify(state.input, null, 2)}</pre>
           <div className="code-block-label">{t.outputLabel}</div>
           <pre className="code-block" tabIndex={-1}>
-            {status === "completed" ? state.output : status === "error" ? state.error : "…"}
+            {status === "completed"
+              ? state.output
+              : status === "error"
+                ? state.aborted
+                  ? t.abortedNotice
+                  : state.error
+                : "…"}
           </pre>
         </div>
       )}
@@ -2739,9 +2763,9 @@ function ToolChip({ part }: { part: ToolPart }) {
 
 /**
  * 子会话末条 assistant 的非中止报错文案（design-subagent-status §D6，无则 null）。
- * 中止（MessageAbortedError）= 用户主动停止，不算报错——与 dotStateFor 的
- * inferFailedFromMessages 同口径。task part 卡 running 时这是 subagent 实际
- * 报错的唯一来源
+ * 中止（isAbortError——v2 wire `type:"aborted"`，v1 防御键 MessageAbortedError）
+ * = 用户主动停止，不算报错——与 dotStateFor 的 inferFailedFromMessages 同口径。
+ * task part 卡 running 时这是 subagent 实际报错的唯一来源
  */
 function childSessionError(entries: ChatEntry[]): string | null {
   for (let i = entries.length - 1; i >= 0; i--) {
@@ -2888,8 +2912,9 @@ export function SubagentPanel({ part, parentSessionID }: { part: ToolPart; paren
 
   // 子会话报错上浮（§D6）：subagent 的实际报错只落在子会话末条 assistant 的
   // error 上（task part 可能同停止投影一样永卡 running 不回写）。报错优先于
-  // running/stopped 展示（子会话报错即终局）；中止（MessageAbortedError）是
-  // 用户主动停止，不算报错——保持已停止样式（inferFailedFromMessages 同口径）。
+  // running/stopped 展示（子会话报错即终局）；中止（isAbortError——v2 wire
+  // `type:"aborted"`）是用户主动停止，不算报错——保持已停止样式
+  // （inferFailedFromMessages 同口径）。
   // 子会话活跃（busy/retry）期间挂起提取——retry 退避窗口里失败尝试的末条
   // assistant 恒带 error，不门控会在 ✗/转圈间按重试轮次闪动（dotStateFor
   // 的「busy/retry 期间跳过终局派生」同口径）；活跃期结束后终局自现
@@ -2903,12 +2928,18 @@ export function SubagentPanel({ part, parentSessionID }: { part: ToolPart; paren
   // 残留 → 按「已停止」渲染（✗ 图标），不再转圈。冷启动/重连对账的瞬时无状态
   // 窗口里活跃会话可能暂缺条目（statusOf 缺省 idle），快照合并后即恢复转圈
   const partRunning = status === "pending" || status === "running"
+  // 中止的 error part（aborted 标记，design-error-message §3.1 修订 2026-10-09）
+  // 按停止投影：打断未结算的 subagent 工具失败非出错，与消息级中止同口径。
+  // partAborted 是 server 已结算的终态，不受 !sessionActive 停止证据门控
+  // （该门控是给 partRunning 卡死残留设计的）——否则同会话后续新回合（父
+  // busy）会把中止面板翻成绿✓「已完成」（review 2026-10-09 阻塞项修复）
+  const partAborted = status === "error" && state.aborted === true
   const sessionActive =
     store.isSessionActive(parentSessionID) ||
     (childSessionId != null && store.isSessionActive(childSessionId))
-  const errored = status === "error" || childErrorText != null
+  const errored = (status === "error" && !partAborted) || childErrorText != null
   const running = partRunning && sessionActive && !errored
-  const stopped = partRunning && !sessionActive && !errored
+  const stopped = (partAborted || (partRunning && !sessionActive)) && !errored
   const agentLabel = subagentType
     ? subagentType.charAt(0).toUpperCase() + subagentType.slice(1)
     : t.assistant
@@ -2916,7 +2947,11 @@ export function SubagentPanel({ part, parentSessionID }: { part: ToolPart; paren
     status === "completed"
       ? (("title" in state ? state.title : "") || description || "")
       : status === "error"
-        ? ("error" in state ? state.error.slice(0, 120) : "")
+        ? partAborted
+          ? description || t.abortedNotice
+          : "error" in state
+            ? state.error.slice(0, 120)
+            : ""
         : childErrorText != null
           ? childErrorText.slice(0, 120)
           : description || ""
