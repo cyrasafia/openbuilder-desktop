@@ -105,10 +105,16 @@ waiting（待输入，琥珀静态）> error（retry 退避重试，红）> runn
 - 落点：Tab 条状态点、左栏会话指示点、>4 会话聚合 chip（`.session-count.error` 红字淡染底）；
   `sessionIndicatorTitle` 增 `{error}`。
 - **颜色亮暗两套**（2026-10-09，参照 openbuilder design-agent-status-indicator）：状态四色
-  token 亮色不再沿用暗色值，同色相压暗一档——running `#15803d` / error `#cf222e` /
+  token 亮色不再沿用暗色值，同色相压暗一档——running `#15803d` / error `#b91c1c` /
   pending `#6e7781`（waiting 亮色 `#b8860b` 原已分开）。暗色值为深底调的亮饱和色，上浅底
   对比不足（绿 2.6:1/灰 2.7:1/红 3.4:1，idle 0.55 弱化点 ~1.6:1 近不可见）；取值依据与
   对比数据见 tokens.css 亮色块注释与 DESIGN.md 使用规范。
+- **亮色取值经对照页实测定案**（2026-10-09，真实 app.css 渲染 + CIELAB 度量 + 目检）：
+  error 先取 #cf222e（GitHub light danger）后改 `#b91c1c`（red-700）——5.7:1 对 4.7:1、
+  淡染 chip 上 4.4:1 对 3.7:1，且与 green-700 同档配目检更协调；waiting 复核保留
+  `#b8860b`——真实底 2.87:1 未达非文字 3:1 下限（原接受值 3.3:1 系按白底计），但压暗
+  达标方案（移动端 #8a660b，与曾否决的 #916b0d ΔE≈2.5）目检读作土褐、圆点单独使用
+  时含义识别度差，识别度优先，对比损失接受。
 - `isSessionActive` 不变：retry 仍视为进行中（停止按钮、关 Tab 确认、补充发送语义均维持）。
 - 左栏连接状态点（ServerStatus 离线红点）是另一体系：静态实心 6px 基础类，不走 session-* 变体。
 
