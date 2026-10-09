@@ -2763,9 +2763,9 @@ function ToolChip({ part }: { part: ToolPart }) {
 
 /**
  * 子会话末条 assistant 的非中止报错文案（design-subagent-status §D6，无则 null）。
- * 中止（MessageAbortedError）= 用户主动停止，不算报错——与 dotStateFor 的
- * inferFailedFromMessages 同口径。task part 卡 running 时这是 subagent 实际
- * 报错的唯一来源
+ * 中止（isAbortError——v2 wire `type:"aborted"`，v1 防御键 MessageAbortedError）
+ * = 用户主动停止，不算报错——与 dotStateFor 的 inferFailedFromMessages 同口径。
+ * task part 卡 running 时这是 subagent 实际报错的唯一来源
  */
 function childSessionError(entries: ChatEntry[]): string | null {
   for (let i = entries.length - 1; i >= 0; i--) {
@@ -2912,8 +2912,9 @@ export function SubagentPanel({ part, parentSessionID }: { part: ToolPart; paren
 
   // 子会话报错上浮（§D6）：subagent 的实际报错只落在子会话末条 assistant 的
   // error 上（task part 可能同停止投影一样永卡 running 不回写）。报错优先于
-  // running/stopped 展示（子会话报错即终局）；中止（MessageAbortedError）是
-  // 用户主动停止，不算报错——保持已停止样式（inferFailedFromMessages 同口径）。
+  // running/stopped 展示（子会话报错即终局）；中止（isAbortError——v2 wire
+  // `type:"aborted"`）是用户主动停止，不算报错——保持已停止样式
+  // （inferFailedFromMessages 同口径）。
   // 子会话活跃（busy/retry）期间挂起提取——retry 退避窗口里失败尝试的末条
   // assistant 恒带 error，不门控会在 ✗/转圈间按重试轮次闪动（dotStateFor
   // 的「busy/retry 期间跳过终局派生」同口径）；活跃期结束后终局自现
