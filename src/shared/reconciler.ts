@@ -6,7 +6,6 @@
 import type { Session } from "./api-types"
 import type { RestClient } from "./rest-client"
 import { toInternalSession as toInternalSessionForReconcile } from "./v2-adapter"
-import { mergeSnapshotIntoMessages } from "./message-merge"
 import type { MessageWithParts } from "./api-types"
 import type { PendingQuestion } from "./pending-requests"
 import { runLimited } from "./run-limited"

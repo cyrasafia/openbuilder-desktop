@@ -2217,7 +2217,13 @@ export class AppStore {
       // 占位（sendPrompt 的 text || "\u200b" 契约）——两侧归一后比较（review
       // 2026-10-10：裸等值会让纯附件/纯引用桥接永失配，chip 降级）
       const normText = (t: string) => (t ? t : "\u200b")
-      const bridge = this.optimisticBySession.get(sessionID)?.find((o) => normText(o.text) === normText(text))
+      const candidates = (this.optimisticBySession.get(sessionID) ?? []).filter(
+        (o) => normText(o.text) === normText(text),
+      )
+      // 多候选撞匹配（同文本并发在途，乱序准入下无法定归属）→ 跳过桥接：
+      // 错配比缺配糟——附件会长在别人的气泡上；降级为无 chip，与「并发在途
+      // 第二条无桥接」同一已接受边界（review 二轮非阻塞 1）
+      const bridge = candidates.length === 1 ? candidates[0] : undefined
       const msg = inboxItemToUserMessage(sessionID, inboxID, item, created, bridge)
       if (!msg) return
       conv.set(inboxID, msg)

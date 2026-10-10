@@ -1252,8 +1252,9 @@ describe("busy 补充发送（design-supplement-send / design-inbox-admission）
       { info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 300 } }, parts: [] },
     ])
     expect(store.chatEntries("s1").some((e) => e.kind === "message" && e.data.info.id === "msg_q")).toBe(true)
-    // 对账页含该 id（投影确认）：豁免解除——后续快照（同形状）照样不删，
-    // 且 cancelled 不再受集合保护语义之外的删（集合已摘）
+    // 对账页含该 id（投影确认）：REST 权威 info 合并（created 251）+ 豁免记账
+    // 摘除（摘除由 created 覆盖间接证明；cancelled 的已投影不删语义由
+    // inbox.cancelled 用例经 delivered/mergeMessagePage 路径覆盖）
     deps.onMessagesSnapshot("s1", [
       { info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } }, parts: [] },
       { info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 300 } }, parts: [] },
@@ -1297,6 +1298,44 @@ describe("busy 补充发送（design-supplement-send / design-inbox-admission）
     expect(refPart.url).toBe("file:///repo/src/a.ts")
     const attachPart = parts[2] as FileDisplayPart
     expect(attachPart.url).toBe("data:image/png;base64,AAAA")
+  })
+
+  it("同文本并发在途（多候选撞匹配）：跳过桥接——错配比缺配糟（review 二轮非阻塞 1）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    const clientV2 = clientV2Of()
+    clientV2.prompt = async () => {}
+    setBusy()
+    seedMessages("s1")
+
+    // 两条空文本（纯附件）乐观并发在途（design-supplement-send 并发已放开）
+    await store.sendPrompt(
+      "s1",
+      "",
+      [{ path: "src/a.ts", absolute: "/repo/src/a.ts", filename: "a.ts", isDir: false }],
+    )
+    await store.sendPrompt(
+      "s1",
+      "",
+      [{ path: "src/b.ts", absolute: "/repo/src/b.ts", filename: "b.ts", isDir: false }],
+    )
+    // 乱序准入（第二条先到）：归一后双候选撞匹配 → 不桥接任何一方的 refs
+    //（附件不长到别人的气泡上），走 payload files 兜底（此处空）
+    dispatch({
+      type: "session.inbox.enqueued",
+      properties: {
+        sessionID: "s1",
+        inboxID: "msg_u2",
+        item: { type: "user", payload: { text: "\u200b" }, delivery: "steer" },
+      },
+    })
+    const entries = store.chatEntries("s1")
+    expect(entries).toHaveLength(1)
+    const parts = (entries[0] as { data: MessageWithParts }).data.parts
+    expect(parts.map((p) => p.type)).toEqual(["text"])
+    // 单候选场景不受影响（前置用例已锁定），此处再验收敛：首条准入清全部
+    // 乐观后，第二条准入无候选 → 兜底照常
+    expect(store.chatEntries("s1").every((e) => e.kind !== "optimistic")).toBe(true)
   })
 
   it("retry 中补充发送：乐观 busy 不覆写 retry（退避提示保持整个 backoff 窗口）", async () => {

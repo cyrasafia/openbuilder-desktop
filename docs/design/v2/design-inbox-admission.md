@@ -63,9 +63,11 @@ M6c 评审 Y3 的 delivered 重取只闭合「最终吸收」场景，没闭合�
   `FileDisplayPart`
   （refs：`source.type="file"` + path，chip 可点；attachments：data: url + mime，
   图片缩略图）——乐观→物化替换不丢 chip/缩略图（移动端 `_bridgeOptimisticParts`
-  同构）。命令回显 payload 是展开文本，匹配失败不桥接（与投影后无 chip 的现状
-  一致，不新增回退）。清乐观 = 清全部（design-supplement-send §4 既有语义：
-  并发在途第二条无桥接，接受）
+  同构）。**多候选撞匹配（同文本并发在途，乱序准入无法定归属）跳过桥接**：
+  错配比缺配糟（附件长到别人的气泡上），降级为无 chip 与「并发在途第二条无
+  桥接」同一已接受边界（review 二轮非阻塞 1）。命令回显 payload 是展开文本，
+  匹配失败不桥接（与投影后无 chip 的现状一致，不新增回退）。清乐观 = 清全部
+  （design-supplement-send §4 既有语义）
 - **payload files 兜底解析**（他端发送/防御）：live 2.0.24 形状
   `{data, mime, source:{type:"uri",uri}, name}`——name chip；有 data 时重组
   `data:` url 供图片缩略图。v2.0.18 形状 `{uri, name}` 同函数防御兼容
