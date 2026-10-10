@@ -1,5 +1,13 @@
 # 会话进行中补充发送（supplement send）— 设计文档
 
+> **v2 修订注记（2026-10-10，design-inbox-admission）**：§2 服务端契约按 v1.18
+> 实测撰写——busy 中 prompt 立即落库 + SSE 广播。v2.0.24 已改为 inbox 准入：
+> busy 中 POST 立即 200 + `session.inbox.enqueued`（server 持久接受），但投影
+> （message list 可见）推迟到 run 吸收（steer=step 边界、queue=idle 边界；
+> error/blocked 收尾不吸收）。补充气泡由**准入即物化**承接（enqueued 以
+> inboxID 铸真实消息 + 清乐观），不再悬挂「发送中」至投影；§3.2 的乐观 busy
+> 守卫与 §3.3 的排序语义不变。详见 `docs/design/v2/design-inbox-admission.md`。
+>
 > 目标：会话进行中（busy/retry）允许继续在输入区发送消息；消息以**补充**形式进入当前 run——**不打断**正在生成的回复，**不排队**为独立轮次。
 >
 > 参考来源（openbuilder 移动端，按 AGENTS.md 约定先行检索）：

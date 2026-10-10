@@ -129,10 +129,15 @@ export function filterRevertedEntries(
  * - info 取 REST 权威
  * - parts 按 part-id 字段级并集：text 取更长者，tool 状态见 mergePart（快照
  *   非 pending 优先），其余取快照
+ * - preserveIds（design-inbox-admission §3.3）：未投影 inbox 物化项豁免窗口
+ *   区间删除——busy 中 in-flight assistant 的 created 会前移越过排队消息
+ *   created（retry 重启 step），把它圈进 (min, max) 开区间；投影确认后由
+ *   调用方（mergeMessagePage）从集合摘除，恢复常规删除语义
  */
 export function mergeSnapshotIntoMessages(
   local: Map<string, MessageWithParts>,
   snapshot: MessageWithParts[],
+  preserveIds?: ReadonlySet<string>,
 ): Map<string, MessageWithParts> {
   // 快照入口过滤合成 text part（引用文件内容等 server 注入，isSyntheticTextPart
   // 注释）：本地侧由 SSE handler 同规则过滤，双侧一致保证 mergeParts 并集不回流
@@ -156,7 +161,7 @@ export function mergeSnapshotIntoMessages(
     const minCreated = Math.min(...snapshot.map((m) => m.info.time.created))
     const maxCreated = Math.max(...snapshot.map((m) => m.info.time.created))
     for (const [id, item] of next) {
-      if (snapshotIds.has(id)) continue
+      if (snapshotIds.has(id) || preserveIds?.has(id)) continue
       const c = item.info.time.created
       if (c > minCreated && c < maxCreated) {
         next.delete(id)

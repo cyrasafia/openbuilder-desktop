@@ -75,7 +75,8 @@ export function archivedAtOf(s: Session): number | null {
 
 // ============ 消息域（M4a）：v2 typed union → v1 {info, parts} ============
 
-import type { Message, MessageWithParts, Part, TextPart, ToolPart } from "./api-types"
+import type { FileDisplayPart, FileRef, Message, MessageWithParts, Part, TextPart, ToolPart } from "./api-types"
+import type { Attachment } from "./attachment-pipeline"
 
 /** v2 消息条目的宽松形状（typed union 过大不强镜像；按 type 判别 + 防御读取） */
 export type V2MessageEntry = { id: string; type: string; time?: { created?: number } } & Record<string, unknown>
@@ -163,6 +164,88 @@ function assistantContentToParts(sessionID: string, messageID: string, content: 
  * - system/skill/shell/compaction/idle/agent-switched/model-switched/location-
  *   switched：v1 渲染层无对应，跳过（对账权威，不进渲染）；M6 评估原生渲染
  */
+/**
+ * inbox user 项 → 内部 user 消息（design-inbox-admission §3.2，准入即物化）。
+ * `session.inbox.enqueued` 的 item（{type, payload, delivery}——无 time，created
+ * 由调用方传信封值）以 inboxID（= 投影后消息 id，活体+源码双证）铸消息：
+ * 投影落地后 REST 权威 info 按 id 覆盖、parts 并集，物化→投影零跳变。
+ * - bridge（自有发送，按 payload.text 匹配乐观条目）：refs/attachments 铸
+ *   file part（chip 可点/图片缩略图随物化保留——移动端 _bridgeOptimisticParts
+ *   同构），跳过 payload files 兜底解析（同源数据，防重复 chip）
+ * - payload files 兜底（他端发送）：live 2.0.24 形状 {data, mime, source:{type:
+ *   "uri", uri}, name}——name chip + data 重组 data: url（图片可缩略图）；
+ *   v2.0.18 形状 {uri, name} 防御兼容。source 原样透传（isFileRefPart 判
+ *   source.type==="file"，"uri" 归附件型 chip）
+ */
+export function inboxItemToUserMessage(
+  sessionID: string,
+  inboxID: string,
+  item: unknown,
+  created: number,
+  bridge?: { refs?: FileRef[]; attachments?: Attachment[] } | null,
+): MessageWithParts | null {
+  const payload = (item as { payload?: Record<string, unknown> } | undefined)?.payload
+  if (!payload) return null
+  const text = typeof payload.text === "string" ? payload.text : ""
+  const parts: Part[] = []
+  if (text) {
+    parts.push({ id: `${inboxID}:text`, sessionID, messageID: inboxID, type: "text", text })
+  }
+  let n = 0
+  const filePartId = () => `${inboxID}:file:${n++}`
+  if (bridge && (bridge.refs?.length || bridge.attachments?.length)) {
+    for (const ref of bridge.refs ?? []) {
+      parts.push({
+        id: filePartId(),
+        sessionID,
+        messageID: inboxID,
+        type: "file",
+        mime: "text/plain",
+        url: `file://${ref.absolute}`,
+        filename: ref.filename,
+        // 引用回灌型（isFileRefPart）：path 相对、absolute 由会话目录拼合
+        //（fileRefToFilePart 发送侧同款 shape）
+        source: { type: "file", path: ref.path, text: { value: "", start: 0, end: 0 } },
+      } as FileDisplayPart)
+    }
+    for (const a of bridge.attachments ?? []) {
+      parts.push({
+        id: filePartId(),
+        sessionID,
+        messageID: inboxID,
+        type: "file",
+        mime: a.mime,
+        url: a.dataUrl,
+        filename: a.filename,
+      } as FileDisplayPart)
+    }
+  } else {
+    const files = Array.isArray(payload.files) ? payload.files : []
+    for (const f of files) {
+      const file = f as Record<string, unknown>
+      const name = typeof file.name === "string" ? file.name : typeof file.filename === "string" ? file.filename : ""
+      const mime = typeof file.mime === "string" ? file.mime : undefined
+      const uri = typeof file.uri === "string" ? file.uri : undefined
+      const source = file.source && typeof file.source === "object" ? (file.source as FileDisplayPart["source"]) : undefined
+      const srcUriRaw = source ? (source as Record<string, unknown>).uri : undefined
+      const srcUri = typeof srcUriRaw === "string" ? srcUriRaw : undefined
+      const data = typeof file.data === "string" ? file.data : undefined
+      const url = uri ?? srcUri ?? (data != null && mime ? `data:${mime};base64,${data}` : undefined)
+      parts.push({
+        id: `${inboxID}:pf:${n++}`,
+        sessionID,
+        messageID: inboxID,
+        type: "file",
+        ...(url != null ? { url } : {}),
+        ...(mime != null ? { mime } : {}),
+        ...(name ? { filename: name } : {}),
+        ...(source != null ? { source } : {}),
+      } as FileDisplayPart)
+    }
+  }
+  return { info: { id: inboxID, sessionID, role: "user", time: { created } }, parts }
+}
+
 export function toInternalMessages(sessionID: string, entries: V2MessageEntry[]): MessageWithParts[] {
   const out: MessageWithParts[] = []
   for (const e of entries) {

@@ -8,6 +8,7 @@ import {
   archivedAtOf,
   contentText as contentTextOf,
   errorMessage as errorMessageOf,
+  inboxItemToUserMessage,
   isArchivedSession,
   toInternalProject,
   toInternalSession,
@@ -407,6 +408,13 @@ export class AppStore {
    */
   private syntheticDroppedBySession = new Map<string, Set<string>>()
   optimisticBySession = new Map<string, OptimisticMessage[]>()
+  /**
+   * 准入即物化的未投影记账（design-inbox-admission §3.1）：inbox user 项经
+   * enqueued 物化进 messagesBySession 后、REST 快照首次见到投影前的 id 集合——
+   * 窗口删除豁免 + inbox.cancelled 精确移除的判据。投影确认（mergeMessagePage
+   * 页内出现）即摘除；生命周期与 messagesBySession 同（cleanupSessionState）。
+   */
+  private materializedInbox = new Map<string, Set<string>>()
   /**
    * 会话消息历史分页状态（design-message-history-pagination §4.2）：
    * cursor 锚定当前最旧已加载消息；不变式 `exhausted ⇒ nextCursor == null`，
@@ -1064,6 +1072,7 @@ export class AppStore {
     this.sessionPages.clear()
     this.pendingPartsMap.clear()
     this.optimisticBySession.clear()
+    this.materializedInbox.clear()
     // 引用全清（design-file-reference §2，与草稿同寿命）+ 附件（design-session-attachments §2）
     this.fileRefs.clear()
     this.attachments.clear()
@@ -1846,8 +1855,14 @@ export class AppStore {
           if (ids) ids.add(inboxID)
           else this.commandEchoMessages.set(sessionID, new Set([inboxID]))
         }
+        // 准入即物化（design-inbox-admission §2）：busy/排队窗口内投影未落地，
+        // 以 inboxID（= 投影消息 id）先物化 user 消息——乐观随真实 id 消解，
+        // 「发送中」在 server 持久接受的时刻结束；投影后按 id 合并零跳变
+        if (this.messagesBySession.has(sessionID)) {
+          this.materializeInboxUser(sessionID, inboxID, item, meta?.created ?? Date.now())
+        }
         // 他端消息实时落地：已加载的会话补一次首页重取（幂等合并；本端 prompt
-        // 的 enqueued 重取无害——回执驱动路径已覆盖）。未加载会话等打开时拉取
+        // 的 enqueued 重取无害——物化已先行，重取合并已投影页并摘除豁免记账）
         if (this.messagesBySession.has(sessionID)) void this.refreshConversationTail(sessionID)
         break
       }
@@ -1859,6 +1874,14 @@ export class AppStore {
         if (sessionID && this.messagesBySession.has(sessionID)) {
           void this.refreshConversationTail(sessionID)
         }
+        break
+      }
+      case "session.inbox.cancelled": {
+        // 他端取消排队项（design-inbox-admission §3.4）：仅清未投影物化项
+        // （集合在判）——已投影消息是历史不可撤；乐观条目不在此列（准入时
+        // 已被物化替换，移动端 removeInboxMessage 同语义）
+        const { sessionID, inboxID } = ev.properties as { sessionID?: string; inboxID?: string }
+        if (sessionID && inboxID) this.removeMaterializedInbox(sessionID, inboxID)
         break
       }
       case "session.status": {
@@ -2174,6 +2197,44 @@ export class AppStore {
     if (this.optimisticBySession.has(sessionID)) {
       this.optimisticBySession.delete(sessionID)
     }
+  }
+
+  /**
+   * 准入即物化（design-inbox-admission §3.2）：enqueued user 项以 inboxID 铸
+   * 真实消息写入已加载会话，乐观清空（首条真实到达清全部，移动端同判）。
+   * 已在场（回执路径先合并的投影页/SSE 重放）幂等跳过——消息已知不构成
+   * 「到达」，不清乐观（在途乐观由各自准入清）。
+   * 桥接：按 payload.text 匹配乐观条目（v2 text 原样落库，含纯附件零宽占位）
+   * ——refs/attachments 铸 file part 随物化保留；命令回显 payload 是展开文本，
+   * 匹配失败不桥接（与投影后现状一致，不新增回退）。
+   */
+  private materializeInboxUser(sessionID: string, inboxID: string, item: unknown, created: number) {
+    const conv = this.messagesBySession.get(sessionID)
+    if (!conv) return
+    if (!conv.has(inboxID)) {
+      const text = (item as { payload?: { text?: string } } | undefined)?.payload?.text ?? ""
+      const bridge = this.optimisticBySession.get(sessionID)?.find((o) => o.text === text)
+      const msg = inboxItemToUserMessage(sessionID, inboxID, item, created, bridge)
+      if (!msg) return
+      conv.set(inboxID, msg)
+      // 未投影记账：窗口删除豁免 + cancelled 精确移除的判据
+      const pendingInbox = this.materializedInbox.get(sessionID)
+      if (pendingInbox) pendingInbox.add(inboxID)
+      else this.materializedInbox.set(sessionID, new Set([inboxID]))
+      // 清全部乐观仅随新鲜准入（首条真实到达清全部，移动端同判）——重复/迟到
+      // 事件（消息已知）不构成「到达」，不清（在途乐观由各自准入清）
+      this.clearOptimistic(sessionID)
+      this.emit()
+    }
+  }
+
+  /** cancelled → 移除未投影物化项（集合在判才动消息——已投影是历史不可撤） */
+  private removeMaterializedInbox(sessionID: string, inboxID: string) {
+    const pending = this.materializedInbox.get(sessionID)
+    if (!pending?.has(inboxID)) return
+    pending.delete(inboxID)
+    if (pending.size === 0) this.materializedInbox.delete(sessionID)
+    if (this.messagesBySession.get(sessionID)?.delete(inboxID)) this.emit()
   }
 
   // ============ 会话状态（design-typing-indicator §4） ============
@@ -3051,6 +3112,7 @@ export class AppStore {
     this.syntheticDroppedBySession.delete(sessionID)
     this.pendingPartsMap.delete(sessionID)
     this.optimisticBySession.delete(sessionID)
+    this.materializedInbox.delete(sessionID)
     this.sessionPages.delete(sessionID)
     // 后台任务通知随会话运行时卸载（design-subagent-background D3：重开不补启动提示；
     // 完成提示经 REST synthetic 重建）。注意：不在此清 childIndex——关 Tab=归档不删会话
@@ -3732,7 +3794,19 @@ export class AppStore {
     this.extractSyntheticNotices(sessionID, msgs)
     const local = this.messagesBySession.get(sessionID) ?? new Map()
     const hadIds = new Set(local.keys())
-    const merged = mergeSnapshotIntoMessages(local, msgs)
+    // 未投影物化项豁免窗口删除（design-inbox-admission §3.3）：快照 (min,max)
+    // 开区间会圈住排队消息（busy 中 assistant created 前移越过其 created）；
+    // 页内已见的 id = 投影确认，摘除记账恢复常规删除语义
+    const pendingInbox = this.materializedInbox.get(sessionID)
+    const merged = mergeSnapshotIntoMessages(
+      local,
+      msgs,
+      pendingInbox && pendingInbox.size > 0 ? pendingInbox : undefined,
+    )
+    if (pendingInbox) {
+      for (const m of msgs) pendingInbox.delete(m.info.id)
+      if (pendingInbox.size === 0) this.materializedInbox.delete(sessionID)
+    }
     // 应用 pending parts
     const pending = this.pendingParts(sessionID)
     for (const [mid, parts] of pending) {

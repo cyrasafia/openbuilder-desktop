@@ -183,6 +183,24 @@ describe("mergeSnapshotIntoMessages", () => {
     expect(merged.has("msg_0")).toBe(true)
   })
 
+  it("preserveIds 窗口删除豁免（design-inbox-admission §3.3）：未投影物化项落窗口不删", () => {
+    // busy 场景：in-flight assistant created 前移（100→300）圈住物化 created（200）
+    const local = new Map([
+      ["msg_1", entry(userMsg("msg_1", 100))],
+      ["msg_q", entry(userMsg("msg_q", 200))], // 未投影物化项（快照必缺）
+    ])
+    const snapshot = [entry(userMsg("msg_1", 100)), entry(assistantMsg("msg_a", 300))]
+    // 不豁免：物化项被窗口删除（对照）
+    expect(mergeSnapshotIntoMessages(local, snapshot).has("msg_q")).toBe(false)
+    // 豁免：保留（投影确认由调用方摘除集合恢复常规语义）
+    const merged = mergeSnapshotIntoMessages(local, snapshot, new Set(["msg_q"]))
+    expect(merged.has("msg_q")).toBe(true)
+    // 快照含该 id（投影已到）：常规合并，豁免无副作用
+    const local2 = new Map([["msg_1", entry(userMsg("msg_1", 100))]])
+    const snapshot2 = [entry(userMsg("msg_1", 100)), entry(userMsg("msg_q", 200))]
+    expect(mergeSnapshotIntoMessages(local2, snapshot2, new Set(["msg_q"])).has("msg_q")).toBe(true)
+  })
+
   it("info 取 REST 权威，parts 并集", () => {
     const local = new Map([
       [
