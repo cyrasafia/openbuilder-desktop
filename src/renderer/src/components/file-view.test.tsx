@@ -598,7 +598,10 @@ describe("FileView markdown 页面内搜索（design-find-in-page §2.3/§2.4）
     expect(findRequestersStub.has("file:/repo/doc.md")).toBe(true)
     openFindBar("/repo/doc.md")
     expect(document.querySelector(".find-bar")).not.toBeNull()
+    // 查找条展开时 wrap 挂 find-open（TOC 限高再让出条高，2026-10-10）
+    expect(document.querySelector(".file-view-wrap.find-open")).not.toBeNull()
     mdFindClose()
+    expect(document.querySelector(".file-view-wrap.find-open")).toBeNull()
     // 切源码：同一注册回调改开 CM 搜索面板（openSearchPanel）——原「不动作」
     // 语义 2026-09-09 修订：未聚焦正文也能 Ctrl+F
     fireEvent.click(screen.getByRole("button", { name: "源码" }))
