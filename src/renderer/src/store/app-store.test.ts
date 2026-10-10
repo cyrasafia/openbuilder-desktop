@@ -1215,6 +1215,90 @@ describe("busy 补充发送（design-supplement-send / design-inbox-admission）
     expect(store.chatEntries("s1").some((e) => e.kind === "message" && e.data.info.id === "msg_u3")).toBe(true)
   })
 
+  it("对账漏斗同判（review 2026-10-10 阻塞项回归）：onMessagesSnapshot 窗口圈住未投影物化项不删", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    const clientV2 = clientV2Of()
+    clientV2.prompt = async () => {}
+    setBusy()
+    seedMessages(
+      "s1",
+      { info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } }, parts: [] },
+    )
+
+    await store.sendPrompt("s1", "retry 退避窗口中的补充")
+    // 准入（created=250）物化；对账快照不含该 id 且 assistant created 前移（300）
+    // 圈住窗口 (100,300) —— 60s 周期/重连对账（onMessagesSnapshot）不得删它
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown, meta?: unknown) => void }).handleEvent(
+      ROOT,
+      {
+        type: "session.inbox.enqueued",
+        properties: {
+          sessionID: "s1",
+          inboxID: "msg_q",
+          item: { type: "user", payload: { text: "retry 退避窗口中的补充" }, delivery: "steer" },
+        },
+      },
+      { created: 250 },
+    )
+    store.mountReconciler()
+    const deps = (
+      (store as unknown as { reconciler: { d: unknown } }).reconciler as {
+        d: { onMessagesSnapshot: (sid: string, msgs: MessageWithParts[]) => void }
+      }
+    ).d
+    deps.onMessagesSnapshot("s1", [
+      { info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } }, parts: [] },
+      { info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 300 } }, parts: [] },
+    ])
+    expect(store.chatEntries("s1").some((e) => e.kind === "message" && e.data.info.id === "msg_q")).toBe(true)
+    // 对账页含该 id（投影确认）：豁免解除——后续快照（同形状）照样不删，
+    // 且 cancelled 不再受集合保护语义之外的删（集合已摘）
+    deps.onMessagesSnapshot("s1", [
+      { info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } }, parts: [] },
+      { info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 300 } }, parts: [] },
+      { info: { id: "msg_q", sessionID: "s1", role: "user", time: { created: 251 } }, parts: [] },
+    ])
+    const uq = store.chatEntries("s1").find((e) => e.kind === "message" && e.data.info.id === "msg_q")
+    expect((uq as { data: MessageWithParts }).data.info.time.created).toBe(251)
+  })
+
+  it("纯附件发送桥接（review 2026-10-10 非阻塞项）：零宽占位归一后命中（text=\"\" vs \"\\u200b\"）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    const clientV2 = clientV2Of()
+    clientV2.prompt = async () => {}
+    setBusy()
+    seedMessages("s1")
+
+    // 本地 optimistic.text = ""（原始输入）；server 落库 "\u200b"（sendPrompt 占位契约）
+    await store.sendPrompt(
+      "s1",
+      "",
+      [{ path: "src/a.ts", absolute: "/repo/src/a.ts", filename: "a.ts", isDir: false }],
+      [{ id: "att_1", mime: "image/png", filename: "shot.png", dataUrl: "data:image/png;base64,AAAA", isImage: true }],
+    )
+    dispatch({
+      type: "session.inbox.enqueued",
+      properties: {
+        sessionID: "s1",
+        inboxID: "msg_u1",
+        item: { type: "user", payload: { text: "\u200b", files: [] }, delivery: "steer" },
+      },
+    })
+    const entries = store.chatEntries("s1")
+    expect(entries).toHaveLength(1)
+    const parts = (entries[0] as { data: MessageWithParts }).data.parts
+    // 桥接命中：refs/attachments 铸 file part（零宽占位 text part 亦随物化）
+    expect(parts.map((p) => p.type)).toEqual(["text", "file", "file"])
+    expect((parts[0] as { text?: string }).text).toBe("\u200b")
+    const refPart = parts[1] as FileDisplayPart
+    expect(refPart.source?.type).toBe("file")
+    expect(refPart.url).toBe("file:///repo/src/a.ts")
+    const attachPart = parts[2] as FileDisplayPart
+    expect(attachPart.url).toBe("data:image/png;base64,AAAA")
+  })
+
   it("retry 中补充发送：乐观 busy 不覆写 retry（退避提示保持整个 backoff 窗口）", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))

@@ -1855,15 +1855,15 @@ export class AppStore {
           if (ids) ids.add(inboxID)
           else this.commandEchoMessages.set(sessionID, new Set([inboxID]))
         }
-        // 准入即物化（design-inbox-admission §2）：busy/排队窗口内投影未落地，
-        // 以 inboxID（= 投影消息 id）先物化 user 消息——乐观随真实 id 消解，
-        // 「发送中」在 server 持久接受的时刻结束；投影后按 id 合并零跳变
+        // 准入即物化（design-inbox-admission §2）+ 尾部重取（M6c 他端落地）：
+        // 共用已加载门（未加载会话等打开时拉取）——busy/排队窗口内投影未落地，
+        // 物化以 inboxID（= 投影消息 id）先行落地 user 消息，乐观随真实 id
+        // 消解（「发送中」在 server 持久接受的时刻结束）；重取合并已投影页并
+        // 摘除豁免记账（幂等）
         if (this.messagesBySession.has(sessionID)) {
           this.materializeInboxUser(sessionID, inboxID, item, meta?.created ?? Date.now())
+          void this.refreshConversationTail(sessionID)
         }
-        // 他端消息实时落地：已加载的会话补一次首页重取（幂等合并；本端 prompt
-        // 的 enqueued 重取无害——物化已先行，重取合并已投影页并摘除豁免记账）
-        if (this.messagesBySession.has(sessionID)) void this.refreshConversationTail(sessionID)
         break
       }
       case "session.inbox.delivered": {
@@ -2213,7 +2213,11 @@ export class AppStore {
     if (!conv) return
     if (!conv.has(inboxID)) {
       const text = (item as { payload?: { text?: string } } | undefined)?.payload?.text ?? ""
-      const bridge = this.optimisticBySession.get(sessionID)?.find((o) => o.text === text)
+      // 桥接匹配按 payload.text：纯附件发送本地存原始空串、server 落库零宽
+      // 占位（sendPrompt 的 text || "\u200b" 契约）——两侧归一后比较（review
+      // 2026-10-10：裸等值会让纯附件/纯引用桥接永失配，chip 降级）
+      const normText = (t: string) => (t ? t : "\u200b")
+      const bridge = this.optimisticBySession.get(sessionID)?.find((o) => normText(o.text) === normText(text))
       const msg = inboxItemToUserMessage(sessionID, inboxID, item, created, bridge)
       if (!msg) return
       conv.set(inboxID, msg)
@@ -3788,15 +3792,14 @@ export class AppStore {
     }
   }
 
-  /** REST 页合并进会话 map（快照合并 + pending parts 回放），返回本页新增的消息条数 */
-  private mergeMessagePage(sessionID: string, msgs: MessageWithParts[]) {
+  /** REST 快照合并统一入口（mergeMessagePage / reconciler onMessagesSnapshot
+   *  两条漏斗共用，design-inbox-admission §3.3）：未投影物化项豁免窗口删除
+   *  ——快照 (min,max) 开区间会圈住排队消息（busy 中 assistant created 前移
+   *  越过其 created）；页内已见 id = 投影确认，摘除记账恢复常规删除语义 */
+  private mergeRestSnapshot(sessionID: string, msgs: MessageWithParts[]): Map<string, MessageWithParts> {
     this.noteSyntheticInSnapshot(sessionID, msgs)
     this.extractSyntheticNotices(sessionID, msgs)
     const local = this.messagesBySession.get(sessionID) ?? new Map()
-    const hadIds = new Set(local.keys())
-    // 未投影物化项豁免窗口删除（design-inbox-admission §3.3）：快照 (min,max)
-    // 开区间会圈住排队消息（busy 中 assistant created 前移越过其 created）；
-    // 页内已见的 id = 投影确认，摘除记账恢复常规删除语义
     const pendingInbox = this.materializedInbox.get(sessionID)
     const merged = mergeSnapshotIntoMessages(
       local,
@@ -3807,6 +3810,14 @@ export class AppStore {
       for (const m of msgs) pendingInbox.delete(m.info.id)
       if (pendingInbox.size === 0) this.materializedInbox.delete(sessionID)
     }
+    this.messagesBySession.set(sessionID, merged)
+    return merged
+  }
+
+  /** REST 页合并进会话 map（快照合并 + pending parts 回放），返回本页新增的消息条数 */
+  private mergeMessagePage(sessionID: string, msgs: MessageWithParts[]) {
+    const hadIds = new Set((this.messagesBySession.get(sessionID) ?? new Map()).keys())
+    const merged = this.mergeRestSnapshot(sessionID, msgs)
     // 应用 pending parts
     const pending = this.pendingParts(sessionID)
     for (const [mid, parts] of pending) {
@@ -3820,7 +3831,7 @@ export class AppStore {
       }
     }
     pending.clear()
-    this.messagesBySession.set(sessionID, merged)
+    // mergeRestSnapshot 已落 map；pending parts 就地变更（同步段无 async gap）
     // 快照合并后补撤回（review 四轮 #1，同 onMessagesSnapshot）：REST 页
     // 落地的 tool part 同样构成前台认领依据；③转后台提示缺口恢复同此；
     // 启动提示 REST 重建（覆盖窗口内未认领子会话）
@@ -6821,11 +6832,10 @@ export class AppStore {
       },
       onActiveSnapshot: (active, fetchedAt) => this.reconcileActiveSnapshot(active, fetchedAt),
       onMessagesSnapshot: (sessionID, msgs) => {
-        this.noteSyntheticInSnapshot(sessionID, msgs)
-        this.extractSyntheticNotices(sessionID, msgs)
-        const local = this.messagesBySession.get(sessionID) ?? new Map()
-        const merged = mergeSnapshotIntoMessages(local, msgs)
-        this.messagesBySession.set(sessionID, merged)
+        // 两条 REST 合并漏斗之一（60s 周期/重连对账）：与 mergeMessagePage
+        // 同经 mergeRestSnapshot——未投影物化项豁免 + 投影摘除（review 2026-10-10：
+        // 漏传豁免会让 busy 排队消息被窗口删除复发，本提交核心场景被对账击穿）
+        const merged = this.mergeRestSnapshot(sessionID, msgs)
         // 快照合并后补撤回（review 四轮 #1）：断线窗口丢 tool part 事件、
         // 重连仅经 REST 落地时，事件侧钩子不会触发——此处兜底；③转后台
         // 提示的缺口恢复、启动提示的 REST 重建同此

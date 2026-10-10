@@ -57,8 +57,10 @@ M6c 评审 Y3 的 delivered 重取只闭合「最终吸收」场景，没闭合�
 `inboxItemToUserMessage(sessionID, inboxID, item, created, bridge)` →
 `MessageWithParts`：text part（`{id}:text`）+ 桥接 file parts。
 
-- **桥接**（自有发送）：按 `payload.text` 匹配乐观条目（v2 text 原样落库，含
-  纯附件零宽空格占位），把其 refs/attachments 铸成 `FileDisplayPart`
+- **桥接**（自有发送）：按 `payload.text` 匹配乐观条目（**双侧零宽占位归一**：
+  纯附件/纯引用发送本地存原始空串、server 落库 `"\u200b"` 占位——裸等值会让
+  纯附件桥接永失配，review 2026-10-10 修订），把其 refs/attachments 铸成
+  `FileDisplayPart`
   （refs：`source.type="file"` + path，chip 可点；attachments：data: url + mime，
   图片缩略图）——乐观→物化替换不丢 chip/缩略图（移动端 `_bridgeOptimisticParts`
   同构）。命令回显 payload 是展开文本，匹配失败不桥接（与投影后无 chip 的现状
@@ -78,9 +80,15 @@ M6c 评审 Y3 的 delivered 重取只闭合「最终吸收」场景，没闭合�
 `preserveIds`：窗口删除跳过其中的 id（乐观/notice 不在 messages map，不受影响，
 维持原语义）。
 
-`mergeMessagePage`（REST 合并唯一漏斗）双动作：
+**两条 REST 合并漏斗统一入口 `mergeRestSnapshot`（review 2026-10-10 修订）**：
+`mergeMessagePage`（回执/尾部重取/翻页）与 reconciler 的 `onMessagesSnapshot`
+（60s 周期/重连对账）都经同一私有方法，双动作原子成对：
 1. 合并前传 `preserveIds`（会话的未投影集合）；
 2. 合并后页内出现过的 id → 从集合摘除（投影已确认，恢复常规删除语义）。
+
+review 阻塞项教训：对账漏斗漏传豁免时，busy 排队消息会被 60s 周期对账的快照
+窗口删除击穿（retry 退避 78s > 60s 周期）——本设计要修的症状在对账路径复发。
+「唯一漏斗」表述作废（首版文档的错误声明）。
 
 ### 3.4 取消（`session.inbox.cancelled`，新 case）
 
@@ -104,6 +112,14 @@ M6c 评审 Y3 的 delivered 重取只闭合「最终吸收」场景，没闭合�
 - **不做会话未加载物化**：`messagesBySession` 无 key 不物化（与既有 enqueued
   尾部重取同门）；重开 Tab 走 REST，未投影项由 delivered 重取收敛
 
+## 4a. 已知边界（接受）
+
+- **retry created 前移的排序跳变**：busy 中 retry 重启 step 使 in-flight
+  assistant 的 created 前移越过物化 created 时，物化消息从流式气泡下方跳到
+  上方（旧乐观锚定 maxCreated+1 每次重算无此跳变）。仅 retry 场景、投影落地
+  前可见；REST 权威 created 合并后位置即稳定。接受（物化的数据真实性优先于
+  排序连续性；上移语义上无错——消息确在 step 重启前提交）
+
 ## 5. 测试
 
 - `message-merge.test.ts`：窗口删除豁免（preserveIds 中的 id 落窗口不被删；
@@ -115,6 +131,10 @@ M6c 评审 Y3 的 delivered 重取只闭合「最终吸收」场景，没闭合�
   - busy 补充发送：enqueued 到达 → 物化消息以真实 id 入列（排流式下方）+
     乐观清空；busy 中途重取（快照不含该 id + assistant created 前移圈窗口）
     → 物化消息不被窗口删除；delivered 重取（页含 id）→ info 取 REST + 豁免解除
+  - **对账漏斗同判（review 2026-10-10 阻塞项回归）**：mountReconciler 直驱
+    `onMessagesSnapshot`，快照窗口圈住未投影物化消息 → 不被删
+  - 纯附件发送（text=""）桥接：零宽占位归一后命中——refs/attachments 照常
+    铸 file part
   - cancelled：未投影物化项被移除；已投影（集合已摘）不删
   - 回归：idle 发送（enqueued + 投影几乎同刻）物化→合并幂等；乐观清全部语义
     （既有用例改挂新时机）；cleanupSessionState 卸载未投影集合
