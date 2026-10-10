@@ -14,6 +14,7 @@ import type {
   AgentInfo,
   FileContentData,
   FileDiff,
+  FileDisplayPart,
   FileNode,
   MessageWithParts,
   ModelRef,
@@ -967,7 +968,7 @@ describe("worktree 库存（v2 权威源，2026-09-29：sandboxes 冻结）", ()
   })
 })
 
-describe("busy 补充发送（design-supplement-send）", () => {
+describe("busy 补充发送（design-supplement-send / design-inbox-admission）", () => {
   /** 直驱 handleEvent（SSE 已 mock off）：事件信封 { type, properties } */
   function dispatch(ev: { type: string; properties: unknown }) {
     ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, ev)
@@ -992,7 +993,7 @@ describe("busy 补充发送（design-supplement-send）", () => {
     })
   }
 
-  it("busy 中 sendPrompt：乐观补充追加不误清既有消息，状态保持 busy；真实 user 事件到达即清乐观", async () => {
+  it("busy 补充发送：enqueued 准入即物化（乐观即时清、窗口删除豁免），delivered 投影合并", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     const clientV2 = clientV2Of()
@@ -1017,31 +1018,66 @@ describe("busy 补充发送（design-supplement-send）", () => {
       "opt",
     ])
 
-    // 真实补充 user 消息（created 晚于流式 assistant）经 v2 inbox 链路到达
-    // （enqueued → 尾部重取合并）：乐观清空、消息入列
+    // busy 中重取：快照不含 msg_u2、in-flight assistant created 前移（retry 重启
+    // step，200→300）圈住物化 created（250）——窗口删除须豁免（§3.3 回归）
     clientV2.listMessagesPage = async () => ({
       entries: [
         { info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } }, parts: [] },
-        { info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 200 } }, parts: [] },
-        { info: { id: "msg_u2", sessionID: "s1", role: "user", time: { created: 300 } }, parts: [] },
+        { info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 300 } }, parts: [] },
       ],
       nextCursor: null,
     })
-    dispatch({
-      type: "session.inbox.enqueued",
-      properties: { sessionID: "s1", inboxID: "msg_u2" },
-    })
-    await vi.waitFor(() => {
+    // 真实补充 user（busy 排队，未投影）经 v2 inbox 准入（design-inbox-admission）：
+    // 同步物化 + 清乐观——不依赖投影/重取
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown, meta?: unknown) => void }).handleEvent(
+      ROOT,
+      {
+        type: "session.inbox.enqueued",
+        properties: {
+          sessionID: "s1",
+          inboxID: "msg_u2",
+          item: { type: "user", payload: { text: "补充：顺带统计词数" }, delivery: "steer" },
+        },
+      },
+      { created: 250 },
+    )
+    {
       const after = store.chatEntries("s1")
       expect(after.map((e) => (e.kind === "message" ? e.data.info.id : e.kind))).toEqual([
         "msg_u1",
         "msg_a1",
         "msg_u2",
       ])
+      expect(store.chatEntries("s1").every((e) => e.kind !== "optimistic")).toBe(true)
+    }
+    // 尾部重取合并（快照窗口 (100,300) 含 250）：物化项不被窗口删除
+    await vi.waitFor(() => {
+      const after = store.chatEntries("s1")
+      const a1 = after.find((e) => e.kind === "message" && e.data.info.id === "msg_a1")
+      expect((a1 as { data: MessageWithParts }).data.info.time.created).toBe(300)
+      expect(after.some((e) => e.kind === "message" && e.data.info.id === "msg_u2")).toBe(true)
+    })
+
+    // delivered：投影落地（页含 msg_u2，REST 权威 created 251）→ 合并 + 豁免解除
+    clientV2.listMessagesPage = async () => ({
+      entries: [
+        { info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } }, parts: [] },
+        { info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 300 } }, parts: [] },
+        { info: { id: "msg_u2", sessionID: "s1", role: "user", time: { created: 251 } }, parts: [] },
+      ],
+      nextCursor: null,
+    })
+    dispatch({
+      type: "session.inbox.delivered",
+      properties: { sessionID: "s1" },
+    })
+    await vi.waitFor(() => {
+      const u2 = store.chatEntries("s1").find((e) => e.kind === "message" && e.data.info.id === "msg_u2")
+      expect((u2 as { data: MessageWithParts }).data.info.time.created).toBe(251)
     })
   })
 
-  it("多条乐观并存：首条真实到达清全部（移动端同语义，短暂闪烁可接受）", async () => {
+  it("多条乐观并存：首条真实（enqueued 准入）清全部（移动端同语义，短暂闪烁可接受）", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     const clientV2 = clientV2Of()
@@ -1057,15 +1093,249 @@ describe("busy 补充发送（design-supplement-send）", () => {
       "补充二",
     ])
 
-    clientV2.listMessagesPage = async () => ({
-      entries: [{ info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } }, parts: [] }],
-      nextCursor: null,
-    })
+    // 首条准入（enqueued 物化）：清全部乐观——第二条的物化在其到达时无桥接
+    //（乐观已清，design-inbox-admission §3.2 已知边界，同移动端）
     dispatch({
       type: "session.inbox.enqueued",
-      properties: { sessionID: "s1", inboxID: "msg_u1" },
+      properties: {
+        sessionID: "s1",
+        inboxID: "msg_u1",
+        item: { type: "user", payload: { text: "补充一" }, delivery: "steer" },
+      },
     })
-    await vi.waitFor(() => expect(store.chatEntries("s1").every((e) => e.kind === "message")).toBe(true))
+    const entries = store.chatEntries("s1")
+    expect(entries.every((e) => e.kind === "message")).toBe(true)
+    expect(entries.map((e) => (e.kind === "message" ? e.data.info.id : null))).toEqual(["msg_u1"])
+    // 第二条随后准入：照常物化（无乐观可清）
+    dispatch({
+      type: "session.inbox.enqueued",
+      properties: {
+        sessionID: "s1",
+        inboxID: "msg_u2",
+        item: { type: "user", payload: { text: "补充二" }, delivery: "steer" },
+      },
+    })
+    expect(store.chatEntries("s1").filter((e) => e.kind === "message")).toHaveLength(2)
+  })
+
+  it("准入物化桥接：refs/attachments 铸 file part 随物化保留（chip/缩略图不闪失）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    const clientV2 = clientV2Of()
+    clientV2.prompt = async () => {}
+    setBusy()
+    seedMessages("s1")
+
+    await store.sendPrompt(
+      "s1",
+      "看下这个",
+      [{ path: "src/a.ts", absolute: "/repo/src/a.ts", filename: "a.ts", isDir: false }],
+      [{ id: "att_1", mime: "image/png", filename: "shot.png", dataUrl: "data:image/png;base64,AAAA", isImage: true }],
+    )
+    // 准入：payload.text 匹配乐观条目 → refs/attachments 铸 file part
+    dispatch({
+      type: "session.inbox.enqueued",
+      properties: {
+        sessionID: "s1",
+        inboxID: "msg_u1",
+        item: { type: "user", payload: { text: "看下这个" }, delivery: "steer" },
+      },
+    })
+    const entries = store.chatEntries("s1")
+    expect(entries).toHaveLength(1)
+    const parts = (entries[0] as { data: MessageWithParts }).data.parts
+    // text + 引用回灌型（source.type=file，chip 可点）+ 附件回灌型（data: url）
+    expect(parts.map((p) => p.type)).toEqual(["text", "file", "file"])
+    const refPart = parts[1] as FileDisplayPart
+    expect(refPart.source?.type).toBe("file")
+    expect((refPart.source as { path?: string }).path).toBe("src/a.ts")
+    expect(refPart.url).toBe("file:///repo/src/a.ts")
+    const attachPart = parts[2] as FileDisplayPart
+    expect(attachPart.url).toBe("data:image/png;base64,AAAA")
+    expect(attachPart.mime).toBe("image/png")
+    expect(attachPart.source).toBeUndefined()
+    expect(store.chatEntries("s1").every((e) => e.kind !== "optimistic")).toBe(true)
+  })
+
+  it("inbox.cancelled：未投影物化项移除；投影确认后不删（历史不可撤）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    const clientV2 = clientV2Of()
+    clientV2.prompt = async () => {}
+    setBusy()
+    seedMessages(
+      "s1",
+      { info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } }, parts: [] },
+    )
+
+    await store.sendPrompt("s1", "排队中被他端取消")
+    dispatch({
+      type: "session.inbox.enqueued",
+      properties: {
+        sessionID: "s1",
+        inboxID: "msg_u2",
+        item: { type: "user", payload: { text: "排队中被他端取消" }, delivery: "queue" },
+      },
+    })
+    expect(store.chatEntries("s1").some((e) => e.kind === "message" && e.data.info.id === "msg_u2")).toBe(true)
+    // 他端取消排队项：物化消息移除（乐观已在准入时清，无草稿回填）
+    dispatch({
+      type: "session.inbox.cancelled",
+      properties: { sessionID: "s1", inboxID: "msg_u2" },
+    })
+    expect(store.chatEntries("s1").some((e) => e.kind === "message" && e.data.info.id === "msg_u2")).toBe(false)
+    expect(store.chatEntries("s1").map((e) => e.kind)).toEqual(["message"])
+
+    // 已投影路径：enqueued → delivered（页含该 id，投影确认 + 豁免解除）→ cancelled 不删
+    dispatch({
+      type: "session.inbox.enqueued",
+      properties: {
+        sessionID: "s1",
+        inboxID: "msg_u3",
+        item: { type: "user", payload: { text: "已投递" }, delivery: "steer" },
+      },
+    })
+    clientV2.listMessagesPage = async () => ({
+      entries: [
+        { info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } }, parts: [] },
+        { info: { id: "msg_u3", sessionID: "s1", role: "user", time: { created: 300 } }, parts: [] },
+      ],
+      nextCursor: null,
+    })
+    dispatch({ type: "session.inbox.delivered", properties: { sessionID: "s1" } })
+    await vi.waitFor(() => {
+      const u3 = store.chatEntries("s1").find((e) => e.kind === "message" && e.data.info.id === "msg_u3")
+      // REST 权威 created（300）落地 = 投影合并完成（豁免记账随之摘除）
+      expect((u3 as { data: MessageWithParts }).data.info.time.created).toBe(300)
+    })
+    dispatch({
+      type: "session.inbox.cancelled",
+      properties: { sessionID: "s1", inboxID: "msg_u3" },
+    })
+    expect(store.chatEntries("s1").some((e) => e.kind === "message" && e.data.info.id === "msg_u3")).toBe(true)
+  })
+
+  it("对账漏斗同判（review 2026-10-10 阻塞项回归）：onMessagesSnapshot 窗口圈住未投影物化项不删", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    const clientV2 = clientV2Of()
+    clientV2.prompt = async () => {}
+    setBusy()
+    seedMessages(
+      "s1",
+      { info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } }, parts: [] },
+    )
+
+    await store.sendPrompt("s1", "retry 退避窗口中的补充")
+    // 准入（created=250）物化；对账快照不含该 id 且 assistant created 前移（300）
+    // 圈住窗口 (100,300) —— 60s 周期/重连对账（onMessagesSnapshot）不得删它
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown, meta?: unknown) => void }).handleEvent(
+      ROOT,
+      {
+        type: "session.inbox.enqueued",
+        properties: {
+          sessionID: "s1",
+          inboxID: "msg_q",
+          item: { type: "user", payload: { text: "retry 退避窗口中的补充" }, delivery: "steer" },
+        },
+      },
+      { created: 250 },
+    )
+    store.mountReconciler()
+    const deps = (
+      (store as unknown as { reconciler: { d: unknown } }).reconciler as {
+        d: { onMessagesSnapshot: (sid: string, msgs: MessageWithParts[]) => void }
+      }
+    ).d
+    deps.onMessagesSnapshot("s1", [
+      { info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } }, parts: [] },
+      { info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 300 } }, parts: [] },
+    ])
+    expect(store.chatEntries("s1").some((e) => e.kind === "message" && e.data.info.id === "msg_q")).toBe(true)
+    // 对账页含该 id（投影确认）：REST 权威 info 合并（created 251）+ 豁免记账
+    // 摘除（摘除由 created 覆盖间接证明；cancelled 的已投影不删语义由
+    // inbox.cancelled 用例经 delivered/mergeMessagePage 路径覆盖）
+    deps.onMessagesSnapshot("s1", [
+      { info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } }, parts: [] },
+      { info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 300 } }, parts: [] },
+      { info: { id: "msg_q", sessionID: "s1", role: "user", time: { created: 251 } }, parts: [] },
+    ])
+    const uq = store.chatEntries("s1").find((e) => e.kind === "message" && e.data.info.id === "msg_q")
+    expect((uq as { data: MessageWithParts }).data.info.time.created).toBe(251)
+  })
+
+  it("纯附件发送桥接（review 2026-10-10 非阻塞项）：零宽占位归一后命中（text=\"\" vs \"\\u200b\"）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    const clientV2 = clientV2Of()
+    clientV2.prompt = async () => {}
+    setBusy()
+    seedMessages("s1")
+
+    // 本地 optimistic.text = ""（原始输入）；server 落库 "\u200b"（sendPrompt 占位契约）
+    await store.sendPrompt(
+      "s1",
+      "",
+      [{ path: "src/a.ts", absolute: "/repo/src/a.ts", filename: "a.ts", isDir: false }],
+      [{ id: "att_1", mime: "image/png", filename: "shot.png", dataUrl: "data:image/png;base64,AAAA", isImage: true }],
+    )
+    dispatch({
+      type: "session.inbox.enqueued",
+      properties: {
+        sessionID: "s1",
+        inboxID: "msg_u1",
+        item: { type: "user", payload: { text: "\u200b", files: [] }, delivery: "steer" },
+      },
+    })
+    const entries = store.chatEntries("s1")
+    expect(entries).toHaveLength(1)
+    const parts = (entries[0] as { data: MessageWithParts }).data.parts
+    // 桥接命中：refs/attachments 铸 file part（零宽占位 text part 亦随物化）
+    expect(parts.map((p) => p.type)).toEqual(["text", "file", "file"])
+    expect((parts[0] as { text?: string }).text).toBe("\u200b")
+    const refPart = parts[1] as FileDisplayPart
+    expect(refPart.source?.type).toBe("file")
+    expect(refPart.url).toBe("file:///repo/src/a.ts")
+    const attachPart = parts[2] as FileDisplayPart
+    expect(attachPart.url).toBe("data:image/png;base64,AAAA")
+  })
+
+  it("同文本并发在途（多候选撞匹配）：跳过桥接——错配比缺配糟（review 二轮非阻塞 1）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    const clientV2 = clientV2Of()
+    clientV2.prompt = async () => {}
+    setBusy()
+    seedMessages("s1")
+
+    // 两条空文本（纯附件）乐观并发在途（design-supplement-send 并发已放开）
+    await store.sendPrompt(
+      "s1",
+      "",
+      [{ path: "src/a.ts", absolute: "/repo/src/a.ts", filename: "a.ts", isDir: false }],
+    )
+    await store.sendPrompt(
+      "s1",
+      "",
+      [{ path: "src/b.ts", absolute: "/repo/src/b.ts", filename: "b.ts", isDir: false }],
+    )
+    // 乱序准入（第二条先到）：归一后双候选撞匹配 → 不桥接任何一方的 refs
+    //（附件不长到别人的气泡上），走 payload files 兜底（此处空）
+    dispatch({
+      type: "session.inbox.enqueued",
+      properties: {
+        sessionID: "s1",
+        inboxID: "msg_u2",
+        item: { type: "user", payload: { text: "\u200b" }, delivery: "steer" },
+      },
+    })
+    const entries = store.chatEntries("s1")
+    expect(entries).toHaveLength(1)
+    const parts = (entries[0] as { data: MessageWithParts }).data.parts
+    expect(parts.map((p) => p.type)).toEqual(["text"])
+    // 单候选场景不受影响（前置用例已锁定），此处再验收敛：首条准入清全部
+    // 乐观后，第二条准入无候选 → 兜底照常
+    expect(store.chatEntries("s1").every((e) => e.kind !== "optimistic")).toBe(true)
   })
 
   it("retry 中补充发送：乐观 busy 不覆写 retry（退避提示保持整个 backoff 窗口）", async () => {

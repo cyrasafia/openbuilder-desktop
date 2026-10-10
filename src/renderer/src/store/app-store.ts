@@ -8,6 +8,7 @@ import {
   archivedAtOf,
   contentText as contentTextOf,
   errorMessage as errorMessageOf,
+  inboxItemToUserMessage,
   isArchivedSession,
   toInternalProject,
   toInternalSession,
@@ -407,6 +408,13 @@ export class AppStore {
    */
   private syntheticDroppedBySession = new Map<string, Set<string>>()
   optimisticBySession = new Map<string, OptimisticMessage[]>()
+  /**
+   * 准入即物化的未投影记账（design-inbox-admission §3.1）：inbox user 项经
+   * enqueued 物化进 messagesBySession 后、REST 快照首次见到投影前的 id 集合——
+   * 窗口删除豁免 + inbox.cancelled 精确移除的判据。投影确认（mergeMessagePage
+   * 页内出现）即摘除；生命周期与 messagesBySession 同（cleanupSessionState）。
+   */
+  private materializedInbox = new Map<string, Set<string>>()
   /**
    * 会话消息历史分页状态（design-message-history-pagination §4.2）：
    * cursor 锚定当前最旧已加载消息；不变式 `exhausted ⇒ nextCursor == null`，
@@ -1064,6 +1072,7 @@ export class AppStore {
     this.sessionPages.clear()
     this.pendingPartsMap.clear()
     this.optimisticBySession.clear()
+    this.materializedInbox.clear()
     // 引用全清（design-file-reference §2，与草稿同寿命）+ 附件（design-session-attachments §2）
     this.fileRefs.clear()
     this.attachments.clear()
@@ -1846,9 +1855,15 @@ export class AppStore {
           if (ids) ids.add(inboxID)
           else this.commandEchoMessages.set(sessionID, new Set([inboxID]))
         }
-        // 他端消息实时落地：已加载的会话补一次首页重取（幂等合并；本端 prompt
-        // 的 enqueued 重取无害——回执驱动路径已覆盖）。未加载会话等打开时拉取
-        if (this.messagesBySession.has(sessionID)) void this.refreshConversationTail(sessionID)
+        // 准入即物化（design-inbox-admission §2）+ 尾部重取（M6c 他端落地）：
+        // 共用已加载门（未加载会话等打开时拉取）——busy/排队窗口内投影未落地，
+        // 物化以 inboxID（= 投影消息 id）先行落地 user 消息，乐观随真实 id
+        // 消解（「发送中」在 server 持久接受的时刻结束）；重取合并已投影页并
+        // 摘除豁免记账（幂等）
+        if (this.messagesBySession.has(sessionID)) {
+          this.materializeInboxUser(sessionID, inboxID, item, meta?.created ?? Date.now())
+          void this.refreshConversationTail(sessionID)
+        }
         break
       }
       case "session.inbox.delivered": {
@@ -1859,6 +1874,14 @@ export class AppStore {
         if (sessionID && this.messagesBySession.has(sessionID)) {
           void this.refreshConversationTail(sessionID)
         }
+        break
+      }
+      case "session.inbox.cancelled": {
+        // 他端取消排队项（design-inbox-admission §3.4）：仅清未投影物化项
+        // （集合在判）——已投影消息是历史不可撤；乐观条目不在此列（准入时
+        // 已被物化替换，移动端 removeInboxMessage 同语义）
+        const { sessionID, inboxID } = ev.properties as { sessionID?: string; inboxID?: string }
+        if (sessionID && inboxID) this.removeMaterializedInbox(sessionID, inboxID)
         break
       }
       case "session.status": {
@@ -2174,6 +2197,54 @@ export class AppStore {
     if (this.optimisticBySession.has(sessionID)) {
       this.optimisticBySession.delete(sessionID)
     }
+  }
+
+  /**
+   * 准入即物化（design-inbox-admission §3.2）：enqueued user 项以 inboxID 铸
+   * 真实消息写入已加载会话，乐观清空（首条真实到达清全部，移动端同判）。
+   * 已在场（回执路径先合并的投影页/SSE 重放）幂等跳过——消息已知不构成
+   * 「到达」，不清乐观（在途乐观由各自准入清）。
+   * 桥接：按 payload.text 匹配乐观条目（v2 text 原样落库，含纯附件零宽占位）
+   * ——refs/attachments 铸 file part 随物化保留；命令回显 payload 是展开文本，
+   * 匹配失败不桥接（与投影后现状一致，不新增回退）。
+   */
+  private materializeInboxUser(sessionID: string, inboxID: string, item: unknown, created: number) {
+    const conv = this.messagesBySession.get(sessionID)
+    if (!conv) return
+    if (!conv.has(inboxID)) {
+      const text = (item as { payload?: { text?: string } } | undefined)?.payload?.text ?? ""
+      // 桥接匹配按 payload.text：纯附件发送本地存原始空串、server 落库零宽
+      // 占位（sendPrompt 的 text || "\u200b" 契约）——两侧归一后比较（review
+      // 2026-10-10：裸等值会让纯附件/纯引用桥接永失配，chip 降级）
+      const normText = (t: string) => (t ? t : "\u200b")
+      const candidates = (this.optimisticBySession.get(sessionID) ?? []).filter(
+        (o) => normText(o.text) === normText(text),
+      )
+      // 多候选撞匹配（同文本并发在途，乱序准入下无法定归属）→ 跳过桥接：
+      // 错配比缺配糟——附件会长在别人的气泡上；降级为无 chip，与「并发在途
+      // 第二条无桥接」同一已接受边界（review 二轮非阻塞 1）
+      const bridge = candidates.length === 1 ? candidates[0] : undefined
+      const msg = inboxItemToUserMessage(sessionID, inboxID, item, created, bridge)
+      if (!msg) return
+      conv.set(inboxID, msg)
+      // 未投影记账：窗口删除豁免 + cancelled 精确移除的判据
+      const pendingInbox = this.materializedInbox.get(sessionID)
+      if (pendingInbox) pendingInbox.add(inboxID)
+      else this.materializedInbox.set(sessionID, new Set([inboxID]))
+      // 清全部乐观仅随新鲜准入（首条真实到达清全部，移动端同判）——重复/迟到
+      // 事件（消息已知）不构成「到达」，不清（在途乐观由各自准入清）
+      this.clearOptimistic(sessionID)
+      this.emit()
+    }
+  }
+
+  /** cancelled → 移除未投影物化项（集合在判才动消息——已投影是历史不可撤） */
+  private removeMaterializedInbox(sessionID: string, inboxID: string) {
+    const pending = this.materializedInbox.get(sessionID)
+    if (!pending?.has(inboxID)) return
+    pending.delete(inboxID)
+    if (pending.size === 0) this.materializedInbox.delete(sessionID)
+    if (this.messagesBySession.get(sessionID)?.delete(inboxID)) this.emit()
   }
 
   // ============ 会话状态（design-typing-indicator §4） ============
@@ -3051,6 +3122,7 @@ export class AppStore {
     this.syntheticDroppedBySession.delete(sessionID)
     this.pendingPartsMap.delete(sessionID)
     this.optimisticBySession.delete(sessionID)
+    this.materializedInbox.delete(sessionID)
     this.sessionPages.delete(sessionID)
     // 后台任务通知随会话运行时卸载（design-subagent-background D3：重开不补启动提示；
     // 完成提示经 REST synthetic 重建）。注意：不在此清 childIndex——关 Tab=归档不删会话
@@ -3726,13 +3798,32 @@ export class AppStore {
     }
   }
 
-  /** REST 页合并进会话 map（快照合并 + pending parts 回放），返回本页新增的消息条数 */
-  private mergeMessagePage(sessionID: string, msgs: MessageWithParts[]) {
+  /** REST 快照合并统一入口（mergeMessagePage / reconciler onMessagesSnapshot
+   *  两条漏斗共用，design-inbox-admission §3.3）：未投影物化项豁免窗口删除
+   *  ——快照 (min,max) 开区间会圈住排队消息（busy 中 assistant created 前移
+   *  越过其 created）；页内已见 id = 投影确认，摘除记账恢复常规删除语义 */
+  private mergeRestSnapshot(sessionID: string, msgs: MessageWithParts[]): Map<string, MessageWithParts> {
     this.noteSyntheticInSnapshot(sessionID, msgs)
     this.extractSyntheticNotices(sessionID, msgs)
     const local = this.messagesBySession.get(sessionID) ?? new Map()
-    const hadIds = new Set(local.keys())
-    const merged = mergeSnapshotIntoMessages(local, msgs)
+    const pendingInbox = this.materializedInbox.get(sessionID)
+    const merged = mergeSnapshotIntoMessages(
+      local,
+      msgs,
+      pendingInbox && pendingInbox.size > 0 ? pendingInbox : undefined,
+    )
+    if (pendingInbox) {
+      for (const m of msgs) pendingInbox.delete(m.info.id)
+      if (pendingInbox.size === 0) this.materializedInbox.delete(sessionID)
+    }
+    this.messagesBySession.set(sessionID, merged)
+    return merged
+  }
+
+  /** REST 页合并进会话 map（快照合并 + pending parts 回放），返回本页新增的消息条数 */
+  private mergeMessagePage(sessionID: string, msgs: MessageWithParts[]) {
+    const hadIds = new Set((this.messagesBySession.get(sessionID) ?? new Map()).keys())
+    const merged = this.mergeRestSnapshot(sessionID, msgs)
     // 应用 pending parts
     const pending = this.pendingParts(sessionID)
     for (const [mid, parts] of pending) {
@@ -3746,7 +3837,7 @@ export class AppStore {
       }
     }
     pending.clear()
-    this.messagesBySession.set(sessionID, merged)
+    // mergeRestSnapshot 已落 map；pending parts 就地变更（同步段无 async gap）
     // 快照合并后补撤回（review 四轮 #1，同 onMessagesSnapshot）：REST 页
     // 落地的 tool part 同样构成前台认领依据；③转后台提示缺口恢复同此；
     // 启动提示 REST 重建（覆盖窗口内未认领子会话）
@@ -6747,11 +6838,10 @@ export class AppStore {
       },
       onActiveSnapshot: (active, fetchedAt) => this.reconcileActiveSnapshot(active, fetchedAt),
       onMessagesSnapshot: (sessionID, msgs) => {
-        this.noteSyntheticInSnapshot(sessionID, msgs)
-        this.extractSyntheticNotices(sessionID, msgs)
-        const local = this.messagesBySession.get(sessionID) ?? new Map()
-        const merged = mergeSnapshotIntoMessages(local, msgs)
-        this.messagesBySession.set(sessionID, merged)
+        // 两条 REST 合并漏斗之一（60s 周期/重连对账）：与 mergeMessagePage
+        // 同经 mergeRestSnapshot——未投影物化项豁免 + 投影摘除（review 2026-10-10：
+        // 漏传豁免会让 busy 排队消息被窗口删除复发，本提交核心场景被对账击穿）
+        const merged = this.mergeRestSnapshot(sessionID, msgs)
         // 快照合并后补撤回（review 四轮 #1）：断线窗口丢 tool part 事件、
         // 重连仅经 REST 落地时，事件侧钩子不会触发——此处兜底；③转后台
         // 提示的缺口恢复、启动提示的 REST 重建同此
