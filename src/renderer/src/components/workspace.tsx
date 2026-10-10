@@ -4217,7 +4217,7 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
     window.desktop.platform === "linux"
 
   return (
-    <div className="file-view-wrap" ref={wrapRef}>
+    <div className={"file-view-wrap" + (mdFind.open ? " find-open" : "")} ref={wrapRef}>
       {/* 操作条（design-file-view-actions §2.1/§2.2）：所有文件视图常驻（加载/
           错误/占位态不弹入，防 ~32px 布局跳动，沿 markdown 工具条常驻决策）——
           文件名（左，flex:1 截断）+ open / open with 动作与文件树右键菜单同源；

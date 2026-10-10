@@ -2622,6 +2622,13 @@
   overflow: hidden;
 }
 
+/* 查找条展开（wrap 挂 find-open）时再让出条高：查找条居底、高 = --file-toolbar-h，
+ * 不占位时 TOC 底缘会盖住它（TOC 绝对定位在滚动层之外）。底缘上抬条高后恒停在
+ * 查找条之上（2026-10-10 修） */
+.file-view-wrap.find-open .md-toc {
+  max-height: calc(100% - var(--file-toolbar-h) - var(--file-toolbar-h) - 24px);
+}
+
 .md-toc-tree {
   flex: 1;
   min-height: 0;
