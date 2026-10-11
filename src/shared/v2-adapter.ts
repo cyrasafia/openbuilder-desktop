@@ -8,6 +8,39 @@ import type { ProjectInfo, SessionInfo } from "./api-v2-types"
 import type { Project, Session } from "./api-types"
 import { isAbortError } from "./message-error"
 
+// ============ 消息 id 铸造（design-optimistic-id-anchor §5.1） ============
+
+/** server identifier.ts 同构字符表（62 字符） */
+const ID_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+let mintLastTimestamp = 0
+let mintCounter = 0
+
+/**
+ * 铸造 `msg_` 形状消息 id（server `packages/schema/src/identifier.ts` 同构编码：
+ * 6 字节 hex 时间戳前缀（ts×0x1000+counter 高 48 位）+ 14 字符随机）。跨进程
+ * 碰撞概率可忽略（62^14 随机空间，官方客户端同风险）。
+ * sendPrompt 乐观条目以它为 localId 随 `POST /prompt` 的 `id` 字段传递——
+ * server 准入按 id 幂等（同 id 重复准入不双计），乐观消解锚从创建起即存在。
+ */
+export function mintMessageID(): string {
+  const ts = Date.now()
+  if (ts !== mintLastTimestamp) {
+    mintLastTimestamp = ts
+    mintCounter = 0
+  }
+  mintCounter++
+  const current = BigInt(ts) * 0x1000n + BigInt(mintCounter)
+  let time = ""
+  for (let i = 0; i < 6; i++) {
+    time += Number((current >> BigInt(40 - 8 * i)) & 0xffn).toString(16).padStart(2, "0")
+  }
+  const bytes = new Uint8Array(14)
+  crypto.getRandomValues(bytes)
+  let suffix = ""
+  for (const b of bytes) suffix += ID_CHARS[b % 62]
+  return `msg_${time}${suffix}`
+}
+
 /** v2 ProjectInfo → 内部 Project：canonical → worktree 字段名（basename 展示/
  *  作用域键逻辑不变）；v2 无 initialized（active 取代），置 undefined。
  *  v2 无 global 项目行（用户裁定 2026-09-28：非 git 目录 = 目录哈希伪项目行，

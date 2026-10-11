@@ -350,18 +350,23 @@ export class RestClient {
   }
 
   /**
-   * POST /api/session/:sessionID/prompt：200 + `{data: SessionInbox.User}` 准入
-   * 回执（非 v1 的 204 盲发）。回执是 inbox 项（无投影消息 id）——user 消息的
-   * 落地由调用方 post-200 首页重取（回执驱动，plan M4）。
-   * files = v1 FilePartInput → v2 {uri, name}。
+   * POST /api/session/:sessionID/prompt：200 + `{data: Session.Inbox.User}` 准入
+   * 回执（非 v1 的 204 盲发）。回执 `data.id` = inboxID = 投影后消息 id
+   * （三体同 id，inbox-admission §1 活体双证）。
+   * - 请求体 `id`（design-optimistic-id-anchor）：client-minted `msg_` id，
+   *   server 准入按 id 幂等（同 id 重复准入不双计）——乐观条目的消解锚
+   * - 回执 id 仅作校验（不匹配时调用方 warn），user 消息落地仍由 post-200
+   *   首页重取 + 事件/快照消解承接（回执≠投影）
+   * - files = v1 FilePartInput → v2 {uri, name}
    */
   async prompt(
     sessionID: string,
-    input: { text: string; files?: Array<{ uri: string; name?: string }> },
-  ): Promise<void> {
-    await this.fetchResponse(`/api/session/${encodeURIComponent(sessionID)}/prompt`, {
+    input: { id?: string; text: string; files?: Array<{ uri: string; name?: string }> },
+  ): Promise<{ id: string }> {
+    const res = await this.fetchResponse(`/api/session/${encodeURIComponent(sessionID)}/prompt`, {
       method: "POST",
       body: JSON.stringify({
+        ...(input.id ? { id: input.id } : {}),
         text: input.text,
         ...(input.files?.length ? { files: input.files } : {}),
       }),
@@ -372,6 +377,18 @@ export class RestClient {
           ? 120000
           : 15000,
     })
+    // 回执尽力解析（防御：无体/非 JSON → {id: ""}——200 恒有 body 为活体事实，
+    // 异常形态只降级校验，不承载清除语义）
+    try {
+      const text = await res.text()
+      if (text) {
+        const body = JSON.parse(text) as { data?: { id?: unknown } }
+        if (typeof body.data?.id === "string") return { id: body.data.id }
+      }
+    } catch {
+      // 无体/非 JSON——防御静默
+    }
+    return { id: "" }
   }
 
   /** POST /api/session/:sessionID/interrupt（取代 v1 abort） */
