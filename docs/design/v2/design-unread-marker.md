@@ -181,7 +181,7 @@ idle && unread        → unread（未读，见 §5）
 
 呈现面（用户裁定）：**左栏状态指示器 + chat Tab**，两处消费同一 `dotStateFor` 投影。
 **不做**手动清除入口（点开即清已足够）；**不做**托盘/任务栏角标。
->4 会话的聚合 chip 另开分支重设计（见 §5.1），本分支不含未读 chip。
+>4 会话的聚合 chip 当时另开分支重设计（见 §5.1），本分支不含未读 chip——**2026-10-11 重设计已落地**（design-indicator-aggregate-chip），未读 chip 随之生效。
 
 ### 5.1 左栏状态指示器（design-layout §3）
 
@@ -189,9 +189,12 @@ idle && unread        → unread（未读，见 §5）
 
 **>4 会话的聚合 chip：本分支不做，未读不加入 chip。** 现有聚合 chip 全族（待输入 / 重试 / 运行 / 失败 / 空闲）
 **保持现状不动**；目检发现其可用性问题（同色字压同色底致对比不足、深色下灰 chip 对比过低、
-未继承状态点的圆点 / 呼吸致语义断裂），需**整体重设计**——另开分支，见
-[todo-indicator-aggregate-chip](../../todo/todo-indicator-aggregate-chip.md)。因此**>4 会话的行本分支暂不呈现未读**
+未继承状态点的圆点 / 呼吸致语义断裂），需**整体重设计**——另开分支。因此**>4 会话的行本分支暂不呈现未读**
 （≤4 行的逐会话蓝点不受影响）。
+> **后续（2026-10-11 同日落地）**：聚合 chip 整体重设计已实施
+> （[design-indicator-aggregate-chip](../design-indicator-aggregate-chip.md)）——chip = 状态圆点
+> 领头 + 中性数字，六态（含未读）全量进 chip，渲染序对齐移动端裁定
+> （running → error → failed → waiting → unread → idle）。本节「未读不入 chip」自此失效。
 
 - `sessionIndicatorTitle` i18n 增 `{unread}` 段（中英两份 catalog）。
 
@@ -207,7 +210,7 @@ idle && unread        → unread（未读，见 §5）
 
 > 用户 2026-10-11 定稿：未读用**蓝**（暗 `#58a6ff` / 亮 `#0969da`）。
 > 静态预览：同目录 `design-unread-marker.preview.html`（浏览器打开，深浅两主题并排；
-> 预览里的 chip 行保留作对照，其重设计见 [todo-indicator-aggregate-chip](../../todo/todo-indicator-aggregate-chip.md)）。
+> 预览里的 chip 行保留作对照，其重设计已落地：design-indicator-aggregate-chip）。
 
 - 新增令牌 `--status-unread`（深浅两态，遵 DESIGN.md「新增色必须先走令牌」）：
   - 暗 `#58a6ff` / 亮 `#0969da`（GitHub blue，同既有 `--syntax-link` 亮暗配对，已过对比审）。
@@ -215,7 +218,8 @@ idle && unread        → unread（未读，见 §5）
   且与官方 GUI 角标同色系（其 `--v2-background-bg-accent` = blue-600）。
 - 状态点 CSS：`.status-dot.session-unread { --session-dot-color: var(--status-unread); }`——
   沿用 `session-*` 12px 盒 / 6px 实心点几何、**静态满不透明**（区别于 running 的绿呼吸光晕）。
-- ~~聚合 chip CSS `.session-count.unread`~~：**延后**——并入聚合 chip 整体重设计（另开分支，见 §5.1）。
+- ~~聚合 chip CSS `.session-count.unread`~~：**延后**——并入聚合 chip 整体重设计（另开分支，见 §5.1）；
+  已随重设计落地（形态为「蓝点领头 chip」而非同色字变体）。
 - 被否决备选：复用 running 绿静态（与 running 靠动效区分太弱、聚合 chip 出现两个绿数字）；
   复用 `--primary`（绿系，且已承担选中 / 焦点语义，语义争用）。
 - **DESIGN.md 同步（末步）**：`status` 由「四色」扩为「五色」并声明理由；token 落 `tokens.css`。
@@ -243,8 +247,8 @@ idle && unread        → unread（未读，见 §5）
 - **不做每设备各自已读**：水位在 server 全局（单用户），任一端已读全体一致——这正是 v1 时代
   「多端不一致」顾虑被 v2 解决的形态。
 - **不处理 shutdown 型中断**：server 不推进 idle，无未读（与 server 同口径）。
-- **不新增会话列表入口**：未读经左栏点（≤4 会话行）/ chat Tab 可见；**>4 会话行的未读**随聚合 chip
-  重设计另开分支（见 todo）；超出 8 个未自动开 Tab 的会话仍无独立列表入口（沿 design-layout §4 既有取舍）。
+- **不新增会话列表入口**：未读经左栏点（≤4 会话行）/ chat Tab 可见；**>4 会话行的未读**已随聚合 chip
+  重设计呈现（2026-10-11，design-indicator-aggregate-chip——蓝点领头未读 chip）；超出 8 个未自动开 Tab 的会话仍无独立列表入口（沿 design-layout §4 既有取舍）。
 - **依赖 cp 到 REST 补拉**：若未来 pool 压力上升，可评估退化为周期性快照（代价 = 未读延迟）。
 
 ## 8. 涉及文件（已实现，2026-10-11）
@@ -256,10 +260,10 @@ idle && unread        → unread（未读，见 §5）
 | `src/shared/rest-client.ts` | 新增 `getSession(sessionID)`（`GET /api/session/:id`）与 `markSessionViewed(sessionID, idle)`（`POST /api/session/:id/view`） |
 | `src/shared/pending-requests.ts`（或新 `src/shared/unread.ts`） | `SessionDotState` 增 `"unread"`；`isSessionUnread(session)`；`sessionDotState(...)` 增 unread 入参 |
 | `src/renderer/src/store/app-store.ts` | `session.viewed` case 合并 `viewed`；终态补拉；`dotStateFor` 传入 unread；`maybeMarkViewed`（激活 Tab 驱动）+ `acknowledged` 去重 / 退避 |
-| `src/renderer/src/components/sidebar.tsx` | `SessionIndicator` 加 `session-unread` 点（>4 的 chip 分支**不动**，重设计见 todo） |
+| `src/renderer/src/components/sidebar.tsx` | `SessionIndicator` 加 `session-unread` 点（>4 的 chip 分支当时不动；chip 重设计已随后落地，见 §5.1 后续注） |
 | `src/renderer/src/components/workspace.tsx` | chat Tab 未读点（Tab 条状态点复用 `session-unread`） |
 | `src/renderer/src/styles/tokens.css` | `--status-unread` 深浅两态 |
-| `src/renderer/src/styles/app.css` | `.status-dot.session-unread`（`.session-count.unread` 延后，见 todo） |
+| `src/renderer/src/styles/app.css` | `.status-dot.session-unread`（`.session-count.unread` 当时延后，已随 chip 重设计以「蓝点领头 chip」形态落地） |
 | `src/renderer/src/i18n/index.ts` | `sessionIndicatorTitle` 增 `{unread}`；相关 a11y 文案 |
 | `docs/design/design-layout.md` | §3 左栏指示器状态点枚举加第 6 态 `unread`（该文是布局权威，AGENTS.md「布局/交互改动以此为准」） |
 | `DESIGN.md` | 状态色「四色→五色」；未读语义与使用规范 |
@@ -267,7 +271,8 @@ idle && unread        → unread（未读，见 §5）
 ## 9. 待办
 
 1. ~~未读蓝目检定稿~~ → **已定稿**：`--status-unread` 暗 `#58a6ff` / 亮 `#0969da`（用户 2026-10-11 确认）。
-2. **聚合 chip 整体重设计**：另开分支，见 [todo-indicator-aggregate-chip](../../todo/todo-indicator-aggregate-chip.md)；
-   未读 chip 随之延后（本分支 >4 会话行不呈现未读）。
+2. ~~**聚合 chip 整体重设计**：另开分支~~ → **已落地（2026-10-11）**：
+   [design-indicator-aggregate-chip](../design-indicator-aggregate-chip.md)；
+   未读 chip 已生效（>4 会话行呈现蓝点领头未读 chip，渲染序对齐移动端裁定）。
 3. **终态补拉的频率**（实施细节）：每终态 1 次 `GET` 是否可接受（§4.3）；备选批量延迟合并。
 4. ~~落地~~ → **已实现（2026-10-11）**：`tokens.css` `--status-unread`（暗 `#58a6ff` / 亮 `#0969da`）；`DESIGN.md` 状态五色；`app.css` `.status-dot.session-unread`；`sidebar.tsx` / `workspace.tsx` 状态点映射加 unread 分支；`app-store.ts` ack（激活 Tab 驱动 + `acknowledged` 去重 + 250ms→5s 退避）、`session.viewed` 单调合并、run 终态补拉、`emit` 单入口触发；`rest-client` `getSession` / `markSessionViewed`；`pending-requests` `SessionDotState` 加 `unread`；`unread.ts` `isSessionUnread`；`session-merge` `mergeMonotoneSessionTime`（idle/viewed 单调 max，防在途快照回退）；i18n `{unread}`。测试：`unread` / `session-merge` / `pending-requests` / `rest-client` / `app-store` 新增用例；全量 vitest 1224 通过、typecheck 绿。

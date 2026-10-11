@@ -218,7 +218,7 @@
 
 /* 选中 = highest 再叠 4% on-surface 微加深：浅色主题 high/highest 每通道仅差 ~5/255，
    而背景是唯一选中信号（无竖线），纯阶梯档位不足以与 hover 区分；
-   color-mix 全走 token，同 project-avatar / session-count 先例 */
+   color-mix 全走 token，同 project-avatar 先例 */
 .tree-row.active {
   background: color-mix(in srgb, var(--surface-container-highest) 96%, var(--on-surface));
 }
@@ -458,36 +458,31 @@
    12px 盒与 Tab 条状态点同几何（原"最右点中心线定右缘 12px、删除钮对齐"依据
    随按钮改 overlay 废弃——2026-08-29，指示器行内流式后最右点贴行 padding 右缘） */
 
+/* >4 会话聚合计数 chip（2026-10-11 重设计，design-indicator-aggregate-chip）：
+   session-* 状态圆点领头（12px 盒几何与 ≤4 逐点态同款，running/error 的光晕
+   呼吸、idle 0.55 弱化经类复用免费继承）+ 中性数字——状态色只落在圆点上，
+   数字与容器全状态同一套中性样式；原「同色字压同色 16% 淡染底」四变体族整体
+   删除（浅色 waiting 字 2.35:1、深色灰 chip 弱到几乎读不出、与逐点态视觉语法
+   断裂三问题，见该设计文档 §1）。
+   容器 = surface-container-high 实底 + 1px outline-variant 细描边：实底令内容
+   对比不随行态漂移（error 红点 3:1 非文字门限把实底亮度钉在 ~high 档以内，
+   纯底色对行边界上限仅 ~1.2:1 不足），胶囊边界由描边承载（对未选中行底
+   深 1.7:1 / 浅 1.4:1，两行态均可见）；数字 on-surface-variant 两主题 ≥6.3:1，
+   tabular-nums 防计数实时变化抖宽。行 hover 时指示器整体隐藏（上方规则），
+   实底与行 hover 底同档不构成冲突 */
 .session-count {
-  min-width: 16px;
+  display: flex;
+  align-items: center;
+  gap: 1px;
   height: 14px;
-  padding: 0 4px;
+  padding: 0 3px;
+  border: 1px solid var(--outline-variant);
   border-radius: var(--radius-chip);
-  background: var(--surface-container);
-  color: var(--outline);
+  background: var(--surface-container-high);
+  color: var(--on-surface-variant);
   font-size: var(--text-xs);
-  line-height: 14px;
-  text-align: center;
-}
-
-/* >4 会话聚合数字的运行变体：绿色数字 + 运行色淡染底，与空闲灰 chip 并排区分状态 */
-.session-count.running {
-  background: color-mix(in srgb, var(--status-running) 16%, transparent);
-  color: var(--status-running);
-}
-
-/* >4 会话聚合数字的待输入变体：琥珀数字 + 待输入色淡染底（waiting 优先语义） */
-.session-count.waiting {
-  background: color-mix(in srgb, var(--status-waiting) 16%, transparent);
-  color: var(--status-waiting);
-}
-
-/* >4 会话聚合数字的重试变体：红数字 + 错误色淡染底（design-error-message §3） */
-.session-count.error,
-/* 报错终局变体：同红（与重试共用错误色，悬停 title 区分计数语义） */
-.session-count.failed {
-  background: color-mix(in srgb, var(--status-error) 16%, transparent);
-  color: var(--status-error);
+  line-height: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .sidebar-empty {
@@ -1485,7 +1480,7 @@
 
 /* 错误卡：红字 + 错误色低透明淡染底 + 同色细描边——出错语义靠色彩承载，
  * 视觉强度弱于实底 error-container（深色下 #93000a 底 + #ffdad6 字过强刺眼；
- * 2026-08-26 修订，弱化对齐 session-count 等淡染惯例） */
+ * 2026-08-26 修订，弱化沿用全应用 color-mix 淡染惯例（同 project-avatar） */
 .error-card {
   background: color-mix(in srgb, var(--status-error) 10%, transparent);
   color: var(--status-error);

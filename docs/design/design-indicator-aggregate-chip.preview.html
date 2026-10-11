@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<title>聚合状态 chip 重设计 — 终案目检（dot 领头 + 中性数字）</title>
+<style>
+  /* 取自 src/renderer/src/styles/tokens.css 实测值；本文件仅作目检预览，非实现 */
+  :root{
+    --text-xs:11px; --text-md:13px; --radius-chip:6px;
+    --status-running:#1dae4e; --status-error:#e5484d; --status-pending:#8b949e;
+    --status-waiting:#fbbf24; --status-unread:#58a6ff;
+    --surface:#161b16; --surface-container-low:#1e231e; --surface-container:#222722;
+    --surface-container-high:#2c312c; --surface-container-highest:#373c37;
+    --on-surface:#c8d0c4; --on-surface-variant:#adb6ab; --outline:#8b938a;
+    --outline-variant:#414941;
+    --avatar-blue:#60a5fa;
+  }
+  body{background:#0c0f0c;color:#c8d0c4;font:13px/1.4 system-ui,sans-serif;margin:0;padding:24px}
+  h1{font-size:15px;font-weight:600;margin:0 0 4px}
+  p.note{color:#8b938a;font-size:12px;margin:0 0 20px}
+  .stage{display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start}
+  .panel{width:340px;border-radius:10px;padding:12px;box-sizing:border-box;border:1px solid rgba(255,255,255,.06);
+    background:var(--surface-container-low)}
+  .panel.light{color:#2e332e;border-color:rgba(0,0,0,.08);
+    --status-running:#15803d; --status-error:#b91c1c; --status-pending:#6e7781;
+    --status-waiting:#b8860b; --status-unread:#0969da;
+    --surface:#eef2e9; --surface-container-low:#e8ece3; --surface-container:#e2e6de;
+    --surface-container-high:#dce0d8; --surface-container-highest:#d7dbd2;
+    --on-surface:#2e332e; --on-surface-variant:#414941; --outline:#727970;
+    --outline-variant:#c1c9be}
+  .panel h2{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;opacity:.6;margin:0 0 10px}
+  .row{display:flex;align-items:center;gap:6px;height:40px;padding:0 8px;border-radius:6px;margin-bottom:2px}
+  .row.ws{height:26px;padding-left:16px}
+  .row.sel{background:color-mix(in srgb, var(--surface-container-highest) 96%, var(--on-surface))}
+  .avatar{width:26px;height:26px;border-radius:7px;background:var(--avatar-blue);color:#0b1220;
+          display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex:0 0 auto}
+  .wsicon{width:16px;height:16px;border-radius:4px;background:color-mix(in srgb,currentColor 22%,transparent);flex:0 0 auto}
+  .name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+  .row.ws .name{font-weight:400}
+  .ind{display:flex;align-items:center;gap:3px;flex:0 0 auto}
+
+  /* 会话状态点：12px 盒、6px 实心点（同 app.css session-*） */
+  .status-dot{position:relative;width:12px;height:12px;flex:0 0 auto}
+  .status-dot::after{content:"";position:absolute;left:50%;top:50%;width:6px;height:6px;border-radius:50%;
+    background:var(--d);transform:translate(-50%,-50%)}
+  .status-dot.session-idle{--d:var(--status-pending)}
+  .status-dot.session-idle::after{opacity:.55}
+  .status-dot.session-waiting{--d:var(--status-waiting)}
+  .status-dot.session-failed{--d:var(--status-error)}
+  .status-dot.session-error{--d:var(--status-error)}
+  .status-dot.session-running{--d:var(--status-running)}
+  .status-dot.session-unread{--d:var(--status-unread)}
+  /* running / retry：外圈 11px 光晕呼吸（同 app.css halo-breathe） */
+  .status-dot.session-running::before,
+  .status-dot.session-error::before{content:"";position:absolute;left:50%;top:50%;width:11px;height:11px;
+    border-radius:50%;background:var(--d);opacity:.2;transform:translate(-50%,-50%) scale(.75);
+    animation:halo-breathe 1.2s ease-in-out infinite alternate}
+  @keyframes halo-breathe{from{transform:translate(-50%,-50%) scale(.75);opacity:.2}
+    to{transform:translate(-50%,-50%) scale(1.15);opacity:.55}}
+  @media (prefers-reduced-motion: reduce){
+    .status-dot.session-running::before,.status-dot.session-error::before{animation:none;
+      transform:translate(-50%,-50%) scale(.95);opacity:.375}}
+
+  /* 终案 chip：session-* 圆点领头 + 中性数字；container-high 实底 + outline-variant 细描边 */
+  .nc{display:flex;align-items:center;gap:1px;height:14px;padding:0 3px;border-radius:var(--radius-chip);
+    border:1px solid var(--outline-variant);background:var(--surface-container-high);
+    font-size:var(--text-xs);line-height:12px;color:var(--on-surface-variant);
+    font-variant-numeric:tabular-nums;box-sizing:border-box}
+
+  /* 旧版（现状）对照：同色字压同色 16% 淡染底 */
+  .old{min-width:16px;height:14px;padding:0 4px;border-radius:var(--radius-chip);
+    background:var(--surface-container);color:var(--outline);font-size:11px;line-height:14px;text-align:center}
+  .old.waiting{background:color-mix(in srgb,var(--status-waiting) 16%,transparent);color:var(--status-waiting)}
+  .old.error{background:color-mix(in srgb,var(--status-error) 16%,transparent);color:var(--status-error)}
+  .old.running{background:color-mix(in srgb,var(--status-running) 16%,transparent);color:var(--status-running)}
+  .old.failed{background:color-mix(in srgb,var(--status-error) 16%,transparent);color:var(--status-error)}
+
+  .lg{margin-top:14px;font-size:11px;color:var(--on-surface-variant);opacity:.9}
+  .k{display:inline-block;padding:1px 5px;border-radius:4px;background:var(--surface-container);margin-right:2px}
+</style>
+</head>
+<body>
+  <h1>聚合状态 chip 重设计 · 终案目检（2026-10-11 用户定案）</h1>
+  <p class="note">结构：<code>chip = session-* 状态圆点（12px 盒，与 ≤4 逐点态同几何同动效，呼吸免费继承）+ 中性数字</code>；
+  状态色只落在圆点上，数字/容器全状态一套中性样式（原四变体族删除）。<br>
+  容器（终案）：<code>surface-container-high 实底 + 1px outline-variant 细描边</code>——实底令内容对比不随行态漂移；
+  描边承载胶囊边界（深 1.7:1 / 浅 1.4:1，未选中行上可见；纯实底上限仅 ~1.2:1 不足，error 红点 3:1 门限钉死实底档位）。<br>
+  排序（对齐移动端 2026-10-11 裁定）：<code>running → error → failed → waiting → unread → idle</code>，为 0 的态省略。
+  行 hover 时指示器整体隐藏，故只呈现「未选中 / 选中」两种行底。</p>
+
+  <div class="stage">
+    <!-- DARK -->
+    <div class="panel dark">
+      <h2>Dark</h2>
+      <div class="row">
+        <span class="avatar">OB</span>
+        <span class="name">≤4 逐点态（参照）</span>
+        <span class="ind">
+          <span class="status-dot session-waiting"></span>
+          <span class="status-dot session-running"></span>
+          <span class="status-dot session-unread"></span>
+          <span class="status-dot session-idle"></span>
+        </span>
+      </div>
+      <div class="row ws">
+        <span class="wsicon"></span>
+        <span class="name">旧·现状（仅对照）</span>
+        <span class="ind">
+          <span class="old waiting">1</span><span class="old error">2</span><span class="old running">3</span><span class="old">4</span>
+        </span>
+      </div>
+      <div class="row ws">
+        <span class="wsicon"></span>
+        <span class="name"><span class="k">终案</span>六态齐呈</span>
+        <span class="ind">
+          <span class="nc"><span class="status-dot session-running"></span>3</span>
+          <span class="nc"><span class="status-dot session-error"></span>2</span>
+          <span class="nc"><span class="status-dot session-failed"></span>1</span>
+          <span class="nc"><span class="status-dot session-waiting"></span>1</span>
+          <span class="nc"><span class="status-dot session-unread"></span>2</span>
+          <span class="nc"><span class="status-dot session-idle"></span>4</span>
+        </span>
+      </div>
+      <div class="row ws sel">
+        <span class="wsicon"></span>
+        <span class="name"><span class="k">终案</span>选中行</span>
+        <span class="ind">
+          <span class="nc"><span class="status-dot session-running"></span>3</span>
+          <span class="nc"><span class="status-dot session-error"></span>2</span>
+          <span class="nc"><span class="status-dot session-failed"></span>1</span>
+          <span class="nc"><span class="status-dot session-waiting"></span>1</span>
+          <span class="nc"><span class="status-dot session-unread"></span>2</span>
+          <span class="nc"><span class="status-dot session-idle"></span>4</span>
+        </span>
+      </div>
+      <div class="row">
+        <span class="avatar">OB</span>
+        <span class="name"><span class="k">终案</span>项目行·常态 2 chip</span>
+        <span class="ind">
+          <span class="nc"><span class="status-dot session-running"></span>7</span>
+          <span class="nc"><span class="status-dot session-idle"></span>5</span>
+        </span>
+      </div>
+      <p class="lg">数字 6.4:1 / error 点 3.4:1 / running 点 4.6:1；描边对行底 1.7:1。</p>
+    </div>
+
+    <!-- LIGHT -->
+    <div class="panel light">
+      <h2>Light</h2>
+      <div class="row">
+        <span class="avatar">OB</span>
+        <span class="name">≤4 逐点态（参照）</span>
+        <span class="ind">
+          <span class="status-dot session-waiting"></span>
+          <span class="status-dot session-running"></span>
+          <span class="status-dot session-unread"></span>
+          <span class="status-dot session-idle"></span>
+        </span>
+      </div>
+      <div class="row ws">
+        <span class="wsicon"></span>
+        <span class="name">旧·现状（仅对照）</span>
+        <span class="ind">
+          <span class="old waiting">1</span><span class="old error">2</span><span class="old running">3</span><span class="old">4</span>
+        </span>
+      </div>
+      <div class="row ws">
+        <span class="wsicon"></span>
+        <span class="name"><span class="k">终案</span>六态齐呈</span>
+        <span class="ind">
+          <span class="nc"><span class="status-dot session-running"></span>3</span>
+          <span class="nc"><span class="status-dot session-error"></span>2</span>
+          <span class="nc"><span class="status-dot session-failed"></span>1</span>
+          <span class="nc"><span class="status-dot session-waiting"></span>1</span>
+          <span class="nc"><span class="status-dot session-unread"></span>2</span>
+          <span class="nc"><span class="status-dot session-idle"></span>4</span>
+        </span>
+      </div>
+      <div class="row ws sel">
+        <span class="wsicon"></span>
+        <span class="name"><span class="k">终案</span>选中行</span>
+        <span class="ind">
+          <span class="nc"><span class="status-dot session-running"></span>3</span>
+          <span class="nc"><span class="status-dot session-error"></span>2</span>
+          <span class="nc"><span class="status-dot session-failed"></span>1</span>
+          <span class="nc"><span class="status-dot session-waiting"></span>1</span>
+          <span class="nc"><span class="status-dot session-unread"></span>2</span>
+          <span class="nc"><span class="status-dot session-idle"></span>4</span>
+        </span>
+      </div>
+      <div class="row">
+        <span class="avatar">OB</span>
+        <span class="name"><span class="k">终案</span>项目行·常态 2 chip</span>
+        <span class="ind">
+          <span class="nc"><span class="status-dot session-running"></span>7</span>
+          <span class="nc"><span class="status-dot session-idle"></span>5</span>
+        </span>
+      </div>
+      <p class="lg">既知例外：琥珀点 2.4:1（tokens.css 2026-10-09 用户裁定）；数字 7.0:1 / error 点 4.8:1；描边 1.4:1。</p>
+    </div>
+  </div>
+
+  <p class="note" style="margin-top:22px">对比度实测与候选分析见同目录 <code>design-indicator-aggregate-chip.md</code>；旧版仅作对照（浅色琥珀字压琥珀底 2.35:1 未达文字 4.5:1 下限）。</p>
+</body>
+</html>
