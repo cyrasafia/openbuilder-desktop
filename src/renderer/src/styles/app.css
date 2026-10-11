@@ -459,30 +459,44 @@
    随按钮改 overlay 废弃——2026-08-29，指示器行内流式后最右点贴行 padding 右缘） */
 
 /* >4 会话聚合计数 chip（2026-10-11 重设计，design-indicator-aggregate-chip）：
-   session-* 状态圆点领头（12px 盒几何与 ≤4 逐点态同款，running/error 的光晕
-   呼吸、idle 0.55 弱化经类复用免费继承）+ 中性数字——状态色只落在圆点上，
-   数字与容器全状态同一套中性样式；原「同色字压同色 16% 淡染底」四变体族整体
-   删除（浅色 waiting 字 2.35:1、深色灰 chip 弱到几乎读不出、与逐点态视觉语法
-   断裂三问题，见该设计文档 §1）。
-   容器 = surface-container-high 实底 + 1px outline-variant 细描边：实底令内容
-   对比不随行态漂移（error 红点 3:1 非文字门限把实底亮度钉在 ~high 档以内，
-   纯底色对行边界上限仅 ~1.2:1 不足），胶囊边界由描边承载（对未选中行底
-   深 1.7:1 / 浅 1.4:1，两行态均可见）；数字 on-surface-variant 两主题 ≥6.3:1，
-   tabular-nums 防计数实时变化抖宽。行 hover 时指示器整体隐藏（上方规则），
-   实底与行 hover 底同档不构成冲突 */
+   session-* 状态圆点领头（12px 盒与 ≤4 逐点态同款，呼吸/弱化经 SessionDot 组件
+   复用免费继承）+ 中性数字——状态色只落在圆点上，数字与容器全状态同一套中性
+   样式；原「同色字压同色 16% 淡染底」四变体族整体删除（浅色 waiting 字 2.35:1、
+   深色灰 chip 弱到几乎读不出、与逐点态视觉语法断裂三问题，见该设计文档 §1）。
+   容器 = 反色填充（用户 2026-10-11 定案「实体 + 未选中行边界可见」）：胶囊取
+   行态对侧色——未选中行填「选中灰」（与 .tree-row.active 同式 color-mix），
+   选中行填行底色（见下方覆盖规则）。边界对比恒等于选中信号步幅（深 1.56:1 /
+   浅 1.26:1，两行态对称恒定）——借用系统内已验证可见的最强安静步级；无描边
+   （实底+描边案目检中被否）。实底令内容对比不随行态漂移。
+   数字 on-surface-variant、tabular-nums（计数实时变化防抖宽）。行 hover 时
+   指示器整体隐藏（上方规则），反色底与行态组合不构成冲突 */
 .session-count {
   display: flex;
   align-items: center;
   gap: 1px;
   height: 14px;
   padding: 0 3px;
-  border: 1px solid var(--outline-variant);
   border-radius: var(--radius-chip);
-  background: var(--surface-container-high);
+  background: color-mix(in srgb, var(--surface-container-highest) 96%, var(--on-surface));
   color: var(--on-surface-variant);
   font-size: var(--text-xs);
   line-height: 12px;
   font-variant-numeric: tabular-nums;
+}
+
+/* 反色填充的选中行侧：胶囊 = 行底色（container-low） */
+.tree-row.active .session-count {
+  background: var(--surface-container-low);
+}
+
+/* 数字光学纵向居中：数字无降部，字形重心恒高于行盒中心（line-height 只缩放
+   盒子、不移动行内字形）。位移 1px——实测矩阵（nudge × DPR，墨迹重心 − 圆点
+   中心，css）：1px 时 1.25→−0.33 / 1.5→−0.04 / 2→−0.13 / 4→+0.58，分数 DPR
+   场景最优；0.5px 在 1.25/1.5 被文字基线量化吸收（Chromium 把基线吸附到整数
+   设备像素，亚像素文字位移无效——1.25 档三档 nudge 落点实测相同），1.25 档
+   残余 −0.33 即该量化下限（引擎硬限，不可再压） */
+.session-count-num {
+  transform: translateY(1px);
 }
 
 .sidebar-empty {
@@ -2753,28 +2767,62 @@
 }
 
 /* ---------- 状态点 ----------
+   全族 inline SVG circle（2026-10-11，design-indicator-aggregate-chip）：Chromium 在
+   分数 DPR（GNOME Wayland 1.25/1.5 等）下对 border-radius 盒做「吸附后拉伸」光栅化，
+   6px 圆点按位置亚像素相位变形为扁/竖椭圆（DevTools 布局尺寸仍 6×6）；SVG 路径
+   光栅化对相位不敏感（16 相位 × DPR 1.25/1.1 实测全部同几何），全族（基类 6px
+   裸点 / session-* 12px 盒）统一改 SVG 圆点。
+   svg 须 overflow:visible——SVG 元素默认裁剪内容到自身视口，session 光晕呼吸
+   最大 scale 1.15（11px×1.15 = 12.65px）超出 12px 盒会被切边。
+   颜色统一经 --session-dot-color 下发（circle 回落 --status-pending）。
    基础实心点 6px（左栏连接状态点用）；会话状态点（Tab 条/左栏）一律走
    session-* 变体（12px 盒，见下），不取基类几何——两套并存会在状态切换时
    因盒尺寸 6↔12 跳变抖动（2026-08-26 教训） */
 .status-dot {
+  position: relative;
   width: 6px;
   height: 6px;
-  border-radius: 50%;
-  background: var(--status-pending);
   flex-shrink: 0;
 }
 
-.status-dot.running {
-  background: var(--status-running);
+.status-dot svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
 }
 
-/* 会话状态点变体（session-*，Tab 条与左栏共用）：统一 12px 盒几何，
-   中心 6px 实心点 ::after 居中（同 app 全应用通用实心点径）——各会话状态点
-   与其他指示纵向对齐；颜色经 --session-dot-color 定制。
-   - session-running / session-error：外圈 11px 光晕 ::before 呼吸（重试也是
-     进行中，红色仅示错因——参考 app retrying 动效语义；参数对齐 openbuilder
+.status-dot circle {
+  fill: var(--session-dot-color, var(--status-pending));
+}
+
+.status-dot.running {
+  --session-dot-color: var(--status-running);
+}
+
+/* 左栏连接状态点（ServerStatus）：静态实心 6px，非会话点不走 session-* 变体 */
+.status-dot.error {
+  --session-dot-color: var(--status-error);
+}
+
+.status-dot.blink {
+  animation: blink 1s infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* 会话状态点变体（session-*，Tab 条/左栏/聚合 chip 共用，渲染统一走共享
+   SessionDot 组件）：12px 盒 + viewBox 12 的 SVG——中心 r=3 实心圆（6px，
+   同全应用通用实心点径），颜色经 --session-dot-color 定制。
+   - session-running / session-error：外圈 r=5.5 光晕圆呼吸（重试也是进行中，
+     红色仅示错因——参考 app retrying 动效语义；参数对齐 openbuilder
      design-agent-status-indicator.md §动效设计：1200ms easeInOut 往复，
-     外圈 scale 0.75→1.15、opacity 0.2→0.55，中心点不缩放）
+     scale 0.75→1.15、opacity 0.2→0.55，中心点不缩放；transform-box: fill-box
+     令 scale 以光晕圆自身中心缩放，无 translate 参与）
    - session-waiting：琥珀静态（待输入非运行，无动效）
    仅此类呼吸；左栏连接状态点保持静态实心 */
 .status-dot.session-running {
@@ -2813,81 +2861,38 @@
 .status-dot.session-failed,
 .status-dot.session-idle,
 .status-dot.session-unread {
-  position: relative;
   width: 12px;
   height: 12px;
-  background: transparent;
 }
 
-.status-dot.session-running::before,
-.status-dot.session-error::before {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  background: var(--session-dot-color);
-  transform: translate(-50%, -50%) scale(0.75);
+.status-dot .halo {
   opacity: 0.2;
+  transform-box: fill-box;
+  transform-origin: center;
   animation: halo-breathe 1.2s ease-in-out infinite alternate;
 }
 
-.status-dot.session-running::after,
-.status-dot.session-error::after,
-.status-dot.session-waiting::after,
-.status-dot.session-failed::after,
-.status-dot.session-idle::after,
-.status-dot.session-unread::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--session-dot-color);
-  transform: translate(-50%, -50%);
-}
-
 /* idle 点弱化（透明度，不缩尺寸——与左栏 idle 同档 0.55） */
-.status-dot.session-idle::after {
+.status-dot.session-idle .core {
   opacity: 0.55;
 }
 
 @keyframes halo-breathe {
   from {
-    transform: translate(-50%, -50%) scale(0.75);
+    transform: scale(0.75);
     opacity: 0.2;
   }
   to {
-    transform: translate(-50%, -50%) scale(1.15);
+    transform: scale(1.15);
     opacity: 0.55;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .status-dot.session-running::before,
-  .status-dot.session-error::before {
+  .status-dot .halo {
     animation: none;
-    transform: translate(-50%, -50%) scale(0.95);
+    transform: scale(0.95);
     opacity: 0.375;
-  }
-}
-
-/* 左栏连接状态点（ServerStatus）：静态实心 6px，非会话点不走 session-* 变体 */
-.status-dot.error {
-  background: var(--status-error);
-}
-
-.status-dot.blink {
-  animation: blink 1s infinite;
-}
-
-@keyframes blink {
-  50% {
-    opacity: 0.3;
   }
 }
 

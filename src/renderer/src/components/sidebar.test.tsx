@@ -82,6 +82,11 @@ describe("SessionIndicator >4 聚合计数 chip", () => {
     ])
     // chip 本体不再按状态分支（变体类已删，状态类只在圆点上）
     expect(chips.every((c) => /^session-count$/.test(c.className))).toBe(true)
+    // 圆点为 SVG（分数 DPR 防变形）：每 chip 一个 core 圆，呼吸态附 halo 圆
+    expect(chips.map((c) => c.querySelectorAll("svg circle").length)).toEqual([2, 2, 1, 1])
+    expect(chips.every((c) => c.querySelector(".status-dot svg circle.core"))).toBe(true)
+    // 数字包在 .session-count-num（1px 光学下移锚点）
+    expect(chips.map((c) => c.querySelector(".session-count-num")?.textContent)).toEqual(["2", "1", "1", "4"])
   })
 
   it("未读纳入 chip：idle 扣未读，chip 数字之和 = 会话总数", () => {

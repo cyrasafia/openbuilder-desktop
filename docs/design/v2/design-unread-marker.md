@@ -205,6 +205,8 @@ idle && unread        → unread（未读，见 §5）
 - **注意（两处映射链）**：左栏 `sidebar.tsx` 与 chat Tab 的「状态 → 类名」映射都是**三元链、末档回落
   `session-idle`**；`dotStateFor` 新增 `unread` 后**两处都必须显式加分支**，否则 TypeScript 不报错、
   未读会被静默画成灰点。
+  > 后续（2026-10-11）：两处已收拢为共享 `SessionDot` 组件（session-dot.tsx）的
+  > `Record<SessionDotState, string>` 穷尽映射——新增状态缺映射即编译错，本坑消除。
 
 ### 5.3 视觉规格（定稿）
 

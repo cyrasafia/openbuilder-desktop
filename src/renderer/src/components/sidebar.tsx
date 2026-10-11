@@ -5,6 +5,7 @@ import { ConfirmDialog } from "./confirm-dialog"
 import { relativeTime } from "../i18n"
 import type { Project, Session } from "@shared/api-types"
 import type { SessionDotState } from "@shared/pending-requests"
+import { SessionDot } from "./session-dot"
 import { MIN_SERVER_VERSION_V2 } from "@shared/semver"
 import { managedNoticeText } from "./managed-notice"
 import { PanelResizeHandle } from "./panel-resize"
@@ -150,7 +151,12 @@ function ServerStatus() {
 
   return (
     <button className="status-cluster" title={title} onClick={() => store.openSettings()}>
-      <span className={"status-dot " + dotClass} />
+      {/* 基础 6px 裸点（非 session-* 族）：SVG 圆点（分数 DPR 防变形，见 app.css 状态点段） */}
+      <span className={"status-dot " + dotClass}>
+        <svg viewBox="0 0 6 6" aria-hidden="true">
+          <circle cx="3" cy="3" r="3" />
+        </svg>
+      </span>
       <span>{label}</span>
       {store.connectionError && <TriangleAlert className="status-error" size={12} aria-hidden />}
     </button>
@@ -465,30 +471,18 @@ function ProjectTree() {
   )
 }
 
-/** dotStateFor 六态 → session-* 变体类。Record 键穷尽：新增状态缺映射即编译错——
- * 替代本组件两处（chip / 逐点）同构三元链，后者对新增状态静默回落灰点（unread
- * 设计 §5.2 记录过的坑：TypeScript 不报错、漏加分支即画错色） */
-const DOT_CLASS: Record<SessionDotState, string> = {
-  running: "session-running",
-  error: "session-error",
-  failed: "session-failed",
-  waiting: "session-waiting",
-  unread: "session-unread",
-  idle: "session-idle",
-}
-
 /**
  * 会话状态指示器（项目/工作区行右侧）：该作用域未归档、非 subagent 会话的状态。
  * 状态投影同移动端 design-agent-status-indicator + design-error-message §3：
  * waiting（待输入，琥珀静态）优先于 error（retry 退避重试，红光晕呼吸）优先于
  * running（busy 运行绿光晕呼吸）——消费 dotStateFor，sessionStatus 单一事实源；
- * 会话点统一 session-* 变体类（12px 盒几何与其他指示对齐）。
+ * 会话点统一走共享 SessionDot 组件（12px 盒 SVG 圆点，分数 DPR 防变形）。
  * ≤4 个逐会话状态点；>4 个按状态聚合计数 chip（2026-10-11 重设计，
- * design-indicator-aggregate-chip）：chip = session-* 状态圆点领头（与逐点态
- * 同几何同动效，呼吸/弱化经类复用免费继承）+ 中性数字，状态色只落在圆点上；
- * 未读 chip 一并纳入，chip 数字之和 = 会话总数。行内流式元素（名称/路径行尾，
- * flex-shrink:0），文本在其前省略不重叠；行 hover 时隐藏（visibility 保占位）
- * 让位给操作 overlay。
+ * design-indicator-aggregate-chip）：chip = SessionDot 状态圆点领头 + 中性数字
+ * （1px 光学下移，见 .session-count-num），容器反色填充（未选中行填选中灰 /
+ * 选中行填行底色）；未读 chip 一并纳入，chip 数字之和 = 会话总数。行内流式元素
+ * （名称/路径行尾，flex-shrink:0），文本在其前省略不重叠；行 hover 时隐藏
+ * （visibility 保占位）让位给操作 overlay。
  */
 /** 导出仅为测试（sidebar 主体经 AppStore 全量驱动，不单测） */
 export function SessionIndicator({ sessions }: { sessions: Session[] }) {
@@ -533,15 +527,13 @@ export function SessionIndicator({ sessions }: { sessions: Session[] }) {
         chipCounts.map(([d, n]) =>
           n > 0 ? (
             <span key={d} className="session-count">
-              <span className={"status-dot " + DOT_CLASS[d]} />
-              {n}
+              <SessionDot state={d} />
+              <span className="session-count-num">{n}</span>
             </span>
           ) : null,
         )
       ) : (
-        sessions.map((s, i) => (
-          <span key={s.id} className={"status-dot " + DOT_CLASS[dots[i]]} />
-        ))
+        sessions.map((s, i) => <SessionDot key={s.id} state={dots[i]} />)
       )}
     </span>
   )
