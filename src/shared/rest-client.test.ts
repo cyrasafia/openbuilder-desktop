@@ -103,6 +103,31 @@ describe("listSessions（flat query + envelope）", () => {
 })
 
 describe("会话域（M2）", () => {
+  it("prompt：请求体带 id（client-minted 锚，design-optimistic-id-anchor）；回执 {data:{id}} 解析返回；无体防御返回 {id:\"\"}", async () => {
+    let seenUrl = ""
+    let seenBody = ""
+    const client = mkClient((_url, init) => {
+      seenUrl = _url
+      seenBody = String(init.body)
+      return new Response(JSON.stringify({ data: { id: "msg_abc", time: { created: 1 } } }))
+    })
+    const receipt = await client.prompt("ses_1", { id: "msg_abc", text: "hi" })
+    expect(receipt).toEqual({ id: "msg_abc" })
+    expect(seenUrl).toBe("http://server/api/session/ses_1/prompt")
+    expect(JSON.parse(seenBody)).toEqual({ id: "msg_abc", text: "hi" })
+    // 无 id 时请求体省略 id 字段（契约可选）
+    const client2 = mkClient((_url, init) => {
+      seenBody = String(init.body)
+      return new Response(JSON.stringify({ data: { id: "msg_x" } }))
+    })
+    await client2.prompt("ses_1", { text: "hi" })
+    expect(JSON.parse(seenBody)).toEqual({ text: "hi" })
+    // 无体（防御形态）：{id: ""} 降级，不抛
+    const client3 = mkClient(() => new Response(null, { status: 200 }))
+    const empty = await client3.prompt("ses_1", { text: "hi" })
+    expect(empty).toEqual({ id: "" })
+  })
+
   it("createSession：POST /api/session，payload 为 location 对象 + 透传字段；响应取 data", async () => {
     let seenUrl = ""
     let seenBody = ""

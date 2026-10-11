@@ -1,5 +1,13 @@
 # inbox 准入即物化（乐观态收敛前移）— 设计文档
 
+> **修订注记（2026-10-11，design-optimistic-id-anchor）**：§3.2 桥接匹配升级为
+> 锚优先（sendPrompt 乐观 localId = client-minted `msg_` id 随 prompt 请求体
+> `id` 传递，锚 = inboxID 精确命中；text 归一匹配降为锚 miss 后的无锚条目
+> 兜底）；§3.4/§3.5 的清除语义补 inboxID 精确清（enqueued 仅 conv 未加载时
+> 门外清——已加载走本设计的物化路径；delivered/cancelled 无条件精确清）；
+> §4「不做会话未加载物化」的乐观悬挂盲区由快照漏斗结算（锚入页即清）封死。
+> 详见 `docs/design/v2/design-optimistic-id-anchor.md`。
+>
 > 状态：已落地（2026-10-10，活体实测 server 2.0.24）。
 > 修复问题：busy 会话中补充发送（design-supplement-send）后，乐观气泡「发送中」
 > 持续到 run 吸收该消息为止（长流式/重试退避下分钟级；error/blocked 收尾的 run

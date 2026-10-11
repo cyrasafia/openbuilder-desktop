@@ -10,6 +10,7 @@ import {
   errorMessage as errorMessageOf,
   inboxItemToUserMessage,
   isArchivedSession,
+  mintMessageID,
   toInternalProject,
   toInternalSession,
 } from "@shared/v2-adapter"
@@ -1818,6 +1819,40 @@ export class AppStore {
       }
       return
     }
+    // ---- 乐观锚清除旁路（design-optimistic-id-anchor §4.1，同 execution.*/revert.*
+    // 旁路模式）：inbox 三事件的乐观消解前置到目录闸门前——按 sessionID 反查
+    // 过等效闸门（信封无 location 时前置闸门判 "global" 会拦截，
+    // design-sse-event-surface §4.1 陷阱警告）。不 return——事件继续流至
+    // switch 内既有 case（物化/尾部重取/物化移除），重复清除幂等。
+    // enqueued 仅在 conv 未加载时清（已加载走门内物化：桥接先取乐观条目的
+    // refs/attachments 再清全部——门外先清会让桥接 miss 丢 chip）；
+    // delivered/cancelled 与桥接无关，无条件精确清
+    if (
+      ev.type === "session.inbox.enqueued" ||
+      ev.type === "session.inbox.delivered" ||
+      ev.type === "session.inbox.cancelled"
+    ) {
+      const p = ev.properties as {
+        sessionID?: unknown
+        inboxID?: unknown
+        item?: { type?: unknown }
+      }
+      const sid = String(p.sessionID ?? "")
+      const inboxID = String(p.inboxID ?? "")
+      if (sid && inboxID) {
+        const session = this.findSession(sid)
+        if (session && this.isOpenedDirectory(session.directory)) {
+          const userItem = p.item?.type == null || p.item.type === "user"
+          const bypass =
+            ev.type !== "session.inbox.enqueued" || !this.messagesBySession.has(sid)
+          // 命中清除即 emit（review 2026-10-11）：信封无 location 时后续 case
+          // 被目录闸门以 "global" 早退、尾部 emit 不可达——撤回滞留到下一次
+          // 任意 emit。兄弟旁路（execution.*/revert.*/viewed）同在 return 前
+          // emit；rAF 合帧，与后续路径的重复 emit 成本可忽略
+          if (userItem && bypass && this.clearOptimisticAt(sid, inboxID)) this.emit()
+        }
+      }
+    }
     // 前置闸门（design-sse-global-event §4.2）：单流收到 server 全部目录的事件，
     // 仅打开项目的目录全集（worktree ∪ sandboxes）放行——关闭项目 = 事件忽略。
     // 此前 message.*/session.created 等依赖"订阅集合即打开集合"隐式隔离，单流后必须显式过滤
@@ -2180,25 +2215,32 @@ export class AppStore {
     // 的精确集合一次清净——server projector 异步落库，重取页可能仍含已删消息
     // （窗口删除依赖下次重取，这里即时收敛）；新消息不在集合，不受影响
     if (revertPurgeIds) this.removeCachedMessages(sessionID, revertPurgeIds)
-    // 投影 user 消息到达（created >= 乐观创建时刻）→ **精确**清除该条乐观
-    // （评审 2026-09-28：全清会在 busy 补充发送（design-supplement-send）下误清
-    // 并发在途的未确认乐观——第二条 prompt 的投影写入有延迟窗口，重取只证明
-    // 自己那条落地；按 localId 唯一匹配删一条，createdAt 仅作落地判定）
+    // 投影 user 消息到达 → **精确**清除该条乐观（评审 2026-09-28：全清会在
+    // busy 补充发送（design-supplement-send）下误清并发在途的未确认乐观——
+    // 第二条 prompt 的投影写入有延迟窗口，重取只证明自己那条落地；按 localId
+    // 唯一匹配删一条，createdAt 仅作落地判定）。id 命中为主判（乐观锚 =
+    // localId = 投影消息 id，design-optimistic-id-anchor §4.2）；created >=
+    // 保留为锚失配防御（server 不尊重传入 id 时与层 3 快照兜底同判据）
     const projected = page.entries.some(
-      (m) => m.info.role === "user" && m.info.time.created >= optimisticCreatedAt,
+      (m) =>
+        m.info.role === "user" &&
+        (m.info.id === optimisticLocalId || m.info.time.created >= optimisticCreatedAt),
     )
     if (projected) this.clearOptimisticAt(sessionID, optimisticLocalId)
     this.emit()
   }
 
-  /** 按 localId 精确清除单条乐观（回执驱动路径）；无匹配不动作 */
-  private clearOptimisticAt(sessionID: string, localId: string) {
+  /** 按 localId 精确清除单条乐观（回执驱动路径）；返回是否实际清除——
+   *  旁路调用方据此补 emit（信封无 location 时后续 case 被目录闸门早退，
+   *  尾部 emit 不可达，review 2026-10-11） */
+  private clearOptimisticAt(sessionID: string, localId: string): boolean {
     const list = this.optimisticBySession.get(sessionID)
-    if (!list) return
+    if (!list) return false
     const next = list.filter((o) => o.localId !== localId)
-    if (next.length === list.length) return
+    if (next.length === list.length) return false
     if (next.length === 0) this.optimisticBySession.delete(sessionID)
     else this.optimisticBySession.set(sessionID, next)
+    return true
   }
 
   // ---- inbox.enqueued 驱动的尾部重取（M6c：他端 user 消息实时落地）----
@@ -2261,13 +2303,19 @@ export class AppStore {
     if (!conv) return
     if (!conv.has(inboxID)) {
       const text = (item as { payload?: { text?: string } } | undefined)?.payload?.text ?? ""
-      // 桥接匹配按 payload.text：纯附件发送本地存原始空串、server 落库零宽
-      // 占位（sendPrompt 的 text || "\u200b" 契约）——两侧归一后比较（review
-      // 2026-10-10：裸等值会让纯附件/纯引用桥接永失配，chip 降级）
+      // 桥接匹配（design-optimistic-id-anchor §4.1）：锚优先——localId ===
+      // inboxID 精确命中（并发在途各锚各桥，「多候选撞匹配跳过桥接」边界
+      // 消失）；锚 miss 退 payload.text 归一匹配（无锚条目的最后桥接通道）：
+      // 纯附件发送本地存原始空串、server 落库零宽占位（sendPrompt 的
+      // text || "\u200b" 契约）——两侧归一后比较（review 2026-10-10：裸等值
+      // 会让纯附件/纯引用桥接永失配，chip 降级）
       const normText = (t: string) => (t ? t : "\u200b")
-      const candidates = (this.optimisticBySession.get(sessionID) ?? []).filter(
-        (o) => normText(o.text) === normText(text),
-      )
+      const list = this.optimisticBySession.get(sessionID) ?? []
+      const anchored = list.filter((o) => o.localId === inboxID)
+      const candidates =
+        anchored.length > 0
+          ? anchored
+          : list.filter((o) => normText(o.text) === normText(text))
       // 多候选撞匹配（同文本并发在途，乱序准入下无法定归属）→ 跳过桥接：
       // 错配比缺配糟——附件会长在别人的气泡上；降级为无 chip，与「并发在途
       // 第二条无桥接」同一已接受边界（review 二轮非阻塞 1）
@@ -3865,7 +3913,39 @@ export class AppStore {
       if (pendingInbox.size === 0) this.materializedInbox.delete(sessionID)
     }
     this.messagesBySession.set(sessionID, merged)
+    // 乐观终兜底（design-optimistic-id-anchor §4.3）：投影确认即清——一次
+    // 落点覆盖全部漏斗（进入会话快照/60s 周期/重连对账/回执重取/尾部重取/
+    // 翻页），封死「一次性事件窗口全错过 → 永久悬挂」。有锚条目（msg_ 形
+    // localId）按 id 命中 merged；无锚条目（命令路径 opt_ 形状）退 created>=
+    // 比对（投影出现新 user 消息即完成使命）。未命中条目不动（排队中/
+    // 在途——消解交给事件与下一次漏斗）
+    this.settleOptimisticOnSnapshot(sessionID, merged, msgs)
     return merged
+  }
+
+  /** 快照合并后的乐观结算（§4.3 私有 helper）：命中即精确清除，emit 由调用方统一。
+   *  有锚判定只查 merged（快照页内 id 经 mergeSnapshotIntoMessages 无条件并入，
+   *  页内判定被其严格包含——review 2026-10-11 删死分支）；无锚判定仍用本页
+   *  （merged 含本地历史，created>= 比对会过宽误清） */
+  private settleOptimisticOnSnapshot(
+    sessionID: string,
+    merged: Map<string, MessageWithParts>,
+    page: MessageWithParts[],
+  ): void {
+    const list = this.optimisticBySession.get(sessionID)
+    if (!list || list.length === 0) return
+    const doomed = new Set<string>()
+    for (const o of list) {
+      if (o.localId.startsWith("msg_")) {
+        if (merged.has(o.localId)) doomed.add(o.localId)
+      } else if (page.some((m) => m.info.role === "user" && m.info.time.created >= o.createdAt)) {
+        doomed.add(o.localId)
+      }
+    }
+    if (doomed.size === 0) return
+    const next = list.filter((o) => !doomed.has(o.localId))
+    if (next.length === 0) this.optimisticBySession.delete(sessionID)
+    else this.optimisticBySession.set(sessionID, next)
   }
 
   /** REST 页合并进会话 map（快照合并 + pending parts 回放），返回本页新增的消息条数 */
@@ -4322,10 +4402,13 @@ export class AppStore {
     if (!text && (!refs || refs.length === 0) && (!attachments || attachments.length === 0)) {
       return { ok: false, error: "empty" }
     }
-    // 乐观消息（design-optimistic-messages：POST 不可信为已送达，真实 user 事件到达即清）
+    // 乐观消息（design-optimistic-id-anchor：localId = client-minted msg_ id，
+    // 随 POST id 传递——server 准入按 id 幂等；消解锚从创建起即存在，事件/
+    // 快照按 id 精确清除。设计前史：POST 不可信为已送达，真实 user 消息到达
+    // 即清——语义不变，清除判定升级为 id 精确）
     const optimistic: OptimisticMessage = {
       optimistic: true,
-      localId: `opt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      localId: mintMessageID(),
       text,
       createdAt: Date.now(),
       ...(refs?.length ? { refs } : {}),
@@ -4351,8 +4434,23 @@ export class AppStore {
       const revertPurgeIds = this.cachedRevertTargets(sessionID)
       // v2 text 必填且原样落库（fromUserMessage 直接入投影）：纯附件/纯引用
       // 发送以零宽空格占位——v1 语义是回显只有文件 chip，"." 会成为可见噪音
-      // （评审 2026-09-28）
-      await this.client!.prompt(sessionID, { text: text || "\u200b", files })
+      // （评审 2026-09-28）。id 随请求传递（server 准入幂等按 id）
+      const receipt = await this.client!.prompt(sessionID, {
+        id: optimistic.localId,
+        text: text || "\u200b",
+        files,
+      })
+      // 回执校验（防御，design-optimistic-id-anchor §6 边界 1）：server 尊重
+      // 传入 id 是官方客户端依赖的稳定行为；不匹配时精确消解失配，由层 3
+      // 快照兜底的 created>= 判定收敛（不悬挂），warn 留痕
+      if (receipt.id && receipt.id !== optimistic.localId) {
+        console.warn(
+          "[prompt] server 回执 id 与铸造 id 不一致",
+          sessionID,
+          optimistic.localId,
+          receipt.id,
+        )
+      }
       // 回滚提交回执兜底（design-sse-event-surface 层 2）：提交权威信号是
       // session.revert.committed 事件（volatile 可丢）——POST 200 即 server 已
       // 提交（prompt 前置 cleanup），本地无条件清暂存，不依赖事件时序。缓存

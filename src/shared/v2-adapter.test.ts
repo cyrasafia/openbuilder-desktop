@@ -7,9 +7,22 @@ import {
   contentText,
   errorMessage,
   inboxItemToUserMessage,
+  mintMessageID,
   toInternalMessages,
   toInternalSession,
 } from "./v2-adapter"
+
+describe("mintMessageID（design-optimistic-id-anchor §5.1）", () => {
+  it("msg_ 前缀 + server 同构 26 字符体（12 hex 时间戳 + 14 随机）", () => {
+    const id = mintMessageID()
+    expect(id).toMatch(/^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/)
+  })
+
+  it("多次铸造唯一（同毫秒内区分靠随机后缀——counter 只进低位，与 server 同构）", () => {
+    const ids = new Set(Array.from({ length: 200 }, () => mintMessageID()))
+    expect(ids.size).toBe(200)
+  })
+})
 
 const U = { id: "msg_u1", time: { created: 100 }, type: "user", text: "看下这些", files: [], agents: [], skills: [] }
 const A = {

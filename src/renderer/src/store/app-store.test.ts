@@ -155,7 +155,7 @@ beforeEach(() => {
       _sid: string,
       _opts: { limit?: number; cursor?: string } = {},
     ): Promise<{ entries: MessageWithParts[]; nextCursor: string | null }> => ({ entries: [], nextCursor: null }),
-    prompt: async () => {},
+    prompt: async () => ({ id: "" }),
     interrupt: async () => {},
     createWorktree: async (_pid: string, _opts: { name?: string } = {}) => ({
       directory: `/wt-${Math.random().toString(36).slice(2, 6)}`,
@@ -1005,7 +1005,7 @@ describe("busy 补充发送（design-supplement-send / design-inbox-admission）
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     const clientV2 = clientV2Of()
-    clientV2.prompt = async () => {}
+    clientV2.prompt = async () => ({ id: "" })
     // 会话 busy + 既有消息（v1 事件 seed 改直建容器——v2 下 user/assistant 骨架
     // 分别走 inbox 重取与流式翻译，本用例聚焦乐观语义不经这两条链路）
     setBusy()
@@ -1089,7 +1089,7 @@ describe("busy 补充发送（design-supplement-send / design-inbox-admission）
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     const clientV2 = clientV2Of()
-    clientV2.prompt = async () => {}
+    clientV2.prompt = async () => ({ id: "" })
     seedMessages("s1")
     setBusy()
 
@@ -1130,7 +1130,7 @@ describe("busy 补充发送（design-supplement-send / design-inbox-admission）
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     const clientV2 = clientV2Of()
-    clientV2.prompt = async () => {}
+    clientV2.prompt = async () => ({ id: "" })
     setBusy()
     seedMessages("s1")
 
@@ -1169,7 +1169,7 @@ describe("busy 补充发送（design-supplement-send / design-inbox-admission）
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     const clientV2 = clientV2Of()
-    clientV2.prompt = async () => {}
+    clientV2.prompt = async () => ({ id: "" })
     setBusy()
     seedMessages(
       "s1",
@@ -1227,7 +1227,7 @@ describe("busy 补充发送（design-supplement-send / design-inbox-admission）
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     const clientV2 = clientV2Of()
-    clientV2.prompt = async () => {}
+    clientV2.prompt = async () => ({ id: "" })
     setBusy()
     seedMessages(
       "s1",
@@ -1276,7 +1276,7 @@ describe("busy 补充发送（design-supplement-send / design-inbox-admission）
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     const clientV2 = clientV2Of()
-    clientV2.prompt = async () => {}
+    clientV2.prompt = async () => ({ id: "" })
     setBusy()
     seedMessages("s1")
 
@@ -1312,7 +1312,7 @@ describe("busy 补充发送（design-supplement-send / design-inbox-admission）
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     const clientV2 = clientV2Of()
-    clientV2.prompt = async () => {}
+    clientV2.prompt = async () => ({ id: "" })
     setBusy()
     seedMessages("s1")
 
@@ -1350,12 +1350,159 @@ describe("busy 补充发送（design-supplement-send / design-inbox-admission）
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     const client = (store as unknown as { client: Record<string, unknown> }).client
-    clientV2Of().prompt = async () => {}
+    clientV2Of().prompt = async () => ({ id: "" })
     setRetry()
 
     const res = await store.sendPrompt("s1", "补充")
     expect(res.ok).toBe(true)
     expect(store.statusOf("s1")).toEqual({ type: "retry", attempt: 2, message: "rate limited" })
+  })
+})
+
+describe("乐观 ID 锚（design-optimistic-id-anchor）", () => {
+  const dispatch = (ev: { type: string; properties: unknown }, meta?: unknown) => {
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown, meta?: unknown) => void }).handleEvent(
+      ROOT,
+      ev,
+      meta,
+    )
+  }
+
+  /** 重取失败（SSE 断线窗口）→ conv 不建立：事件旁路成为唯一消解通道 */
+  function setupUnloadedSession() {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    clientV2Of().prompt = async (_sid: string, input: { id?: string }) => ({ id: input.id ?? "" })
+    clientV2Of().listMessagesPage = async () => {
+      throw new Error("net down")
+    }
+    return s1
+  }
+
+  it("sendPrompt：localId 为 msg_ 形状锚，随请求体 id 传递（server 准入幂等）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    const sent: { id?: string } = {}
+    clientV2Of().prompt = async (_sid: string, input: { id?: string; text: string }) => {
+      sent.id = input.id
+      return { id: input.id ?? "" }
+    }
+    const res = await store.sendPrompt("s1", "hi")
+    expect(res.ok).toBe(true)
+    const optimistic = store.optimisticBySession.get("s1")![0]!
+    expect(optimistic.localId.startsWith("msg_")).toBe(true)
+    expect(sent.id).toBe(optimistic.localId)
+  })
+
+  it("回归（新会话悬挂）：conv 未加载时 enqueued 事件按 inboxID 精确清——不再永久悬挂", async () => {
+    setupUnloadedSession()
+    const res = await store.sendPrompt("s1", "参考移动端实现……")
+    expect(res.ok).toBe(true)
+    const anchor = store.optimisticBySession.get("s1")![0]!.localId
+    // 重取失败早退：conv 未建立，物化路径不可达——旁路清除不需要 conv
+    expect(store.messagesBySession.has("s1")).toBe(false)
+    dispatch(
+      {
+        type: "session.inbox.enqueued",
+        properties: {
+          sessionID: "s1",
+          inboxID: anchor,
+          item: { type: "user", payload: { text: "参考移动端实现……" }, delivery: "steer" },
+        },
+      },
+      { created: 250 },
+    )
+    expect(store.optimisticBySession.has("s1")).toBe(false)
+  })
+
+  it("delivered（conv 未加载）：inboxID 精确清——hasNewUser 失效场景（快照先合并真实 id）由锚闭环", async () => {
+    setupUnloadedSession()
+    const res = await store.sendPrompt("s1", "补充")
+    expect(res.ok).toBe(true)
+    const anchor = store.optimisticBySession.get("s1")![0]!.localId
+    dispatch({
+      type: "session.inbox.delivered",
+      properties: { sessionID: "s1", inboxID: anchor },
+    })
+    expect(store.optimisticBySession.has("s1")).toBe(false)
+  })
+
+  it("inbox.cancelled：锚命中乐观撤回（他端取消排队 = 发送失败语义）；无锚条目不受动", async () => {
+    setupUnloadedSession()
+    const res = await store.sendPrompt("s1", "排队中")
+    expect(res.ok).toBe(true)
+    const anchor = store.optimisticBySession.get("s1")![0]!.localId
+    // 无锚条目并存（命令路径形状，无 server id 锚可命中）
+    store.optimisticBySession.set("s1", [
+      ...store.optimisticBySession.get("s1")!,
+      { optimistic: true, localId: "opt_1", text: "/cmd args", createdAt: 1 },
+    ])
+    dispatch({
+      type: "session.inbox.cancelled",
+      properties: { sessionID: "s1", inboxID: anchor },
+    })
+    const remaining = store.optimisticBySession.get("s1")!
+    expect(remaining.map((o) => o.localId)).toEqual(["opt_1"])
+  })
+
+  it("物化桥接锚优先：localId === inboxID 命中（payload.text 被 server 改写也桥接）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    clientV2Of().prompt = async (_sid: string, input: { id?: string }) => ({ id: input.id ?? "" })
+    seedMessages("s1", {
+      info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
+      parts: [],
+    })
+    const fileRef = { path: "a.ts", absolute: `${ROOT}/a.ts`, filename: "a.ts", isDir: false }
+    store.addFileRef("s1", fileRef)
+    const res = await store.sendPrompt("s1", "原始输入", store.fileRefsFor("s1"))
+    expect(res.ok).toBe(true)
+    const anchor = store.optimisticBySession.get("s1")![0]!.localId
+    dispatch(
+      {
+        type: "session.inbox.enqueued",
+        properties: {
+          sessionID: "s1",
+          inboxID: anchor,
+          // server 改写 text（锚匹配优先于 text 归一匹配的证明）
+          item: { type: "user", payload: { text: "server 改写后的文本" }, delivery: "steer" },
+        },
+      },
+      { created: 250 },
+    )
+    // 物化消息以 inboxID 入列 + refs 铸 file part（chip 保留）
+    const materialized = store.chatEntries("s1").find(
+      (e) => e.kind === "message" && e.data.info.id === anchor,
+    )
+    expect(materialized).toBeTruthy()
+    const parts = (materialized as { data: { parts: Array<{ type: string }> } }).data.parts
+    expect(parts.some((p) => p.type === "file")).toBe(true)
+    expect(store.optimisticBySession.has("s1")).toBe(false)
+  })
+
+  it("终兜底（层 3 快照结算）：锚入页即清；无锚 created>= 即清；排队中不动", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    seedMessages("s1", {
+      info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 50 } },
+      parts: [],
+    })
+    // 手动构造「一次性事件窗口全错过」的残留态（design §1 根因链终态）
+    store.optimisticBySession.set("s1", [
+      { optimistic: true, localId: "msg_x1", text: "已投影", createdAt: 140 },
+      { optimistic: true, localId: "msg_x2", text: "排队中", createdAt: 145 },
+      { optimistic: true, localId: "opt_1", text: "/cmd args", createdAt: 100 },
+    ])
+    clientV2Of().listMessagesPage = async () => ({
+      entries: [
+        { info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 50 } }, parts: [] },
+        { info: { id: "msg_x1", sessionID: "s1", role: "user", time: { created: 150 } }, parts: [] },
+      ],
+      nextCursor: null,
+    })
+    await store.loadEarlierMessages("s1")
+    // 锚入页（投影确认）清；排队锚不动（等待事件/下次漏斗）；无锚 created>= 命中清
+    expect(store.optimisticBySession.get("s1")!.map((o) => o.localId)).toEqual(["msg_x2"])
   })
 })
 
@@ -4906,6 +5053,7 @@ describe("文件引用（design-file-reference）", () => {
       ...clientV2Of(),
       prompt: async (_id: string, input: { text: string; files?: Array<{ uri: string; name?: string }> }) => {
         sentBox.v = input
+        return { id: "" }
       },
     })
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
@@ -4913,14 +5061,17 @@ describe("文件引用（design-file-reference）", () => {
     store.addFileRef("s1", ref("docs/", `${ROOT}/docs`, true))
     const res = await store.sendPrompt("s1", "看下这些", store.fileRefsFor("s1"))
     expect(res.ok).toBe(true)
-    // v2 payload：text + files（v1 file part 的 mime/source 不上送——server 自行读取）
-    expect(sentBox.v).toEqual({
-      text: "看下这些",
-      files: [
-        { uri: `file://${ROOT}/src/a.ts`, name: "a.ts" },
-        { uri: `file://${ROOT}/docs`, name: "docs" },
-      ],
-    })
+    // v2 payload：text + files（v1 file part 的 mime/source 不上送——server 自行读取）；
+    // id = 铸造 msg_ 锚（design-optimistic-id-anchor，动态值不逐字断言）
+    expect(sentBox.v).toEqual(
+      expect.objectContaining({
+        text: "看下这些",
+        files: [
+          { uri: `file://${ROOT}/src/a.ts`, name: "a.ts" },
+          { uri: `file://${ROOT}/docs`, name: "docs" },
+        ],
+      }),
+    )
     // 发送成功引用即清（乐观消息仍带 refs 快照）
     expect(store.fileRefsFor("s1").length).toBe(0)
     expect(store.optimisticBySession.get("s1")![0]!.refs?.length).toBe(2)
@@ -4933,6 +5084,7 @@ describe("文件引用（design-file-reference）", () => {
       ...clientV2Of(),
       prompt: async (_id: string, input: { text: string; files?: Array<{ uri: string }> }) => {
         sentBox.v = input
+        return { id: "" }
       },
     })
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
@@ -6746,6 +6898,7 @@ describe("attachments + sendPrompt 附件扩展", () => {
       ...clientV2Of(),
       prompt: async (_id: string, input: { text: string; files?: Array<{ uri: string; name?: string }> }) => {
         sentBox.v = input
+        return { id: "" }
       },
     })
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
@@ -6753,13 +6906,15 @@ describe("attachments + sendPrompt 附件扩展", () => {
     store.addAttachments("s1", [att("a1", "image/png", "shot.png", true)])
     const res = await store.sendPrompt("s1", "看图", store.fileRefsFor("s1"), store.attachmentsFor("s1"))
     expect(res.ok).toBe(true)
-    expect(sentBox.v).toEqual({
-      text: "看图",
-      files: [
-        { uri: `file://${ROOT}/a.ts`, name: "a.ts" },
-        { uri: "data:image/png;base64,AA==", name: "shot.png" },
-      ],
-    })
+    expect(sentBox.v).toEqual(
+      expect.objectContaining({
+        text: "看图",
+        files: [
+          { uri: `file://${ROOT}/a.ts`, name: "a.ts" },
+          { uri: "data:image/png;base64,AA==", name: "shot.png" },
+        ],
+      }),
+    )
     expect(store.attachmentsFor("s1")).toHaveLength(0)
     // 乐观消息携带附件（气泡即见）
     expect(store.optimisticBySession.get("s1")![0]!.attachments?.length).toBe(1)
@@ -6771,7 +6926,7 @@ describe("attachments + sendPrompt 附件扩展", () => {
     try {
       const s1 = session("s1", ROOT, { created: 1, updated: 1 })
       const cv2 = clientV2Of()
-      cv2.prompt = async () => {}
+      cv2.prompt = async () => ({ id: "" })
       // 首页重取：返回投影（created 晚于乐观时刻 → 判定落地）
       cv2.listMessagesPage = async () => ({
         entries: [{ info: { id: "msg_p1", sessionID: "s1", role: "user", time: { created: 2000 } }, parts: [] }],
@@ -6816,6 +6971,7 @@ describe("attachments + sendPrompt 附件扩展", () => {
       ...clientV2Of(),
       prompt: async (_id: string, input: { text: string; files?: Array<{ uri: string }> }) => {
         sentBox.v = input
+        return { id: "" }
       },
     })
     store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
@@ -7085,7 +7241,7 @@ describe("inbox.enqueued 链路（M6c：他端 user 消息实时落地）", () =
       info: { id: "msg_a1", sessionID: "s1", role: "assistant", time: { created: 100 } },
       parts: [],
     })
-    clientV2Of().prompt = async () => {}
+    clientV2Of().prompt = async () => ({ id: "" })
     ;(store as unknown as { optimisticBySession: Map<string, unknown[]> }).optimisticBySession.set(
       "s1",
       [{ optimistic: true, localId: "opt_1", text: "在途", createdAt: 1 }],
