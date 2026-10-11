@@ -211,3 +211,20 @@ describe("MessageBlock 文件路径自动链接（design-message-autolink）", (
     expect(container.textContent).toContain("lib/foo.dart")
   })
 })
+
+  it("手写 ob-file 越界链接：点击层同源归属校验拒绝（评审修复 3）", () => {
+    storeMock.findSession.mockReturnValue({ directory: "/repo", parentID: null })
+    const entry = assistantEntry(undefined)
+    ;((entry.data as { parts: Array<{ text: string }> }).parts[0]).text =
+      "[看这](ob-file:////etc/hosts) 与 [内的](ob-file:////repo/lib/a.ts)"
+    const { container } = render(<MessageBlock entry={entry} />)
+    const links = [...container.querySelectorAll("a")]
+    expect(links.map((a) => a.getAttribute("href"))).toEqual([
+      "ob-file:////etc/hosts",
+      "ob-file:////repo/lib/a.ts",
+    ])
+    fireEvent.click(links[0]) // 项目外：拒绝
+    expect(storeMock.openFileTab).not.toHaveBeenCalled()
+    fireEvent.click(links[1]) // 项目内：放行
+    expect(storeMock.openFileTab).toHaveBeenCalledWith("/repo/lib/a.ts", undefined)
+  })

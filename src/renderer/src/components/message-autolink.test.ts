@@ -277,3 +277,28 @@ describe("messageFileLinks 插件", () => {
     expect(((tree.children![0] as { children: MdastNode[] }).children[0] as { value: string }).value).toBe(src)
   })
 })
+
+describe("messageFileLinks 插件（评审修复补充）", () => {
+  const DIR = "/home/u/proj"
+
+  it("linkReference 引用文本不转链（防嵌套 a，评审 nit 6）", () => {
+    const tree: MdastNode = {
+      type: "root",
+      children: [
+        {
+          type: "paragraph",
+          children: [
+            { type: "linkReference", identifier: "1", label: "1", children: [text("lib/foo.dart")] },
+            text(" 与 lib/bar.ts"),
+          ],
+        },
+        { type: "definition", identifier: "1", label: "1", url: "https://e.com/x" },
+      ],
+    } as MdastNode
+    messageFileLinks({ directory: DIR })(tree)
+    // 引用标签保持 linkReference（不产生嵌套 link）；相邻自由文本照常转链
+    expect(linksOf(tree)).toEqual([["ob-file:////home/u/proj/lib/bar.ts", "lib/bar.ts"]])
+    const p = tree.children![0] as { children: MdastNode[] }
+    expect(p.children[0].type).toBe("linkReference")
+  })
+})

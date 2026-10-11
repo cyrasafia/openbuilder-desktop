@@ -258,8 +258,9 @@ const softBreaks = () => (tree: MdNode) => {
 }
 
 /** cjkEmphasis（design-markdown-preview §2.9 CJK 标点侧向修复）统一注入全部
- *  管线（assistant / user / 文件预览）；组合次序见下方 mergedPlugins——
- *  补救配对要在 softBreaks 软换行拆分 text 节点之前看到完整段落文本 */
+ *  管线（assistant / user / 文件预览）；组合次序见下方 mergedPlugins——恒排
+ *  最前：补救配对要在任何拆分 text 节点的插件（gfm autolink /
+ *  messageFileLinks / softBreaks）之前看到完整段落文本（2026-10-11 评审修订） */
 
 /* ---------- 消息文件路径链接分流（design-message-autolink §2.5） ----------
  * 消息流传入 onFileLink（引用稳定）：a 覆写按 ob-file: 前缀单点分流——
@@ -308,7 +309,12 @@ interface SanitizeSchemaShape {
  *  percent-encoding 往返保持（实测）。模块级常量：一次构造，streamdown 块
  *  memo 的 rehypePlugins 引用比较不受影响。 */
 const fileLinkRehype: StreamdownProps["rehypePlugins"] = (() => {
-  const [sanitizeFn, schema] = defaultRehypePlugins.sanitize as unknown as [
+  // 上游形状守卫（评审 nit 5）：sanitize 条目须是 [fn, schema] 元组（2.5.0 dist
+  // 核实）；升级改形状时降级为不扩展——ob-file 链接回落默认栈被拦截（功能
+  // 降级），不在模块加载期 TypeError
+  const entry = defaultRehypePlugins.sanitize
+  if (!Array.isArray(entry) || typeof entry[0] !== "function") return undefined
+  const [sanitizeFn, schema] = entry as unknown as [
     (tree: unknown) => unknown,
     SanitizeSchemaShape,
   ]
@@ -361,13 +367,19 @@ export function Markdown({
         : mdComponents,
     [img, onFileLink],
   )
-  // cjkEmphasis 自动追加（§2.9）；softLineBreak 不再吞调用方插件（解互斥），
-  // softBreaks 恒排最后——拆 text 节点与插 link 节点互不相关（路径不含换行）；
-  // 无传入时走默认件。useMemo 保引用稳定，streamdown 块 memo 不失效
+  // cjkEmphasis（§2.9）恒排最前：须在任何拆分 text 节点的插件（remark-gfm
+  // autolink、messageFileLinks、softBreaks）之前看到完整段落文本——2026-10-11
+  // 评审修订：原「追加在调用方插件之后」次序下 messageFileLinks 先按路径拆
+  // text，`**` 配对跨节点失败，CJK 强调补救丢失（`**结论，见 src/a.ts 文档，**
+  // 后续` 实测加粗失效）。softBreaks 恒排最后（拆 text 与软换行互不相关：
+  // 路径不含换行、链接文本是路径）；调用方契约不变（整体替换默认集、自拼
+  // 默认件——cjkEmphasis 与 relativeImageRewrite 改 image/definition 节点、
+  // 与 text 补救互不相关，次序互换无影响）。useMemo 保引用稳定，streamdown
+  // 块 memo 不失效
   const mergedPlugins = useMemo<StreamdownProps["remarkPlugins"]>(
     () => [
-      ...(remarkPlugins ?? Object.values(defaultRemarkPlugins)),
       cjkEmphasis,
+      ...(remarkPlugins ?? Object.values(defaultRemarkPlugins)),
       ...(softLineBreak ? [softBreaks] : []),
     ],
     [remarkPlugins, softLineBreak],

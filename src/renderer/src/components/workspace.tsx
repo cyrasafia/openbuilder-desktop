@@ -54,7 +54,7 @@ import type {
 import type { PendingPermission, PendingQuestion } from "@shared/pending-requests"
 import { externalDirectoryPath, permissionCommand } from "@shared/pending-requests"
 import { Markdown } from "./markdown"
-import { decodeFileHref, messageFileLinks } from "./message-autolink"
+import { decodeFileHref, messageFileLinks, resolveProjectPath } from "./message-autolink"
 import type { StreamdownProps } from "streamdown"
 import { defaultRemarkPlugins } from "streamdown"
 import { splitFrontMatter } from "./markdown-frontmatter"
@@ -2500,13 +2500,16 @@ export function MessageBlock({ entry }: { entry: ChatEntry }) {
   )
   const onFileLink = useCallback(
     (href: string) => {
-      // href 由本端插件产出（恒绝对路径 + 归属校验已过）；手写 ob-file 畸形链接
-      // 防御：相对路径/畸形编码静默忽略不动作
+      // 点击层与解析层同源归属校验（评审修订 3）：手写 `[x](ob-file:…)` 链接
+      // （assistant 输出可受 prompt injection 影响）同走此回调——resolveProjectPath
+      // 对项目外/逃逸/无 directory 一律拒绝；插件产出的 href 恒过校验
       const decoded = decodeFileHref(href)
-      if (!decoded || !decoded.path.startsWith("/")) return
-      store.openFileTab(decoded.path, decoded.line ?? undefined)
+      if (!decoded) return
+      const abs = resolveProjectPath(decoded.path, sessionDir ?? "")
+      if (!abs) return
+      store.openFileTab(abs, decoded.line ?? undefined)
     },
-    [store],
+    [store, sessionDir],
   )
 
   if (entry.kind === "optimistic") {

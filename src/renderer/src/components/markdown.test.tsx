@@ -336,6 +336,18 @@ describe("Markdown 文件路径自动链接（design-message-autolink）", () =>
     ])
   })
 
+  it("CJK 强调补救与路径转链同段并存（评审修复 1：cjkEmphasis 恒前，拆 text 前看到完整段落）", () => {
+    const { container } = render(
+      <Markdown remarkPlugins={plugins} onFileLink={noop}>
+        {"**结论，见 src/a.ts 文档，**后续文字"}
+      </Markdown>,
+    )
+    // CJK 全角逗号侧向失效由 cjkEmphasis 补救（须在 messageFileLinks 拆 text
+    // 之前配对 `**`），路径仍转链
+    expect(container.querySelector("strong")?.textContent).toBe("结论，见 src/a.ts 文档，")
+    expect(container.querySelector("a")?.getAttribute("href")).toBe("ob-file:////repo/src/a.ts")
+  })
+
   it("onFileLink 缺省：默认 rehype 栈 sanitize 拦截 ob-file href（白名单外），不产生可点链接", () => {
     // 文件预览实际不传插件（无 ob-file 链接产生）；本用例锚定「插件在、路由缺」
     // 的错配防护：harden 呈 blocked 指示（span），无 a 可点

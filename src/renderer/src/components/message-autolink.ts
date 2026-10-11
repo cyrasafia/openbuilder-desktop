@@ -154,8 +154,13 @@ export function messageFileLinks(options: { directory: string }) {
 function walk(node: MdastNode, insideLink: boolean, directory: string): void {
   if (insideLink) return
   if (!Array.isArray(node.children)) return
-  // 先递归子树（link 节点自身进入即被 insideLink 剪枝），后序重建本层 children
-  for (const child of node.children) walk(child, child.type === "link", directory)
+  // 先递归子树（link 节点自身进入即被 insideLink 剪枝），后序重建本层 children；
+  // linkReference 子树同样剪枝（评审 nit 6）：引用标签文本转链会嵌套产出
+  // `<a>` in `<a>` 无效 HTML——linkReference 的目标在 definition 节点，
+  // 手写 ob-file definition 由点击层归属校验兜底
+  for (const child of node.children) {
+    walk(child, child.type === "link" || child.type === "linkReference", directory)
+  }
   let next: MdastNode[] | null = null
   for (let i = 0; i < node.children.length; i++) {
     const child = node.children[i]

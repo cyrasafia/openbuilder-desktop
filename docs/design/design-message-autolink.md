@@ -1,6 +1,6 @@
 # 会话消息文件路径自动链接 — 设计文档
 
-> 状态：已实现（2026-10-11），全量 1264 测试通过；实现期两项联调实测契约事实见 §2.5a（rehype-sanitize 白名单 / hast 层 target 注入）
+> 状态：已实现（2026-10-11），全量测试通过；含评审修订三轮（插件次序/click 归属校验/ME-3 表述，见 §2.8/§2.5/§3 修订标注）；实现期联调实测契约事实见 §2.5a（rehype-sanitize 白名单 / hast 层 target 注入 / 外层 memo 上游特性）
 > 参考来源：**openbuilder `docs/design/design-message-autolink.md`**（移动端 v2 文件路径扩展 + 六轮评审 + MF-1/MF-2 线上缺陷修复，识别规则逐条移植）；本仓 `design-markdown-preview.md` §2.9（CJK 标点先例，同为 ASCII 为中心语法规则的坑位家族）
 > 移动端姊妹实现：`openbuilder/lib/features/conversation/message_autolink.dart`（识别/编码/解码/归属校验的规则源）+ `conversation_screen.dart` `_markdownPart`/`_onMdLink`/`_openLinkedFile`（接入形态——桌面不照搬，见 §2.1）
 
@@ -84,23 +84,26 @@ AI 回复高频出现**项目内文件路径**（`src/foo/bar.ts`、`/abs/worktr
 
 **点击路由**（markdown.tsx）：`Markdown` 新增可选 prop `onFileLink?: (href: string) => void`，经 `useMemo` 合并进 components（**同 `img` 覆写的既有模式**：调用方保持引用稳定，消息流恒传、文件预览恒不传）：
 
-- `a` 覆写工厂：href 以 `ob-file:` 开头 → 渲染 `<a>`（无 target/rel——内部链接）+ `onClick` `preventDefault` + `onFileLink(href)`；其余链接维持现状（`target="_blank"` + 主进程 shell.openExternal，外链语义零改动）。
-- MessageBlock 提供 handler（`useCallback([store])`，store 单例引用稳定）：
+- `a` 覆写工厂：href 以 `ob-file:` 开头 → 渲染 `<a>`（无 target/rel——内部链接，§2.5a-2 须剥 hast 注入的 target/rel）+ `onClick` `preventDefault` + `onFileLink(href)`；其余链接维持现状（`target="_blank"` + 主进程 shell.openExternal，外链语义零改动）。
+- MessageBlock 提供 handler（`useCallback([store, sessionDir])`，store 单例 + directory 会话内稳定）：
 
   ```ts
   (href) => {
     const decoded = decodeFileHref(href)
-    if (!decoded || !decoded.path.startsWith("/")) return  // 手写畸形 href 防御（绝对路径校验——桌面 href 恒绝对，相对 = 畸形）
-    store.openFileTab(decoded.path, decoded.line ?? undefined)
+    if (!decoded) return
+    const abs = resolveProjectPath(decoded.path, sessionDir ?? "")  // 点击层同源归属校验
+    if (!abs) return
+    store.openFileTab(abs, decoded.line ?? undefined)
   }
   ```
 
-**禁用 window.open 路径**：`ob-file:` 非 http(s)，主进程 `setWindowOpenHandler` 本就 deny——preventDefault 后无系统侧动作，路由完全在 renderer。
+  **点击层同源归属校验（2026-10-11 评审修订 3）**：手写 `[x](ob-file:…)` 链接（assistant 输出可受 prompt injection 影响）不经插件（link 子树跳过）但同样渲染为可点 `a` 并进入本回调——`resolveProjectPath` 与解析层同源，项目外/`..` 逃逸/无 directory 一律静默拒绝；插件产出的 href 恒过校验。**禁用 window.open 路径**：`ob-file:` 非 http(s)，主进程 `setWindowOpenHandler` 本就 deny——preventDefault 后无系统侧动作，路由完全在 renderer。
 
 ### 2.5a 实现期联调实测（streamdown 2.5.0 契约事实，改渲染层前必读）
 
 1. **rehype-sanitize 白名单拦截自定义 scheme**：streamdown 默认 rehype 栈 = raw + sanitize（rehype-sanitize，schema `protocols.href = [http, https, irc, ircs, mailto, xmpp, tel]`）+ harden。`ob-file:` 不在白名单 → **href 属性被 sanitize 剥除** → harden 呈 "Blocked URL: undefined [blocked]" 灰字指示（实测渲染为 span，无 `a`）。解法：`defaultRehypePlugins` 是 streamdown 导出面（`{raw, sanitize, harden}`），`Markdown` 在 onFileLink 存在时替换为同构栈——三件照搬默认，仅 sanitize schema 的 `protocols.href` 追加 `"ob-file"`；**模块级常量一次构造**（rehypePlugins 引用参与 streamdown 块 memo 比较）。harden 的 `allowedProtocols: ["*"]` 本就放行自定义 scheme，且 `new URL` 序列化对 4 斜杠绝对形态与 percent-encoding **往返保持**（实测）。
 2. **hast 层给全部 `a` 注入 `target="_blank"` / `rel="noopener noreferrer"`**（streamdown rehype 管线装饰，实测）：外链路径无需任何处理（覆写 spread 透传即得既有行为）；**ob-file 分支须显式剥除 target/rel**——不剥则 spread 透传，target 触发主进程 setWindowOpenHandler 路径（deny 后无害，但语义错误）。
+3. **streamdown 外层 memo 不比较 `remarkPlugins` / `rehypePlugins` / `components`**（上游特性，评审待确认项）：若 directory 晚于消息就位且文本不变，Streamdown 不重渲染、链接不出现。当前全部加载路径（主会话 REST 快照先入 map 再开 Tab；子会话 `session.created` 先于消息事件）directory 先于消息就位，未构造出触发场景；`img`/`remarkPlugins` 既有 prop 同受此特性影响（非本设计引入）。**失效条件**：若未来出现子会话消息先于 `session.created` 到达的 SSE 乱序路径，需在 directory 就位时强制重渲染（bump children 引用或 key）。sanitize 元组解构带上游形状守卫（非元组时降级不扩展，模块加载不崩——评审 nit 5）。
 
 ### 2.6 打开语义（Everything is a tab）
 
@@ -128,14 +131,15 @@ AI 回复高频出现**项目内文件路径**（`src/foo/bar.ts`、`/abs/worktr
 
 现状：`remarkPlugins` 与 `softLineBreak` 互斥（softLineBreak 优先、caller 插件被忽略，user 管线恒走模块常量 `userRemarkPlugins`）。user 消息要转链必须两者可组合。
 
-新组合规则（`useMemo`，deps `[remarkPlugins, softLineBreak]`）：
+新组合规则（`useMemo`，deps `[remarkPlugins, softLineBreak]`；**2026-10-11 评审修订 1**）：
 
 ```
-[...(remarkPlugins ?? Object.values(defaultRemarkPlugins)), cjkEmphasis, ...(softLineBreak ? [softBreaks] : [])]
+[cjkEmphasis, ...(remarkPlugins ?? Object.values(defaultRemarkPlugins)), ...(softLineBreak ? [softBreaks] : [])]
 ```
 
-- **调用方契约不变**：caller 插件仍是「整体替换默认集、自拼默认件」（FileView 现行为），cjkEmphasis 仍自动追加（FileView 现次序 `[caller…, cjkEmphasis]` 保持）。
-- 唯一变化：softLineBreak 不再吞掉 caller 插件，`softBreaks` 恒排最后（拆 text 节点与插 link 节点互不相关：路径不含 `\n`，链接文本是路径无换行）。
+- **cjkEmphasis 恒排最前**（评审修订 1）：原公式把 cjkEmphasis 追加在调用方插件之后，messageFileLinks 先按路径拆 text 节点，`**` 配对跨节点失败——`**结论，见 src/a.ts 文档，**后续` 的 CJK 强调补救丢失（实测）。cjkEmphasis 必须在任何拆 text 节点的插件（gfm autolink / messageFileLinks / softBreaks）之前看到完整段落文本（§2.9 既有原则的推广，非仅 softBreaks）。对 FileView 无影响：relativeImageRewrite 只改 image/definition 节点 url，与 text 补救互不相关。
+- **调用方契约不变**：caller 插件仍是「整体替换默认集、自拼默认件」（FileView 现行为），cjkEmphasis 仍自动注入（次序由本组件集中管理）。
+- softLineBreak 不再吞掉 caller 插件，`softBreaks` 恒排最后（路径不含 `\n`，链接文本是路径无换行）。
 - 消息流调用：`remarkPlugins = useMemo(() => [[messageFileLinks, { directory }], ...默认件], [directory])`——目录缺失时传 undefined（不转链）。directory 会话内稳定 → 数组引用稳定 → streamdown 块 memo 不失效。
 
 ## 3. 不做的事
@@ -147,7 +151,7 @@ AI 回复高频出现**项目内文件路径**（`src/foo/bar.ts`、`/abs/worktr
 - **多项目解析不做**：路径只对消息所属会话的 directory 校验；指向其他已开项目/其他 worktree 的绝对路径保持纯文本（移动端同口径——它的校验也只对 session.directory）。
 - **文件存在性校验不做**（零 IO；不存在走 FileView 加载失败 UI）。
 - **文本节点边界的 lookbehind 近似**：mdast 行内解析会把 text 拆成多节点（emphasis/link/softbreak 分隔），本插件按节点 value 起点判定 lookbehind，跨节点的紧邻词字符（如 emphasis 闭侧 `*x*` 后直接跟路径——raw 串里前驱是 `*`，两侧实现都转链）与移动端行为一致的**实际差异**仅剩「前驱是词字符且恰被行内结构拆开」的构造（如 link 节点尾随词字符后接路径），该形态下移动端原样拒绝、桌面可能转链——理论构造，接受为已知近似。
-- 末尾部分切分不防护（`foo/1.0/bar` 只转链 `foo/1.0`，MD-2 同款）；`user@host/a/b.dart` scp 形态（ME-3 同款）——桌面因解析期归属校验，此类误报自然消解为不转链（不产生移动端的「可点但错误」死链，比移动端结果更优）。
+- 末尾部分切分不防护（`foo/1.0/bar` 只转链 `foo/1.0`，MD-2 同款）；`user@host/a/b.dart` scp 形态（ME-3 同款）——**与移动端实际一致：照样转链**（`@` 在段字符集内，相对路径 resolve 后位于项目内），可点但点击走 FileView 加载失败 UI。2026-10-11 评审修订 2：本节原表述「桌面解析期校验使误报自然消解为不转链」错误——解析期校验拦的是项目外/逃逸，相对形态误拼进项目内不构成拦截条件。
 - 手写 `[x](ob-file:…)` 链接：link 子树跳过不二次处理（移动端同款）；点击层防御——非绝对路径/畸形编码静默忽略（移动端 ME-1 同款 try/catch 精神）。
 - 不做 href 悬停提示（title 属性）与链接样式特化：转链后统一走 vendor github-markdown-css 的 `.markdown-body a` 样式（移动端「不保留等宽」同款取舍）。
 
@@ -172,3 +176,17 @@ AI 回复高频出现**项目内文件路径**（`src/foo/bar.ts`、`/abs/worktr
 - [ ] 点击：链接点击 → 文件 Tab 激活；外链仍走系统浏览器（回归）；`ob-file:` 畸形 href 不崩溃不动作
 - [ ] 流式：回复流式期间路径段落逐 token 出现，路径完整成段后转链（尾块重解析）；长消息流式不引入逐 token 全文重扫（块 memo 生效）
 - [ ] 覆盖：user/assistant/subtask/子会话消息均生效；reasoning/乐观消息/文件预览不受影响；typecheck/test 全绿
+
+## 6. 评审意见（2026-10-11，实现后代码评审）
+
+| 编号 | 优先级 | 问题 | 处置 |
+|------|--------|------|------|
+| R-1 | 🟡 | 插件次序：messageFileLinks 拆 text 节点破坏 cjkEmphasis 的 CJK 强调补救——`**结论，见 src/a.ts 文档，**后续` 中 `**` 配对跨节点失败、加粗丢失（实测）；§2.8 原声称「拆 text 与插 link 互不相关」论断不成立 | ✅ cjkEmphasis 恒排最前（先于 gfm autolink/调用方插件/softBreaks，§2.9 原则的推广）；补回归用例（CJK 补救 + 路径转链同段并存） |
+| R-2 | 🟢 | §3 ME-3 表述与实际行为相反：`user@host/a/b.dart` 的 `@` 在段字符集内、resolve 后在项目内 → 照样转链（与移动端一致），非「不转链」 | ✅ 文档修正为「可点但加载失败 UI」同移动端口径，标注修订 |
+| R-3 | 🟢 | 手写 `[x](ob-file:…)` 链接绕过归属校验直达 openFileTab（弱化边界：prompt injection 可诱导开任意本地文件 Tab；实际影响有限——仅本地展示） | ✅ 点击层补同源 `resolveProjectPath` 校验（项目外/逃逸/无 directory 拒绝）；补手写越界拒绝/项目内放行集成用例 |
+| R-4 | 待确认 | streamdown 外层 memo 不比较 remarkPlugins/components：directory 晚于消息就位且文本不变时链接不出现；各加载路径实测 directory 均先就位，未构造出触发场景（img/remarkPlugins 既有 prop 同受影响，非本次引入） | 📝 §2.5a-3 备忘 + 失效条件记录，不改代码 |
+| R-5 | nit | sanitize 元组解构 `as unknown as` 硬 cast：上游升级改形状会在模块加载期 TypeError | ✅ `Array.isArray` + fn 类型守卫，非元组降级不扩展（功能回落、不崩） |
+| R-6 | nit | linkReference 标签文本转链产生嵌套 `<a>`（无效 HTML） | ✅ linkReference 子树同 insideLink 剪枝；补插件用例 |
+| R-7 | nit | `:0` 行号被接受（`?line=0`） | 📝 无害（移动端同构、CodeView 滚动钳定兜底），不动 |
+
+评审验证通过项：resolveProjectPath 前缀/尾斜杠/逃逸、decodeFileHref query 拆分次序、softBreaks 组合、hooks 位置、文档落点与 commit 规范、main 进程 setWindowOpenHandler 仅放行 http(s)（ob-file 中键/ctrl 点击无 OS 动作）。
