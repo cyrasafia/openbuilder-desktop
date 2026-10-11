@@ -41,8 +41,8 @@ opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录�
 
 - 升级版本号时**必须同时修改所有版本落点**：`package.json`（+ `package-lock.json` 随 `npm version` 同步）、`packaging/arch/PKGBUILD`（`pkgver`）、`packaging/fedora/openbuilder-desktop.spec`（`Version:`）
 - 打包脚本 `scripts/package-arch.sh` 从 `package.json` 读取 `pkgver` 并自动递增 `pkgrel`（build number），无需手动改 `pkgrel`
-- 升级**第一段或第二段**版本号时（如 `0.3.0` → `0.4.0` 或 `1.0.0`），**必须打 GitHub tag**（`git tag vX.Y`）并推送（`git push origin vX.Y`）；第三段补丁号（`0.3.0` → `0.3.1`）不打 tag
-- commit message 用 `chore: 升级版本号至 X.Y.Z，对齐 vX.Y 标签`（打 tag 时）或 `chore: 升级版本号至 X.Y.Z`
+- 升级**任意段**版本号时（`0.5.1` → `0.5.2`、`0.6.0`、`1.0.0`），**必须打 GitHub tag**并推送（`git tag vX.Y.Z` → `git push origin vX.Y.Z`）；tag 用全量版本号（2026-10-11 修订，原「仅第一/二段打 tag、第三段补丁号不打 tag」废止）
+- commit message 用 `chore: 升级版本号至 X.Y.Z，对齐 vX.Y.Z 标签`
 
 ## 已锁定的语义（实现时不可走样）
 
