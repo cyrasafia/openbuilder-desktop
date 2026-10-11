@@ -142,8 +142,9 @@ unread(session) ⟺  time.idle !== undefined  &&  (time.viewed === undefined || 
 
 - 挂点是既有终态消费点（`app-store.ts` 的 `session.execution.succeeded/failed/interrupted` 分支）；
 - **跳过 `interrupted`+`reason==="shutdown"`**（server 不推进 idle，补拉纯浪费）；
-- 只对已打开目录的已知会话发（过事件闸门）；按 session 去重（在途合并），并发受既有池约束
-  （`runLimited`）；
+- 只对已打开目录的已知会话发（过事件闸门）；按 session 去重（在途合并）。**不经 `runLimited` 池**——
+  依赖浏览器同 host 连接上限（~6）+ 终态低频 + per-session 去重（子会话终态同样触发，同项目多会话
+  齐发时可短暂并发 N 个 GET；压力上升再评估挂池，见 §7 末条）；
 - 补拉失败静默（60s 对账兜底）。
 
 被否决的替代：**用事件 `created` 本地合成 idle**——服务端 `max(created, prev+1)` 守卫会让二者
@@ -246,7 +247,7 @@ idle && unread        → unread（未读，见 §5）
   重设计另开分支（见 todo）；超出 8 个未自动开 Tab 的会话仍无独立列表入口（沿 design-layout §4 既有取舍）。
 - **依赖 cp 到 REST 补拉**：若未来 pool 压力上升，可评估退化为周期性快照（代价 = 未读延迟）。
 
-## 8. 涉及文件（预期）
+## 8. 涉及文件（已实现，2026-10-11）
 
 | 位置 | 改动 |
 |---|---|
@@ -269,5 +270,4 @@ idle && unread        → unread（未读，见 §5）
 2. **聚合 chip 整体重设计**：另开分支，见 [todo-indicator-aggregate-chip](../../todo/todo-indicator-aggregate-chip.md)；
    未读 chip 随之延后（本分支 >4 会话行不呈现未读）。
 3. **终态补拉的频率**（实施细节）：每终态 1 次 `GET` 是否可接受（§4.3）；备选批量延迟合并。
-4. **落地**：`tokens.css` 加 `--status-unread`；`DESIGN.md` 状态色「四色→五色」；i18n / app.css / 组件；
-   `docs/spec/spec-v0.5.md` 已纳入本功能（范围内 #11 + API 映射 + 验收口径）。
+4. ~~落地~~ → **已实现（2026-10-11）**：`tokens.css` `--status-unread`（暗 `#58a6ff` / 亮 `#0969da`）；`DESIGN.md` 状态五色；`app.css` `.status-dot.session-unread`；`sidebar.tsx` / `workspace.tsx` 状态点映射加 unread 分支；`app-store.ts` ack（激活 Tab 驱动 + `acknowledged` 去重 + 250ms→5s 退避）、`session.viewed` 单调合并、run 终态补拉、`emit` 单入口触发；`rest-client` `getSession` / `markSessionViewed`；`pending-requests` `SessionDotState` 加 `unread`；`unread.ts` `isSessionUnread`；`session-merge` `mergeMonotoneSessionTime`（idle/viewed 单调 max，防在途快照回退）；i18n `{unread}`。测试：`unread` / `session-merge` / `pending-requests` / `rest-client` / `app-store` 新增用例；全量 vitest 1224 通过、typecheck 绿。

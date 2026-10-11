@@ -133,6 +133,10 @@
   --status-pending: #8b949e;
   /* 待输入（授权/问题）：琥珀静态，取值同移动端 AgentStatusIndicator paused 色 */
   --status-waiting: #fbbf24;
+  /* 未读（design-unread-marker）：新产出未验收，蓝＝通用「未读」语义；与绿/红/灰/琥珀
+     四状态色相均不撞（尤其不与 running 绿混淆）。取值同 --syntax-link 暗色档
+     （GitHub blue），已过对比审 */
+  --status-unread: #58a6ff;
 
   /* 语法高亮（design-code-view §2.4）：GitHub dark 色板，两主题可读性经大规模验证 */
   --syntax-comment: #8b949e;
@@ -244,6 +248,9 @@
      2.29:1 低于现行，且与 red-700/green-700 深值档风格不协调，亦弃——
      压暗/橙移加深/亮橙三方向探索完毕，43° 金琥珀为终案 */
   --status-waiting: #b8860b;
+  /* 未读（design-unread-marker）：亮色档同 --syntax-link（GitHub blue #0969da），与暗色档
+     成亮暗配对（同 status 其余四色的亮暗分开做法） */
+  --status-unread: #0969da;
 
   /* 语法高亮（design-code-view §2.4）：GitHub light 色板 */
   --syntax-comment: #6e7781;

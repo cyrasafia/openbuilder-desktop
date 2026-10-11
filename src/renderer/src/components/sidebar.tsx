@@ -482,13 +482,18 @@ function SessionIndicator({ sessions }: { sessions: Session[] }) {
   let waitingCount = 0
   let errorCount = 0
   let failedCount = 0
+  let unreadCount = 0
   const dots = sessions.map((s) => store.dotStateFor(s.id))
   for (const d of dots) {
     if (d === "waiting") waitingCount++
     else if (d === "error") errorCount++
     else if (d === "failed") failedCount++
     else if (d === "running") busyCount++
+    else if (d === "unread") unreadCount++
   }
+  // >4 会话的聚合 chip 保持现状（未读不入 chip，见 design-unread-marker §5.1 /
+  // todo-indicator-aggregate-chip）——未读会话仍计入空闲 chip，保证 chip 数字之和
+  // 等于会话总数；未读计数只进 title
   const idleCount = sessions.length - busyCount - waitingCount - errorCount - failedCount
   const title = t.sessionIndicatorTitle
     .replace("{count}", String(sessions.length))
@@ -496,6 +501,7 @@ function SessionIndicator({ sessions }: { sessions: Session[] }) {
     .replace("{error}", String(errorCount))
     .replace("{failed}", String(failedCount))
     .replace("{waiting}", String(waitingCount))
+    .replace("{unread}", String(unreadCount))
   return (
     <span className="session-indicator" title={title}>
       {sessions.length > 4 ? (
@@ -520,7 +526,9 @@ function SessionIndicator({ sessions }: { sessions: Session[] }) {
                     ? "session-waiting"
                     : dots[i] === "failed"
                       ? "session-failed"
-                      : "session-idle")
+                      : dots[i] === "unread"
+                        ? "session-unread"
+                        : "session-idle")
             }
           />
         ))

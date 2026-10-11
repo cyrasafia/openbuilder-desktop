@@ -231,19 +231,23 @@ export function permissionCommand(p: PendingPermission): string | null {
  * 会话状态点的确定性投影（design-agent-status-indicator.md + design-error-message §3）：
  * 有待处理人机交互 = waiting（琥珀、静态、优先级最高，busy 底层事实保留）；
  * 否则报错退避重试（status=retry）= error（红光晕呼吸）；流式中 = running；
- * 否则以报错结束（终局）= failed（红静态）；否则 idle。
+ * 否则以报错结束（终局）= failed（红静态）；否则未读（服务端水位未清，design-unread-marker）= unread（蓝静态）；否则 idle。
  */
-export type SessionDotState = "waiting" | "error" | "failed" | "running" | "idle"
+export type SessionDotState = "waiting" | "error" | "failed" | "running" | "unread" | "idle"
 
 export function sessionDotState(
   pendingCount: number,
   statusType: SessionStatusValue["type"],
   terminalError = false,
+  unread = false,
 ): SessionDotState {
   if (pendingCount > 0) return "waiting"
   if (statusType === "retry") return "error"
   if (statusType === "busy") return "running"
-  return terminalError ? "failed" : "idle"
+  if (terminalError) return "failed"
+  // 未读（design-unread-marker §4.5）：finish 成功/中断、且服务端水位未清——「已产出未验收」
+  if (unread) return "unread"
+  return "idle"
 }
 
 /** 权限 map 的内容签名（sessionID+权限 id 对）：捕获同数量换血（他端答掉一张、

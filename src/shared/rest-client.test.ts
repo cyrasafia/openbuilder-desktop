@@ -160,6 +160,42 @@ describe("会话域（M2）", () => {
     expect(seenMethod).toBe("DELETE")
   })
 
+  it("getSession：GET /api/session/:id，解 {data} envelope（time.idle/viewed 透传）", async () => {
+    let seenUrl = ""
+    const client = mkClient((url) => {
+      seenUrl = url
+      return new Response(
+        JSON.stringify({
+          data: {
+            id: "ses_1",
+            projectID: "p1",
+            time: { created: 1, updated: 2, idle: 100, viewed: 50 },
+            location: { directory: "/repo" },
+          },
+        }),
+      )
+    })
+    const info = await client.getSession("ses_1")
+    expect(seenUrl).toBe("http://server/api/session/ses_1")
+    expect(info.time).toMatchObject({ idle: 100, viewed: 50 })
+  })
+
+  it("markSessionViewed：POST /api/session/:id/view，body {idle}，204 容忍空体", async () => {
+    let seenUrl = ""
+    let seenMethod = ""
+    let seenBody = ""
+    const client = mkClient((_url, init) => {
+      seenUrl = _url
+      seenMethod = init.method ?? ""
+      seenBody = String(init.body)
+      return new Response(null, { status: 204 })
+    })
+    await client.markSessionViewed("ses_1", 12345)
+    expect(seenUrl).toBe("http://server/api/session/ses_1/view")
+    expect(seenMethod).toBe("POST")
+    expect(JSON.parse(seenBody)).toEqual({ idle: 12345 })
+  })
+
   it("deleteWorktree：DELETE /api/worktree，payload 含必填 force（缺省 false）", async () => {
     let seenBody = ""
     const client = mkClient((_url, init) => {

@@ -292,6 +292,25 @@ export class RestClient {
     })
   }
 
+  /** GET /api/session/:sessionID：单会话（含 `time.idle`/`viewed`）——终态补拉用
+   *  （design-unread-marker §4.3：`Execution.*` 事件不带 idle 时间戳，取权威值）。 */
+  async getSession(sessionID: string): Promise<SessionInfo> {
+    const page = await this.fetchJson<{ data: SessionInfo }>(`/api/session/${encodeURIComponent(sessionID)}`)
+    return page.data
+  }
+
+  /**
+   * POST /api/session/:sessionID/view：标记已读水位（design-unread-marker §2.2）。
+   * body `{idle}` = **观察到的** idle 值（须精确——服务端 `viewed = max(idle, viewed)`
+   * 单调，且拒绝 `input.idle > 服务端 idle`；偏小则仍未读）；204 无返回体。
+   */
+  async markSessionViewed(sessionID: string, idle: number): Promise<void> {
+    await this.fetchResponse(`/api/session/${encodeURIComponent(sessionID)}/view`, {
+      method: "POST",
+      body: JSON.stringify({ idle }),
+    })
+  }
+
   /**
    * DELETE /api/worktree（payload `{projectID, directory, force}`，**force 必填**；
    * 60s 超时——git worktree remove 大目录可慢，对齐 v1 语义）。脏 worktree 且

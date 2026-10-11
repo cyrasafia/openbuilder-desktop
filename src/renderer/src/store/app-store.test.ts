@@ -141,6 +141,14 @@ beforeEach(() => {
     }),
     updateSession: async () => {},
     deleteSession: async () => {},
+    // 未读（design-unread-marker）：单会话补拉 + 标记已读；用例按需覆盖
+    getSession: async (sid: string) => ({
+      id: sid,
+      projectID: "proj1",
+      time: { created: 1, updated: 1 },
+      location: { directory: ROOT },
+    }),
+    markSessionViewed: async () => {},
     deleteWorktree: async () => {},
     // M4a 消息域：typed union 已在真 client 收敛，fake 直接产内部形状
     listMessagesPage: async (
@@ -7755,5 +7763,140 @@ describe("用户后台任务（design-subagent-background）", () => {
     expect(store.noticesForSession("p")).toEqual([])
     // 归档不删会话：家族聚合仍能看到运行中的子会话
     expect(store.sessionActivity("p")).toBe("busy")
+  })
+})
+
+describe("未读标记（design-unread-marker）", () => {
+  function client() {
+    return (
+      store as unknown as {
+        client: {
+          getSession: (sid: string) => Promise<unknown>
+          markSessionViewed: (sid: string, idle: number) => Promise<void>
+        }
+      }
+    ).client
+  }
+  function dispatch(ev: { type: string; properties: unknown }) {
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, ev)
+  }
+  function seed(id: string, time: Session["time"]) {
+    store.sessionsByProject.set("proj1", sessionsOf(session(id, ROOT, time)))
+  }
+  const flush = () => new Promise<void>((r) => setTimeout(r, 0))
+
+  it("dotStateFor：idle + 未读 → unread；viewed 达到 idle → idle", () => {
+    seed("s1", { created: 1, updated: 1, idle: 100 })
+    expect(store.dotStateFor("s1")).toBe("unread")
+    seed("s1", { created: 1, updated: 1, idle: 100, viewed: 100 })
+    expect(store.dotStateFor("s1")).toBe("idle")
+  })
+
+  it("子会话不判未读（顶层会话承载，同 TUI）", () => {
+    store.sessionsByProject.set(
+      "proj1",
+      sessionsOf({ ...session("c1", ROOT, { created: 1, updated: 1, idle: 100 }), parentID: "p" }),
+    )
+    expect(store.dotStateFor("c1")).toBe("idle")
+  })
+
+  it("激活 chat Tab 即 ack：POST /view 回传观察到的 idle 并乐观置 viewed", async () => {
+    seed("s1", { created: 1, updated: 1, idle: 250 })
+    const calls: Array<[string, number]> = []
+    client().markSessionViewed = async (sid, idle) => {
+      calls.push([sid, idle])
+    }
+    store.activeTabKey = "chat:s1"
+    store.emit()
+    await flush()
+    expect(calls).toEqual([["s1", 250]])
+    expect(store.findSession("s1")?.time.viewed).toBe(250)
+    expect(store.dotStateFor("s1")).toBe("idle")
+  })
+
+  it("ack 去重：同一 idle 不重复 POST", async () => {
+    seed("s1", { created: 1, updated: 1, idle: 250 })
+    const calls: Array<[string, number]> = []
+    client().markSessionViewed = async (sid, idle) => {
+      calls.push([sid, idle])
+    }
+    store.activeTabKey = "chat:s1"
+    store.emit()
+    store.emit()
+    await flush()
+    expect(calls).toHaveLength(1)
+  })
+
+  it("非激活 Tab 不 ack（未读保持）", async () => {
+    seed("s1", { created: 1, updated: 1, idle: 250 })
+    const calls: unknown[] = []
+    client().markSessionViewed = async (...a) => {
+      calls.push(a)
+    }
+    store.activeTabKey = "file:/x"
+    store.emit()
+    await flush()
+    expect(calls).toHaveLength(0)
+    expect(store.dotStateFor("s1")).toBe("unread")
+  })
+
+  it("ack 失败：指数退避重试，成功后置 viewed", async () => {
+    vi.useFakeTimers()
+    try {
+      seed("s1", { created: 1, updated: 1, idle: 100 })
+      let attempt = 0
+      client().markSessionViewed = async () => {
+        attempt++
+        if (attempt === 1) throw new Error("net")
+      }
+      store.activeTabKey = "chat:s1"
+      store.emit()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(attempt).toBe(1)
+      await vi.advanceTimersByTimeAsync(250)
+      expect(attempt).toBe(2)
+      expect(store.findSession("s1")?.time.viewed).toBe(100)
+      expect(store.dotStateFor("s1")).toBe("idle")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("session.viewed 事件合并水位（他端 ack）——信封缺 location（global）也收敛", () => {
+    seed("s1", { created: 1, updated: 1, idle: 100 })
+    expect(store.dotStateFor("s1")).toBe("unread")
+    // 模拟信封无 location：subscriber 回调 directory="global"（旁路按 sessionID 反查）
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent("global", {
+      type: "session.viewed",
+      properties: { sessionID: "s1", idle: 100 },
+    })
+    expect(store.findSession("s1")?.time.viewed).toBe(100)
+    expect(store.dotStateFor("s1")).toBe("idle")
+  })
+
+  it("run 终态补拉：execution.succeeded → GET /api/session/:id 落权威 idle → 未读", async () => {
+    seed("s1", { created: 1, updated: 1 })
+    client().getSession = async () => ({
+      id: "s1",
+      projectID: "proj1",
+      time: { created: 1, updated: 1, idle: 500 },
+      location: { directory: ROOT },
+    })
+    dispatch({ type: "session.execution.succeeded", properties: { sessionID: "s1" } })
+    await flush()
+    expect(store.findSession("s1")?.time.idle).toBe(500)
+    expect(store.dotStateFor("s1")).toBe("unread")
+  })
+
+  it("interrupted+shutdown 不补拉（server 不推进 idle）", async () => {
+    seed("s1", { created: 1, updated: 1 })
+    let called = 0
+    client().getSession = async () => {
+      called++
+      return { id: "s1", projectID: "proj1", time: { created: 1, updated: 1, idle: 9 }, location: { directory: ROOT } }
+    }
+    dispatch({ type: "session.execution.interrupted", properties: { sessionID: "s1", reason: "shutdown" } })
+    await flush()
+    expect(called).toBe(0)
   })
 })
