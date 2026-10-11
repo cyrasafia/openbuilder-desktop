@@ -54,6 +54,7 @@ import type {
 import type { PendingPermission, PendingQuestion } from "@shared/pending-requests"
 import { externalDirectoryPath, permissionCommand } from "@shared/pending-requests"
 import { Markdown } from "./markdown"
+import { decodeFileHref, messageFileLinks } from "./message-autolink"
 import type { StreamdownProps } from "streamdown"
 import { defaultRemarkPlugins } from "streamdown"
 import { splitFrontMatter } from "./markdown-frontmatter"
@@ -2483,6 +2484,31 @@ export function MessageBlock({ entry }: { entry: ChatEntry }) {
   // design-message-revert §3.4）：确认后 revertToMessage 内部仍会重估并先停再滚
   const [confirmRevertBusy, setConfirmRevertBusy] = useState(false)
 
+  /* 文件路径自动链接（design-message-autolink §2.7/§2.8）：会话目录驱动的 mdast
+   * 转链插件 + ob-file 点击路由。hooks 先于 kind 早退（optimistic 回显/notice 无
+   * sessionID → 不转链）。引用稳定性：directory 会话内恒定 → 插件数组与回调引用
+   * 稳定 → streamdown 块级 memo 不失效（插件元组进 processor 缓存 key 同
+   * FileView relativeImageRewrite 模式） */
+  const sessionID = entry.kind === "message" ? entry.data.info.sessionID : null
+  const sessionDir = sessionID ? store.findSession(sessionID)?.directory : undefined
+  const fileLinkPlugins = useMemo<StreamdownProps["remarkPlugins"]>(
+    () =>
+      sessionDir
+        ? [...Object.values(defaultRemarkPlugins), [messageFileLinks, { directory: sessionDir }]]
+        : undefined,
+    [sessionDir],
+  )
+  const onFileLink = useCallback(
+    (href: string) => {
+      // href 由本端插件产出（恒绝对路径 + 归属校验已过）；手写 ob-file 畸形链接
+      // 防御：相对路径/畸形编码静默忽略不动作
+      const decoded = decodeFileHref(href)
+      if (!decoded || !decoded.path.startsWith("/")) return
+      store.openFileTab(decoded.path, decoded.line ?? undefined)
+    },
+    [store],
+  )
+
   if (entry.kind === "optimistic") {
     return (
       <div className="msg user">
@@ -2544,8 +2570,8 @@ export function MessageBlock({ entry }: { entry: ChatEntry }) {
   const aborted = failure != null && isAbortError(failure)
   // user 气泡 chip（design-file-reference §5）：引用回灌（source 型，可点）+
   // 二进制/图片附件回灌（无 source，server 以 data: 附件替换原 part，仅文件名）
-  // ——构造收敛在 userFileChipItems（file-ref.tsx，纯函数）
-  const sessionDir = store.findSession(info.sessionID)?.directory
+  // ——构造收敛在 userFileChipItems（file-ref.tsx，纯函数）；
+  // sessionDir 已上移至 hooks 区（自动链接插件共用，design-message-autolink）
   // 子会话（subagent）内禁用回滚（design-subagent-status §D2）
   const isChildSession = !!store.findSession(info.sessionID)?.parentID
   const refChipItems = info.role === "user" ? userFileChipItems(parts, sessionDir) : []
@@ -2586,7 +2612,7 @@ export function MessageBlock({ entry }: { entry: ChatEntry }) {
         )}
         <UserBubble>
           {texts.map((p) => (
-            <Markdown key={p.id} softLineBreak>
+            <Markdown key={p.id} softLineBreak remarkPlugins={fileLinkPlugins} onFileLink={onFileLink}>
               {p.text}
             </Markdown>
           ))}
@@ -2609,7 +2635,7 @@ export function MessageBlock({ entry }: { entry: ChatEntry }) {
             const body = p.prompt || p.text || p.description || ""
             return (
               <div key={p.id} className="bubble-subtask">
-                <Markdown softLineBreak>
+                <Markdown softLineBreak remarkPlugins={fileLinkPlugins} onFileLink={onFileLink}>
                   {body ? `**subtask: ${p.command}**\n\n${body}` : `**subtask: ${p.command}**`}
                 </Markdown>
               </div>
@@ -2654,7 +2680,9 @@ export function MessageBlock({ entry }: { entry: ChatEntry }) {
       ))}
       {texts.map((p) => (
         <div key={p.id} className="assistant-text">
-          <Markdown>{p.text}</Markdown>
+          <Markdown remarkPlugins={fileLinkPlugins} onFileLink={onFileLink}>
+            {p.text}
+          </Markdown>
         </div>
       ))}
       {aborted && (
