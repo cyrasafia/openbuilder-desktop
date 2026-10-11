@@ -51,8 +51,9 @@ import type {
   SubtaskPart,
   ToolPart,
 } from "@shared/api-types"
-import type { PendingPermission, PendingQuestion } from "@shared/pending-requests"
+import type { PendingPermission, PendingQuestion, SessionDotState } from "@shared/pending-requests"
 import { externalDirectoryPath, permissionCommand } from "@shared/pending-requests"
+import { SessionDot } from "./session-dot"
 import { Markdown } from "./markdown"
 import { decodeFileHref, messageFileLinks, resolveProjectPath } from "./message-autolink"
 import type { StreamdownProps } from "streamdown"
@@ -103,21 +104,11 @@ function displayTabTitle(tab: TabEntity, store: StoreLike, t: Catalog): string {
       : tab.title || t.untitled
 }
 
-/** 会话状态点变体类（Tab 条与溢出菜单共用）：全状态映射 session-*（统一 12px
- *  盒几何，状态切换零布局位移）；非 chat Tab 返回 null（无会话语义不显示） */
-function tabDotClass(tab: TabEntity, store: StoreLike): string | null {
-  const dot = tab.kind === "chat" ? store.dotStateFor(tab.key.slice(5)) : null
-  return dot === "running"
-    ? "session-running"
-    : dot === "error"
-      ? "session-error"
-      : dot === "waiting"
-        ? "session-waiting"
-        : dot === "failed"
-          ? "session-failed"
-          : dot === "unread"
-            ? "session-unread"
-            : "session-idle"
+/** 会话状态点（Tab 条与溢出菜单共用）：dotStateFor 直返——session-* 类映射收拢
+ *  在共享 SessionDot 组件的 Record 穷尽映射（原三元链对新增状态静默回落灰点，
+ *  unread 设计 §5.2 坑由此消除）；非 chat Tab 返回 null（无会话语义不显示） */
+function tabDotState(tab: TabEntity, store: StoreLike): SessionDotState | null {
+  return tab.kind === "chat" ? store.dotStateFor(tab.key.slice(5)) : null
 }
 
 export function Workspace() {
@@ -378,9 +369,8 @@ export function Workspace() {
           // 会话状态点常显（含 idle，design-error-message §3.3 修订）：
           // running/error 呼吸光晕、waiting/failed/idle 静态，统一 12px 盒几何
           // （session-* 变体类）与其他指示纵向对齐；非 chat Tab 无会话语义不显示
-          // （映射与溢出菜单共用 tabDotClass，单一来源防漂移）
-          const dotClass = tabDotClass(tab, store)
-          const dot = dotClass != null
+          // （映射与溢出菜单共用 tabDotState，单一来源防漂移）
+          const dot = tabDotState(tab, store)
           const isRenamingThis = renaming?.key === tab.key
           return (
           <div
@@ -423,7 +413,7 @@ export function Workspace() {
               setMenu({ x: e.clientX, y: e.clientY, tab })
             }}
           >
-            {dot && <span className={"status-dot " + dotClass} />}
+            {dot && <SessionDot state={dot} />}
             {isRenamingThis ? (
               // 行内重命名输入框：Enter/失焦提交、Esc 取消；隔离点击与拖拽。
               // 键盘事件不 blanket stopPropagation——全局快捷键（Ctrl+W/Tab 等）
@@ -817,7 +807,7 @@ function TabOverflowMenu({
       onKeyDown={onKeyDown}
     >
       {tabs.map((tab) => {
-        const dotClass = tabDotClass(tab, store)
+        const dot = tabDotState(tab, store)
         const active = tab.key === store.activeTabKey
         return (
           <div key={tab.key} className={"tab-overflow-row" + (active ? " active" : "")}>
@@ -826,7 +816,7 @@ function TabOverflowMenu({
               onClick={() => onPick(tab)}
               title={displayTabTitle(tab, store, t)}
             >
-              {dotClass && <span className={"status-dot " + dotClass} />}
+              {dot && <SessionDot state={dot} />}
               <span className="tab-overflow-label">{displayTabTitle(tab, store, t)}</span>
             </button>
             <button

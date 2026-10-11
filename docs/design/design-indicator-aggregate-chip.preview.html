@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<title>聚合状态 chip 重设计 — 反色填充 + SVG 圆点目检</title>
+<style>
+  /* 取自 src/renderer/src/styles/tokens.css 实测值；本文件仅作目检预览，非实现 */
+  :root{
+    --text-xs:11px; --text-md:13px; --radius-chip:6px;
+    --status-running:#1dae4e; --status-error:#e5484d; --status-pending:#8b949e;
+    --status-waiting:#fbbf24; --status-unread:#58a6ff;
+    --surface:#161b16; --surface-container-low:#1e231e; --surface-container:#222722;
+    --surface-container-high:#2c312c; --surface-container-highest:#373c37;
+    --on-surface:#c8d0c4; --on-surface-variant:#adb6ab; --outline:#8b938a;
+    --outline-variant:#414941;
+    --avatar-blue:#60a5fa;
+  }
+  body{background:#0c0f0c;color:#c8d0c4;font:13px/1.4 system-ui,sans-serif;margin:0;padding:24px}
+  h1{font-size:15px;font-weight:600;margin:0 0 4px}
+  p.note{color:#8b938a;font-size:12px;margin:0 0 20px}
+  .stage{display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start}
+  .panel{width:340px;border-radius:10px;padding:12px;box-sizing:border-box;border:1px solid rgba(255,255,255,.06);
+    background:var(--surface-container-low)}
+  .panel.light,
+  .lightspec{color:#2e332e;border-color:rgba(0,0,0,.08);
+    --status-running:#15803d; --status-error:#b91c1c; --status-pending:#6e7781;
+    --status-waiting:#b8860b; --status-unread:#0969da;
+    --surface:#eef2e9; --surface-container-low:#e8ece3; --surface-container:#e2e6de;
+    --surface-container-high:#dce0d8; --surface-container-highest:#d7dbd2;
+    --on-surface:#2e332e; --on-surface-variant:#414941; --outline:#727970;
+    --outline-variant:#c1c9be}
+  .panel h2{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;opacity:.6;margin:0 0 10px}
+  .row{display:flex;align-items:center;gap:6px;height:40px;padding:0 8px;border-radius:6px;margin-bottom:2px}
+  .row.ws{height:26px;padding-left:16px}
+  /* 行选中底 = .tree-row.active 同式（highest 叠 4% on-surface） */
+  .row.sel{background:color-mix(in srgb, var(--surface-container-highest) 96%, var(--on-surface))}
+  .avatar{width:26px;height:26px;border-radius:7px;background:var(--avatar-blue);color:#0b1220;
+          display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex:0 0 auto}
+  .wsicon{width:16px;height:16px;border-radius:4px;background:color-mix(in srgb,currentColor 22%,transparent);flex:0 0 auto}
+  .name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+  .row.ws .name{font-weight:400}
+  .ind{display:flex;align-items:center;gap:3px;flex:0 0 auto}
+
+  /* 会话状态点：12px 盒；6px 实心点与 11px 光晕改为 inline SVG circle——
+     Chromium 在分数 DPR（GNOME Wayland 1.25/1.5 等）下对 border-radius 盒做
+     「吸附后拉伸」光栅化，6px 圆点按位置相位变形为扁/竖椭圆（DevTools 量
+     仍是 6×6）；SVG 路径光栅化对相位不敏感（16 相位实测同几何），彻底免役 */
+  .status-dot{position:relative;width:12px;height:12px;flex:0 0 auto}
+  .status-dot svg{display:block;width:100%;height:100%;overflow:visible}
+  .status-dot .core{fill:var(--d)}
+  .status-dot .halo{fill:var(--d);opacity:.2;transform-box:fill-box;transform-origin:center;
+    animation:halo-breathe 1.2s ease-in-out infinite alternate}
+  .status-dot.session-idle{--d:var(--status-pending)}
+  .status-dot.session-idle .core{opacity:.55}
+  .status-dot.session-waiting{--d:var(--status-waiting)}
+  .status-dot.session-failed{--d:var(--status-error)}
+  .status-dot.session-error{--d:var(--status-error)}
+  .status-dot.session-running{--d:var(--status-running)}
+  .status-dot.session-unread{--d:var(--status-unread)}
+  @keyframes halo-breathe{from{transform:scale(.75);opacity:.2}
+    to{transform:scale(1.15);opacity:.55}}
+  @media (prefers-reduced-motion: reduce){
+    .status-dot .halo{animation:none;transform:scale(.95);opacity:.375}}
+
+  /* 反色填充 chip：无描边；胶囊 = 行态对侧色——
+     未选中行上填「选中灰」（.tree-row.active 同式），选中行上填「行底色」（container-low） */
+  .nc{display:flex;align-items:center;gap:1px;height:14px;padding:0 3px;border-radius:var(--radius-chip);
+    background:color-mix(in srgb, var(--surface-container-highest) 96%, var(--on-surface));
+    font-size:var(--text-xs);line-height:12px;color:var(--on-surface-variant);
+    font-variant-numeric:tabular-nums;box-sizing:border-box}
+  .row.sel .nc{background:var(--surface-container-low)}
+  /* 数字光学纵向居中：数字无降部，字形重心恒高于行盒中心（行内字形位置由字体
+     度量钉死，line-height 只缩放盒子、不移动字形）。位移量取 1px——实测矩阵
+     （nudge × DPR，墨迹重心 − 圆点中心，css）：1px 时 1.25→−0.33 / 1.5→−0.04 /
+     2→−0.13 / 4→+0.58，为分数 DPR 场景最优；0.5px 在 1.25/1.5 被文字基线
+     量化吸收（Chromium 把基线吸附到整数设备像素——亚像素文字补偿无效），
+     1.25 档残余 −0.33 即该量化下限，不可再压 */
+  .num{transform:translateY(1px)}
+
+  /* 旧版（现状）对照：同色字压同色 16% 淡染底 */
+  .old{min-width:16px;height:14px;padding:0 4px;border-radius:var(--radius-chip);
+    background:var(--surface-container);color:var(--outline);font-size:11px;line-height:14px;text-align:center}
+  .old.waiting{background:color-mix(in srgb,var(--status-waiting) 16%,transparent);color:var(--status-waiting)}
+  .old.error{background:color-mix(in srgb,var(--status-error) 16%,transparent);color:var(--status-error)}
+  .old.running{background:color-mix(in srgb,var(--status-running) 16%,transparent);color:var(--status-running)}
+  .old.failed{background:color-mix(in srgb,var(--status-error) 16%,transparent);color:var(--status-error)}
+
+  .lg{margin-top:14px;font-size:11px;color:var(--on-surface-variant);opacity:.9}
+  .k{display:inline-block;padding:1px 5px;border-radius:4px;background:var(--surface-container);margin-right:2px}
+
+  /* 4× 标本：原生 4× 尺寸渲染（非 transform 放大——scale 路径的光栅舍入
+     与原生不同，不能作验形载体）；SVG 圆点在任何尺寸同一路径光栅化 */
+  .spech{font-size:13px;font-weight:600;margin:22px 0 6px}
+  .specrow{margin-bottom:14px}
+  .speclabel{font-size:11px;color:var(--outline);margin:0 0 4px}
+  .specbox{position:relative;width:740px;height:72px;border-radius:12px;overflow:hidden;
+    background:var(--surface-container-low);display:flex;align-items:center;padding:0 8px}
+  .specbox.sel{background:color-mix(in srgb, var(--surface-container-highest) 96%, var(--on-surface))}
+  .nc4{display:flex;align-items:center;gap:4px;height:56px;padding:0 12px;border-radius:24px;
+    background:color-mix(in srgb, var(--surface-container-highest) 96%, var(--on-surface));
+    font-size:44px;line-height:48px;color:var(--on-surface-variant);
+    font-variant-numeric:tabular-nums;margin-right:12px;flex:0 0 auto}
+  .specbox.sel .nc4{background:var(--surface-container-low)}
+  .nc4 .bigdot{width:48px;height:48px;flex:0 0 auto;display:block;overflow:visible}
+  .nc4 .bigdot .core{fill:var(--d)}
+  .nc4 .bigdot .halo{fill:var(--d);opacity:.2;transform-box:fill-box;transform-origin:center;
+    animation:halo-breathe 1.2s ease-in-out infinite alternate}
+  .nc4 .num4{transform:translateY(2px)}
+  .nc4.st-running{--d:var(--status-running)}
+  .nc4.st-error{--d:var(--status-error)}
+  .nc4.st-failed{--d:var(--status-error)}
+  .nc4.st-waiting{--d:var(--status-waiting)}
+  .nc4.st-unread{--d:var(--status-unread)}
+  .nc4.st-idle{--d:var(--status-pending)}
+  .nc4.st-idle .core{opacity:.55}
+</style>
+</head>
+<body>
+  <h1>聚合状态 chip 重设计 · 反色填充 + SVG 圆点（2026-10-11，待目检）</h1>
+  <p class="note">结构：<code>chip = 状态圆点（12px 盒，与 ≤4 逐点态同几何同动效）+ 中性数字</code>；
+  状态色只落在圆点上，数字/容器全状态一套中性样式（原四变体族已删）。<br>
+  容器（颜色已定案）：<b>无描边，反色填充</b>——胶囊 = 行态对侧色：未选中行填「选中灰」、选中行填「行底色」。
+  边界对比恒等于选中信号步幅（深 1.56:1 / 浅 1.26:1，两行态对称）。<br>
+  <b>圆点改 inline SVG</b>：Chromium 在分数 DPR 下把 6px border-radius 圆点按位置相位
+  光栅化成扁/竖椭圆（DevTools 量仍是 6×6——你看到的「胶囊形」即此）；SVG 路径光栅化相位不敏感
+  （16 相位 × DPR 1.25/1.1 实测全部同几何），光晕/弱化/呼吸同规格保留；光晕 svg 加
+  <code>overflow:visible</code>（svg 默认裁剪到视口，呼吸最大 scale 1.15＝12.65px 会切边）。<br>
+  排序（对齐移动端）：<code>running → error → failed → waiting → unread → idle</code>，为 0 的态省略。
+  行 hover 时指示器整体隐藏，故只呈现「未选中 / 选中」两种行底。数字 1px 下移光学居中
+  （分数 DPR 下文字基线量化，残余 ~0.3px 为引擎下限）。</p>
+
+  <div class="stage">
+    <!-- DARK -->
+    <div class="panel dark">
+      <h2>Dark</h2>
+      <div class="row">
+        <span class="avatar">OB</span>
+        <span class="name">≤4 逐点态（参照）</span>
+        <span class="ind">
+          <span class="status-dot session-waiting"></span>
+          <span class="status-dot session-running"></span>
+          <span class="status-dot session-unread"></span>
+          <span class="status-dot session-idle"></span>
+        </span>
+      </div>
+      <div class="row ws">
+        <span class="wsicon"></span>
+        <span class="name">旧·现状（仅对照）</span>
+        <span class="ind">
+          <span class="old waiting">1</span><span class="old error">2</span><span class="old running">3</span><span class="old">4</span>
+        </span>
+      </div>
+      <div class="row ws">
+        <span class="wsicon"></span>
+        <span class="name"><span class="k">反色</span>未选中行·胶囊=选中灰</span>
+        <span class="ind">
+          <span class="nc"><span class="status-dot session-running"></span><span class="num">3</span></span>
+          <span class="nc"><span class="status-dot session-error"></span><span class="num">2</span></span>
+          <span class="nc"><span class="status-dot session-failed"></span><span class="num">1</span></span>
+          <span class="nc"><span class="status-dot session-waiting"></span><span class="num">1</span></span>
+          <span class="nc"><span class="status-dot session-unread"></span><span class="num">2</span></span>
+          <span class="nc"><span class="status-dot session-idle"></span><span class="num">4</span></span>
+        </span>
+      </div>
+      <div class="row ws sel">
+        <span class="wsicon"></span>
+        <span class="name"><span class="k">反色</span>选中行·胶囊=行底色</span>
+        <span class="ind">
+          <span class="nc"><span class="status-dot session-running"></span><span class="num">3</span></span>
+          <span class="nc"><span class="status-dot session-error"></span><span class="num">2</span></span>
+          <span class="nc"><span class="status-dot session-failed"></span><span class="num">1</span></span>
+          <span class="nc"><span class="status-dot session-waiting"></span><span class="num">1</span></span>
+          <span class="nc"><span class="status-dot session-unread"></span><span class="num">2</span></span>
+          <span class="nc"><span class="status-dot session-idle"></span><span class="num">4</span></span>
+        </span>
+      </div>
+      <div class="row">
+        <span class="avatar">OB</span>
+        <span class="name"><span class="k">反色</span>项目行·常态 2 chip</span>
+        <span class="ind">
+          <span class="nc"><span class="status-dot session-running"></span><span class="num">7</span></span>
+          <span class="nc"><span class="status-dot session-idle"></span><span class="num">5</span></span>
+        </span>
+      </div>
+      <p class="lg">未选中行：数字 4.9:1 / error 点 2.62:1（=≤4 逐点态在选中行上的既有同值——红点对「选中灰」的系统既有例外）/ running 3.5；选中行：数字 7.7 / error 4.1。边界 1.56:1。</p>
+    </div>
+
+    <!-- LIGHT -->
+    <div class="panel light">
+      <h2>Light</h2>
+      <div class="row">
+        <span class="avatar">OB</span>
+        <span class="name">≤4 逐点态（参照）</span>
+        <span class="ind">
+          <span class="status-dot session-waiting"></span>
+          <span class="status-dot session-running"></span>
+          <span class="status-dot session-unread"></span>
+          <span class="status-dot session-idle"></span>
+        </span>
+      </div>
+      <div class="row ws">
+        <span class="wsicon"></span>
+        <span class="name">旧·现状（仅对照）</span>
+        <span class="ind">
+          <span class="old waiting">1</span><span class="old error">2</span><span class="old running">3</span><span class="old">4</span>
+        </span>
+      </div>
+      <div class="row ws">
+        <span class="wsicon"></span>
+        <span class="name"><span class="k">反色</span>未选中行·胶囊=选中灰</span>
+        <span class="ind">
+          <span class="nc"><span class="status-dot session-running"></span><span class="num">3</span></span>
+          <span class="nc"><span class="status-dot session-error"></span><span class="num">2</span></span>
+          <span class="nc"><span class="status-dot session-failed"></span><span class="num">1</span></span>
+          <span class="nc"><span class="status-dot session-waiting"></span><span class="num">1</span></span>
+          <span class="nc"><span class="status-dot session-unread"></span><span class="num">2</span></span>
+          <span class="nc"><span class="status-dot session-idle"></span><span class="num">4</span></span>
+        </span>
+      </div>
+      <div class="row ws sel">
+        <span class="wsicon"></span>
+        <span class="name"><span class="k">反色</span>选中行·胶囊=行底色</span>
+        <span class="ind">
+          <span class="nc"><span class="status-dot session-running"></span><span class="num">3</span></span>
+          <span class="nc"><span class="status-dot session-error"></span><span class="num">2</span></span>
+          <span class="nc"><span class="status-dot session-failed"></span><span class="num">1</span></span>
+          <span class="nc"><span class="status-dot session-waiting"></span><span class="num">1</span></span>
+          <span class="nc"><span class="status-dot session-unread"></span><span class="num">2</span></span>
+          <span class="nc"><span class="status-dot session-idle"></span><span class="num">4</span></span>
+        </span>
+      </div>
+      <div class="row">
+        <span class="avatar">OB</span>
+        <span class="name"><span class="k">反色</span>项目行·常态 2 chip</span>
+        <span class="ind">
+          <span class="nc"><span class="status-dot session-running"></span><span class="num">7</span></span>
+          <span class="nc"><span class="status-dot session-idle"></span><span class="num">5</span></span>
+        </span>
+      </div>
+      <p class="lg">未选中行：数字 6.2:1 / error 点 4.3 / running 3.3；选中行：数字 7.8 / error 5.4。既知例外：琥珀点 2.2–2.7:1（tokens.css 2026-10-09 用户裁定）。边界 1.26:1。</p>
+    </div>
+  </div>
+
+  <h1 class="spech">4× 标本（原生 4× 尺寸渲染，验形与对齐）</h1>
+  <p class="note">标本为<b>原生 4× 尺寸</b>（非 transform 放大——scale 路径光栅舍入与原生不同，不能作验形载体）。
+  圆点应为一颗<b>正圆</b>；数字与圆点应同中线。SVG 圆点在任何尺寸走同一路径光栅化，分数 DPR 下不再变形。</p>
+
+  <div class="specrow">
+    <p class="speclabel">Dark · 未选中行（胶囊 = 选中灰）</p>
+    <div class="specbox">
+      <span class="nc4 st-running"><svg class="bigdot" viewBox="0 0 12 12" aria-hidden="true"><circle class="halo" cx="6" cy="6" r="5.5"/><circle class="core" cx="6" cy="6" r="3"/></svg><span class="num4">3</span></span>
+      <span class="nc4 st-error"><svg class="bigdot" viewBox="0 0 12 12" aria-hidden="true"><circle class="halo" cx="6" cy="6" r="5.5"/><circle class="core" cx="6" cy="6" r="3"/></svg><span class="num4">2</span></span>
+      <span class="nc4 st-failed"><svg class="bigdot" viewBox="0 0 12 12" aria-hidden="true"><circle class="core" cx="6" cy="6" r="3"/></svg><span class="num4">1</span></span>
+      <span class="nc4 st-waiting"><svg class="bigdot" viewBox="0 0 12 12" aria-hidden="true"><circle class="core" cx="6" cy="6" r="3"/></svg><span class="num4">1</span></span>
+      <span class="nc4 st-unread"><svg class="bigdot" viewBox="0 0 12 12" aria-hidden="true"><circle class="core" cx="6" cy="6" r="3"/></svg><span class="num4">2</span></span>
+      <span class="nc4 st-idle"><svg class="bigdot" viewBox="0 0 12 12" aria-hidden="true"><circle class="core" cx="6" cy="6" r="3"/></svg><span class="num4">4</span></span>
+    </div>
+  </div>
+  <div class="specrow">
+    <p class="speclabel">Dark · 选中行（胶囊 = 行底色）</p>
+    <div class="specbox sel">
+      <span class="nc4 st-running"><svg class="bigdot" viewBox="0 0 12 12" aria-hidden="true"><circle class="halo" cx="6" cy="6" r="5.5"/><circle class="core" cx="6" cy="6" r="3"/></svg><span class="num4">3</span></span>
+      <span class="nc4 st-error"><svg class="bigdot" viewBox="0 0 12 12" aria-hidden="true"><circle class="halo" cx="6" cy="6" r="5.5"/><circle class="core" cx="6" cy="6" r="3"/></svg><span class="num4">2</span></span>
+      <span class="nc4 st-failed"><svg class="bigdot" viewBox="0 0 12 12" aria-hidden="true"><circle class="core" cx="6" cy="6" r="3"/></svg><span class="num4">1</span></span>
+      <span class="nc4 st-waiting"><svg class="bigdot" viewBox="0 0 12 12" aria-hidden="true"><circle class="core" cx="6" cy="6" r="3"/></svg><span class="num4">1</span></span>
+      <span class="nc4 st-unread"><svg class="bigdot" viewBox="0 0 12 12" aria-hidden="true"><circle class="core" cx="6" cy="6" r="3"/></svg><span class="num4">2</span></span>
+      <span class="nc4 st-idle"><svg class="bigdot" viewBox="0 0 12 12" aria-hidden="true"><circle class="core" cx="6" cy="6" r="3"/></svg><span class="num4">4</span></span>
+    </div>
+  </div>
+  <div class="specrow lightspec">
+    <p class="speclabel">Light · 未选中行（胶囊 = 选中灰）</p>
+    <div class="specbox">
+      <span class="nc4 st-running"><svg class="bigdot" viewBox="0 0 12 12" aria-hidden="true"><circle class="halo" cx="6" cy="6" r="5.5"/><circle class="core" cx="6" cy="6" r="3"/></svg><span class="num4">3</span></span>
+      <span class="nc4 st-error"><svg class="bigdot" viewBox="0 0 12 12" aria-hidden="true"><circle class="halo" cx="6" cy="6" r="5.5"/><circle class="core" cx="6" cy="6" r="3"/></svg><span class="num4">2</span></span>
+      <span class="nc4 st-failed"><svg class="bigdot" viewBox="0 0 12 12" aria-hidden="true"><circle class="core" cx="6" cy="6" r="3"/></svg><span class="num4">1</span></span>
+      <span class="nc4 st-waiting"><svg class="bigdot" viewBox="0 0 12 12" aria-hidden="true"><circle class="core" cx="6" cy="6" r="3"/></svg><span class="num4">1</span></span>
+      <span class="nc4 st-unread"><svg class="bigdot" viewBox="0 0 12 12" aria-hidden="true"><circle class="core" cx="6" cy="6" r="3"/></svg><span class="num4">2</span></span>
+      <span class="nc4 st-idle"><svg class="bigdot" viewBox="0 0 12 12" aria-hidden="true"><circle class="core" cx="6" cy="6" r="3"/></svg><span class="num4">4</span></span>
+    </div>
+  </div>
+  <div class="specrow lightspec">
+    <p class="speclabel">Light · 选中行（胶囊 = 行底色）</p>
+    <div class="specbox sel">
+      <span class="nc4 st-running"><svg class="bigdot" viewBox="0 0 12 12" aria-hidden="true"><circle class="halo" cx="6" cy="6" r="5.5"/><circle class="core" cx="6" cy="6" r="3"/></svg><span class="num4">3</span></span>
+      <span class="nc4 st-error"><svg class="bigdot" viewBox="0 0 12 12" aria-hidden="true"><circle class="halo" cx="6" cy="6" r="5.5"/><circle class="core" cx="6" cy="6" r="3"/></svg><span class="num4">2</span></span>
+      <span class="nc4 st-failed"><svg class="bigdot" viewBox="0 0 12 12" aria-hidden="true"><circle class="core" cx="6" cy="6" r="3"/></svg><span class="num4">1</span></span>
+      <span class="nc4 st-waiting"><svg class="bigdot" viewBox="0 0 12 12" aria-hidden="true"><circle class="core" cx="6" cy="6" r="3"/></svg><span class="num4">1</span></span>
+      <span class="nc4 st-unread"><svg class="bigdot" viewBox="0 0 12 12" aria-hidden="true"><circle class="core" cx="6" cy="6" r="3"/></svg><span class="num4">2</span></span>
+      <span class="nc4 st-idle"><svg class="bigdot" viewBox="0 0 12 12" aria-hidden="true"><circle class="core" cx="6" cy="6" r="3"/></svg><span class="num4">4</span></span>
+    </div>
+  </div>
+
+  <p class="note" style="margin-top:22px">对比度实测与候选分析见同目录 <code>design-indicator-aggregate-chip.md</code>；
+  圆点 SVG 化与反色填充待目检确认后一并同步实现（app.css 的 session-* 圆点族在分数 DPR 下同样存在
+  该变形——属既有缺陷，将随本设计一并修）。旧版仅作对照。</p>
+
+<script>
+  // 把既有 .status-dot 标记注入为 inline SVG 圆点（与实现目标同构；本文件仅目检）
+  document.querySelectorAll(".status-dot").forEach((el) => {
+    const halo = el.classList.contains("session-running") || el.classList.contains("session-error")
+    el.innerHTML =
+      '<svg viewBox="0 0 12 12" aria-hidden="true">' +
+      (halo ? '<circle class="halo" cx="6" cy="6" r="5.5"/>' : "") +
+      '<circle class="core" cx="6" cy="6" r="3"/></svg>'
+  })
+</script>
+</body>
+</html>

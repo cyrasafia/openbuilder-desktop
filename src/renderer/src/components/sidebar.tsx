@@ -4,6 +4,8 @@ import { useI18n, useStore } from "../app"
 import { ConfirmDialog } from "./confirm-dialog"
 import { relativeTime } from "../i18n"
 import type { Project, Session } from "@shared/api-types"
+import type { SessionDotState } from "@shared/pending-requests"
+import { SessionDot } from "./session-dot"
 import { MIN_SERVER_VERSION_V2 } from "@shared/semver"
 import { managedNoticeText } from "./managed-notice"
 import { PanelResizeHandle } from "./panel-resize"
@@ -149,7 +151,12 @@ function ServerStatus() {
 
   return (
     <button className="status-cluster" title={title} onClick={() => store.openSettings()}>
-      <span className={"status-dot " + dotClass} />
+      {/* 基础 6px 裸点（非 session-* 族）：SVG 圆点（分数 DPR 防变形，见 app.css 状态点段） */}
+      <span className={"status-dot " + dotClass}>
+        <svg viewBox="0 0 6 6" aria-hidden="true">
+          <circle cx="3" cy="3" r="3" />
+        </svg>
+      </span>
       <span>{label}</span>
       {store.connectionError && <TriangleAlert className="status-error" size={12} aria-hidden />}
     </button>
@@ -469,12 +476,16 @@ function ProjectTree() {
  * 状态投影同移动端 design-agent-status-indicator + design-error-message §3：
  * waiting（待输入，琥珀静态）优先于 error（retry 退避重试，红光晕呼吸）优先于
  * running（busy 运行绿光晕呼吸）——消费 dotStateFor，sessionStatus 单一事实源；
- * 会话点统一 session-* 变体类（12px 盒几何与其他指示对齐）。
- * ≤4 个逐会话状态点；>4 个按状态聚合为数字 chip（待输入琥珀、重试红、运行绿、
- * 空闲灰 chip，各自为 0 时省略）。行内流式元素（名称/路径行尾，flex-shrink:0），
- * 文本在其前省略不重叠；行 hover 时隐藏（visibility 保占位）让位给操作 overlay。
+ * 会话点统一走共享 SessionDot 组件（12px 盒 SVG 圆点，分数 DPR 防变形）。
+ * ≤4 个逐会话状态点；>4 个按状态聚合计数 chip（2026-10-11 重设计，
+ * design-indicator-aggregate-chip）：chip = SessionDot 状态圆点领头 + 中性数字
+ * （1px 光学下移，见 .session-count-num），容器反色填充（未选中行填选中灰 /
+ * 选中行填行底色）；未读 chip 一并纳入，chip 数字之和 = 会话总数。行内流式元素
+ * （名称/路径行尾，flex-shrink:0），文本在其前省略不重叠；行 hover 时隐藏
+ * （visibility 保占位）让位给操作 overlay。
  */
-function SessionIndicator({ sessions }: { sessions: Session[] }) {
+/** 导出仅为测试（sidebar 主体经 AppStore 全量驱动，不单测） */
+export function SessionIndicator({ sessions }: { sessions: Session[] }) {
   const store = useStore()
   const { t } = useI18n()
   if (sessions.length === 0) return null
@@ -491,10 +502,18 @@ function SessionIndicator({ sessions }: { sessions: Session[] }) {
     else if (d === "running") busyCount++
     else if (d === "unread") unreadCount++
   }
-  // >4 会话的聚合 chip 保持现状（未读不入 chip，见 design-unread-marker §5.1 /
-  // todo-indicator-aggregate-chip）——未读会话仍计入空闲 chip，保证 chip 数字之和
-  // 等于会话总数；未读计数只进 title
-  const idleCount = sessions.length - busyCount - waitingCount - errorCount - failedCount
+  const idleCount = sessions.length - busyCount - waitingCount - errorCount - failedCount - unreadCount
+  // chip 渲染序（对齐移动端 2026-10-11 裁定，openbuilder design-unread-marker §5.1）：
+  // 生命周期自左向右——running/error 呼吸态（自发迁移源）居左，经 failed/waiting
+  // 至 unread/idle 收尾；为 0 的态省略，序与 title 列举一致
+  const chipCounts: Array<[SessionDotState, number]> = [
+    ["running", busyCount],
+    ["error", errorCount],
+    ["failed", failedCount],
+    ["waiting", waitingCount],
+    ["unread", unreadCount],
+    ["idle", idleCount],
+  ]
   const title = t.sessionIndicatorTitle
     .replace("{count}", String(sessions.length))
     .replace("{busy}", String(busyCount))
@@ -505,33 +524,16 @@ function SessionIndicator({ sessions }: { sessions: Session[] }) {
   return (
     <span className="session-indicator" title={title}>
       {sessions.length > 4 ? (
-        <>
-          {waitingCount > 0 && <span className="session-count waiting">{waitingCount}</span>}
-          {errorCount > 0 && <span className="session-count error">{errorCount}</span>}
-          {busyCount > 0 && <span className="session-count running">{busyCount}</span>}
-          {failedCount > 0 && <span className="session-count failed">{failedCount}</span>}
-          {idleCount > 0 && <span className="session-count">{idleCount}</span>}
-        </>
+        chipCounts.map(([d, n]) =>
+          n > 0 ? (
+            <span key={d} className="session-count">
+              <SessionDot state={d} />
+              <span className="session-count-num">{n}</span>
+            </span>
+          ) : null,
+        )
       ) : (
-        sessions.map((s, i) => (
-          <span
-            key={s.id}
-            className={
-              "status-dot " +
-              (dots[i] === "running"
-                ? "session-running"
-                : dots[i] === "error"
-                  ? "session-error"
-                  : dots[i] === "waiting"
-                    ? "session-waiting"
-                    : dots[i] === "failed"
-                      ? "session-failed"
-                      : dots[i] === "unread"
-                        ? "session-unread"
-                        : "session-idle")
-            }
-          />
-        ))
+        sessions.map((s, i) => <SessionDot key={s.id} state={dots[i]} />)
       )}
     </span>
   )
