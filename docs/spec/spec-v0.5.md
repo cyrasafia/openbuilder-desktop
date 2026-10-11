@@ -22,6 +22,7 @@
 | 9 | global 语义退役（D6/M1b） | v2 无 global 项目行（非 git 目录 = 目录哈希伪项目行以普通项目进左栏）；v1 `global\0<dir>` entry 模型删除，持久化旧键连接期迁移（`migrateLegacyGlobalState`）；新目录发现 = 项目列表刷新（连接/选择器/60s diff/project.updated） |
 | 10 | 用户后台任务卡（design-subagent-background，2026-10-08 升格按异步统一） | 异步子会话三路径统一：命令型 `subagent: true`、工具型 `subagent` tool `background:true`、工具型前台转后台（`POST /api/session/{id}/background`）——常驻任务卡（分隔线上方 `.bg-task-slot` 槽位通栏折叠卡，与授权/问题卡同域，默认收起，运行中后台任务非空时显示；前台 part 运行中不进；展开列任务，任务行整行点击查看（键盘可达），详情窗与任务卡同槽位互斥替代、展开态跨详情保留，单条 `interrupt` 停止）；启动提示客户端本地合成（前台认领不插，SSE 缺口误插由对账撤回）并随 REST 对账在覆盖窗口内重建（created 用会话行权威时间，幂等；续跑认领含 input.sessionID），前台转后台合成「已转后台」提示（part completed ∧ 子会话运行中，运行中可恢复），完成提示取 `session.inbox.enqueued`/REST 的 `synthetic`（`metadata.source=subagent`）并按 id 去重；`sessionActivity` 家族聚合点亮父会话 Tab/左栏指示器；工具型**前台** `task`/`subagent` tool part 保持 `SubagentPanel` 不变 |
 | 11 | 未读标识（design-unread-marker；v2 契约新能力使能） | 会话「已产出未验收」以**服务端水位**判定：`unread ⟺ Session.Info.time.idle != null && (time.viewed == null \|\| time.idle > time.viewed)`（两字段随会话列表/单会话返回）；标记已读 `POST /api/session/:id/view`（body `{idle}`——回传**观察到的** idle，服务端 `viewed = max(idle, viewed)` 单调，且不 touch `time_updated`）；他端 ack 经 `session.viewed` 事件（`viewed = max`）合并。**ack = 该会话成为当前激活 chat Tab**（不判滚动位置/窗口聚焦；点开即清、停留即保持），`view` 失败指数退避重试（250ms→5s），成功乐观置 `viewed`；run 终态补 `GET /api/session/:id` 取权威 idle（`Execution.*` 事件不带 idle 时间戳，且 `time_idle` 有 +1 严格前进守卫，不可本地合成）。呈现 = 左栏状态点（≤4 会话行）+ chat Tab 点，新增 `--status-unread`（蓝）；**>4 会话行的聚合 chip 不做**（其可用性问题需整体重设计，另开分支，见 `docs/todo/todo-indicator-aggregate-chip.md`；未读不入 chip）；**不做**本地通知清单/系统通知/声音/托盘角标/手动清除入口 |
+| 12 | 会话消息文件路径自动链接（design-message-autolink，2026-10-11） | 消息正文（assistant/user/subtask/子会话）中项目内文件路径（含 `:行号` 后缀、行内代码单一路径）自动转链为 `ob-file:` 内部链接，点击开文件 Tab（Tab 注册制去重、带行号强制源码模式跳行）；识别规则移植 openbuilder design-message-autolink（六轮评审收敛形态），管线为 remark 插件（mdast 层，streamdown 块级 memo 内运行）；归属校验在解析期（插件闭包会话 directory，项目外/逃逸保持纯文本）；裸 URI 链接维持 remark-gfm autolink 既有行为，本功能不触及 |
 
 ## 范围外（明确不做）
 
@@ -74,5 +75,6 @@
 - [ ] agent/model 切换：列表含全部 provider 模型；切换生效（会话回读正确）；label 显示友好名、切换键用 id
 - [ ] 用户后台任务（design-subagent-background，2026-10-08 升格）：命令型与 `background:true`/前台转后台运行中任务卡常驻（分隔线上方槽位、通栏折叠、默认收起）、父会话指示器点亮；任务行整行点击查看（详情窗互斥替代任务卡，关闭返回列表保持展开）/停止；启动（或转后台）与完成系统提示落流（前台工具型不走任务卡）
 - [ ] 未读标识（design-unread-marker）：后台会话跑完后左栏（≤4 会话行）出现蓝点；点开（激活 chat Tab）即清（`POST /view`）且失败退避重试；激活 Tab 期间到达的完成不标未读（含窗口失焦）；他端 ack 经 `session.viewed` 收敛；断线重连后状态由会话快照收敛；未读不影响排序 / 活动时间（>4 会话行的聚合 chip 不做，另开分支）
+- [ ] 消息文件路径自动链接（design-message-autolink，2026-10-11）：项目内路径（含行号、行内代码单一路径）转链可点 → 开文件 Tab（重复点击复用；带行号跳行且强制源码模式）；项目外/`../` 逃逸/裸域名/围栏代码块内不转链；外链仍走系统浏览器（回归）
 - [ ] 降级项行为：无任务卡（无 todo 数据源）；设置无 Provider 页签；文件外部修改不自动刷新（重开 Tab 重拉）；文件树无 ignored 弱化
 - [ ] 打包冒烟：`npm run package:linux` 成功产出

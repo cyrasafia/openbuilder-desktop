@@ -5,10 +5,17 @@
  * `.system-notice.interrupted`，非中止错误才呈 `.error-card` 红卡。
  * ResizeObserver/IntersectionObserver jsdom 缺失，补 stub（workspace 模块图所需）。
  */
-import { render } from "@testing-library/react"
-import { beforeAll, describe, expect, it, vi } from "vitest"
+import { fireEvent, render } from "@testing-library/react"
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { MessageBlock } from "./workspace"
 import type { ChatEntry } from "@shared/message-merge"
+
+// store mock（可变状态供自动链接用例定向覆写；vi.hoisted 先于模块图求值）
+const storeMock = vi.hoisted(() => ({
+  showThinking: false,
+  findSession: vi.fn((): unknown => undefined),
+  openFileTab: vi.fn(),
+}))
 
 vi.mock("../app", () => ({
   useI18n: () => ({
@@ -21,10 +28,7 @@ vi.mock("../app", () => ({
     },
     locale: "zh" as const,
   }),
-  useStore: () => ({
-    showThinking: false,
-    findSession: () => undefined,
-  }),
+  useStore: () => storeMock,
 }))
 
 class ResizeObserverStub implements ResizeObserver {
@@ -150,3 +154,77 @@ describe("MessageBlock 中止/报错分流", () => {
     expect(container.querySelector(".chip-summary")?.textContent).toBe("exit 1")
   })
 })
+
+describe("MessageBlock 文件路径自动链接（design-message-autolink）", () => {
+  beforeEach(() => {
+    storeMock.findSession.mockReturnValue(undefined)
+    storeMock.openFileTab.mockClear()
+  })
+
+  it("assistant 消息项目内路径转链：点击 → openFileTab(绝对路径, 行号)", () => {
+    storeMock.findSession.mockReturnValue({ directory: "/repo", parentID: null })
+    const entry = assistantEntry(undefined)
+    ;((entry.data as { parts: Array<{ text: string }> }).parts[0]).text =
+      "见 lib/foo.dart:42 与项目外 /etc/hosts"
+    const { container } = render(<MessageBlock entry={entry} />)
+    // 项目内转链（绝对路径 + 行号进 query）；项目外保持纯文本
+    const links = [...container.querySelectorAll("a")]
+    expect(links.map((a) => a.getAttribute("href"))).toEqual([
+      "ob-file:////repo/lib/foo.dart?line=42",
+    ])
+    fireEvent.click(links[0])
+    expect(storeMock.openFileTab).toHaveBeenCalledWith("/repo/lib/foo.dart", 42)
+  })
+
+  it("user 消息路径同样转链（软换行管线并存）", () => {
+    storeMock.findSession.mockReturnValue({ directory: "/repo", parentID: null })
+    const entry = {
+      kind: "message",
+      data: {
+        info: { id: "msg_u9", sessionID: "s1", role: "user", time: { created: 1 } },
+        parts: [{ id: "prt_u9", type: "text", text: "看下 src/a.ts\n再看看 b/c.md" }],
+      },
+    } as unknown as ChatEntry
+    const { container } = render(<MessageBlock entry={entry} />)
+    const links = [...container.querySelectorAll("a")]
+    expect(links.map((a) => a.getAttribute("href"))).toEqual([
+      "ob-file:////repo/src/a.ts",
+      "ob-file:////repo/b/c.md",
+    ])
+  })
+
+  it("会话无 directory（findSession 未命中）：不转链不崩溃", () => {
+    const entry = assistantEntry(undefined)
+    ;((entry.data as { parts: Array<{ text: string }> }).parts[0]).text = "见 lib/foo.dart"
+    const { container } = render(<MessageBlock entry={entry} />)
+    expect(container.querySelector("a")).toBeNull()
+    expect(container.textContent).toContain("lib/foo.dart")
+  })
+
+  it("乐观回显不转链（发送中瞬时态，真实消息到达后转链）", () => {
+    const entry = {
+      kind: "optimistic",
+      data: { localId: "opt_1", text: "见 lib/foo.dart", refs: [], attachments: [] },
+    } as unknown as ChatEntry
+    const { container } = render(<MessageBlock entry={entry} />)
+    expect(container.querySelector("a")).toBeNull()
+    expect(container.textContent).toContain("lib/foo.dart")
+  })
+})
+
+  it("手写 ob-file 越界链接：点击层同源归属校验拒绝（评审修复 3）", () => {
+    storeMock.findSession.mockReturnValue({ directory: "/repo", parentID: null })
+    const entry = assistantEntry(undefined)
+    ;((entry.data as { parts: Array<{ text: string }> }).parts[0]).text =
+      "[看这](ob-file:////etc/hosts) 与 [内的](ob-file:////repo/lib/a.ts)"
+    const { container } = render(<MessageBlock entry={entry} />)
+    const links = [...container.querySelectorAll("a")]
+    expect(links.map((a) => a.getAttribute("href"))).toEqual([
+      "ob-file:////etc/hosts",
+      "ob-file:////repo/lib/a.ts",
+    ])
+    fireEvent.click(links[0]) // 项目外：拒绝
+    expect(storeMock.openFileTab).not.toHaveBeenCalled()
+    fireEvent.click(links[1]) // 项目内：放行
+    expect(storeMock.openFileTab).toHaveBeenCalledWith("/repo/lib/a.ts", undefined)
+  })

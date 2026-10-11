@@ -7,6 +7,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest"
 import { Markdown } from "./markdown"
 import { defaultRemarkPlugins, type StreamdownProps } from "streamdown"
 import { relativeImageRewrite } from "./markdown-image"
+import { messageFileLinks } from "./message-autolink"
 
 vi.mock("../app", () => ({
   useI18n: () => ({ t: { copy: "复制", copied: "已复制" }, locale: "zh" as const }),
@@ -248,5 +249,110 @@ describe("Markdown", () => {
     expect(seen).toContain("/repo/docs/img/x.png")
     expect(seen).toContain("https://e.com/y.png")
     expect(seen).not.toContain("./img/x.png")
+  })
+})
+
+describe("Markdown 文件路径自动链接（design-message-autolink）", () => {
+  // 消息流调用形态（MessageBlock 同款）：插件元组 + 稳定 onFileLink（rehype 栈
+  // 的 sanitize 白名单扩展随之启用——不传 onFileLink 时 ob-file href 被默认栈拦截）
+  const noop = vi.fn()
+  const plugins = [
+    ...Object.values(defaultRemarkPlugins),
+    [messageFileLinks, { directory: "/repo" }],
+  ] as unknown as StreamdownProps["remarkPlugins"]
+
+  it("自由文本路径转链为 ob-file 链接，行号进 query，文本保留完整匹配", () => {
+    const { container } = render(
+      <Markdown remarkPlugins={plugins} onFileLink={noop}>
+        {"见 lib/foo.dart:42 与 /repo/src/a.ts"}
+      </Markdown>,
+    )
+    const links = [...container.querySelectorAll("a")]
+    expect(links.map((a) => a.getAttribute("href"))).toEqual([
+      "ob-file:////repo/lib/foo.dart?line=42",
+      "ob-file:////repo/src/a.ts",
+    ])
+    expect(links[0].textContent).toBe("lib/foo.dart:42")
+  })
+
+  it("围栏代码块与含他内容的行内代码不转链；行内代码单一路径转链（反引号去除）", () => {
+    const { container } = render(
+      <Markdown remarkPlugins={plugins} onFileLink={noop}>
+        {"```ts\nlib/foo.dart\n```\n\n`open lib/foo.dart` 与 `lib/bar.ts`"}
+      </Markdown>,
+    )
+    expect(container.querySelector("a")).not.toBeNull()
+    const code = container.querySelectorAll(".md-code-inline")
+    expect(code.length).toBe(1)
+    expect(code[0].textContent).toBe("open lib/foo.dart")
+    const a = container.querySelector("a")!
+    expect(a.textContent).toBe("lib/bar.ts")
+  })
+
+  it("ob-file 链接点击：preventDefault + onFileLink 收到 href（内部路由，无 target）", () => {
+    const onFileLink = vi.fn()
+    const { container } = render(
+      <Markdown remarkPlugins={plugins} onFileLink={onFileLink}>{"见 lib/foo.dart:42"}</Markdown>,
+    )
+    const a = container.querySelector("a")!
+    // streamdown rehype 管线给全部 a 注入 target=_blank/rel——内部链接分流须剥除
+    expect(a.getAttribute("target")).toBeNull()
+    expect(a.getAttribute("rel")).toBeNull()
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true })
+    a.dispatchEvent(click)
+    expect(click.defaultPrevented).toBe(true)
+    expect(onFileLink).toHaveBeenCalledWith("ob-file:////repo/lib/foo.dart?line=42")
+  })
+
+  it("外链维持系统浏览器路径：onFileLink 传入也不拦截（回归）", () => {
+    const onFileLink = vi.fn()
+    const { container } = render(
+      <Markdown remarkPlugins={plugins} onFileLink={onFileLink}>
+        {"[显式](https://example.com/) 与裸链 http://example.com/a/b.dart"}
+      </Markdown>,
+    )
+    const links = [...container.querySelectorAll("a")]
+    expect(links.length).toBe(2)
+    for (const a of links) {
+      expect(a.getAttribute("target")).toBe("_blank")
+      expect(a.getAttribute("rel")).toBe("noopener noreferrer")
+    }
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true })
+    links[0].dispatchEvent(click)
+    expect(onFileLink).not.toHaveBeenCalled()
+  })
+
+  it("softLineBreak × remarkPlugins 组合（解互斥）：用户回显软换行 + 路径转链并存", () => {
+    const { container } = render(
+      <Markdown softLineBreak remarkPlugins={plugins} onFileLink={noop}>
+        {"改了 lib/foo.dart\n见 src/bar.ts"}
+      </Markdown>,
+    )
+    const p = container.querySelector("p")!
+    expect(p.querySelectorAll("br").length).toBe(1) // 软换行仍生效
+    expect([...container.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual([
+      "ob-file:////repo/lib/foo.dart",
+      "ob-file:////repo/src/bar.ts",
+    ])
+  })
+
+  it("CJK 强调补救与路径转链同段并存（评审修复 1：cjkEmphasis 恒前，拆 text 前看到完整段落）", () => {
+    const { container } = render(
+      <Markdown remarkPlugins={plugins} onFileLink={noop}>
+        {"**结论，见 src/a.ts 文档，**后续文字"}
+      </Markdown>,
+    )
+    // CJK 全角逗号侧向失效由 cjkEmphasis 补救（须在 messageFileLinks 拆 text
+    // 之前配对 `**`），路径仍转链
+    expect(container.querySelector("strong")?.textContent).toBe("结论，见 src/a.ts 文档，")
+    expect(container.querySelector("a")?.getAttribute("href")).toBe("ob-file:////repo/src/a.ts")
+  })
+
+  it("onFileLink 缺省：默认 rehype 栈 sanitize 拦截 ob-file href（白名单外），不产生可点链接", () => {
+    // 文件预览实际不传插件（无 ob-file 链接产生）；本用例锚定「插件在、路由缺」
+    // 的错配防护：harden 呈 blocked 指示（span），无 a 可点
+    const { container } = render(<Markdown remarkPlugins={plugins}>{"见 lib/foo.dart"}</Markdown>)
+    expect(container.querySelector("a")).toBeNull()
+    expect(container.textContent).toContain("lib/foo.dart")
   })
 })

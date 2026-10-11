@@ -11,6 +11,7 @@ import { cloneElement, isValidElement, useMemo, useState, type ReactElement, typ
 import { Info, Lightbulb, MessageSquareWarning, OctagonX, TriangleAlert, type LucideIcon } from "lucide-react"
 import {
   Streamdown,
+  defaultRehypePlugins,
   defaultRemarkPlugins,
   type Components,
   type LinkSafetyConfig,
@@ -256,22 +257,87 @@ const softBreaks = () => (tree: MdNode) => {
   walk(tree)
 }
 
-/** remarkPlugins 传入即整体替换默认集（gfm + codeMeta），需拼回默认件；模块级常量防 memo 失效。
- *  cjkEmphasis（design-markdown-preview §2.9 CJK 标点侧向修复）统一注入三条管线
- *  （assistant / user / 文件预览）；置于 softBreaks 之前——补救配对要在软换行
- *  拆分 text 节点之前看到完整段落文本 */
-const baseRemarkPlugins: StreamdownProps["remarkPlugins"] = [
-  ...Object.values(defaultRemarkPlugins),
-  cjkEmphasis,
-]
+/** cjkEmphasis（design-markdown-preview §2.9 CJK 标点侧向修复）统一注入全部
+ *  管线（assistant / user / 文件预览）；组合次序见下方 mergedPlugins——恒排
+ *  最前：补救配对要在任何拆分 text 节点的插件（gfm autolink /
+ *  messageFileLinks / softBreaks）之前看到完整段落文本（2026-10-11 评审修订） */
 
-const userRemarkPlugins: StreamdownProps["remarkPlugins"] = [...baseRemarkPlugins, softBreaks]
+/* ---------- 消息文件路径链接分流（design-message-autolink §2.5） ----------
+ * 消息流传入 onFileLink（引用稳定）：a 覆写按 ob-file: 前缀单点分流——
+ * 文件链接走 renderer 路由（preventDefault + 回调，无 target/rel——内部链接），
+ * 其余链接维持系统浏览器路径（target=_blank + 主进程 shell.openExternal）。
+ * 不传时零合并成本（同 img 覆写的既有模式）。 */
+function fileLinkA(onFileLink: (href: string) => void): NonNullable<Components["a"]> {
+  return function MdLink({ node: _node, children, ...rest }) {
+    const href = rest.href
+    if (typeof href === "string" && href.startsWith("ob-file:")) {
+      // streamdown 的 rehype 管线给全部 a 注入 target=_blank/rel（外链语义），
+      // 内部链接须显式剥除，避免 target 触发主进程 setWindowOpenHandler 路径
+      const { target: _target, rel: _rel, ...fileRest } = rest
+      return (
+        <a
+          {...fileRest}
+          tabIndex={-1}
+          onClick={(e) => {
+            e.preventDefault()
+            onFileLink(href)
+          }}
+        >
+          {children}
+        </a>
+      )
+    }
+    return (
+      <a {...rest} target="_blank" rel="noopener noreferrer" tabIndex={-1}>
+        {children}
+      </a>
+    )
+  }
+}
+
+/** rehype-sanitize schema 的结构性子集（本处只扩 protocols.href） */
+interface SanitizeSchemaShape {
+  protocols?: { href?: string[] }
+}
+
+/** ob-file 协议注入 sanitize 白名单（design-message-autolink §2.5 联调实测）：
+ *  streamdown 默认 rehype 栈（raw/sanitize/harden）中 rehype-sanitize 对 a[href]
+ *  有 protocols 白名单（http/https/irc/…/tel），自定义 scheme 的 href 被剥除 →
+ *  harden 呈 "Blocked URL" 指示。onFileLink 存在时替换为同构栈：三件照搬默认，
+ *  仅 sanitize schema 的 protocols.href 追加 "ob-file"；harden 的
+ *  allowedProtocols:["*"] 本就放行，且 new URL 序列化对 4 斜杠绝对形态与
+ *  percent-encoding 往返保持（实测）。模块级常量：一次构造，streamdown 块
+ *  memo 的 rehypePlugins 引用比较不受影响。 */
+const fileLinkRehype: StreamdownProps["rehypePlugins"] = (() => {
+  // 上游形状守卫（评审 nit 5）：sanitize 条目须是 [fn, schema] 元组（2.5.0 dist
+  // 核实）；升级改形状时降级为不扩展——ob-file 链接回落默认栈被拦截（功能
+  // 降级），不在模块加载期 TypeError
+  const entry = defaultRehypePlugins.sanitize
+  if (!Array.isArray(entry) || typeof entry[0] !== "function") return undefined
+  const [sanitizeFn, schema] = entry as unknown as [
+    (tree: unknown) => unknown,
+    SanitizeSchemaShape,
+  ]
+  const extended = {
+    ...schema,
+    protocols: {
+      ...schema?.protocols,
+      href: [...(schema?.protocols?.href ?? []), "ob-file"],
+    },
+  }
+  return [
+    defaultRehypePlugins.raw,
+    [sanitizeFn, extended],
+    defaultRehypePlugins.harden,
+  ] as unknown as StreamdownProps["rehypePlugins"]
+})()
 
 export function Markdown({
   children,
   softLineBreak,
   img,
   remarkPlugins,
+  onFileLink,
 }: {
   children: string
   softLineBreak?: boolean
@@ -279,26 +345,52 @@ export function Markdown({
    *  MarkdownImage；消息流不传——components 引用恒为模块级 mdComponents，
    *  streamdown 块级 memo 语义不变。传入时 useMemo 合并，调用方须保持引用稳定 */
   img?: Components["img"]
-  /** remark 插件整体替换默认集（同 streamdown 语义；§2.8 文件预览传
-   *  relativeImageRewrite 拼默认件）。与 softLineBreak 互斥——同时传入时
-   *  softLineBreak 优先、本 prop 被忽略（当前调用方天然不并存）。调用方
+  /** remark 插件（整体替换默认集语义，调用方自拼默认件；§2.8 文件预览传
+   *  relativeImageRewrite 拼默认件，消息流传 messageFileLinks 转链插件）。
+   *  与 softLineBreak 可组合（design-message-autolink §2.8）：组合次序 =
+   *  [调用方插件…, cjkEmphasis, softBreaks]，softBreaks 恒排最后。调用方
    *  须保持引用稳定；cjkEmphasis 由本组件自动追加（§2.9），调用方无需感知 */
   remarkPlugins?: StreamdownProps["remarkPlugins"]
+  /** ob-file: 链接的点击路由（消息流传入；文件预览不传）。引用稳定时
+   *  components 合并不失效（同 img prop 模式） */
+  onFileLink?: (href: string) => void
 }) {
-  // img 覆写存在才生成新对象（消息流零成本）；引用稳定时 memo 不失效
-  const components = useMemo(() => (img ? { ...mdComponents, img } : mdComponents), [img])
-  // cjkEmphasis 追加在调用方插件之后（relativeImageRewrite 改 image/link 节点，
-  // 与 text 节点补救互不相关）；无传入时走 base 常量，引用稳定
+  // img / onFileLink 任一存在才生成新对象（消息流不传时零成本）；引用稳定时 memo 不失效
+  const components = useMemo(
+    () =>
+      img || onFileLink
+        ? {
+            ...mdComponents,
+            ...(img ? { img } : {}),
+            ...(onFileLink ? { a: fileLinkA(onFileLink) } : {}),
+          }
+        : mdComponents,
+    [img, onFileLink],
+  )
+  // cjkEmphasis（§2.9）恒排最前：须在任何拆分 text 节点的插件（remark-gfm
+  // autolink、messageFileLinks、softBreaks）之前看到完整段落文本——2026-10-11
+  // 评审修订：原「追加在调用方插件之后」次序下 messageFileLinks 先按路径拆
+  // text，`**` 配对跨节点失败，CJK 强调补救丢失（`**结论，见 src/a.ts 文档，**
+  // 后续` 实测加粗失效）。softBreaks 恒排最后（拆 text 与软换行互不相关：
+  // 路径不含换行、链接文本是路径）；调用方契约不变（整体替换默认集、自拼
+  // 默认件——cjkEmphasis 与 relativeImageRewrite 改 image/definition 节点、
+  // 与 text 补救互不相关，次序互换无影响）。useMemo 保引用稳定，streamdown
+  // 块 memo 不失效
   const mergedPlugins = useMemo<StreamdownProps["remarkPlugins"]>(
-    () => (remarkPlugins ? [...remarkPlugins, cjkEmphasis] : baseRemarkPlugins),
-    [remarkPlugins],
+    () => [
+      cjkEmphasis,
+      ...(remarkPlugins ?? Object.values(defaultRemarkPlugins)),
+      ...(softLineBreak ? [softBreaks] : []),
+    ],
+    [remarkPlugins, softLineBreak],
   )
   return (
     <Streamdown
       className="markdown-body md"
       components={components}
       linkSafety={mdLinkSafety}
-      remarkPlugins={softLineBreak ? userRemarkPlugins : mergedPlugins}
+      remarkPlugins={mergedPlugins}
+      rehypePlugins={onFileLink ? fileLinkRehype : undefined}
     >
       {children}
     </Streamdown>
