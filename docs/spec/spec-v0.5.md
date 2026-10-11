@@ -4,7 +4,7 @@
 
 版本定位（2026-10-09 口径补记）：
 
-- **v0.5 目标 = 全量切 v2 接口，不做新功能**。唯一例外 = 用户后台任务卡（功能 #10）——它是功能补丁而非新功能：v2 的 `/review` 等命令从子会话改为在主会话执行，后台任务卡弥补由此产生的异步子会话不可见缺口。
+- **v0.5 目标 = 全量切 v2 接口，不做新功能**。例外二项：用户后台任务卡（功能 #10）——它是功能补丁而非新功能：v2 的 `/review` 等命令从子会话改为在主会话执行，后台任务卡弥补由此产生的异步子会话不可见缺口；未读标识（功能 #11）——v2 契约新能力（`time.viewed` 水位 + `/view` 端点）使能，v1 面无法实现，属迁移顺带落地的功能。
 - **v0.5.1 目标 = 全部功能稳定，可 daily drive**（补丁版收口，不扩范围；0.6 功能范围另行确定，恢复项归属见降级表注记）。
 
 ## 范围内
@@ -21,6 +21,7 @@
 | 8 | 斜杠命令 | `GET /api/command` ∪ `GET /api/skill` 合并（skill 斜杠触发保留，source 标记）；`POST /api/session/:id/command`（body `{name,text,files}`，**timeoutMs: 0** 不设超时——同步端点 SC-4 教训）；命令回显经 inbox.enqueued 转记（回滚不回填展开文本草稿） |
 | 9 | global 语义退役（D6/M1b） | v2 无 global 项目行（非 git 目录 = 目录哈希伪项目行以普通项目进左栏）；v1 `global\0<dir>` entry 模型删除，持久化旧键连接期迁移（`migrateLegacyGlobalState`）；新目录发现 = 项目列表刷新（连接/选择器/60s diff/project.updated） |
 | 10 | 用户后台任务卡（design-subagent-background，2026-10-08 升格按异步统一） | 异步子会话三路径统一：命令型 `subagent: true`、工具型 `subagent` tool `background:true`、工具型前台转后台（`POST /api/session/{id}/background`）——常驻任务卡（分隔线上方 `.bg-task-slot` 槽位通栏折叠卡，与授权/问题卡同域，默认收起，运行中后台任务非空时显示；前台 part 运行中不进；展开列任务，任务行整行点击查看（键盘可达），详情窗与任务卡同槽位互斥替代、展开态跨详情保留，单条 `interrupt` 停止）；启动提示客户端本地合成（前台认领不插，SSE 缺口误插由对账撤回）并随 REST 对账在覆盖窗口内重建（created 用会话行权威时间，幂等；续跑认领含 input.sessionID），前台转后台合成「已转后台」提示（part completed ∧ 子会话运行中，运行中可恢复），完成提示取 `session.inbox.enqueued`/REST 的 `synthetic`（`metadata.source=subagent`）并按 id 去重；`sessionActivity` 家族聚合点亮父会话 Tab/左栏指示器；工具型**前台** `task`/`subagent` tool part 保持 `SubagentPanel` 不变 |
+| 11 | 未读标识（design-unread-marker；v2 契约新能力使能） | 会话「已产出未验收」以**服务端水位**判定：`unread ⟺ Session.Info.time.idle != null && (time.viewed == null \|\| time.idle > time.viewed)`（两字段随会话列表/单会话返回）；标记已读 `POST /api/session/:id/view`（body `{idle}`——回传**观察到的** idle，服务端 `viewed = max(idle, viewed)` 单调，且不 touch `time_updated`）；他端 ack 经 `session.viewed` 事件（`viewed = max`）合并。**ack = 该会话成为当前激活 chat Tab**（不判滚动位置/窗口聚焦；点开即清、停留即保持），`view` 失败指数退避重试（250ms→5s），成功乐观置 `viewed`；run 终态补 `GET /api/session/:id` 取权威 idle（`Execution.*` 事件不带 idle 时间戳，且 `time_idle` 有 +1 严格前进守卫，不可本地合成）。呈现 = 左栏状态点（≤4 会话行）+ chat Tab 点，新增 `--status-unread`（蓝）；**>4 会话行的聚合 chip 不做**（其可用性问题需整体重设计，另开分支，见 `docs/todo/todo-indicator-aggregate-chip.md`；未读不入 chip）；**不做**本地通知清单/系统通知/声音/托盘角标/手动清除入口 |
 
 ## 范围外（明确不做）
 
@@ -44,6 +45,7 @@
 |------|-----------|
 | 探活/版本/扫描验证 | `GET /api/info`（managed 健康等待与发现扫描同源换绑；v2 版本前缀校验淘汰 v1 server） |
 | 会话列表/创建/改/删 | `GET/POST /api/session`（cursor envelope）、`PATCH/DELETE /api/session/:id`（级联删） |
+| 未读标识 | 读 `Session.Info.time.idle`/`time.viewed`；标记已读 `POST /api/session/:id/view`（body `{idle}`）；事件 `session.viewed`（`{sessionID,idle}`） |
 | 消息/prompt/中断 | `GET /api/session/:id/message`（typed union + cursor）、`POST .../prompt`（200 回执）、`POST .../interrupt` |
 | 回滚 | 三段式：`POST .../revert/stage`、`DELETE .../revert`、`POST .../revert/commit`；提交由下一条 prompt 自动触发，事件收敛走 `session.revert.staged/cleared/committed` + 发送回执兜底 + 快照 `revert` 字段映射（design-sse-event-surface 三层策略） |
 | worktree | `GET/POST/DELETE /api/worktree` + `POST /api/worktree/refresh`（库存直连 + 对账，2026-09-29 起消费，见范围表 #3） |
@@ -71,5 +73,6 @@
 - [ ] 斜杠命令：`/` 菜单列出 server 命令 + skill；长命令（>15s）不误判失败；命令回显消息回滚不回填草稿
 - [ ] agent/model 切换：列表含全部 provider 模型；切换生效（会话回读正确）；label 显示友好名、切换键用 id
 - [ ] 用户后台任务（design-subagent-background，2026-10-08 升格）：命令型与 `background:true`/前台转后台运行中任务卡常驻（分隔线上方槽位、通栏折叠、默认收起）、父会话指示器点亮；任务行整行点击查看（详情窗互斥替代任务卡，关闭返回列表保持展开）/停止；启动（或转后台）与完成系统提示落流（前台工具型不走任务卡）
+- [ ] 未读标识（design-unread-marker）：后台会话跑完后左栏（≤4 会话行）出现蓝点；点开（激活 chat Tab）即清（`POST /view`）且失败退避重试；激活 Tab 期间到达的完成不标未读（含窗口失焦）；他端 ack 经 `session.viewed` 收敛；断线重连后状态由会话快照收敛；未读不影响排序 / 活动时间（>4 会话行的聚合 chip 不做，另开分支）
 - [ ] 降级项行为：无任务卡（无 todo 数据源）；设置无 Provider 页签；文件外部修改不自动刷新（重开 Tab 重拉）；文件树无 ignored 弱化
 - [ ] 打包冒烟：`npm run package:linux` 成功产出

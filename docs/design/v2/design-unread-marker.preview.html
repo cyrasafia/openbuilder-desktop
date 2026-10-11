@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<title>未读标记 — 指示器视觉预览（v0.5）</title>
+<style>
+  /* 取自 src/renderer/src/styles/tokens.css 实测值；本文件仅作目检预览，非实现 */
+  :root{
+    --text-xs:11px; --text-sm:12px; --text-md:13px; --radius-chip:6px;
+    --status-running:#1dae4e; --status-error:#e5484d; --status-pending:#8b949e;
+    --status-waiting:#fbbf24; --status-unread:#58a6ff;
+    --surface:#161b16; --surface-container-low:#1e231e; --surface-container:#222722;
+    --surface-container-high:#2c312c; --surface-container-highest:#373c37;
+    --on-surface:#c8d0c4; --on-surface-variant:#adb6ab; --outline:#8b938a;
+    --avatar-blue:#60a5fa;
+  }
+  body{background:#0c0f0c;color:#c8d0c4;font:13px/1.4 system-ui,sans-serif;margin:0;padding:24px}
+  h1{font-size:15px;font-weight:600;margin:0 0 4px}
+  p.note{color:#8b938a;font-size:12px;margin:0 0 20px}
+  .stage{display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start}
+  .panel{width:300px;border-radius:10px;padding:12px;box-sizing:border-box;border:1px solid rgba(255,255,255,.06)}
+  .panel.dark{background:var(--surface);color:var(--on-surface)}
+  .panel.light{background:#eef2e9;color:#2e332e;border-color:rgba(0,0,0,.08);
+    /* 亮色档状态色（同 tokens.css 亮色块；不覆盖则回落到 :root 暗色档 → 深色值压浅底） */
+    --status-running:#15803d; --status-error:#b91c1c; --status-pending:#6e7781;
+    --status-waiting:#b8860b; --status-unread:#0969da}
+  .panel h2{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;opacity:.6;margin:0 0 10px}
+  /* 行列：模拟左栏 tree-row（三级背景态） */
+  .col{background:color-mix(in srgb, currentColor 0%, transparent)}
+  .row{display:flex;align-items:center;gap:6px;height:40px;padding:0 8px;border-radius:6px}
+  .row.ws{height:26px;padding-left:16px}
+  .row.sel{background:color-mix(in srgb, var(--surface-container-highest) 100%, transparent)}
+  .row.hov{background:var(--surface-container-high)}
+  .light .row.sel{background:#d7dbd2}
+  .light .row.hov{background:#dce0d8}
+  .avatar{width:26px;height:26px;border-radius:7px;background:var(--avatar-blue);color:#0b1220;
+          display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex:0 0 auto}
+  .wsicon{width:16px;height:16px;border-radius:4px;background:color-mix(in srgb,currentColor 22%,transparent);flex:0 0 auto}
+  .name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ind{display:flex;align-items:center;gap:2px;flex:0 0 auto}
+
+  /* 会话状态点：12px 盒、6px 实心点（同 app.css session-*） */
+  .status-dot{position:relative;width:12px;height:12px;flex:0 0 auto}
+  .status-dot::after{content:"";position:absolute;left:50%;top:50%;width:6px;height:6px;border-radius:50%;
+    background:var(--d);transform:translate(-50%,-50%)}
+  .status-dot.session-idle{--d:var(--status-pending)}
+  .status-dot.session-idle::after{opacity:.55}
+  .status-dot.session-waiting{--d:var(--status-waiting)}
+  .status-dot.session-failed{--d:var(--status-error)}
+  .status-dot.session-running{--d:var(--status-running)}
+  .status-dot.session-unread{--d:var(--status-unread)}
+  /* running / retry：外圈 11px 光晕呼吸 */
+  .status-dot.session-running::before{content:"";position:absolute;left:50%;top:50%;width:11px;height:11px;
+    border-radius:50%;background:var(--d);opacity:.4;transform:translate(-50%,-50%) scale(.95)}
+  /* 未读：静态满不透明（无光晕）——与 running 的唯一区别 */
+
+  /* 聚合数字 chip（>4 会话） */
+  .session-count{min-width:16px;height:14px;padding:0 4px;border-radius:var(--radius-chip);
+    background:var(--surface-container);color:var(--outline);font-size:11px;line-height:14px;text-align:center}
+  .light .session-count{background:#e2e6de;color:#727970}
+  .session-count.waiting{background:color-mix(in srgb,var(--status-waiting) 16%,transparent);color:var(--status-waiting)}
+  .session-count.running{background:color-mix(in srgb,var(--status-running) 16%,transparent);color:var(--status-running)}
+  .session-count.failed  {background:color-mix(in srgb,var(--status-error) 16%,transparent);color:var(--status-error)}
+  .session-count.unread  {background:color-mix(in srgb,var(--status-unread) 16%,transparent);color:var(--status-unread)}
+
+  /* 模拟 Tab 条 */
+  .tabbar{display:flex;gap:6px;margin-top:10px;padding:6px;border-radius:8px;background:var(--surface-container-low)}
+  .light .tabbar{background:#e8ece3}
+  .tab{display:flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:6px;font-size:12px;
+       background:var(--surface-container-high);color:var(--on-surface)}
+  .light .tab{background:#dce0d8;color:#2e332e}
+  .tab.active{background:var(--surface-container-highest);box-shadow:inset 0 -2px 0 var(--primary,#98d4a3)}
+  .light .tab.active{background:#d7dbd2;box-shadow:inset 0 -2px 0 #35693e}
+
+  .legend{margin-top:26px;display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px 24px;max-width:760px}
+  .lg{display:flex;align-items:center;gap:10px;font-size:12px;color:#c8d0c4}
+  .lg .hex{color:#8b938a;font-family:ui-monospace,monospace;font-size:11px}
+  .lg .sw{width:14px;height:14px;border-radius:50%}
+</style>
+</head>
+<body>
+  <h1>未读标记 · 指示器视觉预览（蓝定稿：暗 #58a6ff / 亮 #0969da）</h1>
+  <p class="note">未读用蓝（暗 #58a6ff / 亮 #0969da）。状态点几何沿用现有 <code>session-*</code>（12px 盒 / 6px 实心点）；未读是静态满点，与「运行中」的绿呼吸光晕区分。<br>
+  下方 <b>chip 行仅作对照</b>——聚合 chip 有可用性问题（同色字压同色底、深色灰底对比低、未继承圆点/呼吸），需整体重设计，<b>本分支不做</b>（见 <code>todo-indicator-aggregate-chip</code>）。</p>
+
+  <div class="stage">
+    <!-- DARK -->
+    <div class="panel dark">
+      <h2>Dark</h2>
+      <div class="col">
+        <div class="row hov">
+          <span class="avatar">OB</span>
+          <span class="name">openbuilder-desktop</span>
+          <span class="ind">
+            <span class="status-dot session-unread"></span>
+            <span class="status-dot session-running"></span>
+            <span class="status-dot session-idle"></span>
+          </span>
+        </div>
+        <div class="row ws">
+          <span class="wsicon"></span>
+          <span class="name">feature-auth</span>
+          <span class="ind">
+            <span class="status-dot session-waiting"></span>
+            <span class="status-dot session-failed"></span>
+            <span class="status-dot session-unread"></span>
+          </span>
+        </div>
+        <div class="row">
+          <span class="wsicon"></span>
+          <span class="name">fix-parser（chip，待重设计·本分支不做）</span>
+          <span class="ind">
+            <span class="session-count waiting">1</span>
+            <span class="session-count running">2</span>
+            <span class="session-count unread">3</span>
+            <span class="session-count failed">1</span>
+          </span>
+        </div>
+      </div>
+      <div class="tabbar">
+        <div class="tab"><span class="status-dot session-unread"></span>未读会话</div>
+        <div class="tab active"><span class="status-dot session-running"></span>当前（运行中）</div>
+        <div class="tab"><span class="status-dot session-idle"></span>空闲</div>
+      </div>
+    </div>
+
+    <!-- LIGHT -->
+    <div class="panel light">
+      <h2>Light</h2>
+      <div class="col">
+        <div class="row hov">
+          <span class="avatar">OB</span>
+          <span class="name">openbuilder-desktop</span>
+          <span class="ind">
+            <span class="status-dot session-unread"></span>
+            <span class="status-dot session-running"></span>
+            <span class="status-dot session-idle"></span>
+          </span>
+        </div>
+        <div class="row ws">
+          <span class="wsicon"></span>
+          <span class="name">feature-auth</span>
+          <span class="ind">
+            <span class="status-dot session-waiting"></span>
+            <span class="status-dot session-failed"></span>
+            <span class="status-dot session-unread"></span>
+          </span>
+        </div>
+        <div class="row">
+          <span class="wsicon"></span>
+          <span class="name">fix-parser（chip，待重设计·本分支不做）</span>
+          <span class="ind">
+            <span class="session-count waiting">1</span>
+            <span class="session-count running">2</span>
+            <span class="session-count unread">3</span>
+            <span class="session-count failed">1</span>
+          </span>
+        </div>
+      </div>
+      <div class="tabbar">
+        <div class="tab"><span class="status-dot session-unread"></span>未读会话</div>
+        <div class="tab active"><span class="status-dot session-running"></span>当前（运行中）</div>
+        <div class="tab"><span class="status-dot session-idle"></span>空闲</div>
+      </div>
+    </div>
+  </div>
+
+  <p class="note" style="margin-top:22px">色板（圆点色块示暗色档；每行文字列出暗 / 亮两值）：</p>
+  <div class="legend">
+    <div class="lg"><span class="sw" style="background:var(--status-unread)"></span>未读（新·蓝）<span class="hex">#58a6ff / #0969da</span></div>
+    <div class="lg"><span class="sw" style="background:var(--status-running)"></span>运行中（绿·呼吸）<span class="hex">#1dae4e / #15803d</span></div>
+    <div class="lg"><span class="sw" style="background:var(--status-waiting)"></span>待输入（琥珀）<span class="hex">#fbbf24 / #b8860b</span></div>
+    <div class="lg"><span class="sw" style="background:var(--status-error)"></span>失败/重试（红）<span class="hex">#e5484d / #b91c1c</span></div>
+    <div class="lg"><span class="sw" style="background:var(--status-pending);opacity:.55"></span>空闲（灰 0.55）<span class="hex">#8b949e / #6e7781</span></div>
+  </div>
+</body>
+</html>
