@@ -10,6 +10,24 @@
  */
 import type { Session } from "./api-types"
 
+/**
+ * 单调时间合并（design-unread-marker §4.1 合并纪律）：`idle` / `viewed` 取 max
+ * （本地 vs 权威）。两者在 server 侧本就只前进（`time_idle` 有 +1 严格前进守卫、
+ * `time_viewed` 是 max 水位）；客户端额外取 max 是为防**在途快照 / 补拉回退
+ * 乐观置位**——一个在 POST /view（或终态补拉）之前发出、之后落地的快照会带回
+ * 旧 viewed/idle，整对象覆盖会把它打回未读、闪一下。
+ */
+export function mergeMonotoneSessionTime(
+  prev: Session["time"],
+  next: Session["time"],
+): Session["time"] {
+  let idle = next.idle
+  if (prev.idle !== undefined && (idle === undefined || prev.idle > idle)) idle = prev.idle
+  let viewed = next.viewed
+  if (prev.viewed !== undefined && (viewed === undefined || prev.viewed > viewed)) viewed = prev.viewed
+  return { ...next, idle, viewed }
+}
+
 export function mergeSessionsSnapshot(
   local: Map<string, Session>,
   directory: string,
@@ -19,7 +37,9 @@ export function mergeSessionsSnapshot(
   const snapIds = new Set<string>()
   for (const s of snapshot) {
     snapIds.add(s.id)
-    next.set(s.id, s)
+    const prev = next.get(s.id)
+    // 已存在会话：整对象取快照权威值，但 idle/viewed 走单调 max（防在途回退）
+    next.set(s.id, prev ? { ...s, time: mergeMonotoneSessionTime(prev.time, s.time) } : s)
   }
   // 窗口区间删除（仅本 directory）：本地同目录会话 updated 落在快照 (min, max)
   // 开区间且不在快照 id 集 → 已删除；<2 条无开区间，保守保留（catch 兜底的空

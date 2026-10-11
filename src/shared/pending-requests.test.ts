@@ -187,6 +187,17 @@ describe("sessionDotState", () => {
     expect(sessionDotState(0, "idle", true)).toBe("failed")
     expect(sessionDotState(0, "retry", true)).toBe("error")
   })
+
+  it("未读（design-unread-marker）：idle + 未读 → unread；优先级低于 waiting/failed", () => {
+    expect(sessionDotState(0, "idle", false, true)).toBe("unread")
+    expect(sessionDotState(0, "idle", false, false)).toBe("idle")
+    // 待输入 > 未读；报错终局 > 未读
+    expect(sessionDotState(1, "idle", false, true)).toBe("waiting")
+    expect(sessionDotState(0, "idle", true, true)).toBe("failed")
+    // busy/retry 期间未读参数无效（进行中状态优先）
+    expect(sessionDotState(0, "busy", false, true)).toBe("running")
+    expect(sessionDotState(0, "retry", false, true)).toBe("error")
+  })
 })
 
 describe("mergePendingSnapshot", () => {

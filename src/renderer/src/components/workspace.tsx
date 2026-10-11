@@ -114,7 +114,9 @@ function tabDotClass(tab: TabEntity, store: StoreLike): string | null {
         ? "session-waiting"
         : dot === "failed"
           ? "session-failed"
-          : "session-idle"
+          : dot === "unread"
+            ? "session-unread"
+            : "session-idle"
 }
 
 export function Workspace() {

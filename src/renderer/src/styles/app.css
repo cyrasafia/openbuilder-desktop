@@ -2806,11 +2806,18 @@
   --session-dot-color: var(--status-pending);
 }
 
+/* 未读（design-unread-marker §5.3）：蓝静态满不透明（区别于 running 的绿呼吸光晕）——
+   会话产出未验收。同 12px 盒几何 */
+.status-dot.session-unread {
+  --session-dot-color: var(--status-unread);
+}
+
 .status-dot.session-running,
 .status-dot.session-error,
 .status-dot.session-waiting,
 .status-dot.session-failed,
-.status-dot.session-idle {
+.status-dot.session-idle,
+.status-dot.session-unread {
   position: relative;
   width: 12px;
   height: 12px;
@@ -2836,7 +2843,8 @@
 .status-dot.session-error::after,
 .status-dot.session-waiting::after,
 .status-dot.session-failed::after,
-.status-dot.session-idle::after {
+.status-dot.session-idle::after,
+.status-dot.session-unread::after {
   content: "";
   position: absolute;
   left: 50%;

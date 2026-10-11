@@ -91,6 +91,8 @@ workspace kind 三种：`local_checkout` / `worktree` / `directory`（裸目录�
 
 agent/终端跑完后标"已完成待查看"（attentionReason: finished），聚焦清除，工作区状态是所有 attention 的卷积汇总。实现依赖 daemon 作为 seen 比特的所有者——任一端已读，全体一致。通知路由与正确性分离（presence 不作为消息闸门）是这套模型里最干净的部分。
 
+> **2026-10-11 版本范围注记**：本节结论基于 **v1 契约**（快照 2026-09-25，v2 迁移尚未开始；v1 面确无未读水位，`viewed`/`/view` 均不存在）。**v2 契约起** server 已新增 `Session.Info.time.viewed` 未读水位与 `POST /api/session/{id}/view`（配套 `session.viewed` 事件、`time.idle` 水位）——"daemon 作为 seen 比特所有者"的模型在 v2 已具备，"结构性不可迁移"这条前提**不再成立**。若重启未读议题须按 v2 重评，见 [design-unread-marker.md](../design/v2/design-unread-marker.md)。
+
 ### 2.7 差异：自动化与编排周边
 
 - **语音**（dictation + voice mode）：本地优先 STT/TTS（ONNX：Parakeet/Kokoro），语音模式复用已配置 agent；项目起点即此功能。
@@ -113,7 +115,7 @@ agent/终端跑完后标"已完成待查看"（attentionReason: finished），�
 | 1 | 多 provider 并行混排（§2.2） | ✗ | 评测视角冒充生产力视角：同时用多个 Agent 不是成熟工作流的常见形态，选型是低频决策（选定一个、用到底）；混排把"同时管理 N 种异构 agent"的复杂度摊给所有用户。openbuilder 的对应规划是服务器隔离 + 互斥激活（一次一个 server、一个 server 一种 agent），选择发生在"换"的时刻 |
 | 2 | Workspace 同目录共用（§2.3） | ✗ | 牺牲安全度换自由性：agent 是无人值守的写手，同目录并行写几乎总是事故。openbuilder"一个 Agent 一个 worktree 独立工作"，把正确做法做成最容易的做法。可借半条：目录级事实按目录键控、workspace 级状态按 workspace 键控的纪律 |
 | 3 | 图形化 Git 写操作套件（§2.4） | ✗ | 双重否决：GUI Git 是成熟软件做得非常好的功能域（用户有肌肉记忆与工具链，需要时丝滑迁移外部软件）；git 写操作属"编辑"不属"观察"，违背"主要做浏览"的取向。限定：diff/PR 的查看不在此否决射程内 |
-| 4 | 未读/注意力标记（§2.6） | ✗ | 结构性不可迁移：依赖 daemon 作为 seen 比特所有者；openbuilder 直连 server 无未读水位，客户端各自记已读必然多端不一致。若未来做托盘角标，可循"每设备各自已读"定义（纯本地派生） |
+| 4 | 未读/注意力标记（§2.6） | ✗ | 结构性不可迁移：依赖 daemon 作为 seen 比特所有者；openbuilder 直连 server 无未读水位，客户端各自记已读必然多端不一致。若未来做托盘角标，可循"每设备各自已读"定义（纯本地派生）。（**v1 口径**：v2 起 server 已有 `time.viewed` 水位与 `view` 端点，此否决前提失效，2026-10-11 注——见 §2.6 版本范围注记） |
 | 5 | 文件 Tab preview 替换（§2.5） | ✗ | 工作流权重判断（非原则问题）：多开收益更高——验收需"消息 ↔ 产出物"对照、回切丢阅读进度打断读的连续性，比防 Tab Flood 更高频。Tab Flood 若成真痛点，答案是改进关闭快捷性而非替换语义 |
 | 6 | 语音输入（§2.7） | ✗ | 输入法的职责，且现有输入法已做得很好（手机系统输入法语音键、桌面 fcitx5）；自建 STT/TTS 是"成熟软件做得好的不做"的教科书案例 |
 | 7 | Cron 调度（§2.7） | ✗ | openbuilder 定位是瘦客户端，cron 要求它成为 service（常驻、守时、离线要跑）——客户端关了就停，形态错配；真需求的正确形态是 server 侧能力或外部 cron + REST |

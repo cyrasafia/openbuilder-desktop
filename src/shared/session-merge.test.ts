@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { mergeSessionsSnapshot } from "./session-merge"
+import { mergeMonotoneSessionTime, mergeSessionsSnapshot } from "./session-merge"
 import type { Session } from "./api-types"
 
 const ROOT = "/repo"
@@ -52,5 +52,46 @@ describe("mergeSessionsSnapshot", () => {
     const local = new Map([["a", mk("a", ROOT, 100)]])
     const next = mergeSessionsSnapshot(local, ROOT, [])
     expect(next.has("a")).toBe(true)
+  })
+
+  it("idle/viewed 单调：在途旧快照不回退本地乐观置位（design-unread-marker §4.1）", () => {
+    const localSession: Session = {
+      ...mk("a", ROOT, 2),
+      time: { created: 1, updated: 2, idle: 200, viewed: 200 },
+    }
+    const local = new Map([["a", localSession]])
+    // 快照是 POST /view 之前发出的旧值（viewed 缺省、idle 更旧）
+    const stale: Session = { ...mk("a", ROOT, 2), time: { created: 1, updated: 2, idle: 150 } }
+    const next = mergeSessionsSnapshot(local, ROOT, [stale])
+    expect(next.get("a")?.time.viewed).toBe(200)
+    expect(next.get("a")?.time.idle).toBe(200)
+    // 其余字段仍取快照权威值（title/updated）
+    expect(next.get("a")?.time.updated).toBe(2)
+  })
+})
+
+describe("mergeMonotoneSessionTime", () => {
+  it("prev 更新（乐观置位）不回退", () => {
+    const prev = { created: 1, updated: 1, idle: 200, viewed: 200 }
+    const next = { created: 1, updated: 2, idle: 100, viewed: 100 }
+    expect(mergeMonotoneSessionTime(prev, next)).toEqual({ created: 1, updated: 2, idle: 200, viewed: 200 })
+  })
+
+  it("权威值前进时取 new", () => {
+    const prev = { created: 1, updated: 1, idle: 100, viewed: 100 }
+    const next = { created: 1, updated: 2, idle: 300, viewed: 250 }
+    expect(mergeMonotoneSessionTime(prev, next)).toEqual({ created: 1, updated: 2, idle: 300, viewed: 250 })
+  })
+
+  it("单侧缺省不误造字段", () => {
+    const prev = { created: 1, updated: 1 }
+    const next = { created: 1, updated: 2, idle: 100 }
+    expect(mergeMonotoneSessionTime(prev, next)).toEqual({ created: 1, updated: 2, idle: 100 })
+    // prev 有而 next 无（在途补拉缺字段）→ 保留 prev
+    expect(mergeMonotoneSessionTime({ created: 1, updated: 1, viewed: 9 }, { created: 1, updated: 2 })).toEqual({
+      created: 1,
+      updated: 2,
+      viewed: 9,
+    })
   })
 })

@@ -60,7 +60,7 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 - 三组令牌：
   - `colorScheme` —— dark/light 两套语义色（primary、surface 阶梯、outline 系、inverse 系）
   - `appColors` —— colorScheme 未覆盖的语义扩展色（code/link/codeBackground/border/quoteBar/userBubble 系）
-  - `status` —— 状态四色（completed/running/error/pending），亮暗两套（2026-10-09 修订，原单套沿用暗色值，见使用规范）
+  - `status` —— 状态五色（运行 running / 错误 error / 空闲 pending / 待输入 waiting / **未读 unread**），亮暗两套（2026-10-09 修订单套→两套；2026-10-11 增未读，见使用规范）
 - colorScheme/appColors 取值逐值沿用 openbuilder v2（`status` 亮色档为桌面端自定，见使用规范），定义收敛到 `tokens.css` 单文件
 - 实现载体：`:root[data-theme=…]` 两套 CSS 自定义属性（移动端为 Flutter `ColorScheme.fromSeed()` + `ThemeExtension`）；跟随系统（`prefers-color-scheme`）+ 手动切换
 - 深色为默认主题（开发者工具惯例，且主力环境 GNOME 多为深色）
@@ -77,7 +77,7 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 ### 使用规范
 
 - 优先语义角色，不硬编码 hex：`on-surface` 主文字、`on-surface-variant` 次级、`outline` 再次级、`surfaceContainer*` 容器背景
-- `status` 四色语义固定、不接 colorScheme 角色，但按亮暗主题分两套（2026-10-09 修订，原「不随主题变化」决策废止）：暗色为深底调的亮饱和色，亮色同色相压暗一档——运行绿 `#1dae4e→#15803d`（green-700）、错误红 `#e5484d→#b91c1c`（red-700，实测二改：先取 #cf222e，目检后改——5.7:1 对 4.7:1 且与 green-700 同档配对协调；不再与 `--diff-del-fg` 亮色同值，语境不相邻接受）、空闲灰 `#8b949e→#6e7781`（dark/light fg.subtle 对）、待输入 `#fbbf24→#b8860b`（原已分开；2026-10-09 实测复核保留——真实底 2.87:1 未达非文字 3:1 下限，但移动端压暗值 #8a660b 目检读作土褐、圆点含义识别度差（与曾否决的 #916b0d ΔE≈2.5），「达标对比」与「琥珀识别度」互斥，识别度优先，跨端琥珀分歧记录在案）；参照 openbuilder design-agent-status-indicator 的亮暗分开做法（红绿两值跟进，琥珀不跟进）。原亮色沿用暗色值时绿 2.6:1/灰 2.7:1/红 3.4:1，idle 0.55 弱化点浅底近不可见
+- `status` 五色语义固定、不接 colorScheme 角色，但按亮暗主题分两套（2026-10-09 修订，原「不随主题变化」决策废止）：暗色为深底调的亮饱和色，亮色同色相压暗一档——运行绿 `#1dae4e→#15803d`（green-700）、错误红 `#e5484d→#b91c1c`（red-700，实测二改：先取 #cf222e，目检后改——5.7:1 对 4.7:1 且与 green-700 同档配对协调；不再与 `--diff-del-fg` 亮色同值，语境不相邻接受）、空闲灰 `#8b949e→#6e7781`（dark/light fg.subtle 对）、待输入 `#fbbf24→#b8860b`（原已分开；2026-10-09 实测复核保留——真实底 2.87:1 未达非文字 3:1 下限，但移动端压暗值 #8a660b 目检读作土褐、圆点含义识别度差（与曾否决的 #916b0d ΔE≈2.5），「达标对比」与「琥珀识别度」互斥，识别度优先，跨端琥珀分歧记录在案）、**未读蓝 `#58a6ff→#0969da`（2026-10-11 增，design-unread-marker——新产出未验收；GitHub blue，同 `--syntax-link` 亮暗配对，与其余四色色相均不撞，尤其不与运行绿混淆）**；参照 openbuilder design-agent-status-indicator 的亮暗分开做法（红绿两值跟进，琥珀不跟进）。原亮色沿用暗色值时绿 2.6:1/灰 2.7:1/红 3.4:1，idle 0.55 弱化点浅底近不可见
 - 新增色必须先走令牌；确需扩展时加入 tokens.css 并定义深浅两态
 
 ## 字体
@@ -162,7 +162,7 @@ openbuilder-desktop 与移动端 openbuilder 共享品牌基因（绿色种子�
 | 三栏容器 | 面板分隔线 1px `outlineVariant`；栏标题 `ui-sm` + `onSurfaceVariant` 色（2026-08-29，原 `outline` 与同排 Plus 图标钮明度倒挂） |
 | 标题栏（Linux） | 高 36，`surfaceContainerLow` 底 + 1px `outlineVariant` 下边、标题「OpenBuilder」`ui-sm` 整栏水平居中（2026-08-26，绝对定位铺满 + `pointer-events:none`）；整体拖拽区，右侧控制钮 44×36（lucide 14px `onSurfaceVariant`，hover `surfaceContainerHigh`，关闭钮 hover `error` 底 + `onError` 图标）；仅 Linux frameless 渲染，深/浅主题随 token 切换 |
 | Tab 条 | 高 36；Tab：图标 16 + 标题 `ui-md`，激活态底部 2px `primary` 指示线 + `surfaceContainerLow` 底；流式中 Tab 标题前置 8px running 状态点；溢出两段式（design-tab-overflow，2026-09-22 三修终案）：先等比例挤压（`flex-shrink:1`，min-width 96 兜底）→ 全体到最小宽仍放不下时尾部 Tab 入 overflow 菜单（容量 = (条宽−72)/96 纯公式，激活/拖拽项保位恒可见），「+」（lucide `plus`）/ overflow（lucide `chevrons-right`）常驻钮 `flex-shrink:0` 永不挤出；前两轮滚动方案（可见滚动条占位 8px 挤压 Tab 高度、隐藏滚动条可发现性差）实测推翻，迭代史见 design-tab-memory §11 |
-| 项目/工作区树（左栏） | 项目行自适应高（≥30，常态 ~40）：26px 圆角头像（`icon.override` > `icon.url` 图片（data:/https:，失败回退）> 名称首字母；色 = `icon.color` 命名色 > 名称哈希，与 openbuilder ProjectAvatar 跨端同色，调色板 token `--avatar-*`；色框/淡染底仅字母瓷片有，自定义图片态裸图（2026-08-24，同移动端））+ 右侧两行——名称 `ui-md` 600 + 路径 `ui-xs` `outline`（行内截断，title 全量）；worktree 行 26（16px 线性 worktree 图标（lucide `folder-git-2`）+ `ui-md` 名称 + 分支，名称文本与项目名文本左对齐（2026-08-24，行 padding-left 16 = 项目行 6+26 头像+6 间距 − 22 图标占位））；行三态纯背景色（2026-08-24 修订，弃用原左侧 2px `primary` 竖线）：未选中透明（承左栏 `surfaceContainerLow` 底）、hover `surfaceContainerHigh`、选中 `surfaceContainerHighest` 叠 4% `onSurface` 微加深（浅色主题 high/highest 色差过小，背景是唯一选中信号）——选中底取中性 surface 而非 `primary` 淡染，避免与行内四色指示器（琥珀/绿/灰/红状态点及聚合 chip）争色，深/浅主题均适用；行内操作钮 = 绝对定位带背景 overlay（2026-08-29 修订，`.row-actions`：右缘 4px + 内衬 2px，左起 40px 渐变淡出区由透明渐入行底色 + 实底胶囊，终点色 = 行当前 hover 底色，hover 行时显、默认隐）不占行内流式空间，名称/路径截断只看行宽与其自身的省略，行尾文本被渐隐遮盖；会话状态指示器为行内流式元素（名称/路径行尾，hover 行时隐藏让位 overlay） |
+| 项目/工作区树（左栏） | 项目行自适应高（≥30，常态 ~40）：26px 圆角头像（`icon.override` > `icon.url` 图片（data:/https:，失败回退）> 名称首字母；色 = `icon.color` 命名色 > 名称哈希，与 openbuilder ProjectAvatar 跨端同色，调色板 token `--avatar-*`；色框/淡染底仅字母瓷片有，自定义图片态裸图（2026-08-24，同移动端））+ 右侧两行——名称 `ui-md` 600 + 路径 `ui-xs` `outline`（行内截断，title 全量）；worktree 行 26（16px 线性 worktree 图标（lucide `folder-git-2`）+ `ui-md` 名称 + 分支，名称文本与项目名文本左对齐（2026-08-24，行 padding-left 16 = 项目行 6+26 头像+6 间距 − 22 图标占位））；行三态纯背景色（2026-08-24 修订，弃用原左侧 2px `primary` 竖线）：未选中透明（承左栏 `surfaceContainerLow` 底）、hover `surfaceContainerHigh`、选中 `surfaceContainerHighest` 叠 4% `onSurface` 微加深（浅色主题 high/highest 色差过小，背景是唯一选中信号）——选中底取中性 surface 而非 `primary` 淡染，避免与行内状态指示器（琥珀/绿/灰/红/蓝状态点及聚合 chip）争色，深/浅主题均适用；行内操作钮 = 绝对定位带背景 overlay（2026-08-29 修订，`.row-actions`：右缘 4px + 内衬 2px，左起 40px 渐变淡出区由透明渐入行底色 + 实底胶囊，终点色 = 行当前 hover 底色，hover 行时显、默认隐）不占行内流式空间，名称/路径截断只看行宽与其自身的省略，行尾文本被渐隐遮盖；会话状态指示器为行内流式元素（名称/路径行尾，hover 行时隐藏让位 overlay） |
 | 会话列表 | 行 30；标题 `ui-md` 400，hover `surfaceContainerLow`，激活 `surfaceContainer`；归档区折叠头 `ui-sm` `outline` |
 | 文件树 | 行 26，`ui-md`；目录/文件图标 16 线性；行三态与项目/工作区树同款（共享 `.tree-row`，2026-08-24 起） |
 | 消息流 | assistant：无底色全宽块，`chat-md`；user：`userBubble` 色块 + `rounded.bubble`，内边距 12×16，用户文字 `userText` |
@@ -306,7 +306,7 @@ hover/`:focus-visible` 升 `surface-container-highest`（焦点即 hover）。
 - 不从移动端 DESIGN.md 抄组件规格（48px 触控、AppBar、Material 图标尺寸均不适用）
 - 不在标签/标题用 mono；不在代码块用 sans
 - 不引入 500/700 字重与第四档强调
-- 不硬编码 hex（status 四色与遮罩黑除外）
+- 不硬编码 hex（status 五色与遮罩黑除外）
 - 不用 Unicode 字符/emoji 充当图标；不改 lucide 默认 strokeWidth；图标不脱离所在文字单独配色
 
 ## 与 openbuilder 移动端的异同

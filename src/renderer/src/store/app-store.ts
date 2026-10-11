@@ -15,7 +15,8 @@ import {
 } from "@shared/v2-adapter"
 import { SseSubscriber, type SseStatus, type SseEventMeta } from "@shared/sse-subscriber"
 import { Reconciler } from "@shared/reconciler"
-import { mergeSessionsSnapshot } from "@shared/session-merge"
+import { mergeMonotoneSessionTime, mergeSessionsSnapshot } from "@shared/session-merge"
+import { isSessionUnread } from "@shared/unread"
 import { inferFailedFromMessages, inferIdleFromMessages } from "@shared/session-status"
 import { runLimited } from "@shared/run-limited"
 import {
@@ -453,6 +454,17 @@ export class AppStore {
    * （内容 part 事件）或终态（idle）才解除。内存态，随 sessionStatus 生命周期。
    */
   private retryHold = new Set<string>()
+  /**
+   * 未读 ack 去重与退避（design-unread-marker §4.4）：sessionID → 已为哪个 idle
+   * 水位发过 `POST /view`（in-flight 或已成功，防事件驱动的重复检查重发同一水位）。
+   * `ackTimers` = 失败重试定时器；`ackRetryAttempt` = 退避轮次（基数 250ms、上限 5s）。
+   * 纯内存，teardown / disconnect 清空。
+   */
+  private acknowledged = new Map<string, number>()
+  private ackTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private ackRetryAttempt = new Map<string, number>()
+  /** 终态补拉在途去重（design-unread-marker §4.3）：按 sessionID 合并重复请求 */
+  private unreadRefetchInFlight = new Set<string>()
   // 斜杠命令注册表缓存（全局单份 per-server，目录隔离见 command-cache.ts）
   commandCache: CommandCacheState = initialCommandCache()
 
@@ -664,6 +676,10 @@ export class AppStore {
 
   emit = () => {
     for (const fn of this.listeners) fn()
+    // 未读 ack 单入口（design-unread-marker §4.2）：每次状态通知后检查「当前激活
+    // chat Tab 是否未读」——点开即清、停留即保持（激活 Tab + 未读 ⇒ POST /view）。
+    // 幂等 + 去重（acknowledged）；POST 异步 fire-and-forget，不在 emit 内阻塞。
+    this.maybeAckActiveSession()
   }
 
   // ============ 初始化 ============
@@ -1052,6 +1068,8 @@ export class AppStore {
     // 搜索唤起注册随连接拆除清空（design-find-in-page：组件随后全部卸载自注销，
     // 此处防御 teardown 时序下的陈旧回调引用）
     this.findRequesters.clear()
+    // 未读 ack 内存态与退避定时器随连接拆除清空（design-unread-marker §4.4）
+    this.clearUnreadAckState()
     // 项目选择器随连接拆除复位（overlayCount 已清零，同步标志位防重连后残留：
     // openProjectPicker 的已开短路会吃掉新一次直达）
     this.pickerOpen = false
@@ -1621,20 +1639,22 @@ export class AppStore {
         return true
       }
       case "session.renamed":
-      case "session.metadata.updated":
-      case "session.viewed": {
+      case "session.metadata.updated": {
         // 增量合并到本地（未加载的会话跳过——重连对账兜底）
         const sid = String(ev.properties.sessionID ?? "")
         const local = sid ? this.findSession(sid) : null
         if (!sid || !local) return true
-        let merged = local
-        if (ev.type === "session.renamed") {
-          merged = { ...local, title: String(ev.properties.title ?? local.title ?? "") }
-        } else if (ev.type === "session.metadata.updated") {
-          const meta = ev.properties.metadata as Record<string, unknown> | undefined
-          merged = { ...local, metadata: meta ?? local.metadata }
-        }
-        this.applySessionEvent(merged, directory)
+        const merged =
+          ev.type === "session.renamed"
+            ? { ...local, title: String(ev.properties.title ?? local.title ?? "") }
+            : {
+                ...local,
+                metadata: (ev.properties.metadata as Record<string, unknown> | undefined) ?? local.metadata,
+              }
+        // 目录归一：以本地目录为准（信封 location 与本地不一致时防止被拒——如
+        // session.moved 后信封/本地尚未收敛；无 location 的帧在闸门处已被丢弃，
+        // rename/metadata 不走旁路，只有 session.viewed 上移到了闸门之前）
+        this.applySessionEvent(merged, local.directory)
         return true
       }
       default:
@@ -1716,6 +1736,13 @@ export class AppStore {
         this.setSessionStatus(sid, { type: "busy" }, session.directory)
       } else {
         this.setSessionStatus(sid, { type: "idle" }, session.directory)
+        // 未读终态补拉（design-unread-marker §4.3）：`Execution.*` 不带 idle 时间戳，
+        // 且 `time_idle` 有 +1 严格前进守卫（不可用事件 created 合成）——拉单会话取
+        // 权威 `time.idle`/`viewed`。interrupted+shutdown 不推进 idle，跳过。
+        const shutdown =
+          ev.type === "session.execution.interrupted" &&
+          (ev.properties as { reason?: unknown }).reason === "shutdown"
+        if (!shutdown) void this.refetchSessionMeta(sid)
       }
       // 状态已变须驱动渲染（review 2026-10-01）：早退在尾部 emit 之前——
       // session.status 路径本就无条件 emit（rAF 合帧，重复 emit 成本低）；
@@ -1767,6 +1794,27 @@ export class AppStore {
         // 投影滞后时重取可能带回已删消息（server projector 异步落库）——窗口
         // 开区间删除在下次重取自愈（§4.4 已知竞态，接受瞬时）
         void this.refreshConversationTail(sid)
+      }
+      return
+    }
+    // ---- 未读水位（design-unread-marker §2.4）：旁路模式同 execution/revert——
+    // durable 帧是否带 location 未活体确认；按 sessionID 反查目录，会话须已加载
+    // 且目录已打开（等效闸门），避免信封缺 location 时被判为 "global" 丢弃。
+    if (ev.type === "session.viewed") {
+      const vp = ev.properties as { sessionID?: unknown; idle?: unknown }
+      const sid = String(vp.sessionID ?? "")
+      const local = sid ? this.findSession(sid) : null
+      if (local && typeof vp.idle === "number" && this.isOpenedDirectory(local.directory)) {
+        const merged = {
+          ...local,
+          time: mergeMonotoneSessionTime(local.time, { ...local.time, viewed: vp.idle }),
+        }
+        // 水位已覆盖在途 ack 的 idle 才撤销（他端按更旧水位 ack 时本端在途 POST
+        // 仍需完成；上游对重复/过期 ack 是幂等 no-op，重发也无害——只避免无谓重发）
+        const ackIdle = this.acknowledged.get(sid)
+        if (ackIdle === undefined || vp.idle >= ackIdle) this.clearAck(sid)
+        this.applySessionEvent(merged, local.directory)
+        this.emit()
       }
       return
     }
@@ -4839,7 +4887,130 @@ export class AppStore {
       const msgs = [...(this.messagesBySession.get(sessionID)?.values() ?? [])]
       terminalError = inferFailedFromMessages(msgs.sort(sortMessages).map((m) => m.info))
     }
-    return sessionDotState(this.pendingCountFor(sessionID), status, terminalError)
+    // 未读只对顶层会话判定（design-unread-marker §4.5）：子代理完成由父会话 idle 承载
+    const session = this.findSession(sessionID)
+    const unread = !!session && !session.parentID && isSessionUnread(session)
+    return sessionDotState(this.pendingCountFor(sessionID), status, terminalError, unread)
+  }
+
+  // ============ 未读 ack（design-unread-marker §4.2/§4.4） ============
+
+  /** ack 单入口（emit 尾部调用）：当前激活 chat Tab 未读 ⇒ 标记已读。 */
+  private maybeAckActiveSession() {
+    const key = this.activeTabKey
+    if (!key || !key.startsWith("chat:")) return
+    this.maybeMarkViewed(key.slice(5))
+  }
+
+  /**
+   * 标记已读：仅当「顶层会话 + 未读 + 有权威 idle + 尚未为该 idle 发过 ack」时
+   * POST /view。发请求前记 `acknowledged` 防重复（同 TUI）。
+   */
+  private maybeMarkViewed(sessionID: string) {
+    if (!this.client) return
+    const session = this.findSession(sessionID)
+    if (!session || session.parentID) return
+    if (!isSessionUnread(session)) return
+    const idle = session.time.idle
+    if (idle === undefined) return
+    if (this.acknowledged.get(sessionID) === idle) return
+    if (this.ackTimers.has(sessionID)) return
+    this.acknowledged.set(sessionID, idle)
+    void this.postViewed(sessionID, idle)
+  }
+
+  /** POST /view + 乐观置 viewed；失败删记录并指数退避重试（基数 250ms、上限 5s）。 */
+  private async postViewed(sessionID: string, idle: number) {
+    const client = this.client
+    if (!client) {
+      this.acknowledged.delete(sessionID)
+      return
+    }
+    try {
+      await client.markSessionViewed(sessionID, idle)
+      if (this.client !== client) return
+      // 乐观置位走单调 max（§4.1 合并纪律）：点即时转灰，不等 session.viewed 回环
+      this.applyViewedLocally(sessionID, idle)
+      this.ackRetryAttempt.delete(sessionID)
+      this.emit()
+    } catch {
+      if (this.client !== client) return
+      if (this.acknowledged.get(sessionID) !== idle) return // 已被更新的 ack 取代
+      this.acknowledged.delete(sessionID)
+      const attempt = this.ackRetryAttempt.get(sessionID) ?? 0
+      this.ackRetryAttempt.set(sessionID, attempt + 1)
+      const delay = Math.min(250 * 2 ** attempt, 5000)
+      const timer = setTimeout(() => {
+        this.ackTimers.delete(sessionID)
+        this.maybeMarkViewed(sessionID)
+      }, delay)
+      this.ackTimers.set(sessionID, timer)
+    }
+  }
+
+  /** 本地单调置 viewed（map 内会话）；未加载会话跳过。调用方负责 emit。 */
+  private applyViewedLocally(sessionID: string, idle: number) {
+    const local = this.findSession(sessionID)
+    if (!local) return
+    const map = this.sessionsByProject.get(local.projectID)
+    if (!map) return
+    map.set(sessionID, { ...local, time: mergeMonotoneSessionTime(local.time, { ...local.time, viewed: idle }) })
+    this.sessionRegistryVersion++
+  }
+
+  /** 撤销某会话的 ack 记录与退避定时器（收到 session.viewed）。 */
+  private clearAck(sessionID: string) {
+    this.acknowledged.delete(sessionID)
+    this.ackRetryAttempt.delete(sessionID)
+    const timer = this.ackTimers.get(sessionID)
+    if (timer) {
+      clearTimeout(timer)
+      this.ackTimers.delete(sessionID)
+    }
+  }
+
+  /** teardown / 切 profile：清空未读 ack 内存态与退避定时器。 */
+  private clearUnreadAckState() {
+    for (const timer of this.ackTimers.values()) clearTimeout(timer)
+    this.ackTimers.clear()
+    this.acknowledged.clear()
+    this.ackRetryAttempt.clear()
+    this.unreadRefetchInFlight.clear()
+  }
+
+  /**
+   * 终态补拉（design-unread-marker §4.3）：`GET /api/session/:id` 取权威
+   * `time.idle`/`viewed`，单调 max 落库（防在途快照回退）；失败静默（60s 对账兜底）。
+   * 按 sessionID 在途去重。
+   */
+  private async refetchSessionMeta(sessionID: string) {
+    const client = this.client
+    if (!client || this.unreadRefetchInFlight.has(sessionID)) return
+    this.unreadRefetchInFlight.add(sessionID)
+    try {
+      const info = await client.getSession(sessionID).catch(() => null)
+      if (!info || this.client !== client) return
+      const incoming = toInternalSession(info)
+      const local = this.findSession(sessionID)
+      if (!local) return
+      const map = this.sessionsByProject.get(local.projectID)
+      if (!map) return
+      // 只取权威 idle/viewed（单调 max）——**不整对象覆盖**：终态动不了 title /
+      // metadata / revert / updated，整覆盖会回退本端乐观的归档（metadata.archivedAt）
+      // 或回滚暂存（在途补拉 RTT 内的竞态，review 2026-10-11）。
+      const time = { ...local.time }
+      const idle = incoming.time.idle
+      if (idle !== undefined && (time.idle === undefined || idle > time.idle)) time.idle = idle
+      const viewed = incoming.time.viewed
+      if (viewed !== undefined && (time.viewed === undefined || viewed > time.viewed)) time.viewed = viewed
+      map.set(sessionID, { ...local, time })
+      this.sessionRegistryVersion++
+      this.emit()
+    } catch {
+      // 失败静默（60s 对账兜底）——也兜住 fake client 未实现 getSession 的测试环境
+    } finally {
+      this.unreadRefetchInFlight.delete(sessionID)
+    }
   }
 
   /**

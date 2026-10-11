@@ -44,6 +44,9 @@ export function toInternalSession(s: SessionInfo): Session {
       created: s.time.created,
       updated: s.time.updated,
       archived: s.time.archived,
+      // 未读水位（design-unread-marker §4.1）：idle = run 终态时刻、viewed = 已读水位
+      idle: s.time.idle,
+      viewed: s.time.viewed,
     },
     metadata: s.metadata,
     // 回滚暂存映射（design-sse-event-surface 层 3）：快照整条替换不得抹 staged

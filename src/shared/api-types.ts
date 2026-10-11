@@ -25,6 +25,10 @@ export interface SessionTime {
   created: number
   updated: number
   archived?: number
+  /** 最近一次 run 终态时刻（epoch ms，design-unread-marker §2.1/§2.3） */
+  idle?: number
+  /** 未读水位（epoch ms；unread ⟺ idle 存在且 idle > viewed，§2.1） */
+  viewed?: number
 }
 
 export interface SessionTokens {
