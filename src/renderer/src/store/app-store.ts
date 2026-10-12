@@ -4972,21 +4972,33 @@ export class AppStore {
    * 会话状态点投影（design-agent-status-indicator + design-error-message §3/§3.4 +
    * design-subagent-background D6）：waiting > error（retry 退避）> running > failed > idle。
    * 进行中/重试取**家族聚合**（自身 + 后代子会话）——后台任务运行时父会话点亮；
-   * 终局 failed 仍是本会话末条 assistant 派生（不受家族影响）。
+   * 终局 failed 仍是本会话自身判定（不受家族影响）。
    * waiting 显示时 busy 底层事实保留不覆写。
-   * 终局是纯派生（无缓存/锁存）：idle 且末条消息为非中止错误的 assistant ⇒ failed——
-   * 新 run 天然自愈（user/新 assistant 消息成为新末条），无事件清除路径的一致性风险；
-   * 家族 busy/retry 期间跳过派生（进行中状态优先，也无终局语义）。
+   * 终局是派生（无缓存/锁存）且双源（§3.4b）：消息在场 = 末条消息派生（idle 且
+   * 末条为非中止错误的 assistant ⇒ failed）——新 run 天然自愈（user/新 assistant
+   * 消息成为新末条），无事件清除路径的一致性风险；消息不在场（冷启动/未打开）=
+   * 服务端 outcome=failed（列表快照自带）。家族 busy/retry 期间跳过派生
+   * （进行中状态优先，也无终局语义）。
    */
   dotStateFor(sessionID: string): SessionDotState {
     const status = this.sessionActivity(sessionID)
-    let terminalError = false
-    if (status === "idle") {
-      const msgs = [...(this.messagesBySession.get(sessionID)?.values() ?? [])]
-      terminalError = inferFailedFromMessages(msgs.sort(sortMessages).map((m) => m.info))
-    }
     // 未读只对顶层会话判定（design-unread-marker §4.5）：子代理完成由父会话 idle 承载
     const session = this.findSession(sessionID)
+    let terminalError = false
+    if (status === "idle") {
+      const conv = this.messagesBySession.get(sessionID)
+      if (conv) {
+        // 消息在场：末条消息派生优先（本端亲历事实比元数据快照新——重跑成功后
+        // 陈旧 outcome 不得误红；中止排除、新 run 自愈等 §3.4 语义全部保留）
+        const msgs = [...conv.values()]
+        terminalError = inferFailedFromMessages(msgs.sort(sortMessages).map((m) => m.info))
+      } else {
+        // 消息不在场（冷启动/未打开会话）：信服务端持久化的上次 run 终局（§3.4b，
+        // 对齐 openbuilder design-session-error-status 2026-10-11 修订——列表
+        // 自带，零额外请求）；interrupted = 用户主动中止，不计 failed
+        terminalError = session?.outcome === "failed"
+      }
+    }
     const unread = !!session && !session.parentID && isSessionUnread(session)
     return sessionDotState(this.pendingCountFor(sessionID), status, terminalError, unread)
   }

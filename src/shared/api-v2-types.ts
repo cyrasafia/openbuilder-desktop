@@ -76,7 +76,7 @@ export interface ModelRef {
 }
 
 /**
- * v2 Session.Info 列表最小面（M1；M2/M4 按需补 cost/tokens/outcome/model 等）。
+ * v2 Session.Info 列表最小面（M1；M2/M4 按需补 cost/tokens/model 等）。
  * time.archived 在 wire 上**可读**（v1 数据迁移/import 透传），但 v2 无 REST 写入
  * 路径——归档写走 D1 私约 metadata.archivedAt，识别读两者（见 plan-v2-protocol M2）。
  */
@@ -91,6 +91,13 @@ export interface SessionInfo {
   location: LocationRef
   subpath?: string
   metadata?: Record<string, unknown>
+  /**
+   * 服务端持久化的「上次 run 终局」（openapi enum 三值；未跑过缺省，宽松容 null）。
+   * 冷启动 failed 红点恢复源（design-error-message §3.4b）——服务端先落库再发
+   * execution.failed 事件（openbuilder 活体 +39ms/+48ms 两次实证），SSE 写入的
+   * 终局在快照对账时恒有本字段佐证
+   */
+  outcome?: "succeeded" | "failed" | "interrupted" | null
   /** 回滚暂存态（wire Session.Info.revert，spec 证实；design-sse-event-surface 层 3） */
   revert?: V2SessionRevert
 }

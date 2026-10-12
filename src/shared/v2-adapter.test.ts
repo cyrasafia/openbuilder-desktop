@@ -141,6 +141,17 @@ describe("toInternalSession revert 映射", () => {
       toInternalSession({ ...base, revert: undefined } as Parameters<typeof toInternalSession>[0]).revert,
     ).toBeUndefined()
   })
+
+  // §3.4b：outcome 透传（null 归一 undefined——内部 Session 无 null 形态）
+  it("outcome 透传；null/缺省归一 undefined", () => {
+    expect(
+      toInternalSession({ ...base, outcome: "failed" } as Parameters<typeof toInternalSession>[0]).outcome,
+    ).toBe("failed")
+    expect(toInternalSession({ ...base } as Parameters<typeof toInternalSession>[0]).outcome).toBeUndefined()
+    expect(
+      toInternalSession({ ...base, outcome: null } as Parameters<typeof toInternalSession>[0]).outcome,
+    ).toBeUndefined()
+  })
 })
 
 describe("inboxItemToUserMessage（design-inbox-admission §3.2，准入即物化）", () => {
