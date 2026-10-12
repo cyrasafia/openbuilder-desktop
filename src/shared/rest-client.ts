@@ -327,6 +327,25 @@ export class RestClient {
   }
 
   /**
+   * DELETE /api/debug/location?location[directory]=：evict 单个 warm location
+   * （ref-pseudo-project-cleanup §3.4 燃料 6——server 每 5 分钟刷新 warm location，
+   * 已删目录的刷新会兜底 upsert 伪项目行；唯一断法 = evict 或 server 重启）。
+   * pin 的 openapi_v2.json **含**该端点（debug 组：GET `debug.location.list` /
+   * DELETE `debug.location.evict`，deepObject query，204/400/401）——原「未文档化」
+   * 为误判（2026-10-12 订正）；debug 面语义稳定性弱于业务组，server 升级随 pin
+   * 核对。唯一调用点 = removeWorkspace 删除成功后 best-effort（失败 warn 留痕，
+   * 不阻塞删除）。requestRef 取参兜底是 `process.cwd()`——裸调会 evict server
+   * cwd 的 location，故 directory 必填（签名层面杜绝裸调）。204 无返回体。
+   */
+  async evictLocation(directory: string): Promise<void> {
+    const q = new URLSearchParams()
+    q.set("location[directory]", directory)
+    await this.fetchResponse(`/api/debug/location?${q.toString()}`, {
+      method: "DELETE",
+    })
+  }
+
+  /**
    * GET /api/vcs/status（deepObject query，location 组专用风格——同
    * resolveLocation；URLSearchParams 编码括号，活体两种形式均可）：未提交
    * 变更文件清单。响应裸 `{location, data}`（无 envelope，2.0.18 活体核对

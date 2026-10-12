@@ -3424,6 +3424,19 @@ export class AppStore {
       // forceRequired 错误分支——其判别被中文 git locale 击穿（活体 2026-10-12），
       // 400 分支在这类环境永不触发
       await client.deleteWorktree(project.id, directory, { force: true })
+      // warm location evict（design-worktree-sync §3.4，2026-10-12）：server 内存
+      // 保留已打开目录的 location（idleTimeToLive=∞），每 5 分钟刷新重解析——目录
+      // 已删即兜底 upsert 伪项目行（燃料 6），删行/归档会话/断客户端都断不了。
+      // DELETE 成功后顺手 evict 从源头断再生；删除失败路径不调（location 保留是
+      // 正确行为）。best-effort（同 mountWorktreeBranch 降级风格：warn 留痕不
+      // 阻塞——端点被升级移除/改名时不静默失效）；会话已在上方级联删（D2），
+      // evict 不打断活会话
+      try {
+        await client.evictLocation(directory)
+      } catch (e) {
+        // 伪行仍可 SQL/server 重启处置（ref §5.2），删除流程照常
+        console.warn(`[worktree] location evict 失败（伪项目行可能再生）: ${directory}`, e)
+      }
       // worktree 库存是 v2 权威源：DELETE 移除库存行，重拉库存即从左栏消失
       // （refreshWorkspacesForProject 内含 projects + 库存定向刷新）
       await this.refreshWorkspacesForProject(project)

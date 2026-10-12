@@ -1,6 +1,6 @@
 # design-worktree-sync.md — 他端创建/删除 worktree 的同步
 
-> 日期：2026-08-28；2026-09-29 修订（§0 数据源切换）
+> 日期：2026-08-28；2026-09-29 修订（§0 数据源切换）；2026-10-12 增补（§3.4 删除后 location evict）
 > 状态：已实现，待评审
 
 ## 0. v2 GA 数据源修订（2026-09-29，取代 §2/§3 的 sandboxes 假设）
@@ -116,9 +116,36 @@ async syncWorktrees(): Promise<void> {
 | 定时 | 60s `setInterval` → `syncWorktrees()` | 外部变更兜底（refresh 发现 + 死行清理） |
 | SSE 重连 | `onReconnected` → `syncWorktrees()` | 补偿断连窗口丢的 `worktree.updated` |
 | SSE 事件 | `worktree.updated` → `syncWorktrees()` | 他端 create/remove 实时（v2 GA 起删除也有事件） |
-| 本端操作 | `createWorkspace`/`removeWorkspace` → `refreshWorkspacesForProject`（定向 list） | server 状态已随 mutation 更新，无需 refresh |
+| 本端操作 | `createWorkspace`/`removeWorkspace` → `refreshWorkspacesForProject`（定向 list）；`removeWorkspace` 删除成功后另做 location evict（§3.4） | server 状态已随 mutation 更新，无需 refresh |
 
 **连接拆除**：`teardownConnection` 清空 `worktreeDirs`（重连重载）并停定时器。
+
+### 3.4 删除后 location evict（2026-10-12 增补，原 todo-worktree-delete-location-evict 落地）
+
+**问题（ref-pseudo-project-cleanup §3.4，燃料 6）**：客户端打开过的目录在 server 留
+warm location（`location-services.ts` `idleTimeToLive: Duration.infinity`——LayerMap
+层永不闲置淘汰）；server 每 5 分钟周期刷新 warm location 的 provider/model，刷新
+重新解析目录——目录已删 → `Worktree.DirectoryUnavailableError` → 兜底 upsert
+**伪项目行**（upsert-only 无回收）。warm location 不随目录消失：删行、归档会话、
+断客户端都断不了再生，唯 server 重启或 evict。`POST /api/location/reload` 不适用
+（invalidate 全部后**立即重建**，重建会再解析死目录）。
+
+**设计**：`removeWorkspace` 在 `DELETE /api/worktree` **成功后**顺手 evict 该目录
+location。删除失败路径不 evict——worktree 未删，location 保留是正确行为。
+
+| 项 | 决策 |
+|---|---|
+| 端点 | `DELETE /api/debug/location?location[directory]=<绝对路径>`，**204** 无返回体。pin 的 openapi_v2.json **含**该端点（debug 组：GET `debug.location.list` / DELETE `debug.location.evict`，deepObject query，204/400/401）——原 todo 与 ref-pseudo-project-cleanup §3.4 判「未文档化」是误查（2026-10-12 订正）；debug 面语义稳定性弱于业务组，**server 升级随 pin 核对** |
+| 封装 | 单点 rest-client `evictLocation(directory)`，不散落调用；directory 必填——requestRef 取参兜底是 `process.cwd()`，裸调会 evict server cwd 的 location，签名层面杜绝 |
+| 失败 | best-effort（同 `mountWorktreeBranch` 降级风格：**warn 留痕**不阻塞删除）——端点被升级移除/改名时不静默失效（伪行再生恰是本设计要消灭的故障模式，无声回归与之相悖）；伪行仍可 SQL/server 重启处置（ref §5.2） |
+| 顺序安全 | 该目录会话已在删除前级联删（D2 语义），evict 不打断活会话；invalidate 语义 = detach 路由、borrowers 保留旧图到边界，无新增风险 |
+| 上游 | 治本在上游（location 发现失败不应 upsert project 行 + 补回收，ref §8 待办 issue）；本端 evict 是止血。dev HEAD 已把 idleTimeToLive 改回 `"60 minutes"`（#34119）但未进 v2.0.x 发行线，且内部刷新是否重置 idle 计时未活体复核 |
+
+活体契约核对（2026-10-12，本机 15120 = 2.0.26——端点 2.0.18 pin → 2.0.26 存续）：
+`GET /api/debug/location` 返回**裸数组** `[{directory}]`（盘点用，本端暂不消费）；
+DELETE 带 deepObject query → 204，warm 集合即时移除该目录（GET 复核为证）。注意
+DELETE 对**非 warm 目录同样返回 204**（幂等空 evict）——204 不是「确有 evict」的
+确认信号，本设计不消费返回值，与此语义一致。
 
 ## 4. 边界与防御
 
@@ -139,14 +166,14 @@ async syncWorktrees(): Promise<void> {
 | 文件 | 改动 |
 |------|------|
 | `src/shared/api-v2-types.ts` | `WorktreeDirectory` wire 类型 |
-| `src/shared/rest-client.ts` | `createWorktree` 裸响应修正；新增 `listWorktrees`/`refreshWorktrees` |
-| `src/renderer/src/store/app-store.ts` | `worktreeDirs` 状态 + `loadWorktreeInventory`/`mergeWorktreeDirsIntoProjects`；`workspacesOfProject` 库存优先；`syncWorktrees` refresh+list+diff；`refreshAllOpenedProjects` 库存先行；`unloadWorktreeDirectory` sandboxes 剥离；teardown 清理 |
+| `src/shared/rest-client.ts` | `createWorktree` 裸响应修正；新增 `listWorktrees`/`refreshWorktrees`/`evictLocation`（§3.4） |
+| `src/renderer/src/store/app-store.ts` | `worktreeDirs` 状态 + `loadWorktreeInventory`/`mergeWorktreeDirsIntoProjects`；`workspacesOfProject` 库存优先；`syncWorktrees` refresh+list+diff；`refreshAllOpenedProjects` 库存先行；`unloadWorktreeDirectory` sandboxes 剥离；`removeWorkspace` 删除成功后 evict location（§3.4）；teardown 清理 |
 | `src/shared/sse-subscriber.ts` | （不变；meta.project 透传沿用） |
 
 ## 6. 测试
 
-- `rest-client.test.ts`：listWorktrees 裸数组/query、createWorktree 裸响应/name 透传、refreshWorktrees payload/204——3 用例
-- `app-store.test.ts`：库存为准渲染（幽灵不渲染/新建可见/union）、createWorkspace 裸响应+切换、他端删除库存 diff 卸载、removeWorkspace 库存刷新——4 用例；既有 worktree 用例（fake 缺省无库存端点 = 旧 server 回退路径）全数保留
+- `rest-client.test.ts`：listWorktrees 裸数组/query、createWorktree 裸响应/name 透传、refreshWorktrees payload/204、evictLocation DELETE deepObject query/204（§3.4）——4 用例
+- `app-store.test.ts`：库存为准渲染（幽灵不渲染/新建可见/union）、createWorkspace 裸响应+切换、他端删除库存 diff 卸载、removeWorkspace 库存刷新——4 用例；removeWorkspace location evict（删除成功必调/失败不调/evict 失败不阻塞删除）——3 用例（§3.4）；既有 worktree 用例（fake 缺省无库存端点 = 旧 server 回退路径）全数保留
 
 ## 7. 不做的事
 
@@ -155,3 +182,8 @@ async syncWorktrees(): Promise<void> {
 - **不清理 server 侧冻结 sandboxes 列**：无写 API（PATCH /api/project 不含该字段）；
   客户端渲染已免疫，server 侧残留无消费者（官方 app 同样无视）。
 - **不渲染无 strategy 的 checkout 根**：库存含主 checkout 行（项目 canonical），渲染层排除（与旧 sandboxes 语义对齐）。
+- **不做对账批量 evict 兜底**（原 todo 可选项——`GET /api/debug/location` 盘点死目录
+  逐个清）：本端删除路径已覆盖（§3.4）；他端删除的漏口由执行删除的一方负责
+  （openbuilder 同构对齐中），外部 `rm -rf` 场景的 warm location 靠 server 重启/
+  上游 idleTimeToLive 收敛——「死目录判定」客户端无权威源（磁盘存在性不可判），
+  误 evict 活目录（他端在用）代价不对称，需要时再增。

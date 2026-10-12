@@ -104,6 +104,9 @@ creates a branch」。无关联 issue（N/A），提交保留/数据安全零讨
 3. slug 守卫同 §2.2（不匹配 = 外部 worktree，跳过整段）
 4. 用户在 worktree 内自切的其他分支不碰（只认 `opencode/<name>` 归属）
 
+同一「DELETE 成功后」窗口另有 location evict 增补（断 server warm location 周期
+刷新再生的伪项目行，与分支管理正交）——见 design-worktree-sync §3.4。
+
 ### 2.4 失败降级与边界
 
 | 场景 | 行为 |

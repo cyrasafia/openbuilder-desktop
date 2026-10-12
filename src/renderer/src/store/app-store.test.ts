@@ -155,6 +155,8 @@ beforeEach(() => {
     }),
     markSessionViewed: async () => {},
     deleteWorktree: async () => {},
+    // location evict（design-worktree-sync §3.4）：默认成功，用例按需覆盖/侦听
+    evictLocation: async () => {},
     // 删除预检（design-keyboard-shortcuts §4.1）：默认干净，用例按需覆盖
     vcsStatus: async () => [],
     // M4a 消息域：typed union 已在真 client 收敛，fake 直接产内部形状
@@ -884,6 +886,55 @@ describe("worktree 库存（v2 权威源，2026-09-29：sandboxes 冻结）", ()
     await store.syncWorktrees()
     expect(store.workspacesOfProject("proj1").some((w) => w.directory === WT1)).toBe(true)
     wtOnly.delete(WT1)
+    const res = await store.removeWorkspace(WT1)
+    expect(res.ok).toBe(true)
+    expect(store.workspacesOfProject("proj1").some((w) => w.directory === WT1)).toBe(false)
+  })
+
+  it("removeWorkspace location evict（design-worktree-sync §3.4）：DELETE 成功后必调 evictLocation（目录参数）", async () => {
+    snapshots.set(ROOT, [])
+    snapshots.set(WT2, [])
+    const evicted: string[] = []
+    const cv2 = fakeClient()
+    cv2.deleteWorktree = async () => {}
+    cv2.listWorktrees = async () => [{ directory: ROOT }, { directory: WT2, strategy: "git" }]
+    cv2.evictLocation = async (dir: string) => {
+      evicted.push(dir)
+    }
+    projectList = [{ ...project(), sandboxes: [WT1, WT2] }]
+    await store.syncWorktrees()
+    const res = await store.removeWorkspace(WT1)
+    expect(res.ok).toBe(true)
+    // 断燃料 6：warm location 被逐出，server 5 分钟刷新不再重解析死目录
+    expect(evicted).toEqual([WT1])
+  })
+
+  it("removeWorkspace 删除失败不 evict：location 保留是正确行为（worktree 未删）", async () => {
+    const evicted: string[] = []
+    const cv2 = fakeClient()
+    cv2.deleteWorktree = async () => {
+      throw new Error("git worktree remove failed")
+    }
+    cv2.evictLocation = async (dir: string) => {
+      evicted.push(dir)
+    }
+    const res = await store.removeWorkspace(WT1)
+    expect(res.ok).toBe(false)
+    expect(evicted).toEqual([])
+  })
+
+  it("removeWorkspace evict 失败不阻塞删除：端点被升级移除/网络失败（best-effort 降级兼容）", async () => {
+    snapshots.set(ROOT, [])
+    snapshots.set(WT2, [])
+    const cv2 = fakeClient()
+    cv2.deleteWorktree = async () => {}
+    cv2.listWorktrees = async () => [{ directory: ROOT }, { directory: WT2, strategy: "git" }]
+    // server 升级移除/改名 /api/debug/location → 404/405；网络失败同路径
+    cv2.evictLocation = async () => {
+      throw new Error("debug endpoint gone")
+    }
+    projectList = [{ ...project(), sandboxes: [WT1, WT2] }]
+    await store.syncWorktrees()
     const res = await store.removeWorkspace(WT1)
     expect(res.ok).toBe(true)
     expect(store.workspacesOfProject("proj1").some((w) => w.directory === WT1)).toBe(false)
