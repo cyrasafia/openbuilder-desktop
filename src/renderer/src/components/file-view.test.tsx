@@ -14,6 +14,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import {
   clampImageScale,
   FileView,
+  formatBytes,
   IMAGE_MAX_SCALE,
   IMAGE_MIN_SCALE,
   normalizeWheelDeltaY,
@@ -128,10 +129,18 @@ function buildStoreStub() {
   }
 }
 
-/** 测试内动态替换的内容表（vi.mock 提升导致闭包需经变量间接） */
+/** 测试内动态替换的内容表（vi.mock 提升导致闭包需经变量间接）；
+ * loading/progress = 在途条目（design-file-load-streaming） */
 let fileContentsStub: Map<
   string,
-  { content: string; binary?: boolean; mimeType?: string; error?: string }
+  {
+    content: string
+    binary?: boolean
+    mimeType?: string
+    error?: string
+    loading?: boolean
+    progress?: { received: number; total?: number }
+  }
 >
 /** findRequester 注册表桩（design-find-in-page：FileView 经 useFindRequester 注册） */
 let findRequestersStub = new Map<string, () => void>()
@@ -250,6 +259,74 @@ describe("FileView markdown 预览", () => {
     fileContentsStub.set("/repo/BIG.MD", { content: "# B" })
     render(<FileView absolutePath="/repo/BIG.MD" />)
     expect((await screen.findAllByText("B")).some((el) => el.tagName === "H1")).toBe(true)
+  })
+
+  // 加载在途条目（design-file-load-streaming，2026-10-12）：content 空的
+  // {loading} 条目必须先于图片/PDF/文本分支判定——进度条呈现，不误触任何内容分支
+  it("loading 条目 + 进度：进度条与字节数呈现，不进图片/文本分支；无 total 只报已收字节", async () => {
+    fileContentsStub.set("/repo/big.png", {
+      content: "",
+      loading: true,
+      progress: { received: 2048, total: 4096 },
+    })
+    const { unmount } = render(<FileView absolutePath="/repo/big.png" />)
+    expect(screen.getByText("加载中…")).toBeTruthy()
+    expect(screen.getByText("2.0 KiB / 4.0 KiB")).toBeTruthy()
+    const bar = document.querySelector(".file-progress") as HTMLElement
+    expect(bar).not.toBeNull()
+    expect((bar.firstElementChild as HTMLElement).style.width).toBe("50%")
+    expect(document.querySelector("img")).toBeNull()
+    expect(document.querySelector(".cm-content")).toBeNull()
+    expect(document.querySelector(".file-binary")).toBeNull()
+    unmount()
+
+    // 无 total（chunked 响应无 Content-Length）：只报已收字节、不出进度条
+    fileContentsStub.set("/repo/big2.png", {
+      content: "",
+      loading: true,
+      progress: { received: 512 },
+    })
+    render(<FileView absolutePath="/repo/big2.png" />)
+    expect(screen.getByText("512 B")).toBeTruthy()
+    expect(document.querySelector(".file-progress")).toBeNull()
+  })
+
+  // review 2026-10-12 #1：重拉在途（loading + 旧渲染态）必须静默呈现旧内容——
+  // 加载占位仅「无可用渲染态」（首开）介入，内容容器不卸载（滚动/锚定不闪断）
+  it("重拉在途静默：loading + 旧 content 走内容分支，不出加载占位", async () => {
+    fileContentsStub.set("/repo/README.md", { content: "# 标题", loading: true })
+    render(<FileView absolutePath="/repo/README.md" />)
+    expect((await screen.findAllByText("标题")).some((el) => el.tagName === "H1")).toBe(true)
+    expect(screen.queryByText("加载中…")).toBeNull()
+  })
+
+  it("重拉在途静默：loading + binary 条目保持占位/PDF 宿主，不闪加载态", async () => {
+    // 非图片二进制：占位持续（binary 即可用渲染态，content 恒空）
+    fileContentsStub.set("/repo/blob.bin", { content: "", binary: true, loading: true })
+    const { unmount } = render(<FileView absolutePath="/repo/blob.bin" />)
+    expect(document.querySelector(".file-binary")).not.toBeNull()
+    expect(screen.queryByText("加载中…")).toBeNull()
+    unmount()
+
+    // PDF：宿主持续（重拉期间 WebContentsView 不卸载重挂）
+    fileContentsStub.set("/repo/doc.pdf", {
+      content: "",
+      binary: true,
+      mimeType: "application/pdf",
+      loading: true,
+    })
+    render(<FileView absolutePath="/repo/doc.pdf" />)
+    expect(document.querySelector(".pdf-frame-stub")).not.toBeNull()
+    expect(screen.queryByText("加载中…")).toBeNull()
+  })
+
+  it("formatBytes：二进制单位阶梯 + 一位小数", () => {
+    expect(formatBytes(0)).toBe("0 B")
+    expect(formatBytes(512)).toBe("512 B")
+    expect(formatBytes(2048)).toBe("2.0 KiB")
+    expect(formatBytes(142257177)).toBe("135.7 MiB")
+    expect(formatBytes(3 * 1024 * 1024 * 1024)).toBe("3.0 GiB")
+    expect(formatBytes(2 * 1024 ** 4)).toBe("2.0 TiB")
   })
 
   it(".mdx / 点文件 .md / 无扩展名：均不识别（纯文本代码视图，无预览/源码分段；操作条常驻）", () => {

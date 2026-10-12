@@ -573,6 +573,73 @@ describe("文件系统（M6b）", () => {
     expect((await svg.readFileContent("/r", "a.svg")).type).toBe("text")
   })
 
+  // 流式消费（design-file-load-streaming，2026-10-12）：chunk 化 body 的嗅探/增量转换/取消
+  it("readFileContent：流式——非图片二进制头 8K 含 NUL 即 cancel，余量不读、不产 base64", async () => {
+    let cancelled = false
+    const body = new Uint8Array(64 * 1024 + 100)
+    body.set([0x28, 0xb5, 0x2f, 0xfd, 0x00], 0) // zstd 魔数 + NUL（嗅探窗口内）
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(body.subarray(0, 30000))
+        c.enqueue(body.subarray(30000))
+      },
+      cancel() {
+        cancelled = true
+      },
+    })
+    const client = mkClient(
+      () => new Response(stream, { headers: { "content-type": "application/zstd" } }),
+    )
+    const fc = await client.readFileContent("/r", "a.pkg.tar.zst")
+    expect(fc).toEqual({ type: "binary", content: "", encoding: "base64", mimeType: "application/zstd" })
+    expect(cancelled).toBe(true)
+  })
+
+  it("readFileContent：流式——image/* 分 chunk 增量拼 binary string，完结 btoa + 进度上报", async () => {
+    const progress: Array<[number, number | undefined]> = []
+    const enc = new TextEncoder()
+    const client = mkClient(
+      () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(c) {
+              c.enqueue(enc.encode("AB"))
+              c.enqueue(enc.encode("C"))
+              c.close()
+            },
+          }),
+          { headers: { "content-type": "image/png" } },
+        ),
+    )
+    const fc = await client.readFileContent("/r", "a.png", {
+      onProgress: (received, total) => progress.push([received, total]),
+    })
+    expect(fc).toEqual({ type: "binary", content: "QUJD", encoding: "base64", mimeType: "image/png" })
+    expect(progress.map((p) => p[0])).toEqual([2, 3])
+  })
+
+  it("readFileContent：流式——文本超 8K 早判 text，多字节序列跨 chunk 增量解码不碎", async () => {
+    const enc = new TextEncoder()
+    const head = new Uint8Array(8192).fill(0x61) // 无 NUL → 首 chunk 攒满嗅探窗口即判 text
+    const tail = enc.encode("a你b")
+    const client = mkClient(
+      () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(c) {
+              c.enqueue(head)
+              c.enqueue(tail.subarray(0, 2)) // "你" 的 UTF-8 序列从中间切开
+              c.enqueue(tail.subarray(2))
+              c.close()
+            },
+          }),
+          { headers: { "content-type": "application/octet-stream" } },
+        ),
+    )
+    const fc = await client.readFileContent("/r", "big.txt")
+    expect(fc).toEqual({ type: "text", content: "a".repeat(8192) + "a你b" })
+  })
+
   it("listVcsDiff：mode 映射 git→working、branch 直传；context 恒显式", async () => {
     const seen: string[] = []
     const client = mkClient((url) => {

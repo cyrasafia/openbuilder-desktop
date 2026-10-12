@@ -2271,6 +2271,36 @@
   color: var(--error);
 }
 
+/* 文件加载在途态（design-file-load-streaming）：大文件非阻塞读取的字节进度。
+ * 纵排：文案 + 进度条 + 字节数；条仅 total 已知时渲染（无 total 只报已收字节） */
+.file-state.file-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--on-surface-variant);
+}
+
+.file-progress {
+  width: min(280px, 60%);
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-container-low);
+  overflow: hidden;
+}
+
+.file-progress > div {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--primary);
+  transition: width 120ms ease-out;
+}
+
+.file-progress-bytes {
+  font-size: 12px;
+  color: var(--on-surface-variant);
+}
+
 /* 选区：不装 drawSelection（装饰层自绘），走原生 ::selection——此前误写的
  * .cm-selectionBackground 规则对应的 DOM 只由 drawSelection 创建；取值已
  * 收编为全局 ::selection 令牌（tokens.css，2026-09-18），此处不再局部覆写 */

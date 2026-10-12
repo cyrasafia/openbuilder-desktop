@@ -3598,6 +3598,22 @@ function useMdFind(
 }
 
 /**
+ * 字节数人类可读格式（design-file-load-streaming 进度文案）：二进制单位
+ * （KiB/MiB/GiB/TiB），一位小数；< 1024 直出 B。
+ */
+export function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  const units = ["KiB", "MiB", "GiB", "TiB"]
+  let v = n
+  let u = -1
+  do {
+    v /= 1024
+    u++
+  } while (v >= 1024 && u < units.length - 1)
+  return `${v.toFixed(1)} ${units[u]}`
+}
+
+/**
  * 图片 data URL 构建（design-image-preview §2.3）：渲染依据是服务端返回的
  * type/mimeType（扩展名只决定分支入口）——位图须 binary + image/*（mimeType
  * 缺省按扩展名兜底）；svg 为 text 源码（服务端对 svg 不返 mimeType）。
@@ -3652,7 +3668,11 @@ function MarkdownImage({ node: _node, src, alt, ...rest }: MdImageProps) {
   }, [target, store])
   if (target == null) return <img src={src} alt={alt} {...rest} />
   const label = (typeof alt === "string" ? alt : "").trim() || target.split("/").pop() || ""
-  if (!entry) return <span className="md-img-pending">{label}</span>
+  // 在途且无内容（首开，design-file-load-streaming）：维持 pending 占位，不得用
+  // 空 content 产 data URL（破图闪现）；重拉在途有旧内容则照常渲染
+  if (!entry || (entry.loading && !entry.content)) {
+    return <span className="md-img-pending">{label}</span>
+  }
   const url = imageSrcFor(target, entry)
   if (entry.error || !url) {
     return (
@@ -3945,6 +3965,11 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
   const isImage = isImagePath(absolutePath)
   const isPdf = isPdfPath(absolutePath)
   const previewable = isMarkdown
+  // 在途占位判定（design-file-load-streaming §2.3，review 2026-10-12 #1 修订）：
+  // 仅「无可用渲染态」的加载条目（首开——无 content 且非 binary）走加载分支；
+  // 重拉在途保留旧 content / binary（PDF 闸门/占位）静默呈现——内容容器不
+  // 卸载，滚动恢复与锚定不闪断（design-tab-state-memory §2.2）
+  const showLoading = !!cached?.loading && !cached.content && !cached.binary
   // 文件视图状态记忆（design-tab-state-memory §2.2）：挂载从 store 恢复模式 +
   // 滚动偏移（一次性待恢复）；捕获 = 容器/CM 滚动上报 + 模式切换归零
   const savedView = store.fileViewStateFor(absolutePath)
@@ -3955,11 +3980,13 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
   // revealLine 一次性消费（挂载或锚点更新即清 TabEntity 残留）：锚定是
   // 「从 diff 跳转」的瞬时意图，常驻会让切 Tab 往返被过时行号反复强制源码
   // 模式 + 重滚，压掉 store 保存的浏览模式（design-tab-state-memory §2.2）。
-  // 消费须等内容落地（cached 无错误）——CodeView 挂载门控于此，未缓存文件
-  // （从 diff 跳转的主路径）挂载即清会让晚挂载的 CodeView 拿不到锚定行；
-  // 落地 commit 先挂 CodeView（prop 仍锚定值），效果随后清 entity，滚动送达
+  // 消费须等内容落地（cached 无错误且非在途——loading 条目期间清会让晚挂载
+  // 的 CodeView 拿不到锚定行）；落地 commit 先挂 CodeView（prop 仍锚定值），
+  // 效果随后清 entity，滚动送达
   useEffect(() => {
-    if (revealLine != null && cached && !cached.error) store.consumeFileReveal(absolutePath)
+    if (revealLine != null && cached && !cached.error && !showLoading) {
+      store.consumeFileReveal(absolutePath)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revealLine, cached])
   const fileScrollRef = useRef<HTMLDivElement>(null)
@@ -4082,13 +4109,23 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
   // memo 同 mdFrontMatter/imageSrc 决策（上方注释）：FileView 非 memo，SSE
   // emit 高频重渲染下不重复付出 O(内容长) 字符串拼接（review 二轮 #2）
   const fileTabKey = `file:${absolutePath}`
-  const mdPreviewLive = !!(previewable && cached && !cached.error && mode === "preview" && !cached.binary)
+  // 占位在途（showLoading）同未落地：不注册任何 find（design-file-load-streaming）；
+  // 重拉在途（有内容）find 照常——Ctrl+F 作用于旧内容，同旧版行为
+  const mdPreviewLive = !!(
+    previewable &&
+    cached &&
+    !cached.error &&
+    !showLoading &&
+    mode === "preview" &&
+    !cached.binary
+  )
   // CodeView 渲染中的渲染期镜像（内容分支条件的子集）：md 源码态，或
   // 非图片/PDF 的文本文件内容落地（图片文本回退的边角不注册——Ctrl+F
   // 聚焦后仍可走 CM keymap）
   const codeViewLive = !!(
     cached &&
     !cached.error &&
+    !showLoading &&
     !cached.binary &&
     (isMarkdown ? mode === "source" : !isPdf && !isImage)
   )
@@ -4118,7 +4155,7 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
   // fileScrollRef 未挂载为 null、无恢复条目，效果为纯 no-op
   useLayoutEffect(() => {
     if (pendingScroll.current == null) return
-    if (!cached || cached.error) return
+    if (!cached || cached.error || showLoading) return
     if (mode === "preview") {
       const el = fileScrollRef.current
       if (el) el.scrollTop = pendingScroll.current
@@ -4131,7 +4168,37 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
   // 骨架（无早退），各分支标记/结构与原早退路径逐一等价——仅图片/PDF 加载态
   // 容器类简化（image-view/pdf-view 于加载态无样式意义，统一走文本分支占位）
   let content: ReactNode
-  if (isImage && cached && !cached.error && imageSrc) {
+  if (showLoading) {
+    // 加载在途（design-file-load-streaming）：仅首开（无可用渲染态）呈现——
+    // 空 content 会误触图片 data URL/PDF binary 闸门。进度条仅 total 已知
+    // （Content-Length）时呈现；无 total 只报已收字节。
+    const p = cached.progress
+    content = (
+      <div className="file-view">
+        <div className="file-state file-loading">
+          <span>{t.loading}</span>
+          {p && p.total != null && p.total > 0 ? (
+            <>
+              <div
+                className="file-progress"
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={p.total}
+                aria-valuenow={p.received}
+              >
+                <div style={{ width: `${Math.min(100, (p.received / p.total) * 100)}%` }} />
+              </div>
+              <span className="file-progress-bytes">
+                {formatBytes(p.received)} / {formatBytes(p.total)}
+              </span>
+            </>
+          ) : p ? (
+            <span className="file-progress-bytes">{formatBytes(p.received)}</span>
+          ) : null}
+        </div>
+      </div>
+    )
+  } else if (isImage && cached && !cached.error && imageSrc) {
     // 图片分支（design-image-preview §2.2）：扩展名决定入口，渲染按服务端
     // type/mimeType 兜底——不满足（如 .png 实为文本）继续走下方文本/二进制分支。
     // ImagePreview 自持滚动容器（滚轮锚定/拖动平移都要操作其 scroll 位置）
