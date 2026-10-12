@@ -542,10 +542,21 @@ export class AppStore {
   pickerOpen = false
   fileTreeExpanded = new Map<string, boolean>()
   fileTreeNodes = new Map<string, FileNode[]>()
-  /** binary/mimeType：图片预览分发依据（design-image-preview §2.1）；二进制非图占位用 */
+  /**
+   * binary/mimeType：图片预览分发依据（design-image-preview §2.1）；二进制非图占位用。
+   * loading/progress（design-file-load-streaming）：在途条目——content 空、
+   * loading true，FileView 以加载态/进度条呈现，不进图片/PDF/文本任何分支。
+   */
   fileContents = new Map<
     string,
-    { content: string; binary?: boolean; mimeType?: string; error?: string }
+    {
+      content: string
+      binary?: boolean
+      mimeType?: string
+      error?: string
+      loading?: boolean
+      progress?: { received: number; total?: number }
+    }
   >()
   /** diff 数据（design-diff-view §3）：key = diffDataKey(type, directory) */
   diffData = new Map<string, { files: FileDiff[]; error?: string; loading?: boolean }>()
@@ -6106,56 +6117,84 @@ export class AppStore {
     this.emit()
   }
 
-  /** directory 显式传入（Tab 会话恢复——跨作用域 file Tab 的归属目录，同 doFileReload
-   *  口径不带 workspace）；缺省 = 当前作用域（openFileTab 时 Tab 归属即当前作用域） */
+  /**
+   * 加载文件内容（design-file-load-streaming）：
+   * - **singleflight**：openFileTab 与 FileView 挂载 effect 各调一次（首开双拉），
+   *   在途按 absolutePath 合并——大文件双下载双转换是原卡顿主因之一；
+   * - 在途落 {loading} 条目（content 空）驱动进度 UI，进度上报 100ms 节流
+   *   （emit 高频无益，App 层 rAF 合帧之外再削一层）；
+   * - 落地守卫：client 换代（重连/teardown）丢弃，不入缓存。
+   * directory 显式传入（Tab 会话恢复——跨作用域 file Tab 的归属目录，同 doFileReload
+   *  的口径不带 workspace）；缺省 = 当前作用域（openFileTab 时 Tab 归属即当前作用域）
+   */
   async loadFileContent(absolutePath: string, directory?: string) {
+    const inflight = this.fileLoadInflight.get(absolutePath)
+    if (inflight) return inflight
+    const client = this.client
     const dir = directory ?? this.scopeQuery.directory
+    if (!client) return
+    const task = this.doLoadFileContent(client, dir, absolutePath)
+    this.fileLoadInflight.set(absolutePath, task)
     try {
-      const fc = await this.client!.readFileContent(dir, absolutePath)
+      await task
+    } finally {
+      this.fileLoadInflight.delete(absolutePath)
+    }
+  }
+
+  private async doLoadFileContent(
+    client: RestClient,
+    dir: string,
+    absolutePath: string,
+  ): Promise<void> {
+    this.fileContents.set(absolutePath, { content: "", loading: true })
+    this.emit()
+    try {
+      const fc = await client.readFileContent(dir, absolutePath, {
+        onProgress: (received, total) => this.onFileLoadProgress(absolutePath, received, total),
+      })
+      if (this.client !== client) return
       this.fileContents.set(absolutePath, fileContentEntry(fc))
     } catch (e) {
+      if (this.client !== client) return
       this.fileContents.set(absolutePath, {
         content: "",
         error: e instanceof Error ? e.message : String(e),
       })
+    } finally {
+      this.fileLoadProgressAt.delete(absolutePath)
+      this.emit()
     }
+  }
+
+  /** 进度上报（design-file-load-streaming）：100ms 节流；条目仍在途才更新 */
+  private onFileLoadProgress(absolutePath: string, received: number, total: number | undefined) {
+    const now = Date.now()
+    if (now - (this.fileLoadProgressAt.get(absolutePath) ?? 0) < 100) return
+    this.fileLoadProgressAt.set(absolutePath, now)
+    const cur = this.fileContents.get(absolutePath)
+    if (!cur?.loading) return
+    this.fileContents.set(absolutePath, {
+      content: "",
+      loading: true,
+      progress: { received, total },
+    })
     this.emit()
   }
 
   /**
-   * md 相对路径图片拉取（design-markdown-preview §2.8）：singleflight——非
-   * error 缓存命中且不在途才跳过；结果落 fileContents（与文件 Tab 图片同缓存，
-   * 互预热）。**error 条目不短路**：瞬时失败（如 agent 尚未写出图片）在组件
-   * 重挂载（重开 Tab / 切回预览态）时即重试；error 落地不会触发组件 effect
-   * 重跑（依赖不变），无重试风暴。作用域取当前 scopeQuery（与 FileView 首拉
-   * md 同口径，worktree 场景带 workspace）；落地守卫 client 身份（teardown 后
-   * 丢弃）。不跟随 file watch（监听仅覆盖打开的 file Tab）。
+   * md 相对路径图片拉取（design-markdown-preview §2.8，2026-10-12 起委托
+   * loadFileContent——同缓存同 singleflight 同进度语义）：非 error 缓存命中即
+   * 跳过（loading 条目也命中——在途中）；**error 条目不短路**：瞬时失败（如
+   * agent 尚未写出图片）在组件重挂载（重开 Tab / 切回预览态）时即重试；error
+   * 落地不会触发组件 effect 重跑（依赖不变），无重试风暴。不跟随 file watch
+   * （监听仅覆盖打开的 file Tab）。
    */
   ensureFileImage(absolutePath: string): void {
     const client = this.client
     const cached = this.fileContents.get(absolutePath)
-    if (!client || (cached && !cached.error) || this.fileImageInflight.has(absolutePath)) {
-      return
-    }
-    const { directory } = this.scopeQuery
-    this.fileImageInflight.add(absolutePath)
-    void client
-      .readFileContent(directory, absolutePath)
-      .then((fc) => {
-        if (this.client !== client) return
-        this.fileContents.set(absolutePath, fileContentEntry(fc))
-      })
-      .catch((e: unknown) => {
-        if (this.client !== client) return
-        this.fileContents.set(absolutePath, {
-          content: "",
-          error: e instanceof Error ? e.message : String(e),
-        })
-      })
-      .finally(() => {
-        this.fileImageInflight.delete(absolutePath)
-        this.emit()
-      })
+    if (!client || (cached && !cached.error)) return
+    void this.loadFileContent(absolutePath)
   }
 
   /** 关闭 chat Tab = 归档（design-layout 锁定语义），并卸载会话运行时状态 */
@@ -6788,8 +6827,10 @@ export class AppStore {
   private fileReloadTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private fileReloadInflight = new Set<string>()
   private fileReloadDirty = new Set<string>()
-  /** md 相对图片在途（design-markdown-preview §2.8）：同图多次引用并发只发一次请求 */
-  private fileImageInflight = new Set<string>()
+  /** 文件内容加载在途（design-file-load-streaming）：key = absolutePath */
+  private fileLoadInflight = new Map<string, Promise<void>>()
+  /** 进度上报节流时间戳（loadFileContent 在途条目按 path） */
+  private fileLoadProgressAt = new Map<string, number>()
   private treeRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
   /**

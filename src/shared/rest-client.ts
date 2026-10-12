@@ -706,9 +706,23 @@ export class RestClient {
    * （v1 是 server 返回 type 字段）：**NUL 嗅探为主**（前 8K 含 0x00 = 二进制，
    * 救回 server MIME 库对 .ts 的 video/mp2t 误判）+ image/* mime 直判二进制
    * （svg 例外：文本源码，imageSrcFor 的 svg 分支依赖 text）。
-   * binary 时 content 为 base64（mimeType 透传，图片预览分发依据）。
+   * 图片 binary 时 content 为 base64（mimeType 透传，图片预览分发依据）。
+   *
+   * 流式消费（design-file-load-streaming，2026-10-12）：整包 arrayBuffer +
+   * 同步 base64 会长时间阻塞渲染主线程（142MB 实测 ~3.3s，且非图片二进制的
+   * base64 无任何消费者），故 res.body 可读时按 chunk 消费：
+   * - 前 8K 攒齐做嗅探；**非图片二进制即刻 cancel**——占位分支不读 content，
+   *   余量不下载、不做 base64，返回空 content（FileContentData 契约不变）；
+   * - 图片：chunk 增量拼 binary string（转换成本摊进下载等待），完结 btoa；
+   * - 文本：TextDecoder stream 模式增量解码（多字节序列跨 chunk 安全）；
+   * - 每 chunk 上报 onProgress（total = Content-Length，chunked 响应缺省）。
+   * res.body 缺失（非流式环境兜底）回退旧的整包缓冲路径。
    */
-  async readFileContent(directory: string, path: string): Promise<FileContentData> {
+  async readFileContent(
+    directory: string,
+    path: string,
+    opts: { onProgress?: (received: number, total: number | undefined) => void } = {},
+  ): Promise<FileContentData> {
     const encoded = path
       .split("/")
       .map((s) => encodeURIComponent(s))
@@ -717,7 +731,84 @@ export class RestClient {
       `/api/fs/read/${encoded}${this.locationQuery(directory)}`,
       { timeoutMs: 30000 },
     )
-    // 响应体读取中途断网与 fetchJson 同契约：包成 ApiError（模块只抛 ApiError）
+    const mime = (res.headers.get("content-type") ?? "").split(";")[0].trim() || undefined
+    const isImage = !!mime && mime.startsWith("image/") && mime !== "image/svg+xml"
+    const reader = res.body?.getReader()
+    if (!reader) return this.readFileContentBuffered(res, mime, isImage)
+
+    const SNIFF = 8192
+    const CHUNK = 0x8000
+    const totalRaw = Number(res.headers.get("content-length"))
+    const total = Number.isFinite(totalRaw) && totalRaw > 0 ? totalRaw : undefined
+    // 嗅探窗口缓冲：decision 未定期间逐 chunk 攒入（只取前 SNIFF 字节）
+    let head = new Uint8Array(0)
+    // undefined = 未攒齐嗅探窗口；image 由 mime 头预判（与旧路径 isImage 直判一致）
+    let decision: "image" | "text" | undefined = isImage ? "image" : undefined
+    let received = 0
+    let binaryStr = ""
+    let text = ""
+    const decoder = new TextDecoder("utf-8")
+
+    // 读取中途断网/超时中止与 fetchJson 同契约：包成 ApiError（模块只抛 ApiError）
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        received += value.length
+        if (decision === undefined) {
+          const room = SNIFF - head.length
+          const headPart = value.subarray(0, room)
+          const rest = value.subarray(room)
+          const merged = new Uint8Array(head.length + headPart.length)
+          merged.set(head)
+          merged.set(headPart, head.length)
+          head = merged
+          if (head.length >= SNIFF) {
+            if (head.includes(0)) {
+              // 非图片二进制：content 无消费者——cancel 省掉余量下载
+              await reader.cancel().catch(() => {})
+              return { type: "binary", content: "", encoding: "base64", mimeType: mime }
+            }
+            decision = "text"
+            text += decoder.decode(head, { stream: true })
+            if (rest.length > 0) text += decoder.decode(rest, { stream: true })
+          }
+        } else if (decision === "image") {
+          // 分块 base64 前置段（spread 大文件会栈溢出）
+          for (let i = 0; i < value.length; i += CHUNK) {
+            binaryStr += String.fromCharCode(...value.subarray(i, i + CHUNK))
+          }
+        } else {
+          text += decoder.decode(value, { stream: true })
+        }
+        opts.onProgress?.(received, total)
+      }
+    } catch (e) {
+      throw classifyFetchError(e)
+    }
+    // 流完结仍无 decision = 整文件不足嗅探窗口：对整包嗅探（与旧路径同口径）
+    if (decision === undefined) {
+      if (head.includes(0)) {
+        return { type: "binary", content: "", encoding: "base64", mimeType: mime }
+      }
+      text += decoder.decode(head, { stream: true })
+    }
+    if (decision === "image") {
+      return { type: "binary", content: btoa(binaryStr), encoding: "base64", mimeType: mime }
+    }
+    return { type: "text", content: text + decoder.decode() }
+  }
+
+  /**
+   * 非流式兜底（res.body 缺失）：整包缓冲 + 同步转换——2026-10-12 流式化前的
+   * 原路径原样保留（仅非图片二进制不再产 base64 改为空 content，与流式路径
+   * 对齐：占位分支不消费 content）。
+   */
+  private async readFileContentBuffered(
+    res: Response,
+    mime: string | undefined,
+    isImage: boolean,
+  ): Promise<FileContentData> {
     let buffer: ArrayBuffer
     try {
       buffer = await res.arrayBuffer()
@@ -725,10 +816,9 @@ export class RestClient {
       throw classifyFetchError(e)
     }
     const bytes = new Uint8Array(buffer)
-    const mime = (res.headers.get("content-type") ?? "").split(";")[0].trim() || undefined
-    const isImage = !!mime && mime.startsWith("image/") && mime !== "image/svg+xml"
     const binary = isImage || bytes.subarray(0, 8192).includes(0)
     if (binary) {
+      if (!isImage) return { type: "binary", content: "", encoding: "base64", mimeType: mime }
       // 分块 base64（spread 大文件会栈溢出）
       let binaryStr = ""
       const CHUNK = 0x8000
