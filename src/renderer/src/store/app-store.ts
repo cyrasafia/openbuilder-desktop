@@ -6128,17 +6128,21 @@ export class AppStore {
    *  的口径不带 workspace）；缺省 = 当前作用域（openFileTab 时 Tab 归属即当前作用域）
    */
   async loadFileContent(absolutePath: string, directory?: string) {
-    const inflight = this.fileLoadInflight.get(absolutePath)
-    if (inflight) return inflight
     const client = this.client
-    const dir = directory ?? this.scopeQuery.directory
     if (!client) return
-    const task = this.doLoadFileContent(client, dir, absolutePath)
-    this.fileLoadInflight.set(absolutePath, task)
+    const inflight = this.fileLoadInflight.get(absolutePath)
+    // 仅同代在途合并：旧 client 代的任务结果必被守卫丢弃，合并会把新请求
+    // 吞进死任务（重连窗口内切回 Tab 的场景，review 2026-10-12 #2）
+    if (inflight && inflight.client === client) return inflight.task
+    const task = this.doLoadFileContent(client, directory ?? this.scopeQuery.directory, absolutePath)
+    this.fileLoadInflight.set(absolutePath, { client, task })
     try {
       await task
     } finally {
-      this.fileLoadInflight.delete(absolutePath)
+      // 身份守卫：期间被换代任务覆写/清空时不误删新条目
+      if (this.fileLoadInflight.get(absolutePath)?.task === task) {
+        this.fileLoadInflight.delete(absolutePath)
+      }
     }
   }
 
@@ -6147,16 +6151,33 @@ export class AppStore {
     dir: string,
     absolutePath: string,
   ): Promise<void> {
-    this.fileContents.set(absolutePath, { content: "", loading: true })
+    // 重拉保留旧内容（review 2026-10-12 #1，design-file-load-streaming §2.2 修订）：
+    // 「激活即重拉」挂载即触发，若在途条目清掉已有 content/binary，FileView 会
+    // 闪断成加载占位、内容容器卸载——滚动恢复（design-tab-state-memory §2.2）
+    // 与锚定在首 commit 已消费，重挂载后即丢失。故仅首开（无条目/error 条目）
+    // 落占位；重拉在途静默（旧内容持续呈现），进度反馈只在首开可见。
+    const prev = this.fileContents.get(absolutePath)
+    const entry = {
+      ...(prev && !prev.error ? prev : { content: "" }),
+      loading: true as const,
+    }
+    this.fileContents.set(absolutePath, entry)
     this.emit()
+    // 换代丢弃时的条目回滚：仅当缓存仍持本任务写入的在途条目（teardown 已清 /
+    // 新代任务已覆写则不动，防复活与抢夺）
+    const rollback = () => {
+      if (this.fileContents.get(absolutePath) !== entry) return
+      if (prev && !prev.error) this.fileContents.set(absolutePath, prev)
+      else this.fileContents.delete(absolutePath)
+    }
     try {
       const fc = await client.readFileContent(dir, absolutePath, {
         onProgress: (received, total) => this.onFileLoadProgress(absolutePath, received, total),
       })
-      if (this.client !== client) return
+      if (this.client !== client) return rollback()
       this.fileContents.set(absolutePath, fileContentEntry(fc))
     } catch (e) {
-      if (this.client !== client) return
+      if (this.client !== client) return rollback()
       this.fileContents.set(absolutePath, {
         content: "",
         error: e instanceof Error ? e.message : String(e),
@@ -6167,18 +6188,15 @@ export class AppStore {
     }
   }
 
-  /** 进度上报（design-file-load-streaming）：100ms 节流；条目仍在途才更新 */
+  /** 进度上报（design-file-load-streaming）：100ms 节流；条目仍在途才更新
+   *  （展开保留既有字段——重拉在途的旧 content/binary 不被进度覆写清掉） */
   private onFileLoadProgress(absolutePath: string, received: number, total: number | undefined) {
     const now = Date.now()
     if (now - (this.fileLoadProgressAt.get(absolutePath) ?? 0) < 100) return
     this.fileLoadProgressAt.set(absolutePath, now)
     const cur = this.fileContents.get(absolutePath)
     if (!cur?.loading) return
-    this.fileContents.set(absolutePath, {
-      content: "",
-      loading: true,
-      progress: { received, total },
-    })
+    this.fileContents.set(absolutePath, { ...cur, progress: { received, total } })
     this.emit()
   }
 
@@ -6827,8 +6845,9 @@ export class AppStore {
   private fileReloadTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private fileReloadInflight = new Set<string>()
   private fileReloadDirty = new Set<string>()
-  /** 文件内容加载在途（design-file-load-streaming）：key = absolutePath */
-  private fileLoadInflight = new Map<string, Promise<void>>()
+  /** 文件内容加载在途（design-file-load-streaming）：key = absolutePath；
+   *  值带 client 代别——换代后不合并（旧任务结果必被守卫丢弃） */
+  private fileLoadInflight = new Map<string, { client: RestClient; task: Promise<void> }>()
   /** 进度上报节流时间戳（loadFileContent 在途条目按 path） */
   private fileLoadProgressAt = new Map<string, number>()
   private treeRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>()

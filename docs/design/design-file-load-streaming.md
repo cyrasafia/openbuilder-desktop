@@ -46,12 +46,19 @@ singleflight 合并（§2.2）后仅一次。
 
 ### 2.2 store：singleflight + 在途条目（app-store）
 
-- `loadFileContent` 按 absolutePath singleflight（`fileLoadInflight`）——
-  消掉首开双拉。落地守卫对齐 house style：client 换代（重连/teardown）
-  丢弃，不入缓存。
-- 在途落 `{content:"", loading:true}` 条目；`onFileLoadProgress` 100ms 节流
-  更新 `progress:{received,total?}` 并 emit（App 层 rAF 合帧外再削一层）。
-  完成后条目替换为 `fileContentEntry(fc)`（形状同旧）。
+- `loadFileContent` 按 absolutePath singleflight（`fileLoadInflight`，
+  **值带 client 代别——换代后不合并**：旧代任务结果必被守卫丢弃，合并会把
+  新请求吞进死任务）；finally 删除带身份守卫（被新代覆写/清空不误删）。
+- 在途条目**保留旧渲染态**（review 2026-10-12 #1 修订）：重拉起点若有非
+  error 条目，loading 标记叠加在旧 content/binary 之上而非清掉——「激活即
+  重拉」挂载即触发，清掉会让 FileView 闪断成加载占位、内容容器卸载，滚动
+  恢复（design-tab-state-memory §2.2）与锚定在首 commit 已消费，重挂载即
+  丢失。首开（无条目/error 条目）才落 `{content:"", loading:true}` 占位。
+- 进度 `onFileLoadProgress` 100ms 节流，展开保留既有字段（旧内容不被进度
+  覆写清掉），并 emit（App 层 rAF 合帧外再削一层）。完成后条目替换为
+  `fileContentEntry(fc)`（形状同旧）。
+- 落地守卫对齐 house style：client 换代（重连/teardown）丢弃且**回滚**
+  在途覆写（仅当缓存仍持本任务条目——防复活/抢夺新代条目）。
 - `ensureFileImage` 委托 `loadFileContent`（同缓存/singleflight/进度语义），
   原 `fileImageInflight` 退役。error 条目不短路的重试语义保留。
 - `doFileReload`（file watch 重拉）不动：2 参调用、旧内容保持显示直到
@@ -59,15 +66,21 @@ singleflight 合并（§2.2）后仅一次。
 
 ### 2.3 FileView：加载态分支 + 进度条（workspace/app.css）
 
-- 分支链**首位**判定 `cached?.loading`——空 content 的在途条目不得进入
-  图片（空 data URL 破图）/PDF（binary 闸门）/文本分支。
-- 进度 UI：`t.loading` 文案 + `.file-progress` 条（total 已知时，
-  width = received/total）+ 字节数（`formatBytes`，KiB/MiB/GiB 一位小数）；
-  无 total 只报已收字节。样式收编 app.css `.file-state.file-loading` 区块。
-- 在态门控同步收紧（loading 条目视同未落地）：`revealLine` 消费、
-  `mdPreviewLive`/`codeViewLive` find 注册、滚动恢复 effect——均在
-  `!cached.loading` 下才生效。锚定行/滚动位不因加载起点被提前消费。
-- `MarkdownImage`：loading 条目维持 pending 占位（空 content 不产 data URL）。
+- 分支链**首位**判定 `showLoading = loading && !content && !binary`——
+  仅「无可用渲染态」的首开条目走加载占位；**重拉在途（有旧 content 或
+  binary——PDF 闸门/占位）静默呈现旧渲染态**，内容容器不卸载，滚动/锚定
+  不闪断（对齐 design-tab-state-memory §2.2）。空 content 的首开条目不得
+  进入图片（空 data URL 破图）/PDF（binary 闸门）/文本分支。
+- 进度 UI（仅首开可见）：`t.loading` 文案 + `.file-progress` 条（total
+  已知时，width = received/total）+ 字节数（`formatBytes`，KiB/MiB/GiB/TiB
+  一位小数）；无 total 只报已收字节。样式收编 app.css
+  `.file-state.file-loading` 区块。
+- 在态门控（首开占位视同未落地）：`revealLine` 消费、
+  `mdPreviewLive`/`codeViewLive` find 注册、滚动恢复 effect——均以
+  `!showLoading` 为门。重拉在途 find 照常（作用于旧内容，同旧版行为）。
+  锚定行/滚动位不因加载起点被提前消费。
+- `MarkdownImage`：首开在途维持 pending 占位（空 content 不产 data URL）；
+  重拉在途有旧内容照常渲染。
 
 ## 3. 语义与不变量
 
@@ -84,12 +97,28 @@ singleflight 合并（§2.2）后仅一次。
 
 - rest-client：非图片二进制 cancel + 空 content；图片分 chunk base64 +
   进度；文本超 8K 早判 + 多字节跨 chunk 解码。既有 47 例全绿。
-- app-store：singleflight 双调合并 + 完成解除；进度节流（100ms 窗口）；
-  error 落地 + ensureFileImage 重试。既有断言随第三参（onProgress）修订两处。
+- app-store：singleflight 双调合并 + 完成解除；**重拉在途保留旧内容**；
+  error 重试从占位开始；**换代不吞并 + 落地回滚（有内容恢复/首开删除）**；
+  进度节流（100ms 窗口）；error 落地 + ensureFileImage 重试。既有断言随
+  第三参（onProgress）修订两处。
 - file-view：loading 条目渲染进度条/字节数、不进内容分支；无 total 降级；
-  formatBytes 阶梯。
+  **重拉在途静默（md 内容分支/binary 占位/PDF 宿主均不闪加载态）**；
+  formatBytes 阶梯（含 TiB）。
 
-## 5. 遗留（todo 候选）
+## 5. Review 记录（2026-10-12）
+
+一轮 review 提出三项，全部采纳修复：
+
+1. **阻塞**：切回 file Tab 滚动丢失 + 内容闪断——`doLoadFileContent` 无条件
+   覆写缓存条目为空 content 占位，「激活即重拉」挂载即触发覆写，滚动恢复
+   layout effect 在首 commit 已消费 `pendingScroll`，内容容器卸载重挂后
+   停在顶部。修复 = 在途条目保留旧渲染态 + FileView 以 `showLoading`
+   （无可用渲染态才占位）判定（§2.2/§2.3）。
+2. **非阻塞**：client 换代后 loading 条目残留且 singleflight 可能吞掉新
+   请求。修复 = 代别化的 inflight（不合并旧代）+ 落地守卫回滚条目。
+3. **nit**：`formatBytes` 超 TiB 封顶 GiB——units 增补 TiB。
+
+## 6. 遗留（todo 候选）
 
 - 大文本文件的 CodeMirror 渲染上限/虚拟化：加载已不阻塞，但 100MB+ 文本
   的 CM doc 构建与高亮仍是重活。可参考 `../opencode` session-ui 的分段渲染。

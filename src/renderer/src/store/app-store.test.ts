@@ -2804,6 +2804,79 @@ describe("文件内容加载（design-file-load-streaming）", () => {
     expect(readFileContent).toHaveBeenCalledTimes(2)
   })
 
+  // review 2026-10-12 #1：激活即重拉不得清掉已有内容——重拉在途保留旧
+  // content/binary 静默呈现（FileView 内容分支不卸载，滚动/锚定不闪断）
+  it("重拉在途保留旧内容（loading 条目携带 content/binary）；完成后替换", async () => {
+    const d = deferred<FileContentData>()
+    clientRef().readFileContent = vi.fn(() => d.promise)
+    store.fileContents.set(ROOT + "/a.ts", { content: "v1" })
+
+    void store.loadFileContent(ROOT + "/a.ts")
+    expect(store.fileContents.get(ROOT + "/a.ts")).toEqual({ content: "v1", loading: true })
+
+    d.resolve({ type: "text", content: "v2" })
+    await vi.waitFor(() =>
+      expect(store.fileContents.get(ROOT + "/a.ts")).toEqual({ content: "v2" }),
+    )
+  })
+
+  it("error 条目重试从占位开始（不保留 error 也不保留空内容残值）", async () => {
+    store.fileContents.set(ROOT + "/bad.ts", { content: "", error: "boom" })
+    const d = deferred<FileContentData>()
+    clientRef().readFileContent = vi.fn(() => d.promise)
+    void store.loadFileContent(ROOT + "/bad.ts")
+    expect(store.fileContents.get(ROOT + "/bad.ts")).toEqual({ content: "", loading: true })
+    d.resolve({ type: "text", content: "ok" })
+    await vi.waitFor(() =>
+      expect(store.fileContents.get(ROOT + "/bad.ts")).toEqual({ content: "ok" }),
+    )
+  })
+
+  // review 2026-10-12 #2：client 换代后旧代在途任务不得吞并新请求，落地回滚
+  it("换代：旧代在途不合并新请求；旧代落地被守卫丢弃并回滚条目", async () => {
+    const d = deferred<FileContentData>()
+    const oldRef = clientRef()
+    oldRef.readFileContent = vi.fn(() => d.promise)
+    store.fileContents.set(ROOT + "/a.ts", { content: "v1" })
+    void store.loadFileContent(ROOT + "/a.ts") // 旧代在途
+
+    // 换代（重连）：注入新 client 对象
+    const newClient = { ...oldRef, readFileContent: vi.fn(async () => ({ type: "text" as const, content: "v3" })) }
+    ;(store as unknown as { client: unknown }).client = newClient
+    void store.loadFileContent(ROOT + "/a.ts") // 不得吞进旧代死任务
+    expect(newClient.readFileContent).toHaveBeenCalledTimes(1)
+
+    // 旧代随后落地：守卫丢弃 + 回滚（不覆盖新代条目/不复活自身占位）
+    d.resolve({ type: "text", content: "stale" })
+    await vi.waitFor(() =>
+      expect(store.fileContents.get(ROOT + "/a.ts")).toEqual({ content: "v3" }),
+    )
+    expect(oldRef.readFileContent).toHaveBeenCalledTimes(1)
+  })
+
+  it("换代且回滚：无新任务接手时恢复覆写前条目；首开占位则删除", async () => {
+    // 已有内容 → 回滚恢复
+    const d1 = deferred<FileContentData>()
+    clientRef().readFileContent = vi.fn(() => d1.promise)
+    store.fileContents.set(ROOT + "/a.ts", { content: "v1" })
+    void store.loadFileContent(ROOT + "/a.ts")
+    const newClient1 = { ...clientRef(), readFileContent: vi.fn(async (): Promise<FileContentData> => ({ type: "text", content: "x" })) }
+    ;(store as unknown as { client: unknown }).client = newClient1
+    d1.resolve({ type: "text", content: "stale" })
+    await vi.waitFor(() =>
+      expect(store.fileContents.get(ROOT + "/a.ts")).toEqual({ content: "v1" }),
+    )
+
+    // 首开占位（无 prev）→ 回滚删除条目
+    const d2 = deferred<FileContentData>()
+    newClient1.readFileContent = vi.fn(() => d2.promise)
+    void store.loadFileContent(ROOT + "/fresh.ts")
+    const newClient2 = { ...newClient1, readFileContent: vi.fn(async () => ({ type: "text" as const, content: "y" })) }
+    ;(store as unknown as { client: unknown }).client = newClient2
+    d2.resolve({ type: "text", content: "stale" })
+    await vi.waitFor(() => expect(store.fileContents.has(ROOT + "/fresh.ts")).toBe(false))
+  })
+
   it("进度上报更新 loading 条目（100ms 节流）；完成后替换为内容条目", async () => {
     let push!: (received: number, total: number | undefined) => void
     let resolveLoad!: (v: FileContentData) => void

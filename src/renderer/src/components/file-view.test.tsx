@@ -291,12 +291,42 @@ describe("FileView markdown 预览", () => {
     expect(document.querySelector(".file-progress")).toBeNull()
   })
 
+  // review 2026-10-12 #1：重拉在途（loading + 旧渲染态）必须静默呈现旧内容——
+  // 加载占位仅「无可用渲染态」（首开）介入，内容容器不卸载（滚动/锚定不闪断）
+  it("重拉在途静默：loading + 旧 content 走内容分支，不出加载占位", async () => {
+    fileContentsStub.set("/repo/README.md", { content: "# 标题", loading: true })
+    render(<FileView absolutePath="/repo/README.md" />)
+    expect((await screen.findAllByText("标题")).some((el) => el.tagName === "H1")).toBe(true)
+    expect(screen.queryByText("加载中…")).toBeNull()
+  })
+
+  it("重拉在途静默：loading + binary 条目保持占位/PDF 宿主，不闪加载态", async () => {
+    // 非图片二进制：占位持续（binary 即可用渲染态，content 恒空）
+    fileContentsStub.set("/repo/blob.bin", { content: "", binary: true, loading: true })
+    const { unmount } = render(<FileView absolutePath="/repo/blob.bin" />)
+    expect(document.querySelector(".file-binary")).not.toBeNull()
+    expect(screen.queryByText("加载中…")).toBeNull()
+    unmount()
+
+    // PDF：宿主持续（重拉期间 WebContentsView 不卸载重挂）
+    fileContentsStub.set("/repo/doc.pdf", {
+      content: "",
+      binary: true,
+      mimeType: "application/pdf",
+      loading: true,
+    })
+    render(<FileView absolutePath="/repo/doc.pdf" />)
+    expect(document.querySelector(".pdf-frame-stub")).not.toBeNull()
+    expect(screen.queryByText("加载中…")).toBeNull()
+  })
+
   it("formatBytes：二进制单位阶梯 + 一位小数", () => {
     expect(formatBytes(0)).toBe("0 B")
     expect(formatBytes(512)).toBe("512 B")
     expect(formatBytes(2048)).toBe("2.0 KiB")
     expect(formatBytes(142257177)).toBe("135.7 MiB")
     expect(formatBytes(3 * 1024 * 1024 * 1024)).toBe("3.0 GiB")
+    expect(formatBytes(2 * 1024 ** 4)).toBe("2.0 TiB")
   })
 
   it(".mdx / 点文件 .md / 无扩展名：均不识别（纯文本代码视图，无预览/源码分段；操作条常驻）", () => {
