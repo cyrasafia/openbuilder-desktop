@@ -63,7 +63,8 @@ export function toInternalProject(p: ProjectInfo): Project {
 
 /** v2 SessionInfo → 内部 Session：directory ← location.directory。
  *  metadata 透传（D1 归档私约 metadata.archivedAt 的识别数据源）；
- *  agent/model 透传（创建回显/默认模型链路消费）。 */
+ *  agent/model 透传（创建回显/默认模型链路消费）；outcome 透传（§3.4b
+ *  冷启动 failed 红点，null 归一 undefined）。 */
 export function toInternalSession(s: SessionInfo): Session {
   return {
     id: s.id,
@@ -82,6 +83,7 @@ export function toInternalSession(s: SessionInfo): Session {
       viewed: s.time.viewed,
     },
     metadata: s.metadata,
+    outcome: s.outcome ?? undefined,
     // 回滚暂存映射（design-sse-event-surface 层 3）：快照整条替换不得抹 staged
     // 态——否则 60s 对账把回滚条/隐藏态打回原形，与 server 真态背离
     revert: s.revert ?? undefined,

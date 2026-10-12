@@ -165,7 +165,9 @@ NamedError 防御）+ v2.0.18 活体值 `type === "aborted"`（2026-10-09 核验
 **实现**（app-store `dotStateFor` 纯派生，无缓存/锁存集合）：
 
 - idle 时对已加载消息排序取末条判定（`inferFailedFromMessages`）；busy/retry 跳过派生
-  （进行中状态优先，也无终局语义）。无消息容器（未打开会话）⇒ 空列表 ⇒ 不触发。
+  （进行中状态优先，也无终局语义）。无消息容器（未打开会话）⇒ 空列表 ⇒ 不触发
+  （2026-10-12 修订：此残窗由 §3.4b outcome 第二数据源取代——未打开会话信服务端
+  持久化终局，冷启动不再丢红点）。
 - **不设事件清除路径**：终局是消息数据的纯函数——新 run 的 user/新 assistant 消息天然
   成为新末条，终局自愈；事件锁存（如新 run 清标记）反而引入「清除后重新派生又复活」
   的一致性问题（busy 期间无新消息落地的窗口）。代价是每次 dotStateFor 对 idle 会话的
@@ -178,6 +180,38 @@ NamedError 防御）+ v2.0.18 活体值 `type === "aborted"`（2026-10-09 核验
 **视觉落点**：Tab 条/左栏会话点 `session-failed`（红静态，共享 12px 盒）；>4 聚合
 `.session-count.failed`（与 error 同红色，悬停 title 计数区分语义）；`sessionIndicatorTitle`
 增 `{failed}`。
+
+### 3.4b 冷启动恢复：outcome 第二数据源（2026-10-12 修订）
+
+**问题**：§3.4 的终局派生依赖消息容器在场——「无消息容器（未打开会话）⇒ 不触发」在
+冷启动成为主路径：错误终止过的会话重启后全部回灰点，直到用户切进会话（消息加载、
+末条派生生效）才变红。「错误终止要看得见」在列表层失效。
+
+**发现**（openbuilder design-session-error-status 2026-10-11 修订先行实证）：
+`GET /api/session` 列表的 `Session.Info.outcome` 是**服务端持久化的「上次 run 终局」**
+（openapi enum：`succeeded | failed | interrupted`），独立于 active 表、列表自带、零额外
+请求；服务端**先落库再发** `execution.failed` 事件（openbuilder 活体两次实测：事件到达
+后 +39ms/+48ms 查 outcome 均已 `failed`）——本端经 SSE/消息派生认定的终局在快照对账时
+恒有 outcome 佐证，两源不打架。
+
+**设计**：`dotStateFor` 的 terminalError 判定改双源——
+
+- **消息容器在场**：末条消息派生**优先**（§3.4 原语义全保留：中止排除、新 run 末条
+  自愈、家族 busy/retry 跳过）。消息是本端亲历事实，比元数据快照新——重跑成功后、
+  outcome 尚未随 60s 对账刷新的窗口里，陈旧 `outcome=failed` 不得误红。
+- **消息容器不在场**（冷启动/未打开会话）：`session.outcome === "failed"` ⇒ failed
+  静态红。`interrupted`（用户主动中止，同 §3.4 中止排除口径）与 `succeeded` 不计。
+
+数据通路：wire `SessionInfo.outcome` → `toInternalSession` 透传（null 归一 undefined）→
+`mergeSessionsSnapshot` 整对象合并随 60s 对账/reconciler 快照刷新——重跑成功后 outcome
+变 `succeeded`，未打开会话的红点由对账自愈（app 端场景 15 同款）。会话 opened/关闭 Tab
+不落任何锁存：仍是纯派生，只是多了一个数据源。
+
+**与 app 方案的差异**：app 在状态合并层（`_mergeStatus`）把 outcome 写进 `_statusMap`
+（error 粘性态 + 保留条件收紧）；桌面端 failed 本就无锁存（§3.4「不设事件清除路径」），
+outcome 直接作为派生输入即可，无需保留条件/清除路径——新 run（busy 优先）与重跑成功
+（消息派生优先/快照 outcome 翻转）天然自愈。
+
 
 ### 3.6 retry 保持锁存（红点防闪）
 
@@ -255,6 +289,15 @@ part 即恢复绿。中途失败类错误（已产出部分内容后断流）每
 | `src/renderer/src/store/app-store.ts` | `session.tool.failed` 经 `isAbortError` 置标记 |
 | `src/renderer/src/components/workspace.tsx` | ToolChip 摘要/输出与 SubagentPanel 投影的中止降级 |
 
+2026-10-12 修订（冷启动 failed 红点恢复，§3.4b；对齐 openbuilder design-session-error-status 2026-10-11）：
+
+| 文件 | 改动 |
+|------|------|
+| `src/shared/api-v2-types.ts` | `SessionInfo` 补 `outcome`（openapi enum 三值 + 宽松 null） |
+| `src/shared/api-types.ts` | `Session` 补 `outcome` |
+| `src/shared/v2-adapter.ts` | `toInternalSession` 透传 outcome（null 归一 undefined） |
+| `src/renderer/src/store/app-store.ts` | `dotStateFor` terminalError 双源：消息在场派生优先，不在场信 outcome；`session.created` 事件骨架回填 outcome/revert（review nit 1：回放/重复投递整对象覆盖曾抹本地值） |
+
 ## 5. 测试
 
 - `message-error.test.ts`：NamedError 主路径/中止/多形态兜底/永不 `[object Object]`；
@@ -271,7 +314,11 @@ part 即恢复绿。中途失败类错误（已产出部分内容后断流）每
 - `app-store.test.ts`（"报错消息与重试状态"）：retry part 丢弃（不传播/不入 parts/未知消息
   不建容器/既有终态错误无影响）、`dotStateFor` retry→error/busy→running/idle 链、
   保持锁存（busy 扣住/内容 part 解除/step-start 不解除/REST 快照改写与解除）、
-  报错终局（failed 投影/中止不算/新末条消息自愈）。
+  报错终局（failed 投影/中止不算/新末条消息自愈）；§3.4b 冷启动恢复（outcome=failed
+  ⇒ failed、succeeded/interrupted/缺省 ⇒ idle、消息在场派生优先防陈旧误红、
+  busy/retry 不受 outcome 影响）、空容器不特判回落 outcome、`session.created`
+  骨架回填 outcome（review 2026-10-12）。
+- `v2-adapter.test.ts`：outcome 透传与 null 归一（2026-10-12）。
 - `app-store.test.ts`（"重试收敛"，design-session-retry-recovery）：退避期气泡独担、
   成功重放无 error 残留、连续重试最新错误、耗尽 `step.failed` 终态 + failed 红点闭环、
   壳未建丢弃、`step.started` 防漂移（不清终态/复位 tool-calls）。

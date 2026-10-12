@@ -67,6 +67,12 @@ export interface Session {
   agent?: string
   model?: ModelRef
   time: SessionTime
+  /**
+   * 上次 run 终局（v2 wire Session.Info.outcome 透传；未跑过缺省）。
+   * 冷启动 failed 红点恢复源（design-error-message §3.4b）——仅消息容器
+   * 不在场的会话消费；interrupted（用户中止）/succeeded 不计 failed
+   */
+  outcome?: "succeeded" | "failed" | "interrupted"
   /** 回滚暂存（staging）；unrevert/提交后为 null/缺省 */
   revert?: SessionRevert | null
   /** 会话改动汇总（staging 时 = 被回滚区间的改动；契约 Session.summary） */

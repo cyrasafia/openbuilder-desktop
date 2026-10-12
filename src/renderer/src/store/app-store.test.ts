@@ -3775,6 +3775,98 @@ describe("报错消息与重试状态（design-error-message）", () => {
     })
     expect(store.dotStateFor("s1")).toBe("idle")
   })
+
+  // §3.4b（对齐 openbuilder design-session-error-status 2026-10-11 修订）：
+  // 冷启动恢复——消息容器不在场的会话信服务端持久化 outcome（列表快照自带）
+  it("报错终局冷启动（§3.4b）：无消息容器 + outcome=failed → failed；succeeded/interrupted/缺省 → idle", () => {
+    seedSession()
+    store.sessionsByProject.set(
+      "proj1",
+      sessionsOf(
+        { ...session("s1", ROOT, { created: 1, updated: 1 }), outcome: "failed" },
+        { ...session("s2", ROOT, { created: 2, updated: 2 }), outcome: "succeeded" },
+        { ...session("s3", ROOT, { created: 3, updated: 3 }), outcome: "interrupted" },
+        session("s4", ROOT, { created: 4, updated: 4 }),
+      ),
+    )
+    // 消息容器均不在场（冷启动/未打开）
+    expect(store.dotStateFor("s1")).toBe("failed")
+    expect(store.dotStateFor("s2")).toBe("idle")
+    expect(store.dotStateFor("s3")).toBe("idle")
+    expect(store.dotStateFor("s4")).toBe("idle")
+  })
+
+  it("报错终局双源（§3.4b）：消息在场以消息派生为准——outcome 陈旧不误红、消息终局照常", () => {
+    seedSession()
+    // 重跑成功后 outcome 尚未随快照刷新（陈旧 failed）——末条 stop 无 error ⇒ 不红
+    store.sessionsByProject.set(
+      "proj1",
+      sessionsOf({ ...session("s1", ROOT, { created: 1, updated: 1 }), outcome: "failed" }),
+    )
+    dispatch({
+      type: "message.updated",
+      properties: {
+        sessionID: "s1",
+        info: {
+          id: "msg_a1",
+          sessionID: "s1",
+          role: "assistant",
+          time: { created: 100, completed: 200 },
+          finish: "stop",
+        },
+      },
+    })
+    expect(store.dotStateFor("s1")).toBe("idle")
+    // 容器在场但空（打开会话、消息在途）同属消息派生域——不回落 outcome
+    store.sessionsByProject.set(
+      "proj1",
+      sessionsOf({ ...session("s2", ROOT, { created: 2, updated: 2 }), outcome: "failed" }),
+    )
+    dispatch({
+      type: "message.updated",
+      properties: { sessionID: "s2", info: { id: "msg_u1", sessionID: "s2", role: "user", time: { created: 1 } } },
+    })
+    // 末条 user（新 run 前窗口）⇒ 消息派生 false ⇒ 不红
+    expect(store.dotStateFor("s2")).toBe("idle")
+    // 空容器（seedMessages 零参）边界固化：容器在场即消息派生域，不得特判回落 outcome
+    store.sessionsByProject.set(
+      "proj1",
+      sessionsOf({ ...session("s3", ROOT, { created: 3, updated: 3 }), outcome: "failed" }),
+    )
+    seedMessages("s3")
+    expect(store.dotStateFor("s3")).toBe("idle")
+  })
+
+  it("session.created 骨架回填 outcome/revert（§3.4b）：回放/重复投递不抹冷启动恢复源", () => {
+    seedSession()
+    store.sessionsByProject.set(
+      "proj1",
+      sessionsOf({ ...session("s1", ROOT, { created: 1, updated: 1 }), outcome: "failed" }),
+    )
+    // 迟到的 session.created 事件骨架（v2 payload 增量字段）落地——outcome 从
+    // 本地回填，不被整对象覆盖抹掉（未打开会话的红点不回灰）
+    dispatch({
+      type: "session.created",
+      properties: { sessionID: "s1", projectID: "proj1", title: "s1" },
+    })
+    expect(store.findSession("s1")?.outcome).toBe("failed")
+    expect(store.dotStateFor("s1")).toBe("failed")
+  })
+
+  it("报错终局冷启动（§3.4b）：进行中状态优先——busy/retry 不受 outcome 影响", () => {
+    seedSession()
+    store.sessionsByProject.set(
+      "proj1",
+      sessionsOf({ ...session("s1", ROOT, { created: 1, updated: 1 }), outcome: "failed" }),
+    )
+    dispatch({ type: "session.status", properties: { sessionID: "s1", status: { type: "busy" } } })
+    expect(store.dotStateFor("s1")).toBe("running")
+    dispatch({
+      type: "session.status",
+      properties: { sessionID: "s1", status: { type: "retry", attempt: 1, message: "rate limited" } },
+    })
+    expect(store.dotStateFor("s1")).toBe("error")
+  })
 })
 
 describe("重试收敛（design-session-retry-recovery，同 openbuilder）", () => {
