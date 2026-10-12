@@ -235,7 +235,7 @@ v2 server 默认强制密码（移动端基线 §认证）。桌面端影响：
 | B3 | **文件监听自动刷新**（spec 降级 #3：无 `file.watcher.updated` 事件、无 watch 端点） | 重开文件 Tab / 切作用域 / 重连对账重拉；链路代码保留 | v2.0.19–24 无 watch 路径；事件 schema 名单 v2.0.18→24 零变化 |
 | B4 | **大文件下载被 Bun keepAliveTimeout 截断**（openbuilder todo，🔴 >20MB 慢链路 100% 失败） | 无（客户端明确不做续传——server 不支持 Range） | PR #50507（4 行 `keepAliveTimeout=0`）实查 open/未合；v2.0.24 源码 grep 零命中 |
 | B5 | **worktree create 恒 detached**（上游 #26931 未合） | 本端 `POST /api/shell` 挂 `opencode/{name}` 分支 + 删除时 canonical 下 `branch -D`（design-worktree-branch-sync） | v2.0.24 `git.ts` `worktree add --detach` 仍硬编码 |
-| B6 | **伪项目回收机制**（server 只 upsert 不删、重启解析 cwd 复活、`project.sandboxes` 冻结列无写 API） | 客户端指纹过滤 + SQL 手工清理（ref-pseudo-project-cleanup） | v2.0.18..24 project 层仅 refactor（#51729），无回收机制；上游 issue 仍未提（ref §8 待办）。身份模型与解析时机核对见附录二——「upsert-only 无回收」是配套缺陷而非身份模型问题 |
+| B6 | **伪项目回收机制**（server 只 upsert 不删、重启解析 cwd 复活、`project.sandboxes` 冻结列无写 API、warm location 周期刷新） | ~~客户端指纹过滤~~（2026-10-12 否决：易误伤且属上游问题，见 ref §8 裁定）+ SQL 手工清理 + 删 worktree 时卸载该目录全部引用（ref §3.4/§8） | v2.0.18..24 project 层仅 refactor（#51729），无回收机制；上游 issue 仍未提（ref §8 待办）。身份模型与解析时机核对见附录二——「upsert-only 无回收」是配套缺陷而非身份模型问题 |
 | B7 | **todo 概念回归**（spec 降级 #1：任务卡全链移除） | 无（消息流内计划文本不受影响） | 无端点无事件，概念仍在 server API 层面缺席 |
 | B8 | **文件树 ignored 弱化样式**（spec 降级 #4） | 无害降级（dot 文件仍展示） | `FileSystem.Entry` schema 无变化，仍无 gitignore 标记 |
 
@@ -278,7 +278,7 @@ URL 归一化（project.ts:273-291）：HTTPS/SSH/scp 语法归一为 `host/path
 | 该目录新建会话 | `Session.create` 每次直调 `projects.resolve()`（session.ts:271，无缓存） | 立即 |
 | location 缓存逐出后重建 | 服务栈按目录缓存在内存 LayerMap，构建时才 resolve（location.ts:24） | 逐出后下次触碰 |
 | ├ 空闲 60 分钟自动逐出 | location-activity TTL sweep（每分钟检查）。**TTL 到点会就地 interrupt 该 location 运行中会话**（reason `"inactivity"`），非只清空闲 | 最长 1 小时 |
-| ├ `POST /api/location/reload` | 逐出全部已加载 location | 手动即时 |
+| ├ `POST /api/location/reload` | 逐出全部已加载 location 并**立即重建**（location-service-map.ts `reload()`），重建即再次逐目录 resolve | 手动即时 |
 | └ server 重启 | 内存缓存清空，按需重建 | 手动 |
 | `GET /api/project` | **纯 DB 读不触发解析** | — |
 
@@ -286,4 +286,4 @@ URL 归一化（project.ts:273-291）：HTTPS/SSH/scp 语法归一为 `host/path
 
 ### 设计评估（一句话：认血统修了认位置的病，但没配销户流程）
 
-身份模型本身自洽（修 v1 目录身份的搬家断链之痛，跨端同仓同 ID）；不合理在配套四点：① **upsert-only 无回收**（伪项目根源，B6）；② canonical 先到先得的任意仲裁；③ 零提交落 global 桶无提示；④ URL 归一化大小写不对称。本端展示层兜底见 ref-pseudo-project-cleanup §8。
+身份模型本身自洽（修 v1 目录身份的搬家断链之痛，跨端同仓同 ID）；不合理在配套四点：① **upsert-only 无回收**（伪项目根源，B6）；② canonical 先到先得的任意仲裁；③ 零提交落 global 桶无提示；④ URL 归一化大小写不对称。本端处置见 ref-pseudo-project-cleanup §8——2026-10-12 裁定：项目列表过滤否决（易误伤且属上游问题），新增客户端要点为删 worktree 时卸载该目录全部引用。
