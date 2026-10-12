@@ -17,7 +17,8 @@ vi.mock("../app", () => ({
       fileRefRemove: "删除",
       attachPick: "添加附件",
       attachProcessing: "处理附件中…",
-      attachTooLarge: "附件超过 4MB 上限（base64 后）：{names}",
+      attachTooLargeBlocked: "文件过大，无法发送：{names}。请移除该文件后重试",
+      attachTooLargeChip: "文件过大，无法发送",
     },
     locale: "zh" as const,
   }),
@@ -72,6 +73,23 @@ describe("AttachmentChips", () => {
   it("空列表不渲染", () => {
     const { container } = render(<AttachmentChips items={[]} onRemove={() => {}} />)
     expect(container.querySelector(".attach-chips")).toBeNull()
+  })
+  it("超限占位渲染红态 chip（design-session-attachments §2b）：too-large 类 + 删除钮", () => {
+    const onRemove = vi.fn()
+    const placeholder: Attachment = {
+      id: "att_big",
+      mime: "application/octet-stream",
+      filename: "big.pkg.tar.zst",
+      dataUrl: "",
+      isImage: false,
+      tooLarge: true,
+    }
+    const { container } = render(<AttachmentChips items={[placeholder]} onRemove={onRemove} />)
+    const chip = container.querySelector(".ref-chip.too-large")
+    expect(chip).toBeTruthy()
+    expect(screen.getByText("big.pkg.tar.zst")).toBeTruthy()
+    fireEvent.click(screen.getByLabelText("删除"))
+    expect(onRemove).toHaveBeenCalledWith("att_big")
   })
 })
 
@@ -142,6 +160,19 @@ describe("useAttachmentInput（粘贴入口）", () => {
     render(<Probe />)
     expect(firePaste([])).toBe(false)
     expect(addAttachments).not.toHaveBeenCalled()
+  })
+
+  it("粘贴超限文件 → tooLarge 占位入库（design-session-attachments §2b）", async () => {
+    render(<Probe />)
+    // 5MB 原始字节 → base64 约 6.67MB > 4MB 上限（非图片透传路径）
+    const big = new File([new Uint8Array(5 * 1024 * 1024)], "big.pkg.tar.zst", { type: "" })
+    expect(firePaste([big])).toBe(true)
+    await waitFor(() => expect(addAttachments).toHaveBeenCalled())
+    const list = addAttachments.mock.calls[0]![1] as Attachment[]
+    expect(list).toHaveLength(1)
+    expect(list[0]?.tooLarge).toBe(true)
+    expect(list[0]?.filename).toBe("big.pkg.tar.zst")
+    expect(list[0]?.dataUrl).toBe("") // 占位不存内容
   })
 })
 

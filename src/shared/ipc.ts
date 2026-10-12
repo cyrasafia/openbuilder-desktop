@@ -145,6 +145,10 @@ export interface DesktopApi {
     accepted: Array<{ name: string; type: string | null; bytes: Uint8Array }>
     rejected: Array<{ name: string; reason: string }>
   }>
+  /** 引用体积预检（design-session-attachments §2b）：fstat 文件大小（字节）；
+   * 目录/stat 失败 = null（不预检，发送侧 server 兜底）。renderer 无本地
+   * stat 通道，经 IPC 走 main */
+  fsStatSize(path: string): Promise<number | null>
   /** 自动扫描（design-auto-scan）：managed 二进制候选（PATH + 常见安装落点） */
   scanBinaries(): Promise<BinaryCandidate[]>
   /** 自动扫描（design-auto-scan）：attach server 候选（loopback 默认端口 + mDNS；

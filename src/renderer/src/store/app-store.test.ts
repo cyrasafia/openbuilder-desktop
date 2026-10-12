@@ -5,7 +5,9 @@
  * 快照落点用手动 deferred 控制。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { waitFor } from "@testing-library/react"
 import { AppStore, diffTabKey, FILE_WATCH_DEBOUNCE_MS } from "./app-store"
+import type { Attachment } from "@shared/attachment-pipeline"
 import { ApiError, RestClient } from "@shared/rest-client"
 import { SseSubscriber } from "@shared/sse-subscriber"
 import type { ModelCatalog } from "@shared/model-catalog"
@@ -105,6 +107,8 @@ beforeEach(() => {
     onBrowserFindRequest: () => () => {},
     onBrowserFindState: () => () => {},
     onBrowserViewState: () => () => {},
+    // 引用体积预检（design-session-attachments §2b）：null = 不预检
+    fsStatSize: vi.fn(async () => null),
   }
   browserCalls.length = 0
   snapshots = new Map()
@@ -5136,6 +5140,51 @@ describe("文件引用（design-file-reference）", () => {
     expect(store.fileRefsFor("s1").length).toBe(1)
     store.removeFileRef("s1", "/repo/src")
     expect(store.fileRefsFor("s1").length).toBe(0)
+  })
+
+  it("引用体积预检（design-session-attachments §2b）：超限标 tooLarge、限内/null 不标；删除占位恢复", async () => {
+    const d = (window as unknown as { desktop: { fsStatSize: (p: string) => Promise<number | null> } }).desktop
+    ;(d.fsStatSize as ReturnType<typeof vi.fn>).mockImplementation(
+      async (p: string) => (p === "/repo/big.zst" ? 142257177 : p === "/repo/mid.ts" ? 1024 : null),
+    )
+    store.addFileRef("s1", ref("big.zst", "/repo/big.zst"))
+    store.addFileRef("s1", ref("mid.ts", "/repo/mid.ts"))
+    store.addFileRef("s1", ref("dir/", "/repo/dir", true)) // 目录不预检
+    await waitFor(() => expect(store.fileRefsFor("s1").find((r) => r.absolute === "/repo/big.zst")?.tooLarge).toBe(true))
+    expect(store.fileRefsFor("s1").find((r) => r.absolute === "/repo/mid.ts")?.tooLarge).toBeUndefined()
+    expect(store.fileRefsFor("s1").find((r) => r.absolute === "/repo/dir")?.tooLarge).toBeUndefined()
+    // 删除超限占位 → 状态恢复（发送置灰条件由 UI 读 tooLarge 计算）
+    store.removeFileRef("s1", "/repo/big.zst")
+    expect(store.fileRefsFor("s1").some((r) => r.tooLarge)).toBe(false)
+  })
+
+  it("sendPrompt 过滤超限条目（design-session-attachments §2b 防御层）：tooLarge 引用/附件不进 files", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    const sentBox: { v: { text: string; files?: Array<{ uri: string; name?: string }> } | null } = { v: null }
+    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
+      ...clientV2Of(),
+      prompt: async (_id: string, input: { text: string; files?: Array<{ uri: string; name?: string }> }) => {
+        sentBox.v = input
+        return { id: "" }
+      },
+    })
+    store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
+    store.addFileRef("s1", { ...ref("big.zst", "/repo/big.zst"), tooLarge: true })
+    store.addFileRef("s1", ref("ok.ts", "/repo/ok.ts"))
+    const bigAtt: Attachment = {
+      id: "att_big",
+      mime: "application/octet-stream",
+      filename: "big.bin",
+      dataUrl: "",
+      isImage: false,
+      tooLarge: true,
+    }
+    const res = await store.sendPrompt("s1", "看下", store.fileRefsFor("s1"), [bigAtt])
+    expect(res.ok).toBe(true)
+    expect(sentBox.v?.files).toEqual([{ uri: "file:///repo/ok.ts", name: "ok.ts" }])
+    // 纯占位 + 无文本：过滤后全空 → empty 守卫（不发零宽空格裸消息）
+    const only = await store.sendPrompt("s1", "", [{ ...ref("big.zst", "/repo/big.zst"), tooLarge: true }], [bigAtt])
+    expect(only).toEqual({ ok: false, error: "empty" })
   })
 
   it("sendPrompt parts 构造：文本 + 引用 file part（absolute file:// + source）", async () => {

@@ -27,6 +27,10 @@ function createBrowserDesktopApi(): DesktopApi {
     async openFilesPicker() {
       return { accepted: [], rejected: [] }
     },
+    // 无本地 stat 通道：null = 不预检（发送侧 server 兜底，design-session-attachments §2b）
+    async fsStatSize() {
+      return null
+    },
     onManagedEvent() {
       return () => {}
     },

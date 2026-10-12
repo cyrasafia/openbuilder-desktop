@@ -979,6 +979,8 @@ function GuidePage() {
     const refs = store.fileRefsFor(directory)
     const attachments = store.attachmentsFor(directory)
     if ((!text && refs.length === 0 && attachments.length === 0) || sendingRef.current) return
+    // 超限占位守卫（design-session-attachments §2b）：按钮已置灰，此处拦 Enter
+    if (refs.some((r) => r.tooLarge) || attachments.some((a) => a.tooLarge)) return
     // 闩与 state 同步置起，先于下方任何 await（守卫的 refreshCommands 在途时
     // 第二次 Enter 不得再入，见 sendingRef 注释）；出口统一在 finally 清
     sendingRef.current = true
@@ -1192,7 +1194,10 @@ function GuidePage() {
                 className="btn-primary"
                 disabled={
                   (!draft.trim() && guideRefs.length === 0 && store.attachmentsFor(directory).length === 0) ||
-                  sending
+                  sending ||
+                  // 超限占位置灰（design-session-attachments §2b）：删除占位后恢复
+                  guideRefs.some((r) => r.tooLarge) ||
+                  store.attachmentsFor(directory).some((a) => a.tooLarge)
                 }
                 onClick={() => void send()}
               >
@@ -1567,6 +1572,9 @@ function ChatView({ sessionID }: { sessionID: string }) {
     const refs = store.fileRefsFor(sessionID)
     const attachments = store.attachmentsFor(sessionID)
     if (!text && refs.length === 0 && attachments.length === 0) return
+    // 超限占位守卫（design-session-attachments §2b）：按钮已置灰，此处拦
+    // Enter 键路径——占位在场 = 发送必失败（server 400 / base64 超限），不发
+    if (refs.some((r) => r.tooLarge) || attachments.some((a) => a.tooLarge)) return
     // 斜杠命令 + 附件守卫（design-session-attachments review P2-2，移动端 AT-5
     // 同型）：命中注册命令的 /cmd 是否消费 data URL 附件未经验证——阻止并提示，
     // 文本/附件全部保留（去掉 / 前缀或清空附件后可发；未注册 /xxx 按字面
@@ -1828,9 +1836,12 @@ function ChatView({ sessionID }: { sessionID: string }) {
             <button
               className="btn-primary"
               disabled={
-                !draft.trim() &&
-                store.fileRefsFor(sessionID).length === 0 &&
-                store.attachmentsFor(sessionID).length === 0
+                (!draft.trim() &&
+                  store.fileRefsFor(sessionID).length === 0 &&
+                  store.attachmentsFor(sessionID).length === 0) ||
+                // 超限占位置灰（design-session-attachments §2b）：删除占位后恢复
+                store.fileRefsFor(sessionID).some((r) => r.tooLarge) ||
+                store.attachmentsFor(sessionID).some((a) => a.tooLarge)
               }
               onClick={() => void send()}
             >

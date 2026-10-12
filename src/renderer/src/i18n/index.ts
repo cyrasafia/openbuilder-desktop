@@ -210,7 +210,8 @@ const zh = {
   // 会话附件（design-session-attachments）
   attachPick: "添加附件",
   attachProcessing: "处理附件中…",
-  attachTooLarge: "附件超过 4MB 上限（base64 后）：{names}",
+  attachTooLargeBlocked: "文件过大，无法发送：{names}。请移除该文件后重试",
+  attachTooLargeChip: "文件过大，无法发送",
   attachCmdBlocked: "斜杠命令不支持附件——请去掉 / 前缀或清空附件后发送",
   // 服务器连接状态（左栏底部）
   statusStreaming: "实时",
@@ -529,7 +530,8 @@ const en: typeof zh = {
   welcomeConnect: "Connect",
   attachPick: "Attach files",
   attachProcessing: "Processing attachments…",
-  attachTooLarge: "Attachment exceeds the 4MB limit (base64): {names}",
+  attachTooLargeBlocked: "File too large to send: {names}. Remove the file and retry",
+  attachTooLargeChip: "File too large to send",
   attachCmdBlocked: "Slash commands do not support attachments — remove the / prefix or clear attachments",
   statusStreaming: "Live",
   statusDegraded: "Reconnecting",

@@ -2107,6 +2107,19 @@
   opacity: 0.55;
 }
 
+/* 超限占位 chip（design-session-attachments §2b，附件/引用统一）：红边红字，
+   删除钮保留——删除占位即恢复发送 */
+.ref-chip.too-large {
+  border-color: var(--status-error);
+  color: var(--status-error);
+}
+
+/* 超限常驻红字（与占位 chip 同寿命；非 4 秒 notice） */
+.form-note.attach-error {
+  color: var(--status-error);
+  margin: 4px 0 0;
+}
+
 /* @ 引用浮层条目：command-row 基底 + 文件图标对齐 */
 .file-ref-picker .command-row {
   align-items: center;

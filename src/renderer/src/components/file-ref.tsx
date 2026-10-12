@@ -69,7 +69,8 @@ export function fileRefFromDataTransfer(dt: DataTransfer): FileRef | null {
   }
 }
 
-/** 引用 chip 条目（composer 与消息气泡共用形态）；pending = 拖拽悬停占位预览 */
+/** 引用 chip 条目（composer 与消息气泡共用形态）；pending = 拖拽悬停占位预览；
+ *  tooLarge = 超限占位（design-session-attachments §2b，composer 红态） */
 export interface RefChipItem {
   key: string
   path: string
@@ -77,6 +78,7 @@ export interface RefChipItem {
   isDir: boolean
   title?: string
   pending?: boolean
+  tooLarge?: boolean
 }
 
 /**
@@ -97,14 +99,18 @@ export function FileRefChips({
   return (
     <div className="ref-chips">
       {items.map((r) => {
-        const clickable = !!onOpen && !r.isDir && !!r.absolute && !r.pending
+        const clickable = !!onOpen && !r.isDir && !!r.absolute && !r.pending && !r.tooLarge
         return (
           <span
             key={r.key}
             className={
-              "ref-chip" + (r.isDir ? " dir" : "") + (clickable ? " clickable" : "") + (r.pending ? " pending" : "")
+              "ref-chip" +
+              (r.isDir ? " dir" : "") +
+              (clickable ? " clickable" : "") +
+              (r.pending ? " pending" : "") +
+              (r.tooLarge ? " too-large" : "")
             }
-            title={r.title ?? r.path}
+            title={r.tooLarge ? t.attachTooLargeChip : (r.title ?? r.path)}
             onClick={clickable ? () => onOpen!(r) : undefined}
           >
             {r.isDir ? <Folder size={12} aria-hidden /> : <FileText size={12} aria-hidden />}
@@ -345,32 +351,46 @@ export function useFileRefInput(opts: {
   }, [pending])
 
   const refs = store.fileRefsFor(refKey)
+  const tooLargeRefs = refs.filter((r) => r.tooLarge)
   const chips = (
-    <FileRefChips
-      items={[
-        ...refs.map((r) => ({
-          key: r.absolute,
-          path: r.path,
-          absolute: r.absolute,
-          isDir: r.isDir,
-          title: r.absolute,
-        })),
-        // 悬停占位 chip（实时预览）：挂引用条末位 = addFileRef 追加语义的预演
-        ...(pending
-          ? [
-              {
-                key: pending.absolute,
-                path: pending.path,
-                absolute: pending.absolute,
-                isDir: pending.isDir,
-                title: pending.absolute,
-                pending: true,
-              },
-            ]
-          : []),
-      ]}
-      onRemove={(key) => store.removeFileRef(refKey, key)}
-    />
+    <>
+      <FileRefChips
+        items={[
+          ...refs.map((r) => ({
+            key: r.absolute,
+            path: r.path,
+            absolute: r.absolute,
+            isDir: r.isDir,
+            title: r.absolute,
+            tooLarge: r.tooLarge,
+          })),
+          // 悬停占位 chip（实时预览）：挂引用条末位 = addFileRef 追加语义的预演
+          ...(pending
+            ? [
+                {
+                  key: pending.absolute,
+                  path: pending.path,
+                  absolute: pending.absolute,
+                  isDir: pending.isDir,
+                  title: pending.absolute,
+                  pending: true,
+                },
+              ]
+            : []),
+        ]}
+        onRemove={(key) => store.removeFileRef(refKey, key)}
+      />
+      {/* 超限常驻红字（design-session-attachments §2b）：fstat 预检超限的引用
+          占位——与附件占位同形态，删除全部超限引用即消失 */}
+      {tooLargeRefs.length > 0 && (
+        <div className="form-note attach-error">
+          {t.attachTooLargeBlocked.replace(
+            "{names}",
+            tooLargeRefs.map((r) => r.filename).join("、"),
+          )}
+        </div>
+      )}
+    </>
   )
   const picker = state ? (
     <div className="command-hints-slot">

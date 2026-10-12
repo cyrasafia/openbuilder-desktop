@@ -7,6 +7,11 @@
 /** 客户端体积上限：对 base64 长度校验（server max_base64_bytes 同语义，AT-3） */
 export const MAX_BASE64_BYTES = 4 * 1024 * 1024
 
+/** 引用（file://）路径体积上限（2026-10-12 实测 v2.0.18）：POST /prompt 对
+ * file:// URI 同步 fstat 预检，超 20MiB 返 400 "Attachment exceeds the
+ * 20971520 byte limit"——客户端同值预检，超限占位置灰（design-session-attachments §2b） */
+export const MAX_FILEREF_BYTES = 20 * 1024 * 1024
+
 /** 图片压缩边上限（移动端同款 2048） */
 const IMAGE_MAX_EDGE = 2048
 
@@ -19,6 +24,9 @@ export interface Attachment {
   filename: string
   dataUrl: string
   isImage: boolean
+  /** 超限占位（design-session-attachments §2b）：体积超限不读字节不存
+   * dataUrl（空串），composer 红态 chip 占位 + 发送置灰，删除后恢复 */
+  tooLarge?: boolean
 }
 
 export interface RejectedFile {
@@ -90,6 +98,19 @@ export function shrinkPlan(): Array<{ quality: number; maxEdge: number }> {
 
 function attachmentId(): string {
   return `att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+}
+
+/** 超限占位条目（design-session-attachments §2b）：不读字节不存 dataUrl，
+ * composer 红态 chip + 发送置灰；删除占位即恢复 */
+export function tooLargeAttachment(name: string, declaredMime: string | null): Attachment {
+  return {
+    id: attachmentId(),
+    mime: guessMime(name, declaredMime),
+    filename: name,
+    dataUrl: "",
+    isImage: false,
+    tooLarge: true,
+  }
 }
 
 export interface ResolveResult {

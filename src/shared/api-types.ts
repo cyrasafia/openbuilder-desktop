@@ -258,6 +258,9 @@ export interface FileRef {
   absolute: string
   filename: string
   isDir: boolean
+  /** 超限占位（design-session-attachments §2b）：fstat 超 MAX_FILEREF_BYTES，
+   * 发送必被 server 400 拒——composer 红态 chip 占位 + 发送置灰，删除后恢复 */
+  tooLarge?: boolean
 }
 
 // ---- pty（design-terminal-tab §1，openapi Pty/PtyTicketConnectToken/shells） ----

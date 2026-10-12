@@ -1,5 +1,7 @@
 # 会话附件（文件与贴图）— 设计文档
 
+> **超限交互统一修订（2026-10-12，§2b）**：附件/引用超限时不再"拒绝即弃 + 4 秒 notice"（附件）或"无预检直发 → server 400 乐观闪退"（引用），统一为**占位 + 常驻红字 + 发送置灰**——起因为 142MB `.pkg.tar.zst` 引用发送实测（server 同步 400，错误仅左栏小图标，用户感知"消息闪一下消失且无提示"）。新增 server 20MiB `file://` 预检契约（实测 v2.0.18，`Attachment exceeds the 20971520 byte limit`）。
+
 > **v2 迁移注记（2026-09-29，M4）**：发送端点换 `POST /api/session/:id/prompt`（200 回执驱动，files 为 v2 `{uri, name}`）；data URL 内联策略与体积上限延续。
 
 
@@ -36,6 +38,24 @@ export interface Attachment {
   4. 输出 `{accepted: Attachment[]; rejected: {name; reason}[]}`（移动端场景验证表逐条对应）
 - **发送**：`sendPrompt(sessionID, text, refs?, attachments?)`——parts 追加 `{type:"file", mime, url:dataUrl, filename}`（**无 source 字段**，与引用型 FilePart 的分野）；空守卫扩展为 text/refs/attachments 全空才拒绝（纯附件可发，移动端 3R-A）；乐观消息携带 attachments（气泡即见，spec「乐观消息附件随上屏」）；成功清 attachments（+refs），失败保留（AT-11）
 - 斜杠命令 send（ChatView）：parts 同样携带附件（§1 契约）
+
+## 2b. 超限占位（附件/引用统一，2026-10-12 修订）
+
+原分叉行为（附件超限 = rejected + 4 秒 notice 即弃；引用超限 = 无预检直发，server 400 后乐观撤回 + 错误仅左栏状态行小图标——用户感知"消息闪一下消失且无提示"）统一为**占位拦截**：
+
+| 项 | 语义 |
+|---|---|
+| 上限（引用 file://） | `MAX_FILEREF_BYTES = 20MiB`（20971520，server 实测同值——POST /prompt 对 file:// URI 同步 fstat 预检，超限 400 `Attachment exceeds the 20971520 byte limit`） |
+| 上限（附件 data URL） | `MAX_BASE64_BYTES = 4MB` base64（§1 既有）+ main picker 128MB 读字节预检（§3 既有） |
+| 预检通道 | 引用经 IPC `fs:statSize`（main fstat；目录/stat 失败/浏览器 shim = null 不预检，server 兜底）——renderer 无本地 stat 通道 |
+| 占位模型 | `FileRef.tooLarge` / `Attachment.tooLarge`：引用在 `addFileRef` 内 fire-and-forget 预检回标（晚到标记对重加同路径 ref 仍正确）；附件超限项经 `tooLargeAttachment()` 构造（不读字节、`dataUrl: ""`）入 store |
+| UI | 占位 chip 红态（`.ref-chip.too-large`）+ 常驻红字（`.form-note.attach-error`，列出文件名，与占位同寿命——删除全部占位即消失）；发送按钮置灰 + Enter 守卫 |
+| 发送防御 | `sendPrompt`/`sendCommand` 过滤 tooLarge 条目（UI 已拦，兜底程序化调用）；空守卫按过滤后判定——纯占位 + 无文本 = `empty`，不发零宽空格裸消息 |
+| 删除恢复 | `removeFileRef`/`removeAttachment` 既有路径，UI 重算置灰条件自然恢复 |
+
+**判定注记**：引用预检是 fire-and-forget 异步——占位标记落地前（约一次 IPC 往返）chip 短暂呈正常态；此窗口内点发送仍会打到 server 400（既有 catch 撤回路径），可接受（窗口毫秒级，且超限引用是少数场景）。
+
+**上游追踪（2026-10-12 核实）**：上游 `anomalyco/opencode` 分支 `attachment-path-delivery`（commit `30fb0dc3fb`，PR #49682/#49717）拟把「file:// 超 20MiB 拒绝」改为「admit 为路径引用」（cap 收窄到只拒 data: URL）。该提交不在 v2.0.18..v2.0.24 任何 tag 中——当前 pin（2.0.18）契约确如本节所记，代码与 pin 一致。若上游合入，本端 20MiB 硬预检会拦住 server 将接受的发送，需随 pin 升级同步放宽（预检常量与 server cap 的对齐是升级检查项）。
 
 ## 3. 三入口
 
@@ -75,7 +95,7 @@ export interface Attachment {
 ## 7. 测试
 
 - pipeline 纯函数：guessMime（扩展名/类型缺失）、toDataUrl、base64Len、shrink 循环计划（注入 bitmap/canvas 桩：尺寸超限→降质→缩宽）、非图片超限拒绝、resolveFiles 聚合
-- store：attachments CRUD 去重键位、sendPrompt parts 序列（text+ref+attachment 混排）、纯附件守卫、成功清/失败留、乐观携带
+- store：attachments CRUD 去重键位、sendPrompt parts 序列（text+ref+attachment 混排）、纯附件守卫、成功清/失败留、乐观携带；引用体积预检回标（§2b：超限标/限内与 null 不标/目录不预检/删除恢复）、sendPrompt 过滤 tooLarge + 纯占位 empty 守卫（§2b）
 - 组件：AttachmentChips 渲染删除、气泡缩略图/文件 chip 分流、点击放大开关
 - E2E（人工/CDP 可选）：粘贴截图 → 发送 → 用户气泡缩略图 → AI 读到内容回复
 

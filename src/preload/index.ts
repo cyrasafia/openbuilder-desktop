@@ -15,6 +15,7 @@ const api = {
       accepted: Array<{ name: string; type: string | null; bytes: Uint8Array }>
       rejected: Array<{ name: string; reason: string }>
     }>,
+  fsStatSize: (path: string) => ipcRenderer.invoke("fs:statSize", path) as Promise<number | null>,
   scanBinaries: () => ipcRenderer.invoke("scan:binaries"),
   scanServers: () => ipcRenderer.invoke("scan:servers"),
   onManagedEvent: (cb: (payload: string) => void) => {

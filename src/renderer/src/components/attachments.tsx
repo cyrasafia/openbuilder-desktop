@@ -10,6 +10,7 @@ import { FILEREF_MIME } from "./file-ref"
 import {
   isDisplayableImage,
   resolveFiles,
+  tooLargeAttachment,
   type Attachment,
   type ImageOps,
 } from "@shared/attachment-pipeline"
@@ -77,7 +78,22 @@ export function AttachmentChips({
   return (
     <div className="ref-chips attach-chips">
       {items.map((a) =>
-        a.isImage && !readOnly ? (
+        a.tooLarge ? (
+          <span key={a.id} className="ref-chip too-large" title={t.attachTooLargeChip}>
+            <FileText size={12} aria-hidden />
+            <span className="ref-chip-path mono">{a.filename}</span>
+            {!readOnly && (
+              <button
+                className="ref-chip-x"
+                aria-label={t.fileRefRemove}
+                title={t.fileRefRemove}
+                onClick={() => onRemove?.(a.id)}
+              >
+                <X size={12} aria-hidden />
+              </button>
+            )}
+          </span>
+        ) : a.isImage && !readOnly ? (
           <span key={a.id} className="attach-thumb" title={a.filename}>
             <img src={a.dataUrl} alt={a.filename} decoding="async" />
             <button
@@ -217,25 +233,38 @@ export function useAttachmentInput(refKey: string): {
           files.map(async (f) => ({ name: f.name, type: f.type || null, bytes: await fileToBytes(f) })),
         )
         const { accepted, rejected } = await resolveFiles(inputs, canvasImageOps())
+        // 超限占位（design-session-attachments §2b，2026-10-12 修订）：不再
+        // 4 秒 notice 即弃，改 tooLarge 占位入 store——红态 chip + 常驻红字 +
+        // 发送置灰，删除占位后恢复
+        const placeholders = rejected
+          .filter((r) => r.reason === "too_large")
+          .map((r) => {
+            const src = files.find((f) => f.name === r.name)
+            return tooLargeAttachment(r.name, src?.type || null)
+          })
         if (accepted.length > 0) store.addAttachments(refKey, accepted)
-        if (rejected.length > 0) {
-          showNotice(
-            t.attachTooLarge.replace("{names}", rejected.map((r) => r.name).join("、")),
-          )
-        }
+        if (placeholders.length > 0) store.addAttachments(refKey, placeholders)
       } catch (e) {
         showNotice(e instanceof Error ? e.message : String(e))
       } finally {
         setProcessing(false)
       }
     },
-    [refKey, showNotice, store, t],
+    [refKey, showNotice, store],
   )
 
   const items = store.attachmentsFor(refKey)
+  const tooLargeItems = items.filter((a) => a.tooLarge)
   const chips = (
     <>
       <AttachmentChips items={items} onRemove={(id) => store.removeAttachment(refKey, id)} />
+      {/* 超限常驻红字（design-session-attachments §2b）：与占位 chip 同寿命，
+          删除全部超限占位即消失——非 4 秒 notice */}
+      {tooLargeItems.length > 0 && (
+        <div className="form-note attach-error">
+          {t.attachTooLargeBlocked.replace("{names}", tooLargeItems.map((a) => a.filename).join("、"))}
+        </div>
+      )}
       {notice && <div className="form-note attach-notice">{notice}</div>}
       {processing && <div className="form-note">{t.attachProcessing}</div>}
     </>
@@ -250,10 +279,12 @@ export function useAttachmentInput(refKey: string): {
       disabled={processing}
       onClick={() => {
         // main 侧读字节返回（renderer 无法从路径构造 File）；>128MB 预检拒绝
+        // ——拒绝项同走 tooLarge 占位（design-session-attachments §2b）
         void window.desktop.openFilesPicker().then(({ accepted, rejected }) => {
-          if (rejected.length > 0) {
-            showNotice(t.attachTooLarge.replace("{names}", rejected.map((r) => r.name).join("、")))
-          }
+          const placeholders = rejected
+            .filter((r) => r.reason === "too_large")
+            .map((r) => tooLargeAttachment(r.name, null))
+          if (placeholders.length > 0) store.addAttachments(refKey, placeholders)
           if (accepted.length === 0) return
           void ingest(
             accepted.map(

@@ -91,7 +91,7 @@ import {
 import type { BrowserViewState, ConnectionProfile, ManagedNotice } from "@shared/ipc"
 import "@shared/ipc-global"
 import { belowMinServerVersion, MIN_SERVER_VERSION_V2 } from "@shared/semver"
-import type { Attachment } from "@shared/attachment-pipeline"
+import { MAX_FILEREF_BYTES, type Attachment } from "@shared/attachment-pipeline"
 import {
   applyCommandFetch,
   initialCommandCache,
@@ -4403,9 +4403,14 @@ export class AppStore {
     if (!this.client) return { ok: false, error: "not connected" }
     const session = this.findSession(sessionID)
     if (!session) return { ok: false, error: "session not found" }
+    // 超限条目（tooLarge）防御过滤（design-session-attachments §2b）：UI 已
+    // 置灰拦截，此处兜底程序化调用方——占位条目不进乐观也不进 files；空守卫
+    // 同按过滤后判定（纯占位 + 无文本 = empty，不发零宽空格裸消息）
+    const safeRefs = (refs ?? []).filter((r) => !r.tooLarge)
+    const safeAttachments = (attachments ?? []).filter((a) => !a.tooLarge)
     // 空守卫（design-file-reference §4 + design-session-attachments §2）：文本、
     // 引用、附件全空才拒绝——纯附件发送合法（移动端 3R-A）
-    if (!text && (!refs || refs.length === 0) && (!attachments || attachments.length === 0)) {
+    if (!text && safeRefs.length === 0 && safeAttachments.length === 0) {
       return { ok: false, error: "empty" }
     }
     // 乐观消息（design-optimistic-id-anchor：localId = client-minted msg_ id，
@@ -4417,8 +4422,8 @@ export class AppStore {
       localId: mintMessageID(),
       text,
       createdAt: Date.now(),
-      ...(refs?.length ? { refs } : {}),
-      ...(attachments?.length ? { attachments } : {}),
+      ...(safeRefs.length ? { refs: safeRefs } : {}),
+      ...(safeAttachments.length ? { attachments: safeAttachments } : {}),
     }
     this.optimisticBySession.set(sessionID, [
       ...(this.optimisticBySession.get(sessionID) ?? []),
@@ -4427,12 +4432,12 @@ export class AppStore {
     this.emit()
     try {
       const files: Array<{ uri: string; name?: string }> = []
-      for (const ref of refs ?? []) {
+      for (const ref of safeRefs) {
         const p = fileRefToFilePart(ref)
         if (p.type === "file") files.push({ uri: p.url, name: p.filename })
       }
       // 附件（design-session-attachments §2）：data URL 内联
-      for (const a of attachments ?? []) {
+      for (const a of safeAttachments) {
         files.push({ uri: a.dataUrl, name: a.filename })
       }
       // 发送前捕获回滚清除目标（design-sse-event-surface 层 2）：必须在 POST
@@ -4881,13 +4886,16 @@ export class AppStore {
     const session = this.findSession(sessionID)
     if (!session) return { ok: false, error: "session not found" }
     const text = arguments_ ? `/${command} ${arguments_}` : `/${command}`
+    // 超限条目防御过滤（同 sendPrompt，design-session-attachments §2b）
+    const safeRefs = (refs ?? []).filter((r) => !r.tooLarge)
+    const safeAttachments = (attachments ?? []).filter((a) => !a.tooLarge)
     const optimistic: OptimisticMessage = {
       optimistic: true,
       localId: `opt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       text,
       createdAt: Date.now(),
-      ...(refs?.length ? { refs } : {}),
-      ...(attachments?.length ? { attachments } : {}),
+      ...(safeRefs.length ? { refs: safeRefs } : {}),
+      ...(safeAttachments.length ? { attachments: safeAttachments } : {}),
     }
     this.optimisticBySession.set(sessionID, [
       ...(this.optimisticBySession.get(sessionID) ?? []),
@@ -4904,8 +4912,8 @@ export class AppStore {
     try {
       // 斜杠命令同样携带引用/附件（移动端 6R-C；v2 files 契约同 prompt）
       const files: Array<{ uri: string; name?: string }> = [
-        ...(refs ?? []).map((r) => ({ uri: fileRefToFilePart(r).url, name: r.filename })),
-        ...(attachments ?? []).map((a) => ({ uri: a.dataUrl, name: a.filename })),
+        ...safeRefs.map((r) => ({ uri: fileRefToFilePart(r).url, name: r.filename })),
+        ...safeAttachments.map((a) => ({ uri: a.dataUrl, name: a.filename })),
       ]
       await this.client.sendCommand(
         sessionID,
@@ -6647,11 +6655,29 @@ export class AppStore {
     return this.fileRefs.get(key) ?? []
   }
 
-  /** 引用写：按 absolute 去重（同文件重复引用无意义）；emit 驱动 chip 条 */
+  /** 引用写：按 absolute 去重（同文件重复引用无意义）；emit 驱动 chip 条。
+   *  文件引用异步预检体积（design-session-attachments §2b）：fstat 超
+   *  MAX_FILEREF_BYTES 标 tooLarge（占位红 chip + 发送置灰）；stat 失败/
+   *  null（浏览器 shim）不预检，发送侧 server 400 兜底。fire-and-forget：
+   *  晚到标记误标重加的同路径 ref 仍是正确结果（文件没变还是超限）；mark
+   *  时已删/已标则 no-op。catch 吞 IPC 通道异常（main 热重载窗口等——
+   *  同 storeSet 惯例，防 unhandled rejection）。 */
   addFileRef(key: string, ref: FileRef) {
     const list = this.fileRefs.get(key) ?? []
     if (list.some((r) => r.absolute === ref.absolute)) return
     this.fileRefs.set(key, [...list, ref])
+    this.emit()
+    if (!ref.isDir) void this.prefillFileRefSize(key, ref.absolute).catch(() => {})
+  }
+
+  /** fstat 预检回标（addFileRef 内部调用）：超限置 tooLarge + emit。目标
+   *  已删或已标时 no-op（map 恒产新数组，先判存在才动——review 2026-10-12） */
+  private async prefillFileRefSize(key: string, absolute: string) {
+    const size = await window.desktop.fsStatSize(absolute)
+    if (size == null || size <= MAX_FILEREF_BYTES) return
+    const list = this.fileRefs.get(key)
+    if (!list?.some((r) => r.absolute === absolute && !r.tooLarge)) return
+    this.fileRefs.set(key, list.map((r) => (r.absolute === absolute ? { ...r, tooLarge: true } : r)))
     this.emit()
   }
 

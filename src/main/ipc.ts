@@ -139,6 +139,18 @@ export function registerIpc() {
     }
     return { accepted, rejected }
   })
+
+  // 引用体积预检（design-session-attachments §2b）：文件 fstat 字节数；
+  // 目录/失败 = null（不预检）——超限判定在 renderer（MAX_FILEREF_BYTES）
+  ipcMain.handle("fs:statSize", async (_e: unknown, path: unknown) => {
+    if (typeof path !== "string" || !path) return null
+    try {
+      const st = await stat(path)
+      return st.isFile() ? st.size : null
+    } catch {
+      return null
+    }
+  })
   // 自动扫描（design-auto-scan §4）：单次收束 + in-flight 去重（StrictMode 双触发
   // 不重复 spawn 一串 --version 子进程/开两条 mDNS 浏览）
   let binariesInFlight: Promise<unknown> | null = null
