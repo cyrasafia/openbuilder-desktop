@@ -72,6 +72,10 @@ bash scripts/package-arch.sh
 
 # 发行包：Fedora（fedora:41 容器内 rpmbuild）
 bash scripts/package-fedora.sh
+
+# 两个发行包脚本默认在打包成功后清理中间产物（组装件 + release/linux-unpacked）；
+# 需要保留中间产物（排查用）加 --keep-intermediates
+bash scripts/package-arch.sh --keep-intermediates
 ```
 
 #### 通信层说明
@@ -145,6 +149,10 @@ bash scripts/package-arch.sh
 
 # Distribution package: Fedora (rpmbuild inside a fedora:41 container)
 bash scripts/package-fedora.sh
+
+# Both scripts clean intermediate artifacts after a successful build
+# (assembly files + release/linux-unpacked); pass --keep-intermediates to keep them
+bash scripts/package-arch.sh --keep-intermediates
 ```
 
 #### API client note

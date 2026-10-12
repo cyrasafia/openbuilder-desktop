@@ -17,6 +17,7 @@ case "${1:-}" in
   -h|--help)
     echo "用法: $0 [--keep-intermediates]"
     echo "  默认：打包成功后清理中间产物（release/arch 组装件 + release/linux-unpacked）"
+    echo "  --keep-intermediates（别名 --keep）：保留中间产物"
     exit 0
     ;;
   *) echo "未知参数: $1（可用 --keep-intermediates）" >&2; exit 2 ;;
@@ -55,11 +56,13 @@ ls -la ./*.pkg.tar.zst
 # 打包成功后清理中间产物（失败路径不触发：set -e 在此前已退出，便于排查）
 cd "$ROOT"
 if [ "$KEEP_INTERMEDIATES" -eq 0 ]; then
-  before=$(du -sb "$ARCH_DIR" release/linux-unpacked 2>/dev/null | awk '{s+=$1} END{print s+0}')
+  # du 对缺失路径返回 1，在 set -e + pipefail 下会终止脚本——组内 || true 吞掉
+  # 该状态（认路径缺失为正常，缺了就按 0 计），避免产物已成功却以失败退出
+  before=$( { du -sb "$ARCH_DIR" release/linux-unpacked 2>/dev/null || true; } | awk '{s+=$1} END{print s+0}')
   rm -rf "$ARCH_DIR/src" "$ARCH_DIR/pkg" "$ARCH_DIR/icons"
   rm -f "$ARCH_DIR/PKGBUILD" "$ARCH_DIR/openbuilder-desktop.install"
   rm -rf release/linux-unpacked
-  after=$(du -sb "$ARCH_DIR" 2>/dev/null | awk '{s+=$1} END{print s+0}')
+  after=$( { du -sb "$ARCH_DIR" 2>/dev/null || true; } | awk '{s+=$1} END{print s+0}')
   echo "==> 已清理中间产物（arch 组装件 + linux-unpacked），释放 $(( (before-after)/1024/1024 )) MB；如需保留用 --keep-intermediates"
 else
   echo "==> 保留中间产物（--keep-intermediates）"

@@ -16,6 +16,7 @@ case "${1:-}" in
   -h|--help)
     echo "用法: $0 [--keep-intermediates]"
     echo "  默认：打包成功后清理中间产物（release/fedora/src + .rpmbuild.* + release/linux-unpacked）"
+    echo "  --keep-intermediates（别名 --keep）：保留中间产物"
     exit 0
     ;;
   *) echo "未知参数: $1（可用 --keep-intermediates）" >&2; exit 2 ;;
@@ -75,11 +76,16 @@ ls -la "$FED_DIR"/out/RPMS/x86_64/*.rpm
 # 打包成功后清理中间产物（失败路径不触发：set -e 在此前已退出，便于排查）
 cd "$ROOT"
 if [ "$KEEP_INTERMEDIATES" -eq 0 ]; then
-  before=$(du -sb "$FED_DIR/src" release/linux-unpacked 2>/dev/null | awk '{s+=$1} END{print s+0}')
+  # du 对缺失路径返回 1，在 set -e + pipefail 下会终止脚本——组内 || true 吞掉
+  # 该状态（认路径缺失为正常，缺了就按 0 计），避免产物已成功却以失败退出
+  before=$( { du -sb "$FED_DIR/src" release/linux-unpacked 2>/dev/null || true; } | awk '{s+=$1} END{print s+0}')
   rm -rf "$FED_DIR/src"
-  rm -rf "$FED_DIR"/.rpmbuild.*
+  # 只清 >1h 的残留 _topdir：正常路径的已由容器内删除，而在跑的并发实例
+  # （唯一 _topdir 是本脚本原设计）不能被误删
+  find "$FED_DIR" -maxdepth 1 -name '.rpmbuild.*' -mmin +60 -exec rm -rf {} + 2>/dev/null || true
   rm -rf release/linux-unpacked
-  echo "==> 已清理中间产物（fedora src 组装件 + .rpmbuild.* + linux-unpacked），释放 $(( before/1024/1024 )) MB；如需保留用 --keep-intermediates"
+  after=$( { du -sb "$FED_DIR" 2>/dev/null || true; } | awk '{s+=$1} END{print s+0}')
+  echo "==> 已清理中间产物（fedora src 组装件 + .rpmbuild.* + linux-unpacked），释放 $(( (before-after)/1024/1024 )) MB；如需保留用 --keep-intermediates"
 else
   echo "==> 保留中间产物（--keep-intermediates）"
 fi
