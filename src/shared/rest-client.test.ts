@@ -122,6 +122,24 @@ describe("会话域（M2）", () => {
     })
     await client2.prompt("ses_1", { text: "hi" })
     expect(JSON.parse(seenBody)).toEqual({ text: "hi" })
+    // skills（skill 激活通道，design-slash-command 2026-10-12 修订）：非空进
+    // body（最简 {id} 形态）、空数组省略——与 files 同为可选数组字段
+    const clientSkills = mkClient((_url, init) => {
+      seenBody = String(init.body)
+      return new Response(JSON.stringify({ data: { id: "msg_s" } }))
+    })
+    await clientSkills.prompt("ses_1", {
+      text: "/opencode x",
+      files: [{ uri: "data:text/plain;base64,aGk=", name: "t.txt" }],
+      skills: [{ id: "opencode" }],
+    })
+    expect(JSON.parse(seenBody)).toEqual({
+      text: "/opencode x",
+      files: [{ uri: "data:text/plain;base64,aGk=", name: "t.txt" }],
+      skills: [{ id: "opencode" }],
+    })
+    await clientSkills.prompt("ses_1", { text: "hi", skills: [] })
+    expect(JSON.parse(seenBody)).toEqual({ text: "hi" })
     // 无体（防御形态）：{id: ""} 降级，不抛
     const client3 = mkClient(() => new Response(null, { status: 200 }))
     const empty = await client3.prompt("ses_1", { text: "hi" })

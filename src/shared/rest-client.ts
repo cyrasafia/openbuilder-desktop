@@ -358,10 +358,18 @@ export class RestClient {
    * - 回执 id 仅作校验（不匹配时调用方 warn），user 消息落地仍由 post-200
    *   首页重取 + 事件/快照消解承接（回执≠投影）
    * - files = v1 FilePartInput → v2 {uri, name}
+   * - skills = v2 skill 激活通道（design-slash-command 2026-10-12 修订）：
+   *   `{id}` 最简形态（SkillAttachment required 仅 id，name/text 由 server 按
+   *   id 查注册表回填——2026-10-12 活体验证），与 files 并列无互斥
    */
   async prompt(
     sessionID: string,
-    input: { id?: string; text: string; files?: Array<{ uri: string; name?: string }> },
+    input: {
+      id?: string
+      text: string
+      files?: Array<{ uri: string; name?: string }>
+      skills?: Array<{ id: string }>
+    },
   ): Promise<{ id: string }> {
     const res = await this.fetchResponse(`/api/session/${encodeURIComponent(sessionID)}/prompt`, {
       method: "POST",
@@ -369,6 +377,7 @@ export class RestClient {
         ...(input.id ? { id: input.id } : {}),
         text: input.text,
         ...(input.files?.length ? { files: input.files } : {}),
+        ...(input.skills?.length ? { skills: input.skills } : {}),
       }),
       // 大附件同 v1 放宽（design-session-attachments §6）：data URL 总长 >1MB → 120s
       timeoutMs:

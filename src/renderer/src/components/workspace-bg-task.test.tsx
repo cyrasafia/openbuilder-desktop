@@ -170,6 +170,31 @@ afterEach(() => {
 })
 
 describe("后台任务卡（展开态跨详情保留 + 键盘路径）", () => {
+  it("ChatView 命中 skill：走 sendPrompt + skills 附件（/command 不认 skill，2026-10-12 修复）", async () => {
+    storeStub = makeStore([])
+    // sendSlash 的注册表目录来源（findSession → directory）；命令表含 skill 条目
+    ;(storeStub.findSession as ReturnType<typeof vi.fn>).mockReturnValue({
+      id: "s1",
+      title: "标题A",
+      directory: DIR_A,
+    })
+    ;(storeStub.commandsFor as ReturnType<typeof vi.fn>).mockReturnValue([
+      { name: "codeup-mr", source: "skill" },
+    ])
+    render(<Workspace />)
+    const ta = screen.getByPlaceholderText("输入…")
+    fireEvent.change(ta, { target: { value: "/codeup-mr 标题" } })
+    fireEvent.keyDown(ta, { key: "Enter" })
+    await act(async () => {
+      await vi.waitFor(() => expect(storeStub.sendPrompt).toHaveBeenCalled())
+    })
+    // skill 分流：prompt 端点 + skills=[{id}]（text 原始），不碰 /command
+    expect(storeStub.sendPrompt).toHaveBeenCalledWith("s1", "/codeup-mr 标题", [], [], [
+      { id: "codeup-mr" },
+    ])
+    expect(storeStub.sendCommand).not.toHaveBeenCalled()
+  })
+
   it("展开 → 点行开详情 → 关详情：列表保持展开（用户实测回归路径）", () => {
     storeStub = makeStore(["child-1"])
     render(<Workspace />)

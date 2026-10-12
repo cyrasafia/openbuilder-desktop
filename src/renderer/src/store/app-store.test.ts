@@ -1210,6 +1210,25 @@ describe("busy 补充发送（design-supplement-send / design-inbox-admission）
     ).toBe(true)
   })
 
+  it("sendPrompt skills 透传：skill 类斜杠命令经 prompt 激活（2026-10-12 修复回归）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    const clientV2 = clientV2Of()
+    let seenInput: { text?: string; files?: unknown[]; skills?: Array<{ id: string }> } = {}
+    clientV2.prompt = async (
+      _sid: string,
+      input: { id?: string; text: string; files?: unknown[]; skills?: Array<{ id: string }> },
+    ) => {
+      seenInput = input
+      return { id: input.id ?? "" }
+    }
+    const res = await store.sendPrompt("s1", "/codeup-mr 标题", [], [], [{ id: "codeup-mr" }])
+    expect(res.ok).toBe(true)
+    // text 原样（回显/消解与普通 prompt 同源）；skills 最简 {id} 形态透传
+    expect(seenInput.text).toBe("/codeup-mr 标题")
+    expect(seenInput.skills).toEqual([{ id: "codeup-mr" }])
+  })
+
   it("inbox.cancelled：未投影物化项移除；投影确认后不删（历史不可撤）", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))

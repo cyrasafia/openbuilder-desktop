@@ -999,13 +999,16 @@ function GuidePage() {
       pendingSession.current = null
     }
     try {
-      // 斜杠命令 + 附件守卫（同 ChatView，design-session-attachments review P2-2）：
-      // 命中注册命令的 /cmd 是否消费 data URL 附件未经验证——阻止并提示，
-      // 文本/附件全部保留（去掉 / 前缀或清空附件后可发）
+      // 斜杠命令 + 附件守卫（同 ChatView，design-session-attachments review
+      // P2-2）：命中注册命令的 /cmd 是否消费 data URL 附件未经验证——阻止并
+      // 提示，文本/附件全部保留（去掉 / 前缀或清空附件后可发）；skill 命中
+      // 放行（走 prompt 契约，同 ChatView 2026-10-12 修订）
       if (text.startsWith("/") && attachments.length > 0) {
         await store.refreshCommands(directory)
         const { token } = parseSlash(text)
-        const matched = store.commandsFor(directory).some((c) => c.name.toLowerCase() === token)
+        const matched = store.commandsFor(directory).some(
+          (c) => c.name.toLowerCase() === token && c.source !== "skill",
+        )
         if (matched) {
           attachInput.notify(t.attachCmdBlocked)
           return
@@ -1048,11 +1051,13 @@ function GuidePage() {
     }
   }
 
-  /** 发送分流：非斜杠/未注册 = 字面 prompt；斜杠命中 = command（服务端展开模板）。
-   *  返回 { command, res }：command 端点是同步长端点，调用方不得等 res 再开
-   *  Tab（见 send 内注释）——分发（乐观回显同步入 store）后立即消费。发送前
-   *  强制重拉注册表（最新命令集）；会话已建，注册表与匹配仍按作用域目录
-   *  （新会话目录 = scopeQuery.directory，createSession 契约） */
+  /** 发送分流：非斜杠/未注册 = 字面 prompt；斜杠命中 skill = prompt + skills
+   *  附件（异步端点，语义同普通发送——见 ChatView sendSlash 注释）；斜杠命中
+   *  普通 command = /command 端点（服务端展开模板）。返回 { command, res }：
+   *  command 端点是同步长端点，调用方不得等 res 再开 Tab（见 send 内注释）——
+   *  分发（乐观回显同步入 store）后立即消费。发送前强制重拉注册表（最新
+   *  命令集）；会话已建，注册表与匹配仍按作用域目录（新会话目录 =
+   *  scopeQuery.directory，createSession 契约） */
   const sendSlash = async (
     text: string,
     refs: ReturnType<typeof store.fileRefsFor>,
@@ -1064,12 +1069,17 @@ function GuidePage() {
     await store.refreshCommands(directory)
     const { token, args } = parseSlash(text)
     const matched = store.commandsFor(directory).find((c) => c.name.toLowerCase() === token)
-    return matched
-      ? {
-          command: true,
-          res: store.sendCommand(session.id, matched.name, args, refs, attachments),
-        }
-      : { command: false, res: store.sendPrompt(session.id, text, refs, attachments) }
+    if (!matched)
+      return { command: false, res: store.sendPrompt(session.id, text, refs, attachments) }
+    if (matched.source === "skill")
+      return {
+        command: false,
+        res: store.sendPrompt(session.id, text, refs, attachments, [{ id: matched.name }]),
+      }
+    return {
+      command: true,
+      res: store.sendCommand(session.id, matched.name, args, refs, attachments),
+    }
   }
 
   return (
@@ -1578,13 +1588,15 @@ function ChatView({ sessionID }: { sessionID: string }) {
     // 斜杠命令 + 附件守卫（design-session-attachments review P2-2，移动端 AT-5
     // 同型）：命中注册命令的 /cmd 是否消费 data URL 附件未经验证——阻止并提示，
     // 文本/附件全部保留（去掉 / 前缀或清空附件后可发；未注册 /xxx 按字面
-    // prompt 走，附件合法）
+    // prompt 走，附件合法）。**skill 命中放行**（design-slash-command
+    // 2026-10-12 修订）：skill 走 prompt 契约，files 消费与普通 prompt 同源
+    // （2.0.18 活体验证 skills+files 同发 200）
     if (text.startsWith("/") && attachments.length > 0) {
       const slashDir = store.findSession(sessionID)?.directory ?? null
       await store.refreshCommands(slashDir)
       const { token } = parseSlash(text)
       const matched = (slashDir ? store.commandsFor(slashDir) : []).some(
-        (c) => c.name.toLowerCase() === token,
+        (c) => c.name.toLowerCase() === token && c.source !== "skill",
       )
       if (matched) {
         attachInput.notify(t.attachCmdBlocked)
@@ -1610,7 +1622,10 @@ function ChatView({ sessionID }: { sessionID: string }) {
   /**
    * 斜杠命令分流：发送前强制重拉注册表（最新命令集），命中才走
    * POST /session/:id/command（服务端展开）；未注册的 /xxx 按字面文本
-   * 走 prompt（服务端不会展开模板）。
+   * 走 prompt（服务端不会展开模板）。**skill 命中走 prompt + skills 附件**
+   * （design-slash-command 2026-10-12 修订）：v2 `/command` 端点只查 command
+   * 注册表，skill 必须经 prompt 的 skills 字段激活（server 按 id 回填正文），
+   * 移动端 conversation_screen 同构；text/refs/attachments 与普通 prompt 同源。
    */
   const sendSlash = async (
     text: string,
@@ -1623,8 +1638,12 @@ function ChatView({ sessionID }: { sessionID: string }) {
     const matched = (slashDir ? store.commandsFor(slashDir) : []).find(
       (c) => c.name.toLowerCase() === token,
     )
-    // 未注册命令按字面文本走 prompt（引用/附件 parts 同样携带）；命中走 command（parts 契约同）
+    // 未注册命令按字面文本走 prompt（引用/附件 parts 同样携带）；命中 skill
+    // 走 prompt + skills（异步端点，乐观/消解与普通 prompt 同机制）；命中普通
+    // command 走 /command 端点（parts 契约同）
     if (!matched) return store.sendPrompt(sessionID, text, refs, attachments)
+    if (matched.source === "skill")
+      return store.sendPrompt(sessionID, text, refs, attachments, [{ id: matched.name }])
     return store.sendCommand(sessionID, matched.name, args, refs, attachments)
   }
 
