@@ -77,8 +77,12 @@ interface CommandCacheState {
   scope，客户端断连不取消执行，user 回显与回复全走 SSE。故 `sendCommand` 传 `timeoutMs: 0`
   **无限等待**（对齐官方 SDK v2 `req.timeout = false` 与移动端 dio 无 receiveTimeout）；
   失败只剩快速真错误（400 未注册/404）与断网。~~15s 默认超时~~是回显 bug 根源，见评审 SC-4。
-- 乐观消息：回显原始 `/cmd args`（与 prompt 路径共用机制，真实 user `message.updated` 到达即清）；
-  POST 失败撤回乐观 + **草稿回填输入框**（文本不丢，普通消息路径同样补了回填）。
+- 乐观消息：回显原始 `/cmd args`（与 prompt 路径共用机制）；清除（v2 修订
+  2026-10-12，design-optimistic-id-anchor §4/§4b）：普通命令经 `session.inbox.enqueued`
+  物化清全部（M6c），subagent 命令（`/review` 类，父会话零消息）经受理信号清
+  （`session.created` 子会话出生 / POST 204）；POST 失败撤回乐观 + **草稿回填
+  输入框**（文本不丢，普通消息路径同样补了回填）。官方 GUI 命令分支零乐观
+  （fire-and-forget），本端保留乐观是既有裁定（即时反馈），消解锚已闭环。
 
 ### 回显渲染
 

@@ -2295,6 +2295,22 @@ export class AppStore {
     }
   }
 
+  /** 清命令路径无锚乐观（opt_ 形状），返回是否实际清除——调用方据此补 emit。
+   *  subagent 命令（/review 类）的 user 消息整体落子会话、父会话零写入
+   *  （2026-10-12 v2.0.18 源码 + 活体双证），锚定「父会话新 user 消息」的
+   *  消解链对它失效——换锚 server 受理信号：session.created 子会话出生 /
+   *  POST 204（design-optimistic-id-anchor §4b 层 1b/层 2b）。msg_ 锚条目
+   *  各有 inbox 精确消解，不受动（supplement-send 并发在途不误清） */
+  private clearUnanchoredOptimistic(sessionID: string): boolean {
+    const list = this.optimisticBySession.get(sessionID)
+    if (!list || list.length === 0) return false
+    const next = list.filter((o) => !o.localId.startsWith("opt_"))
+    if (next.length === list.length) return false
+    if (next.length === 0) this.optimisticBySession.delete(sessionID)
+    else this.optimisticBySession.set(sessionID, next)
+    return true
+  }
+
   /**
    * 准入即物化（design-inbox-admission §3.2）：enqueued user 项以 inboxID 铸
    * 真实消息写入已加载会话，乐观清空（首条真实到达清全部，移动端同判）。
@@ -4285,6 +4301,11 @@ export class AppStore {
   private onChildSessionCreated(child: Session) {
     const parentID = child.parentID
     if (!parentID) return
+    // 命令乐观消解（design-optimistic-id-anchor §4b 层 1b）：子会话出生 =
+    // server 受理证据。挂在呈现闸门（parentLoaded/前台认领）之前——消解是
+    // 数据语义不是呈现语义；agent 前台 subagent 与命令并发在途的误清面 =
+    // 物化亚秒补位的闪烁（supplement-send 边界 4 同款，接受）
+    if (this.clearUnanchoredOptimistic(parentID)) this.emit()
     const parentLoaded =
       this.messagesBySession.has(parentID) ||
       this.tabs.some((t) => t.kind === "chat" && t.key === `chat:${parentID}`)
@@ -4919,6 +4940,14 @@ export class AppStore {
         this.clearLocalRevertStaging(sessionID)
         this.removeCachedMessages(sessionID, revertPurgeIds)
       }
+      // 命令乐观消解（design-optimistic-id-anchor §4b 层 2b）：204 = 受理
+      // 证据——subagent 命令的 handler 先建子会话后 return（此时必已创建，
+      // 父会话零消息、无 inbox 事件可等）。只清 opt_ 无锚形状，锚条目不动。
+      // 同步触发尾部重取（review 2026-10-12：REST 必通——204 本身即 REST
+      // 成功；普通命令在 SSE 断线窗口的回显缺口从「等 60s 对账」缩到重取
+      // RTT，subagent 命令扑空幂等；projector 晚于重取的残余由周期对账收敛）
+      if (this.clearUnanchoredOptimistic(sessionID)) this.emit()
+      if (this.messagesBySession.has(sessionID)) void this.refreshConversationTail(sessionID)
       this.clearFileRefs(sessionID)
       this.clearAttachments(sessionID)
       // 同步端点返回即执行完毕：回显已在 await 期间到达并转记；SSE 断线窗口内未
