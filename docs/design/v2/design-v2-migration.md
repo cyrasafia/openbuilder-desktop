@@ -130,7 +130,7 @@ v2 server 默认强制密码（移动端基线 §认证）。桌面端影响：
 
 **D4 canonical 自愈红利（已确认，2026-09-28）**：v1 时代「项目移动后登记路径 stale、手改 DB」的知识（本仓库 2026-09-28 实操过）在 v2 由服务端解决（旧 canonical 消失才替换 + `PATCH /api/project/:id` 可改）。左栏项目条目数据源改 `Project.canonical`，相关容错逻辑可删。**已实测验证**：本机升级 v2.0.18 后，上午手改的 c139e90b 行被原地迁移并正确映射为 `canonical=/home/cyrasafia/projects/PRD&文档/订前Agent优化`、`sandboxes=[]`。
 
-**D5 instance/dispose 的对应（已确认，2026-09-28）**：v1 `POST /instance/dispose?directory=` 逐实例释放；v2 `POST /api/location/reload` 是**重建全部已加载 location**（pending permission/form 取消、运行中会话在新服务层继续）、`DELETE /api/debug/location` 是 debug 端点（逐个 evict）。桌面端目前使用 dispose 的场景（如 worktree 删除后清实例缓存）改走 refresh + 服务层自管理，**不直接映射** reload；保留 debug evict 做诊断。
+**D5 instance/dispose 的对应（已确认，2026-09-28；2026-10-12 修订）**：v1 `POST /instance/dispose?directory=` 逐实例释放；v2 `POST /api/location/reload` 是**重建全部已加载 location**（pending permission/form 取消、运行中会话在新服务层继续）、`DELETE /api/debug/location` 是 debug 端点（逐个 evict）。桌面端目前使用 dispose 的场景（如 worktree 删除后清实例缓存）改走 refresh + 服务层自管理，**不直接映射** reload；debug evict 已从「诊断保留」升格为**删除流程内建步骤**（`removeWorkspace` 删除成功后 best-effort 逐出该目录 warm location，断伪项目行再生——见 design-worktree-sync §3.4，2026-10-12）。
 
 ### 双兼容与版本探测（已定，2026-09-28）
 
@@ -235,7 +235,7 @@ v2 server 默认强制密码（移动端基线 §认证）。桌面端影响：
 | B3 | **文件监听自动刷新**（spec 降级 #3：无 `file.watcher.updated` 事件、无 watch 端点） | 重开文件 Tab / 切作用域 / 重连对账重拉；链路代码保留 | v2.0.19–24 无 watch 路径；事件 schema 名单 v2.0.18→24 零变化 |
 | B4 | **大文件下载被 Bun keepAliveTimeout 截断**（openbuilder todo，🔴 >20MB 慢链路 100% 失败） | 无（客户端明确不做续传——server 不支持 Range） | PR #50507（4 行 `keepAliveTimeout=0`）实查 open/未合；v2.0.24 源码 grep 零命中 |
 | B5 | **worktree create 恒 detached**（上游 #26931 未合） | 本端 `POST /api/shell` 挂 `opencode/{name}` 分支 + 删除时 canonical 下 `branch -D`（design-worktree-branch-sync） | v2.0.24 `git.ts` `worktree add --detach` 仍硬编码 |
-| B6 | **伪项目回收机制**（server 只 upsert 不删、重启解析 cwd 复活、`project.sandboxes` 冻结列无写 API、warm location 周期刷新） | ~~客户端指纹过滤~~（2026-10-12 否决：易误伤且属上游问题，见 ref §8 裁定）+ SQL 手工清理 + 删 worktree 时卸载该目录全部引用（ref §3.4/§8） | v2.0.18..24 project 层仅 refactor（#51729），无回收机制；上游 issue 仍未提（ref §8 待办）。身份模型与解析时机核对见附录二——「upsert-only 无回收」是配套缺陷而非身份模型问题 |
+| B6 | **伪项目回收机制**（server 只 upsert 不删、重启解析 cwd 复活、`project.sandboxes` 冻结列无写 API、warm location 周期刷新） | ~~客户端指纹过滤~~（2026-10-12 否决：易误伤且属上游问题，见 ref §8 裁定）+ SQL 手工清理 + 删 worktree 时卸载该目录全部引用（ref §3.4/§8）+ **删除成功后 evict 该目录 warm location**（2026-10-12 落地，design-worktree-sync §3.4——断 5 分钟刷新再生燃料） | v2.0.18..24 project 层仅 refactor（#51729），无回收机制；上游 issue 仍未提（ref §8 待办）。身份模型与解析时机核对见附录二——「upsert-only 无回收」是配套缺陷而非身份模型问题 |
 | B7 | **todo 概念回归**（spec 降级 #1：任务卡全链移除） | 无（消息流内计划文本不受影响） | 无端点无事件，概念仍在 server API 层面缺席 |
 | B8 | **文件树 ignored 弱化样式**（spec 降级 #4） | 无害降级（dot 文件仍展示） | `FileSystem.Entry` schema 无变化，仍无 gitignore 标记 |
 
@@ -286,4 +286,4 @@ URL 归一化（project.ts:273-291）：HTTPS/SSH/scp 语法归一为 `host/path
 
 ### 设计评估（一句话：认血统修了认位置的病，但没配销户流程）
 
-身份模型本身自洽（修 v1 目录身份的搬家断链之痛，跨端同仓同 ID）；不合理在配套四点：① **upsert-only 无回收**（伪项目根源，B6）；② canonical 先到先得的任意仲裁；③ 零提交落 global 桶无提示；④ URL 归一化大小写不对称。本端处置见 ref-pseudo-project-cleanup §8——2026-10-12 裁定：项目列表过滤否决（易误伤且属上游问题），新增客户端要点为删 worktree 时卸载该目录全部引用。
+身份模型本身自洽（修 v1 目录身份的搬家断链之痛，跨端同仓同 ID）；不合理在配套四点：① **upsert-only 无回收**（伪项目根源，B6）；② canonical 先到先得的任意仲裁；③ 零提交落 global 桶无提示；④ URL 归一化大小写不对称。本端处置见 ref-pseudo-project-cleanup §8——2026-10-12 裁定：项目列表过滤否决（易误伤且属上游问题），新增客户端要点为删 worktree 时卸载该目录全部引用 + 删除成功后显式 evict warm location（design-worktree-sync §3.4）。

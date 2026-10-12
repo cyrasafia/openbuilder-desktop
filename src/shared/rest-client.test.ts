@@ -323,6 +323,23 @@ describe("worktree 库存直连（2026-09-29：v2 权威源）", () => {
       { url: "http://server/api/worktree/refresh", method: "POST", body: JSON.stringify({ projectID: "p1" }) },
     ])
   })
+
+  it("evictLocation：DELETE /api/debug/location?location[directory]=（debug 组端点，pin 含），204 容忍空体", async () => {
+    const seen: Array<{ url: string; method: string }> = []
+    const client = mkClient((url, init) => {
+      seen.push({ url, method: init.method ?? "GET" })
+      return new Response(null, { status: 204 })
+    })
+    await client.evictLocation("/data/worktree/abc123/wt1")
+    // directory 必填（签名层面杜绝裸调——requestRef 缺参兜底 process.cwd() 会误
+    // evict server cwd 的 location）；deepObject query 同 location 组风格
+    expect(seen).toEqual([
+      {
+        url: "http://server/api/debug/location?location%5Bdirectory%5D=%2Fdata%2Fworktree%2Fabc123%2Fwt1",
+        method: "DELETE",
+      },
+    ])
+  })
 })
 
 describe("runShell（design-worktree-branch-sync：POST /api/shell 至终态）", () => {
