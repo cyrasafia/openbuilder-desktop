@@ -1,6 +1,6 @@
 # 快捷键体系 — 设计文档
 
-> 主体（Ctrl 系 Tab/面板/编辑域、§1.1 引导页磁贴、§2 关闭栈、§3 作用域遍历）对应 spec-v0.3 #2。**2026-09-06 重构对应 spec-v0.4 #7：修饰键域划分——Alt 系 = 项目/worktree 管理专域**（打开/关闭项目、新建/删除 worktree、作用域遍历全部归 Alt 系，Alt 系也仅用于此域；打开项目自 Ctrl+O 迁移至 Alt+O）。此前版本沉淀：Tab 新建/关闭/切换、关闭栈恢复（Ctrl+Shift+T）、作用域遍历（2026-09-04 绑裸 Alt+↑/↓，2026-09-06 再修预览-提交模型 §3）、面板开关（Ctrl+B 系）、引导页磁贴（Ctrl+1/2/3，§1.1）。改动面：renderer 分发 + 确认弹窗键（§4.1）+ main 浏览器视图转发过滤 + 终端 dead 释放（§0.2）。**spec-v0.3 不随重构修订**（Ctrl+O 行为随 v0.3 发布，v0.4 替换）。
+> 主体（Ctrl 系 Tab/面板/编辑域、§1.1 引导页磁贴、§2 关闭栈、§3 作用域遍历）对应 spec-v0.3 #2。**2026-09-06 重构对应 spec-v0.4 #7：修饰键域划分——Alt 系 = 项目/worktree 管理专域**（打开/关闭项目、新建/删除 worktree、作用域遍历全部归 Alt 系，Alt 系也仅用于此域；打开项目自 Ctrl+O 迁移至 Alt+O）。此前版本沉淀：Tab 新建/关闭/切换、关闭栈恢复（Ctrl+Shift+T）、作用域遍历（2026-09-04 绑裸 Alt+↑/↓，2026-09-06 再修预览-提交模型 §3）、面板开关（Ctrl+B 系）、引导页磁贴（Ctrl+1/2/3，§1.1）。改动面：renderer 分发 + 确认弹窗键（§4.1）+ main 浏览器视图转发过滤 + 终端 dead 释放（§0.2）。**spec-v0.3 不随重构修订**（Ctrl+O 行为随 v0.3 发布，v0.4 替换）。**2026-10-12 修订：Ctrl+Shift+T 改为作用域内恢复（§2/§2.1），不再跨项目/worktree 切换**（用户决策——跨作用域隐式切换反直觉）。
 >
 > 参考先例：按 AGENTS.md 约定检索 `../openbuilder/docs/design-*.md`——移动端无硬件键盘快捷键体系（TUI 无从借鉴），无同类设计（2026-09-04/09-06 两轮核查一致）。
 
@@ -42,7 +42,7 @@
 | **Alt+N（mac ⌘⌥N）** | 当前项目下**新建 worktree**（§1.2） |
 | **Alt+⌫（mac ⌘⌥⌫）** | 删除**当前作用域 worktree**，二次确认（§1.2 + §4.1；键位选型见 §0.2——⌘⌥D 系统占用弃用） |
 | Ctrl+W | 关闭激活 Tab；**无激活 Tab 时仅消费不动作**（放行会命中默认菜单关窗，见下注）；chat Tab 流式中 / 终端运行中先二次确认——应用内 ConfirmDialog（`store.pendingTabClose`，**2026-09-11 替换原生 confirm**），chat 确认后 abort+归档；**overlay 遮挡时仅消费不动作**（§1.2 闸门，非阻塞弹窗化后必拦）——与 Tab 栏关闭按钮**同一代码路径**（§4 tab-actions） |
-| Ctrl+Shift+T | 恢复刚关闭的 Tab（§2 关闭栈） |
+| Ctrl+Shift+T | 恢复当前作用域内上一个关闭的 Tab（§2 关闭栈；不跨项目/worktree——2026-10-12 修订） |
 | **F5（仅非 mac，2026-09-19 增）** | 刷新激活浏览器 Tab（与浏览器 Tab 工具条刷新钮同路径：`browserViewIdFor` → `browserReload`）；仅 browser kind 动作，其余视图/无 viewId 放行（未映射组合语义）；**页面 F5 语义（review 2026-09-19 澄清）**：按键不吞、页面仍收到 F5，但应用侧刷新无条件触发——页面 `preventDefault` 无法抑制（before-input-event 转发/分发先于页面意愿可知，与 Chrome 页面可拦 F5 相反，接受的取舍）；**overlay 遮挡时仅消费不动作**（§1.2 闸门）；无修饰键限定——Ctrl+F5 硬刷新 / Shift+F5 不做（Keep Lean）；**mac 不绑**：⌘R 惯例且已可用——未消费的 ⌘R 回流 Electron 默认菜单 reload 加速键作用于聚焦 webContents（视图持焦刷视图、主窗持焦刷主窗 renderer）。浏览器视图持焦时经转发入同一分发（转发过滤扩裸 F5，非 mac；转发不消费按键，见 design-browser-tab §1.2）；主窗 renderer 持焦时 window keydown 入口 gate 对裸 F5 单键放行进分发 |
 | Ctrl+1 / Ctrl+2 / Ctrl+3（**仅引导页**，2026-09-06 增，§1.1） | 分别开 diff / 终端 / 网页 Tab（与引导页磁贴点击同路径、同禁用态）；Ctrl 按住期间磁贴右上角显示对应数字角标 |
 | Ctrl+N / Ctrl+A / Ctrl+Y（**仅会话页授权卡**，2026-09-28 增，§1.1b） | 拒绝 / 总是允许 / 允许一次（与卡片按钮同路径同禁用态；**卡存在且展开期间三键焦点无关恒为卡动作**——2026-10-07 修订撤销 A/Y 文本域让行，§1.1b）；Ctrl 按住期间按钮显示键位角标 |
@@ -110,19 +110,20 @@ private closedTabs: ClosedTabEntry[] = []   // push 尾 / pop 尾，上限 20（
 ```
 
 - **入栈 = 仅用户主动关闭**：`closeChatTab` 成功路径（归档成功 / 会话已消失）与 `closeTab(key, { pushClosed: true })`（非 chat 的 UI/快捷键路径）。卸载路径（关项目/删工作区/死会话收敛/session.deleted）不传 pushClosed，不入栈——恢复一个所属项目已关闭的 Tab 没有落点
-- **恢复**（`restoreClosedTab()`）：自栈顶逐项弹出尝试，失败（不可恢复）继续弹下一项，直到成功或栈空；**全 kind 先过作用域落点判定（§2.1）**——恢复的 Tab 必须落在其所属作用域（chat 恢复到别的作用域会打破“激活 Tab 属于当前作用域”不变式；所属项目已关时还会在 server 侧产生取消归档副作用）：
-  - `chat`：落点可达 → `openChatTab`（自带取消归档，与"打开 Tab = 取消归档"锁定语义对称）；会话已删除 → 跳过
-  - `file` / `diff`：落点可达 → `openFileTab(path)` / `openDiffTab()`（diff 每作用域单 Tab，openDiffTab 复用）
-  - `terminal` / `browser`：栈结构兼容，M3/M4 落地时接入（终端 = 原 cwd 新建 pty；浏览器 = 原 URL 重开）
+- **恢复**（`restoreClosedTab()`，**2026-10-12 修订：作用域内恢复**）：自栈顶向下找第一个 `directory` = 当前作用域的条目恢复，直到成功或栈中再无当前作用域条目。**不跨项目/worktree 切换**——原跨作用域落点判定（§2.1 旧版 ensureScopeFor）废弃：Ctrl+Shift+T 的心智是「作用域内撤销关闭」，隐式切走项目/worktree 反直觉（切作用域是显式动作，Alt+↑/↓ 或左栏点击）。跨作用域条目**跳过保留**在栈中（切回该作用域后仍可按序恢复）；当前作用域内不可恢复的条目（会话已删）弹出丢弃：
+  - `chat`：会话存在 → `openChatTab`（自带取消归档，与"打开 Tab = 取消归档"锁定语义对称）；会话已删除 → 弹出丢弃继续
+  - `file` / `diff`：`openFileTab(path)` / `openDiffTab()`（diff 每作用域单 Tab，openDiffTab 复用）
+  - `terminal`：当前作用域新建 pty（原 pty 已随关 Tab 销毁，spec #2）
+  - `browser`：按关闭时当前页 URL 重开
 - 纯内存不持久化（重启场景由 Tab 记忆覆盖）
 
-### 2.1 跨作用域恢复的落点判定（ensureScopeFor）
+### 2.1 作用域匹配与栈保留（2026-10-12 修订）
 
-恢复项 `directory` ≠ 当前作用域时**同步段**切过去（切换函数在首个 await 前写入作用域状态，随后开 Tab 时 `scopeDirectory()` 已就位）：
+原「跨作用域恢复的落点判定（ensureScopeFor）」整体废弃——恢复不再触发任何作用域切换（`setCurrentWorkspace` / `openEntry` / `setCurrentProject` 均不经此路径）。现行为：
 
-1. 属当前项目（**仅普通项目**——global 项目 sandboxes 恒空，global 跨目录恢复须走分支 2，否则误判不可达）：项目根 → `setCurrentWorkspace(null)`；worktree（在 sandboxes 内）→ `setCurrentWorkspace(dir)`
-2. 属其他**已打开** entry（`openedEntries` 按 projectId + directory/sandboxes 匹配）：entry 根/global 目录 → `openEntry(key)`；**普通项目的 worktree 一步直达 `setCurrentProject(projectId, dir)`**（= `openProject` 单次切换，同步段即落位 worktree——先 openEntry 再补 setCurrentWorkspace 的两段式会把 Tab 开在项目根作用域）
-3. 所属项目/entry 已关闭 → 不可达，跳过该栈项
+1. 匹配 = 条目 `directory` 与当前作用域 `scopeDirectory()`（项目根或 worktree）**精确相等**；同项目跨 worktree 的条目同样不匹配（跨项目/worktree 均不恢复）
+2. 不匹配条目**留在栈中**不弹出：切回该作用域（显式切换）后 Ctrl+Shift+T 可继续恢复该作用域的关闭序列；栈上限 20 全局共享，跨作用域残留条目随新关闭被挤出
+3. 已删会话/已关项目的条目不再主动清扫（只在成为当前作用域条目且不可恢复时丢弃）——所属作用域无法再激活时静默残留至挤出，无害（纯内存、有上限）
 
 ## 3. Alt+↑/↓（mac ⌘⌥↑/↓）作用域遍历——预览-提交模型
 
@@ -168,7 +169,7 @@ private closedTabs: ClosedTabEntry[] = []   // push 尾 / pop 尾，上限 20（
 
 | 文件 | 变更 |
 |---|---|
-| `src/renderer/src/store/app-store.ts` | `closedTabs` + `restoreClosedTab` + `ensureScopeFor`；`closeTab` pushClosed 选项；`closeChatTab` 入栈；`cycleTab(dir)`；`scopePreview` + begin/move/commit/cancelScopePreview + `scopeNavRows`/`currentScopeRow`/`activateScopeRow`（§3 修订，原 `cycleScopeEntry` 移除）；Alt 域（§1.2/§4.1）：`pendingWorktreeDelete` + `requestWorktreeDelete`/`cancelWorktreeDelete` + `closeActiveEntry`（激活 entry 推导/单 entry 判定，与左栏 entries 视图同源） |
+| `src/renderer/src/store/app-store.ts` | `closedTabs` + `restoreClosedTab`（作用域内恢复，2026-10-12 修订——原 `ensureScopeFor` 移除）；`closeTab` pushClosed 选项；`closeChatTab` 入栈；`cycleTab(dir)`；`scopePreview` + begin/move/commit/cancelScopePreview + `scopeNavRows`/`currentScopeRow`/`activateScopeRow`（§3 修订，原 `cycleScopeEntry` 移除）；Alt 域（§1.2/§4.1）：`pendingWorktreeDelete` + `requestWorktreeDelete`/`cancelWorktreeDelete` + `closeActiveEntry`（激活 entry 推导/单 entry 判定，与左栏 entries 视图同源） |
 | `src/renderer/src/components/shortcuts.ts` | `useShortcuts()`（window keydown 分发表 + keyup/blur 预览-提交监听）；dispatch 增 Alt 域四键（code 匹配/平台判定/overlay 闸门/repeat 守卫）+ 移除 Ctrl+O；入口守卫 altArrow → altCombo；SHORTCUT_GROUPS 更新（§8） |
 | `src/renderer/src/components/tab-actions.ts` | 新：`closeTabInteractive` |
 | `src/renderer/src/components/sidebar.tsx` | 光标行 `.scope-cursor` + `data-scope-cursor`（scrollIntoView 跟随）；工作区删除确认上提 store（删除钮与 Alt+⌫ 同路径，§4.1） |
@@ -181,7 +182,7 @@ private closedTabs: ClosedTabEntry[] = []   // push 尾 / pop 尾，上限 20（
 | `src/renderer/src/components/ctrl-held.ts` | Ctrl 按住态模块级单例跟踪 + `useCtrlHeld`（2026-09-06 修复：挂载晚于 keydown 的初始态） |
 | `src/renderer/src/styles/app.css` | `.tree-row.scope-cursor`（§3 修订）；§1.1 `.btn-tile` relative + `.btn-tile-badge` |
 | `docs/spec/spec-v0.4.md` | 新增 #7（Alt 系重构范围行）+ 验收口径行；#6 设置页快捷键列表行同步 Alt 系键位（spec-v0.3 不回溯修订——Ctrl+O 随 v0.3 发布，v0.4 替换） |
-| 测试 | store（关闭栈入/弹/跳过/跨作用域/上限、cycleTab 循环、scopePreview 预览-提交/环游/no-op/作废/虚拟边界、Alt 域 requestWorktreeDelete/closeActiveEntry）；shortcuts（分发表 + begin/commit/cancel + 转发 up + Alt 域四键/overlay 闸门/code 匹配/AltGr 排除/Ctrl+O 移除/Ctrl+W 流式挂 pendingTabClose + overlay 闸门）；confirm-dialog（Enter/Esc）；terminal-view（live 归 pty/dead 释放/copy 例外修饰守卫）；workspace-guide（§1.1 分发/禁用态/角标/卸载）；**workspace-pending-shortcuts（§1.1b：两卡键位分发/守卫（Shift/Alt/repeat/IME/已消费/回复中/收起/overlay/A 与 Y 焦点无关恒动作——capture 短路内层）/角标含 ↵ 与 0/卸载）** |
+| 测试 | store（关闭栈入/弹/作用域内恢复与跨作用域跳过保留/上限、cycleTab 循环、scopePreview 预览-提交/环游/no-op/作废/虚拟边界、Alt 域 requestWorktreeDelete/closeActiveEntry）；shortcuts（分发表 + begin/commit/cancel + 转发 up + Alt 域四键/overlay 闸门/code 匹配/AltGr 排除/Ctrl+O 移除/Ctrl+W 流式挂 pendingTabClose + overlay 闸门）；confirm-dialog（Enter/Esc）；terminal-view（live 归 pty/dead 释放/copy 例外修饰守卫）；workspace-guide（§1.1 分发/禁用态/角标/卸载）；**workspace-pending-shortcuts（§1.1b：两卡键位分发/守卫（Shift/Alt/repeat/IME/已消费/回复中/收起/overlay/A 与 Y 焦点无关恒动作——capture 短路内层）/角标含 ↵ 与 0/卸载）** |
 
 ## 7. 验收
 

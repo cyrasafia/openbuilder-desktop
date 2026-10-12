@@ -4688,24 +4688,10 @@ describe("D1 归档私约（M2：metadata.archivedAt，双源识别）", () => {
     store.moveScopePreview(1)
     expect(store.scopePreview).toEqual({ kind: "ws", projectId: "proj1", directory: WT1 })
   })
-
-  it("restoreClosedTab 跨作用域：diff 栈项先切回所属作用域再开 Tab", async () => {
-    store.tabs = []
-    store.closedTabs = [
-      { kind: "diff", key: diffTabKey(WT1), projectId: "proj1", directory: WT1, title: "diff" },
-    ]
-    // 当前作用域 = 项目根（≠WT1）
-    store.projectStates = {
-      default: { opened: ["proj1"], currentProjectId: "proj1", currentWorkspaceId: null },
-    }
-    store.restoreClosedTab()
-    await vi.waitFor(() => expect(store.scopeQuery.directory).toBe(WT1))
-    expect(store.tabs.some((t) => t.key === diffTabKey(WT1))).toBe(true)
-  })
 })
 
-describe("关闭栈跨作用域恢复（design-keyboard-shortcuts §2.1 修订）", () => {
-  it("H1：跨项目 worktree 一步直达——diff 栈项恢复落在目标 worktree 而非项目根", () => {
+describe("关闭栈作用域内恢复（design-keyboard-shortcuts §2 修订 2026-10-12）", () => {
+  it("跨项目条目不恢复、不切作用域：留在栈中（切回该作用域后可恢复）", () => {
     const proj2 = { ...project(), id: "proj2", worktree: "/other", sandboxes: ["/other/wt9"] }
     store.projects = [project(), proj2]
     store.projectStates = {
@@ -4716,66 +4702,64 @@ describe("关闭栈跨作用域恢复（design-keyboard-shortcuts §2.1 修订�
       { kind: "diff", key: diffTabKey("/other/wt9"), projectId: "proj2", directory: "/other/wt9", title: "diff" },
     ]
     store.restoreClosedTab()
-    // 同步段即落位：作用域 = wt9，diff Tab 的 directory 也是 wt9（不是项目根）
-    expect(store.scopeQuery.directory).toBe("/other/wt9")
-    const tab = store.tabs.find((t) => t.kind === "diff")
-    expect(tab).toBeTruthy()
-    expect(tab!.directory).toBe("/other/wt9")
-    expect(tab!.key).toBe(diffTabKey("/other/wt9"))
+    // 作用域不动、不开 Tab、条目保留
+    expect(store.scopeQuery.directory).toBe(ROOT)
+    expect(store.tabs.length).toBe(0)
+    expect(store.closedTabs.length).toBe(1)
   })
 
-  it("M1：跨目录恢复走 entry 分支（不误判不可达）——伪项目行（v2/A，M1b）", () => {
-    const hx = { ...session("gx", "/tmp/x", { created: 1, updated: 1 }), projectID: "hashX" }
-    const hy = { ...session("gy", "/tmp/y", { created: 1, updated: 2 }), projectID: "hashY" }
-    store.projects = [
-      project(),
-      { id: "hashX", worktree: "/tmp/x", time: { created: 0, updated: 0 }, sandboxes: [] },
-      { id: "hashY", worktree: "/tmp/y", time: { created: 0, updated: 0 }, sandboxes: [] },
-    ]
-    store.sessionsByProject = new Map([
-      ["proj1", new Map()],
-      ["hashX", sessionsOf(hx)],
-      ["hashY", sessionsOf(hy)],
-    ])
-    store.projectStates = {
-      default: {
-        opened: ["proj1", "hashX", "hashY"],
-        currentProjectId: "hashY",
-        currentWorkspaceId: null,
-      },
-    }
+  it("同项目跨 worktree 条目同样不恢复；显式切到该 worktree 后恢复落位", () => {
     store.tabs = []
     store.closedTabs = [
-      { kind: "file", key: "file:/tmp/x/a.txt", projectId: "hashX", directory: "/tmp/x", title: "a.txt" },
+      { kind: "diff", key: diffTabKey(WT1), projectId: "proj1", directory: WT1, title: "diff" },
     ]
     store.restoreClosedTab()
-    expect(store.scopeQuery.directory).toBe("/tmp/x")
-    expect(store.tabs.some((t) => t.key === "file:/tmp/x/a.txt" && t.directory === "/tmp/x")).toBe(true)
+    expect(store.scopeQuery.directory).toBe(ROOT)
+    expect(store.tabs.length).toBe(0)
+    expect(store.closedTabs.length).toBe(1)
+    // 用户显式切到 WT1 后（currentWorkspaceId 即 directory，sandboxes 含 WT1）
+    store.projectStates.default.currentWorkspaceId = WT1
+    store.restoreClosedTab()
+    expect(store.scopeQuery.directory).toBe(WT1)
+    expect(store.tabs.some((t) => t.key === diffTabKey(WT1))).toBe(true)
+    expect(store.closedTabs.length).toBe(0)
   })
 
-  it("M2：chat 跨作用域恢复先切作用域——激活 Tab 不落在外作用域", async () => {
+  it("chat 跨作用域条目不恢复：不发取消归档（updateSession 无调用）、条目保留", async () => {
     const s1 = session("s1", WT1, { created: 1, updated: 1 })
-    ;Object.assign((store as unknown as { client: Record<string, unknown> }).client, {
-      listSessions: async () => ({ data: [], cursor: {} }),
-      listProjects: async () => [project()].map(wireProject),
-      updateSession: async () => {},
-    })
-    store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
-    store.projectStates = {
-      default: { opened: ["proj1"], currentProjectId: "proj1", currentWorkspaceId: null },
+    const updates: string[] = []
+    clientV2Of().updateSession = async (input: { id: string }) => {
+      updates.push(input.id)
     }
+    store.sessionsByProject = new Map([["proj1", sessionsOf(s1)]])
     store.tabs = []
     store.closedTabs = [
       { kind: "chat", key: "chat:s1", projectId: "proj1", directory: WT1, title: "s1" },
     ]
     store.activeTabKey = null
     store.restoreClosedTab()
-    expect(store.scopeQuery.directory).toBe(WT1)
-    expect(store.tabs.some((t) => t.key === "chat:s1" && t.directory === WT1)).toBe(true)
-    expect(store.activeTabKey).toBe("chat:s1")
+    expect(store.tabs.length).toBe(0)
+    expect(store.activeTabKey).toBeNull()
+    expect(updates).toEqual([])
+    expect(store.closedTabs.length).toBe(1)
   })
 
-  it("所属项目已关：栈项跳过不入激活", () => {
+  it("混合栈：自栈顶向下找最近的当前作用域条目恢复，其余（跨作用域/更早）保留", () => {
+    store.tabs = []
+    store.closedTabs = [
+      { kind: "file", key: `file:${ROOT}/old.md`, projectId: "proj1", directory: ROOT, title: "old.md" },
+      { kind: "file", key: "file:/other/a.md", projectId: "proj2", directory: "/other", title: "a.md" },
+      { kind: "file", key: `file:${WT1}/x.md`, projectId: "proj1", directory: WT1, title: "x.md" },
+      { kind: "file", key: `file:${ROOT}/new.md`, projectId: "proj1", directory: ROOT, title: "new.md" },
+    ]
+    store.activeTabKey = null
+    store.restoreClosedTab()
+    expect(store.activeTabKey).toBe(`file:${ROOT}/new.md`)
+    expect(store.closedTabs.length).toBe(3)
+    expect(store.closedTabs.some((e) => e.key === `file:${ROOT}/old.md`)).toBe(true)
+  })
+
+  it("所属项目已关：条目同样跳过保留（directory ≠ 当前作用域）", () => {
     store.projectStates = {
       default: { opened: ["proj1"], currentProjectId: "proj1", currentWorkspaceId: null },
     }
@@ -4787,6 +4771,7 @@ describe("关闭栈跨作用域恢复（design-keyboard-shortcuts §2.1 修订�
     expect(store.tabs.length).toBe(0)
     expect(store.activeTabKey).toBeNull()
     expect(store.scopeQuery.directory).toBe(ROOT)
+    expect(store.closedTabs.length).toBe(1)
   })
 })
 
@@ -5352,17 +5337,29 @@ describe("终端 Tab（design-terminal-tab）", () => {
     expect(calls).toEqual([`create:${ROOT}:undefined`])
   })
 
-  it("restoreClosedTab terminal 分支：原目录新建（新 pty id）", async () => {
+  it("restoreClosedTab terminal 分支：当前作用域内条目原目录新建（新 pty id）", async () => {
+    const calls = ptyClient()
+    store.tabs = []
+    store.closedTabs = [
+      { kind: "terminal", key: "terminal:pty_old", projectId: "proj1", directory: WT1, title: "bash" },
+    ]
+    // 作用域内恢复（2026-10-12 修订）：当前作用域 = WT1（条目 directory）
+    store.projectStates.default.currentWorkspaceId = WT1
+    store.restoreClosedTab()
+    await vi.waitFor(() => expect(calls).toEqual([`create:${WT1}:undefined`]))
+    expect(store.tabs[0]!.directory).toBe(WT1)
+  })
+
+  it("restoreClosedTab terminal 分支：条目属其他 worktree 不恢复（栈中保留）", async () => {
     const calls = ptyClient()
     store.tabs = []
     store.closedTabs = [
       { kind: "terminal", key: "terminal:pty_old", projectId: "proj1", directory: WT1, title: "bash" },
     ]
     store.restoreClosedTab()
-    // ensureScopeFor 同步切到 WT1 → openTerminalTab（异步）用当前作用域
-    expect(store.scopeQuery.directory).toBe(WT1)
-    await vi.waitFor(() => expect(calls).toEqual([`create:${WT1}:undefined`]))
-    expect(store.tabs[0]!.directory).toBe(WT1)
+    expect(calls).toEqual([])
+    expect(store.tabs.length).toBe(0)
+    expect(store.closedTabs.length).toBe(1)
   })
 
   it("closeProject：该目录运行中 pty 被杀（防孤儿）", async () => {
