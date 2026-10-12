@@ -8,7 +8,7 @@ opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录�
 - `npm run build` / `npm run typecheck`（node+web 双 tsconfig）/ `npm run test`（vitest，约千余用例——以实跑为准）
 - 联调：本机 opencode server `http://127.0.0.1:15120`（v2.0.18，Basic auth——密码见 systemd unit；不要停止/重启）；v1 回归（如需）另起 1.18.x 二进制于其他端口；CDP 驱动 E2E 用 `--remote-debugging-port=9222`
 - preload 必须 CJS 输出（`.cjs`）——sandbox:true 不支持 ESM preload（electron.vite.config.ts 有注释）
-- 打包：`npm run package:linux`（electron-builder）；发行包用 `scripts/package-arch.sh`（makepkg）/ `scripts/package-fedora.sh`（fedora:41 容器内 rpmbuild）
+- 打包：`npm run package:linux`（electron-builder）；发行包用 `scripts/package-arch.sh`（makepkg）/ `scripts/package-fedora.sh`（fedora:41 容器内 rpmbuild）。两个发行包脚本**打包成功后默认清理中间产物**（组装件 + `release/linux-unpacked`；失败不清理便于排查），需保留时加 `--keep-intermediates`（2026-10-12 增）
 
 ## 必读文档（写任何代码/文档前）
 
