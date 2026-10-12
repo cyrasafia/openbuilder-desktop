@@ -304,8 +304,8 @@ found` 400（官方 `session/prompt.ts` `SessionPrompt.command`），客户端�
 - `rest-client.prompt` / `store.sendPrompt` 增加 `skills` 参数（非空进 body）。
 
 **测试**：rest-client（skills 请求体/空省略）、app-store（sendPrompt 透传）、
-workspace-guide（skill 分流 / skill+附件放行 / 普通 command+附件仍拦），
-全量 1313 通过。
+workspace-guide（skill 分流 / skill+附件放行 / 普通 command+附件仍拦）、
+workspace-bg-task（ChatView 分流）共 6 用例，全量 1314 通过。
 
 ### 2026-09-11：引导页命中命令「分发即开 Tab」（同步长端点不等响应）
 
