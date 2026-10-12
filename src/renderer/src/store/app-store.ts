@@ -1616,6 +1616,12 @@ export class AppStore {
           agent: p.agent ?? local?.agent,
           model: p.model ?? local?.model,
           metadata: p.metadata ?? local?.metadata,
+          // outcome/revert 同回填模式（review 2026-10-12）：事件骨架不带这两个
+          // 字段，整对象覆盖会抹掉本地已有值——outcome 是冷启动 failed 红点
+          // 恢复源（§3.4b，被抹后未打开会话红点回灰，待下次对账才恢复）；
+          // revert 是回滚暂存态（design-sse-event-surface 层 3 同款缺口）
+          outcome: local?.outcome,
+          revert: local?.revert,
           time: { created: eventTime, updated: eventTime },
         }
         this.applySessionEvent(child, directory)

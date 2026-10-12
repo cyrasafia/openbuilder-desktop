@@ -296,7 +296,7 @@ part 即恢复绿。中途失败类错误（已产出部分内容后断流）每
 | `src/shared/api-v2-types.ts` | `SessionInfo` 补 `outcome`（openapi enum 三值 + 宽松 null） |
 | `src/shared/api-types.ts` | `Session` 补 `outcome` |
 | `src/shared/v2-adapter.ts` | `toInternalSession` 透传 outcome（null 归一 undefined） |
-| `src/renderer/src/store/app-store.ts` | `dotStateFor` terminalError 双源：消息在场派生优先，不在场信 outcome |
+| `src/renderer/src/store/app-store.ts` | `dotStateFor` terminalError 双源：消息在场派生优先，不在场信 outcome；`session.created` 事件骨架回填 outcome/revert（review nit 1：回放/重复投递整对象覆盖曾抹本地值） |
 
 ## 5. 测试
 
@@ -316,7 +316,8 @@ part 即恢复绿。中途失败类错误（已产出部分内容后断流）每
   保持锁存（busy 扣住/内容 part 解除/step-start 不解除/REST 快照改写与解除）、
   报错终局（failed 投影/中止不算/新末条消息自愈）；§3.4b 冷启动恢复（outcome=failed
   ⇒ failed、succeeded/interrupted/缺省 ⇒ idle、消息在场派生优先防陈旧误红、
-  busy/retry 不受 outcome 影响）（2026-10-12）。
+  busy/retry 不受 outcome 影响）、空容器不特判回落 outcome、`session.created`
+  骨架回填 outcome（review 2026-10-12）。
 - `v2-adapter.test.ts`：outcome 透传与 null 归一（2026-10-12）。
 - `app-store.test.ts`（"重试收敛"，design-session-retry-recovery）：退避期气泡独担、
   成功重放无 error 残留、连续重试最新错误、耗尽 `step.failed` 终态 + failed 红点闭环、

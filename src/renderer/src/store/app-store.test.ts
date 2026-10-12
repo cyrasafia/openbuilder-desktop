@@ -3828,6 +3828,29 @@ describe("报错消息与重试状态（design-error-message）", () => {
     })
     // 末条 user（新 run 前窗口）⇒ 消息派生 false ⇒ 不红
     expect(store.dotStateFor("s2")).toBe("idle")
+    // 空容器（seedMessages 零参）边界固化：容器在场即消息派生域，不得特判回落 outcome
+    store.sessionsByProject.set(
+      "proj1",
+      sessionsOf({ ...session("s3", ROOT, { created: 3, updated: 3 }), outcome: "failed" }),
+    )
+    seedMessages("s3")
+    expect(store.dotStateFor("s3")).toBe("idle")
+  })
+
+  it("session.created 骨架回填 outcome/revert（§3.4b）：回放/重复投递不抹冷启动恢复源", () => {
+    seedSession()
+    store.sessionsByProject.set(
+      "proj1",
+      sessionsOf({ ...session("s1", ROOT, { created: 1, updated: 1 }), outcome: "failed" }),
+    )
+    // 迟到的 session.created 事件骨架（v2 payload 增量字段）落地——outcome 从
+    // 本地回填，不被整对象覆盖抹掉（未打开会话的红点不回灰）
+    dispatch({
+      type: "session.created",
+      properties: { sessionID: "s1", projectID: "proj1", title: "s1" },
+    })
+    expect(store.findSession("s1")?.outcome).toBe("failed")
+    expect(store.dotStateFor("s1")).toBe("failed")
   })
 
   it("报错终局冷启动（§3.4b）：进行中状态优先——busy/retry 不受 outcome 影响", () => {
