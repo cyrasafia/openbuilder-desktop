@@ -155,6 +155,8 @@ beforeEach(() => {
     }),
     markSessionViewed: async () => {},
     deleteWorktree: async () => {},
+    // 删除预检（design-keyboard-shortcuts §4.1）：默认干净，用例按需覆盖
+    vcsStatus: async () => [],
     // M4a 消息域：typed union 已在真 client 收敛，fake 直接产内部形状
     listMessagesPage: async (
       _sid: string,
@@ -630,6 +632,79 @@ describe("非聊天 Tab 作用域化（design-tab-memory §18）", () => {
     expect(res.ok).toBe(false)
     expect(store.isWorkspaceDeleting("proj1", WT1)).toBe(false)
     expect(store.workspacesOfProject("proj1").some((w) => w.directory === WT1)).toBe(true)
+  })
+
+  it("removeWorkspace 恒 force=true（§4.1 2026-10-12 修订）：不再依赖 server forceRequired 分支", async () => {
+    snapshots.set(ROOT, [])
+    snapshots.set(WT2, [])
+    let seenForce: boolean | undefined
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    cv2.deleteWorktree = async (
+      _pid: string,
+      _dir: string,
+      opts: { force?: boolean } = {},
+    ) => {
+      seenForce = opts.force
+    }
+    cv2.listWorktrees = async () => [{ directory: ROOT }, { directory: WT2, strategy: "git" }]
+    projectList = [{ ...project(), sandboxes: [WT2] }]
+    await store.syncWorktrees()
+
+    const res = await store.removeWorkspace(WT1)
+    expect(res.ok).toBe(true)
+    expect(seenForce).toBe(true)
+  })
+
+  it("requestWorktreeDelete 预检流转（§4.1）：checking → dirty/clean/error，弹窗态联动", async () => {
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    store.projects = [project()]
+    const files = [{ file: "a.txt", additions: 1, deletions: 0, status: "modified" as const }]
+    let resolveStatus!: (f: typeof files | []) => void
+    cv2.vcsStatus = () => new Promise((r) => (resolveStatus = r))
+
+    store.requestWorktreeDelete(WT1)
+    expect(store.pendingWorktreeDelete).toEqual({ directory: WT1, projectId: "proj1" })
+    expect(store.dirtyCheckFor("proj1", WT1)).toEqual({ state: "checking" })
+
+    resolveStatus(files)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(store.dirtyCheckFor("proj1", WT1)).toEqual({ state: "dirty", count: 1 })
+
+    // 重开重置预检：clean 落地
+    store.requestWorktreeDelete(WT1)
+    expect(store.dirtyCheckFor("proj1", WT1)).toEqual({ state: "checking" })
+    resolveStatus([])
+    await new Promise((r) => setTimeout(r, 0))
+    expect(store.dirtyCheckFor("proj1", WT1)).toEqual({ state: "clean" })
+
+    // 预检失败：error 态（不阻塞确认）
+    cv2.vcsStatus = async () => {
+      throw new Error("vcs unavailable")
+    }
+    store.requestWorktreeDelete(WT1)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(store.dirtyCheckFor("proj1", WT1)).toEqual({ state: "error" })
+
+    // 取消：弹窗与预检态一并清位
+    store.cancelWorktreeDelete()
+    expect(store.pendingWorktreeDelete).toBeNull()
+    expect(store.dirtyCheckFor("proj1", WT1)).toBeUndefined()
+  })
+
+  it("requestWorktreeDelete 过期预检丢弃：弹窗关闭/换目标后旧结果不落地", async () => {
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    store.projects = [project()]
+    const files = [{ file: "b.txt", additions: 0, deletions: 2, status: "modified" as const }]
+    let resolveStatus!: (f: typeof files | []) => void
+    cv2.vcsStatus = () => new Promise((r) => (resolveStatus = r))
+
+    store.requestWorktreeDelete(WT1)
+    store.cancelWorktreeDelete()
+    resolveStatus(files)
+    await new Promise((r) => setTimeout(r, 0))
+    // 弹窗已关：迟到的预检结果不得写入（防下次重开闪旧态）
+    expect(store.dirtyCheckFor("proj1", WT1)).toBeUndefined()
+    expect(store.pendingWorktreeDelete).toBeNull()
   })
 
   it("openFileTab revealLine：携带时设置，无锚点调用时清除残留", () => {

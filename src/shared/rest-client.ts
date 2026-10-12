@@ -21,6 +21,7 @@ import type {
   V2ModelInfo,
   V2PermissionDecision,
   ShellInfo,
+  VcsFileStatus,
   WorktreeDirectory,
 } from "./api-v2-types"
 import { toInternalMessages, type V2MessageEntry } from "./v2-adapter"
@@ -45,8 +46,8 @@ export interface RestClientOptions {
 }
 
 export class ApiError extends Error {
-  /** 4xx/5xx 的结构化错误体（`{name, data}`，v2 typed error）——WorktreeError
-   *  的 forceRequired 等判别用；无体/解析失败为 undefined */
+  /** 4xx/5xx 的结构化错误体（`{name, data}`，v2 typed error）——SessionBusyError
+   *  等判别用；无体/解析失败为 undefined */
   readonly body?: { name?: string; data?: Record<string, unknown> }
 
   constructor(
@@ -64,11 +65,6 @@ export class ApiError extends Error {
   ) {
     super(message)
     this.body = body
-  }
-
-  /** WorktreeError{forceRequired} 判别（M5）：脏 worktree 的 400 拒绝 */
-  get forceRequired(): boolean {
-    return this.body?.name === "WorktreeError" && this.body.data?.forceRequired === true
   }
 }
 
@@ -313,10 +309,14 @@ export class RestClient {
 
   /**
    * DELETE /api/worktree（payload `{projectID, directory, force}`，**force 必填**；
-   * 60s 超时——git worktree remove 大目录可慢，对齐 v1 语义）。脏 worktree 且
-   * force=false 时返回 WorktreeError（400，`forceRequired: true`）。库存行不存在
-   * 或目录已从磁盘消失 → 400（InvalidDirectory / DirectoryUnavailable——幽灵
-   * 条目只剩 sandboxes 残留时删除必拒，对账清理由 refresh 承担）。
+   * 60s 超时——git worktree remove 大目录可慢，对齐 v1 语义）。**调用方恒传
+   * force=true（2026-10-12 修订，design-keyboard-shortcuts §4.1）**：server 的
+   * 400 WorktreeError{forceRequired} 判别依赖英文 git stderr（`contains
+   * modified or untracked files` 正则），中文 locale 恒 false（活体核实
+   * 2026-10-12）——脏态提示改由客户端 vcsStatus 预检承担，不再依赖该字段。
+   * 库存行不存在或目录已从磁盘消失 → 400（InvalidDirectory /
+   * DirectoryUnavailable——幽灵条目只剩 sandboxes 残留时删除必拒，对账清理由
+   * refresh 承担）。
    */
   async deleteWorktree(projectID: string, directory: string, opts: { force?: boolean } = {}): Promise<void> {
     await this.fetchResponse("/api/worktree", {
@@ -324,6 +324,21 @@ export class RestClient {
       body: JSON.stringify({ projectID, directory, force: opts.force ?? false }),
       timeoutMs: 60000,
     })
+  }
+
+  /**
+   * GET /api/vcs/status（deepObject query，location 组专用风格——同
+   * resolveLocation；URLSearchParams 编码括号，活体两种形式均可）：未提交
+   * 变更文件清单。响应裸 `{location, data}`（无 envelope，2.0.18 活体核对
+   * 2026-10-12），data 空数组 = 干净；缺 data 按干净容忍（调用方在弹窗
+   * 状态行展示，违约体不致卡死检查态）。删除确认弹窗预检用（实测 p50 <
+   * 100ms，300 脏文件 88ms——非阻塞预检性能前提成立）。
+   */
+  async vcsStatus(directory: string): Promise<VcsFileStatus[]> {
+    const q = new URLSearchParams()
+    q.set("location[directory]", directory)
+    const res = await this.fetchJson<{ location: unknown; data?: VcsFileStatus[] }>(`/api/vcs/status?${q.toString()}`)
+    return res.data ?? []
   }
 
   // ============ 消息域（M4a） ============

@@ -3580,6 +3580,19 @@
   line-height: 1.5;
 }
 
+/* 确认弹窗补充状态行（worktree 删除预检等）：默认同 message，danger 时
+   着警色（--status-error，同 branch-notice 口径） */
+.confirm-hint {
+  margin: 8px 0 0;
+  font-size: var(--text-sm);
+  color: var(--on-surface-variant);
+  line-height: 1.5;
+}
+
+.confirm-hint.danger {
+  color: var(--status-error);
+}
+
 .confirm-loading {
   display: flex;
   align-items: center;

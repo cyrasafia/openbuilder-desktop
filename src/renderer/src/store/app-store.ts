@@ -307,6 +307,14 @@ export interface ProjectEntry {
   name: string
 }
 
+/** worktree 删除确认的预检态（design-keyboard-shortcuts §4.1）：vcsStatus 四态，
+ *  dirty 携带文件数（弹窗文案插值）。error = 预检请求失败——删除仍可确认（不阻塞）。 */
+export type WorktreeDirtyCheck =
+  | { state: "checking" }
+  | { state: "clean" }
+  | { state: "dirty"; count: number }
+  | { state: "error" }
+
 /** 左栏可遍历行（design-keyboard-shortcuts §3 Alt 预览-提交）：entry 行按 key、
  *  工作区行按 projectId + directory 定位（描述符而非下标——拖拽重排/快照刷新
  *  中列表变化不失位）；亦供侧栏渲染光标高亮 */
@@ -512,10 +520,14 @@ export class AppStore {
    * 取消/关闭清空。上提自 sidebar 本地状态——快捷键与按钮共用同一弹窗路径。
    */
   pendingWorktreeDelete: { directory: string; projectId: string } | null = null
-  /** force 二次确认态（M5）：deleteKey → 已确认强制。WorktreeError{forceRequired}
-   *  到达时复用 pendingWorktreeDelete 确认弹窗（文案切强制删除），确认即带 force
-   *  重试；取消/重开清位 */
-  forceDeleteRequests = new Set<string>()
+  /**
+   * 删除确认预检结果（design-keyboard-shortcuts §4.1，2026-10-12 修订）：
+   * deleteKey → vcsStatus 检查态。预检非阻塞（对齐官方 GUI DialogDeleteWorkspace：
+   * 慢/失败不挡删除，只切换弹窗状态行文案与着色）；确认恒 force=true——server 的
+   * forceRequired 判别被中文 git locale 击穿（活体 2026-10-12），脏态提示不再
+   * 依赖 server 错误分支，由本预检承担。取消/重开清位。
+   */
+  worktreeDirtyChecks = new Map<string, WorktreeDirtyCheck>()
   /**
    * 保留分支提示（design-worktree-branch-sync §2.3）：删除的 worktree 分支含
    * 未合并提交时保留，值为分支名（渲染层 i18n 插值），10s 自动清空；新提示
@@ -3407,10 +3419,11 @@ export class AppStore {
       await Promise.all(
         sessionIds.map((id) => client.deleteSession(id).catch(() => {})),
       )
-      // force=false 首发：脏 worktree 返回 400 WorktreeError{forceRequired:true}
-      // （活体实测）→ 置二次确认态，用户确认后带 force 重试（M5 UX）
-      const force = this.forceDeleteRequests.has(deleteKey)
-      await client.deleteWorktree(project.id, directory, { force })
+      // force 恒 true（2026-10-12 修订，design-keyboard-shortcuts §4.1）：脏态
+      // 提示由确认弹窗的 vcsStatus 预检承担（官方 GUI 模式），不再依赖 server 的
+      // forceRequired 错误分支——其判别被中文 git locale 击穿（活体 2026-10-12），
+      // 400 分支在这类环境永不触发
+      await client.deleteWorktree(project.id, directory, { force: true })
       // worktree 库存是 v2 权威源：DELETE 移除库存行，重拉库存即从左栏消失
       // （refreshWorkspacesForProject 内含 projects + 库存定向刷新）
       await this.refreshWorkspacesForProject(project)
@@ -3422,16 +3435,11 @@ export class AppStore {
       if (kept) this.showBranchNotice(kept)
       return { ok: true, ...(kept ? { keptBranch: kept } : {}) }
     } catch (e) {
-      // forceRequired：脏 worktree 的 server 拒绝（含未提交变更）——复用确认弹窗
-      // 二次确认（文案由 forceDelete 标记切换），非终态报错
-      if (e instanceof ApiError && e.forceRequired) {
-        this.forceDeleteRequests.add(deleteKey)
-        this.pendingWorktreeDelete = { directory, projectId }
-        return { ok: false, error: "force-required" }
-      }
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     } finally {
       this.deletingWorkspaces.delete(deleteKey)
+      // 预检态随删除流程终结清位（弹窗此时已关，防同 key 重开残留旧结果）
+      this.worktreeDirtyChecks.delete(deleteKey)
       this.emit()
     }
   }
@@ -3530,29 +3538,51 @@ export class AppStore {
    * 左栏删除钮与 Alt+⌫ 共用——置位 pendingWorktreeDelete 挂 ConfirmDialog，
    * 确认走 removeWorkspace、取消走 cancelWorktreeDelete。global 项目（无
    * worktree 概念）与删除中（重入）不动作——Alt+⌫ 对 global 作用域触达此处
-   * 亦被兜底拒绝。
+   * 亦被兜底拒绝。挂载同时发 vcsStatus 预检（非阻塞，对齐官方 GUI）：预检
+   * 结果只驱动弹窗状态行（checking→clean/dirty/error，dirty 危险色），
+   * 不阻塞确认——确认恒 force=true。
    */
   requestWorktreeDelete(directory: string, projectId: string = this.currentProject?.id ?? "") {
     const project = this.projects.find((p) => p.id === projectId)
     // 非 git 项目（v2 伪项目行）无 worktree 概念（左栏不渲染子行，此处兜底）
     if (!project || !project.vcs) return
     if (this.isWorkspaceDeleting(projectId, directory)) return
-    // 新请求清 force 态（上轮 forceRequired 的二次确认不跨请求残留）
-    this.forceDeleteRequests.delete(`${projectId}\0${directory}`)
+    const key = `${projectId}\0${directory}`
+    // 新请求重置预检（上轮结果不跨请求残留）
+    this.worktreeDirtyChecks.set(key, { state: "checking" })
     this.pendingWorktreeDelete = { directory, projectId }
     this.emit()
+    const client = this.client
+    if (!client) {
+      this.worktreeDirtyChecks.set(key, { state: "error" })
+      this.emit()
+      return
+    }
+    // 过期丢弃：预检返回时弹窗已换目标/关闭 → 不落地（防旧结果覆盖新请求态）
+    void client.vcsStatus(directory).then(
+      (files) => {
+        if (this.pendingWorktreeDelete?.directory !== directory) return
+        this.worktreeDirtyChecks.set(key, files.length ? { state: "dirty", count: files.length } : { state: "clean" })
+        this.emit()
+      },
+      () => {
+        if (this.pendingWorktreeDelete?.directory !== directory) return
+        this.worktreeDirtyChecks.set(key, { state: "error" })
+        this.emit()
+      },
+    )
   }
 
-  /** 当前删除确认是否为强制删除（forceRequired 二次确认，弹窗文案切换依据） */
-  isForceDeleteConfirm(projectId: string, directory: string): boolean {
-    return this.forceDeleteRequests.has(`${projectId}\0${directory}`)
+  /** 删除确认预检态读取（弹窗状态行数据源；undefined = 无请求，渲染层按 checking 容忍） */
+  dirtyCheckFor(projectId: string, directory: string): WorktreeDirtyCheck | undefined {
+    return this.worktreeDirtyChecks.get(`${projectId}\0${directory}`)
   }
 
   /** 取消删除确认（ConfirmDialog onClose / Esc，design-keyboard-shortcuts §4.1） */
   cancelWorktreeDelete() {
     if (!this.pendingWorktreeDelete) return
     const { projectId, directory } = this.pendingWorktreeDelete
-    this.forceDeleteRequests.delete(`${projectId}\0${directory}`)
+    this.worktreeDirtyChecks.delete(`${projectId}\0${directory}`)
     this.pendingWorktreeDelete = null
     this.emit()
   }

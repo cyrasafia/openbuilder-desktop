@@ -153,6 +153,7 @@ private closedTabs: ClosedTabEntry[] = []   // push 尾 / pop 尾，上限 20（
 - **Enter = 确认**（调 handleConfirm）、**Esc = 取消**（既有行为）；`loading` 中两者均不动作（防重复提交/误关）
 - Enter 需 **preventDefault + stopPropagation**：打开即聚焦的是取消钮（danger 弹窗的安全默认，同 OpenWithDialog 的 focus-on-mount），原生行为下 Enter 会点击聚焦钮 = 取消——dialog 容器 onKeyDown 先行拦截改道确认；stopPropagation 防嵌套宿主弹窗（设置的 provider 删除确认嵌在设置弹窗内，Esc 既有同处理）
 - 侧栏工作区删除确认的状态从 sidebar 组件本地 `pendingDelete` **上提 store**（`pendingWorktreeDelete` + `requestWorktreeDelete/cancelWorktreeDelete`）——左栏删除钮与 Alt+⌫ 快捷键共用同一弹窗状态与路径，防两份入口漂移
+- **脏态预检替代 forceRequired 二次弹窗**（2026-10-12 修订，参考官方 GUI `DialogDeleteWorkspace`）：原 M5 方案（首发 `force=false`，吃 400 WorktreeError{forceRequired} 后同一弹窗切"强制删除"文案再确认）被**上游缺陷击穿**——server 判别 `forceRequired` 的正则只匹配英文 git stderr，中文 locale 恒 false（活体核实），二次弹窗永不触发。改为：`requestWorktreeDelete` 挂弹窗同时**非阻塞预检** `GET /api/vcs/status?location[directory]=`（实测 p50 < 100ms，300 脏文件 88ms），结果只驱动弹窗状态行（checking→clean/dirty/error 四态文案，dirty 危险色 + 插值文件数），**不阻塞确认**；确认即删除，**恒 `force=true`**。预检返回时弹窗已换目标/关闭则丢弃（防旧结果闪态）；取消/删除终结清位
 
 ## 5. 不做的事
 
@@ -169,7 +170,7 @@ private closedTabs: ClosedTabEntry[] = []   // push 尾 / pop 尾，上限 20（
 
 | 文件 | 变更 |
 |---|---|
-| `src/renderer/src/store/app-store.ts` | `closedTabs` + `restoreClosedTab`（作用域内恢复，2026-10-12 修订——原 `ensureScopeFor` 移除）；`closeTab` pushClosed 选项；`closeChatTab` 入栈；`cycleTab(dir)`；`scopePreview` + begin/move/commit/cancelScopePreview + `scopeNavRows`/`currentScopeRow`/`activateScopeRow`（§3 修订，原 `cycleScopeEntry` 移除）；Alt 域（§1.2/§4.1）：`pendingWorktreeDelete` + `requestWorktreeDelete`/`cancelWorktreeDelete` + `closeActiveEntry`（激活 entry 推导/单 entry 判定，与左栏 entries 视图同源） |
+| `src/renderer/src/store/app-store.ts` | `closedTabs` + `restoreClosedTab`（作用域内恢复，2026-10-12 修订——原 `ensureScopeFor` 移除）；`closeTab` pushClosed 选项；`closeChatTab` 入栈；`cycleTab(dir)`；`scopePreview` + begin/move/commit/cancelScopePreview + `scopeNavRows`/`currentScopeRow`/`activateScopeRow`（§3 修订，原 `cycleScopeEntry` 移除）；Alt 域（§1.2/§4.1）：`pendingWorktreeDelete` + `requestWorktreeDelete`（vcsStatus 预检，2026-10-12）/`cancelWorktreeDelete` + `closeActiveEntry`（激活 entry 推导/单 entry 判定，与左栏 entries 视图同源） |
 | `src/renderer/src/components/shortcuts.ts` | `useShortcuts()`（window keydown 分发表 + keyup/blur 预览-提交监听）；dispatch 增 Alt 域四键（code 匹配/平台判定/overlay 闸门/repeat 守卫）+ 移除 Ctrl+O；入口守卫 altArrow → altCombo；SHORTCUT_GROUPS 更新（§8） |
 | `src/renderer/src/components/tab-actions.ts` | 新：`closeTabInteractive` |
 | `src/renderer/src/components/sidebar.tsx` | 光标行 `.scope-cursor` + `data-scope-cursor`（scrollIntoView 跟随）；工作区删除确认上提 store（删除钮与 Alt+⌫ 同路径，§4.1） |
