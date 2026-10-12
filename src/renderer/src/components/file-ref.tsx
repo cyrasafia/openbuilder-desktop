@@ -157,13 +157,25 @@ export function userFileChipItems(parts: Part[], sessionDir: string | undefined)
     const mime = p.mime
     if (isFileRefPart(p)) {
       const rel = p.source?.path ?? name
-      const abs =
-        sessionDir && rel && !rel.startsWith("/")
+      // 绝对 path（wire 投影：file:// uri 去 scheme）直接作 absolute——chip 保持
+      // 可点；相对 path（乐观 bridge 铸造）由会话目录拼合（2026-10-12：投影置换
+      // 后 path 由相对变绝对，不可点即回退降级）
+      const abs = rel.startsWith("/")
+        ? rel
+        : sessionDir && rel
           ? `${sessionDir.replace(/\/+$/, "")}/${rel.replace(/^\.?\//, "")}`
           : null
+      // 标签归一（review 2026-10-12）：绝对 path 在 sessionDir 内时剥前缀回相对
+      // ——与乐观 bridge 形态一致，乐观→投影置换 chip 文本不跳变；目录外保持
+      // 绝对（打开仍用 absolute）
+      let displayPath = rel
+      if (abs && sessionDir) {
+        const base = `${sessionDir.replace(/\/+$/, "")}/`
+        if (rel.startsWith(base)) displayPath = rel.slice(base.length)
+      }
       out.push({
         key: id,
-        path: rel,
+        path: displayPath,
         absolute: abs ?? undefined,
         isDir: rel.endsWith("/"),
         title: abs ?? rel,

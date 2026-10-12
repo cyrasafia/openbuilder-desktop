@@ -105,6 +105,70 @@ describe("toInternalMessages", () => {
     expect(out).toHaveLength(1)
     expect(out[0].parts[0]).toMatchObject({ synthetic: true, text: "Background" })
   })
+
+  // 2026-10-12 修复回归：user files 此前整组丢弃——引导页发送附件后投影合并 +
+  // 乐观消解，chip/缩略图直接消失；冷加载带附件历史会话同不显示
+  it("user files 铸 file parts（活体 2.0.18 投影形状，text 后按序拼接）", () => {
+    const e = {
+      id: "msg_u2",
+      time: { created: 100 },
+      type: "user",
+      text: "看下这些",
+      files: [
+        { data: "AAAA", mime: "image/png", source: { type: "inline" }, name: "dot.png" },
+        { data: "aGVsbG8=", mime: "text/plain", source: { type: "uri", uri: "file:///repo/a/src/a.ts" }, name: "a.ts" },
+      ],
+    }
+    const [u] = toInternalMessages("ses_1", [e])
+    expect(u.parts).toHaveLength(3)
+    // inline 附件：无 source（缩略图判据）+ data 重组 url；id 与 inbox bridge 同
+    // scheme（投影置换不双 chip）
+    expect(u.parts[1]).toMatchObject({
+      id: "msg_u2:file:0",
+      type: "file",
+      url: "data:image/png;base64,AAAA",
+      mime: "image/png",
+      filename: "dot.png",
+    })
+    expect((u.parts[1] as { source?: unknown }).source).toBeUndefined()
+    // file:// 引用：引用回灌型（chip 可点，path 取 uri 绝对路径）
+    expect(u.parts[2]).toMatchObject({
+      id: "msg_u2:file:1",
+      type: "file",
+      url: "file:///repo/a/src/a.ts",
+      mime: "text/plain",
+      filename: "a.ts",
+      source: { type: "file", path: "/repo/a/src/a.ts" },
+    })
+  })
+
+  it("user files 缺省/空数组：零 file part（旧消息无附件不受影响）", () => {
+    const noField = { id: "msg_u3", time: { created: 100 }, type: "user", text: "hi" }
+    const empty = { ...noField, id: "msg_u4", files: [] }
+    const out = toInternalMessages("ses_1", [noField, empty])
+    expect(out.every((m) => m.parts.every((p) => p.type === "text"))).toBe(true)
+  })
+
+  // decode round-trip 校验（review 2026-10-12）：本端发送不编码，字面 %XX 不
+  // 得误解码；确系编码产物（encodeURI 还原）才解码
+  it("file:// path decode：字面 %XX 保留原文；合法编码（他端）才解码", () => {
+    const e = {
+      id: "msg_u5",
+      time: { created: 100 },
+      type: "user",
+      text: "",
+      files: [
+        { data: "QQ==", mime: "text/plain", source: { type: "uri", uri: "file:///repo/100%41.txt" }, name: "100%41.txt" },
+        { data: "Qg==", mime: "text/plain", source: { type: "uri", uri: "file:///repo/a%20b.txt" }, name: "a b.txt" },
+      ],
+    }
+    const [u] = toInternalMessages("ses_1", [e])
+    const paths = u.parts
+      .filter((p) => p.type === "file")
+      .map((p) => (p as { source?: { path?: string } }).source?.path)
+    // 字面 %41 不被解码成 A；%20 确为编码产物（encodeURI 还原）→ 解码为空格
+    expect(paths).toEqual(["/repo/100%41.txt", "/repo/a b.txt"])
+  })
 })
 
 describe("contentText / errorMessage", () => {
@@ -193,7 +257,7 @@ describe("inboxItemToUserMessage（design-inbox-admission §3.2，准入即物�
     expect(attachPart.filename).toBe("shot.png")
   })
 
-  it("payload files 兜底：live 2.0.24 形状（data/mime/source.uri/name）+ 2.0.18 形状（uri/name）", () => {
+  it("payload files 兜底：wireFilesToFileParts 统一铸造（file:// → 引用回灌型，data → 附件型）", () => {
     const m = inboxItemToUserMessage(
       "ses_1",
       "msg_u1",
@@ -202,11 +266,12 @@ describe("inboxItemToUserMessage（design-inbox-admission §3.2，准入即物�
         payload: {
           text: "看文件",
           files: [
-            // source.uri 在场：uri 优先（原始文件引用）；data 无 url 落点时才重组
+            // source.uri 在场（2.0.18 REST/2.0.24 inbox 回灌形状）：file:// 铸引用型
             { data: "QUFB", mime: "image/png", source: { type: "uri", uri: "file:///repo/pic.png" }, name: "pic.png" },
+            // 2.0.18 inbox 裸形状：uri 直用（file:// 同铸引用型）
             { uri: "file:///repo/b.ts", name: "b.ts" },
-            // 仅 data + mime（server 剥离了 uri）：重组 data: url（图片缩略图路径）
-            { data: "QkI", mime: "image/jpeg", name: "inline.jpg" },
+            // 仅 data + mime（inline 附件）：重组 data: url（图片缩略图路径）
+            { data: "QkI", mime: "image/jpeg", source: { type: "inline" }, name: "inline.jpg" },
           ],
         },
         delivery: "steer",
@@ -214,18 +279,29 @@ describe("inboxItemToUserMessage（design-inbox-admission §3.2，准入即物�
       250,
     )
     const files = m?.parts.filter((p) => p.type === "file") as Array<{
+      id?: string
       url?: string
       mime?: string
       filename?: string
-      source?: { type?: string; uri?: string }
+      source?: { type?: string; path?: string }
     }>
     expect(files).toHaveLength(3)
-    expect(files[0]).toMatchObject({ url: "file:///repo/pic.png", mime: "image/png", filename: "pic.png" })
-    expect(files[0].source?.type).toBe("uri")
-    // 2.0.18 形状：uri 直用
-    expect(files[1]).toMatchObject({ url: "file:///repo/b.ts", filename: "b.ts" })
-    // 无 uri：data + mime → 重组 data: url
-    expect(files[2]).toMatchObject({ url: "data:image/jpeg;base64,QkI", mime: "image/jpeg", filename: "inline.jpg" })
+    // file:// 源：chip 可点的引用回灌型（path 取 uri 绝对路径）
+    expect(files[0]).toMatchObject({
+      id: "msg_u1:file:0",
+      url: "file:///repo/pic.png",
+      mime: "image/png",
+      filename: "pic.png",
+      source: { type: "file", path: "/repo/pic.png" },
+    })
+    expect(files[1]).toMatchObject({
+      id: "msg_u1:file:1",
+      url: "file:///repo/b.ts",
+      source: { type: "file", path: "/repo/b.ts" },
+    })
+    // inline 附件：无 source（userImageParts 缩略图判据）+ 重组 data: url
+    expect(files[2]).toMatchObject({ id: "msg_u1:file:2", url: "data:image/jpeg;base64,QkI", mime: "image/jpeg", filename: "inline.jpg" })
+    expect(files[2].source).toBeUndefined()
   })
 
   it("防御：payload 缺失/非对象 → null（malformed 事件走旧重取路径）", () => {

@@ -91,3 +91,20 @@ export interface Attachment {
 - **AI 读图**：64×64 纯红 PNG 附件 + "What solid color fills this image?" → AI 回复 "Red"（1×1 图被 provider 以「边长 <10px」拒绝——侧面证明图片真实到达模型）
 - **大附件超时**：`promptAsync` data URL 总长 >1MB → 120s（store 层不感知，见 rest-client）
 - 测试：管线 9 用例（mime 推断/plan 循环/超限拒绝/解码失败透传/聚合）+ 组件 6 用例（chips/缩略图放大/分流/粘贴拦截）+ store 4 用例（CRUD/混排 parts/纯附件/失败保留）
+
+## 10. v2 投影回灌修订（2026-10-12，live server 2.0.18 @15120，修复引导页流附件消失）
+
+§9 的「user 消息回灌 file part」是 v1 事实。v2 REST `GET /message` 的 user entry **无 parts，附件在 `files` 数组**（内容一律内联为 base64 `data`，来源记于 `source.type`）：
+
+- data 附件（prompt files `uri=data:…`）→ `{data, mime, source:{type:"inline"}, name}`
+- `file://` 引用（prompt files `uri=file://…`）→ `{data, mime, source:{type:"uri", uri:"file://…"}, name}`
+
+适配层 `wireFilesToFileParts`（v2-adapter，REST 投影与 inbox payload 兜底共用）按渲染契约铸造：`file://` 源 → 引用回灌型 `source:{type:"file", path}`（path 取 uri 绝对路径；`userFileChipItems` 绝对 path 直接作 absolute，chip 可点）；其余 → 附件回灌型**无 source** + `data:` url 重组（可显示图片走缩略图）。**id 与 inbox bridge 同 scheme（`${id}:file:${n}`）**——投影合并按 id 命中置换，不并集出双 chip。
+
+回归背景：`toInternalMessages` 此前整组丢弃 `files`。会话内发送有 inbox 物化桥接兜底（parts 并集保留）故不显；**引导页流/冷加载无此兜底**，投影合并 + 乐观按 id 锚消解后附件直接消失。旧数据（无 files 字段）不受影响，零 file part。
+
+review 补记（2026-10-12 二轮）：
+
+- **files 回显丢项错配**（待确认项，探针证伪）：不可读附件（如 file:// 指向不存在文件）被 server **同步 400 拒绝整个请求**（`InvalidRequestError, field: files`），走本地失败路径（附件保留重发），不产生部分回显；且 `data` 在准入时内联进库，GET 回显不依赖盘上文件——bridge/投影计数错配在 2.0.18 无路径。若未来版本观测到丢项，修法：投影置换按「同消息 file part 全组替换」而非 id 并集。
+- **decode round-trip 校验**：`file://` path 的 `decodeURIComponent` 收紧为 `encodeURI(decoded) === rawPath` 才采信——本端发送侧裸拼 absolute 不编码，文件名字面 `%XX`（如 `100%41.txt`）不得误解码。
+- **chip 标签归一**：绝对 path 在 sessionDir 内剥前缀回相对显示（`absolute` 保留原值用于打开）——乐观 bridge（相对）→ 投影（绝对）置换 chip 文本不跳变。

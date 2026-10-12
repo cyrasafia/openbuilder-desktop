@@ -210,10 +210,9 @@ function assistantContentToParts(sessionID: string, messageID: string, content: 
  * - bridge（自有发送，按 payload.text 匹配乐观条目）：refs/attachments 铸
  *   file part（chip 可点/图片缩略图随物化保留——移动端 _bridgeOptimisticParts
  *   同构），跳过 payload files 兜底解析（同源数据，防重复 chip）
- * - payload files 兜底（他端发送）：live 2.0.24 形状 {data, mime, source:{type:
- *   "uri", uri}, name}——name chip + data 重组 data: url（图片可缩略图）；
- *   v2.0.18 形状 {uri, name} 防御兼容。source 原样透传（isFileRefPart 判
- *   source.type==="file"，"uri" 归附件型 chip）
+ * - payload files 兜底（他端发送）：wireFilesToFileParts 统一铸造（2.0.18
+ *   REST/inbox 活体形状见其注释）——file:// 源铸引用回灌型 chip、data 源铸
+ *   附件型（图片缩略图）；id 与 bridge/REST 投影同 scheme，投影置换不双 chip
  */
 export function inboxItemToUserMessage(
   sessionID: string,
@@ -232,6 +231,9 @@ export function inboxItemToUserMessage(
   let n = 0
   const filePartId = () => `${inboxID}:file:${n++}`
   if (bridge && (bridge.refs?.length || bridge.attachments?.length)) {
+    // bridge 铸造（自有发送）与 wireFilesToFileParts（投影/他端）共用同一 id
+    // scheme（`${id}:file:${n}`）——投影合并按 id 命中置换（mergePart 快照
+    // 优先），不并集出双 chip
     for (const ref of bridge.refs ?? []) {
       parts.push({
         id: filePartId(),
@@ -259,29 +261,76 @@ export function inboxItemToUserMessage(
     }
   } else {
     const files = Array.isArray(payload.files) ? payload.files : []
-    for (const f of files) {
-      const file = f as Record<string, unknown>
-      const name = typeof file.name === "string" ? file.name : typeof file.filename === "string" ? file.filename : ""
-      const mime = typeof file.mime === "string" ? file.mime : undefined
-      const uri = typeof file.uri === "string" ? file.uri : undefined
-      const source = file.source && typeof file.source === "object" ? (file.source as FileDisplayPart["source"]) : undefined
-      const srcUriRaw = source ? (source as Record<string, unknown>).uri : undefined
-      const srcUri = typeof srcUriRaw === "string" ? srcUriRaw : undefined
-      const data = typeof file.data === "string" ? file.data : undefined
-      const url = uri ?? srcUri ?? (data != null && mime ? `data:${mime};base64,${data}` : undefined)
-      parts.push({
-        id: `${inboxID}:pf:${n++}`,
-        sessionID,
-        messageID: inboxID,
-        type: "file",
-        ...(url != null ? { url } : {}),
-        ...(mime != null ? { mime } : {}),
-        ...(name ? { filename: name } : {}),
-        ...(source != null ? { source } : {}),
-      } as FileDisplayPart)
-    }
+    parts.push(...wireFilesToFileParts(sessionID, inboxID, files))
   }
   return { info: { id: inboxID, sessionID, role: "user", time: { created } }, parts }
+}
+
+/**
+ * v2 wire files[]（REST user 消息 / inbox payload 同构数据）→ file parts。
+ * 活体 2.0.18 探针（2026-10-12，POST files uri=data:/file: 回读 GET /message）：
+ * - data 附件 → `{data, mime, source:{type:"inline"}, name}`（无 uri）
+ * - file:// 引用 → `{data, mime, source:{type:"uri", uri:"file://…"}, name}`
+ *   （内容被 server 内联进 data）；裸 `{uri, name}`（2.0.18 inbox payload）防御兼容。
+ * 铸造对齐渲染契约（design-session-attachments §4 / design-file-reference §5）：
+ * - file:// uri 源 → 引用回灌型 `source:{type:"file",path}`（chip 可点；
+ *   path 取 uri 绝对路径——userFileChipItems 绝对 rel 直接作 absolute）
+ * - 其余（inline/无 source/非 file uri）→ 附件回灌型（**无 source**）：url
+ *   重组 `data:`——可显示图片走缩略图（userImageParts 判 `!p.source`）、
+ *   其余文件名 chip。source 原样透传会让 inline 图片两侧判定全 skip（不可见，
+ *   2026-10-12 修复根因之二）
+ */
+function wireFilesToFileParts(sessionID: string, messageID: string, files: unknown[]): Part[] {
+  const parts: Part[] = []
+  let n = 0
+  for (const f of files) {
+    if (!f || typeof f !== "object") continue
+    const file = f as Record<string, unknown>
+    const name = typeof file.name === "string" ? file.name : typeof file.filename === "string" ? file.filename : ""
+    const mime = typeof file.mime === "string" ? file.mime : undefined
+    const uri = typeof file.uri === "string" ? file.uri : undefined
+    const source = file.source && typeof file.source === "object" ? (file.source as Record<string, unknown>) : undefined
+    const srcUri = typeof source?.uri === "string" ? source.uri : undefined
+    const data = typeof file.data === "string" ? file.data : undefined
+    const partId = `${messageID}:file:${n++}`
+    const fileUri = uri ?? srcUri
+    if (fileUri?.startsWith("file://")) {
+      // 引用回灌：path 取 uri 去 scheme。decode 收 round-trip 校验（review
+      // 2026-10-12）：本端发送侧不编码（fileRefToFilePart 裸拼 absolute），
+      // 文件名字面含 %XX（如 100%41.txt）会被误解码成 100A.txt——只有
+      // encodeURI(decode) 还原出原文（确系他端编码产物）才采信，否则保留字面
+      const rawPath = fileUri.slice("file://".length)
+      let path = rawPath
+      try {
+        const decoded = decodeURIComponent(rawPath)
+        if (encodeURI(decoded) === rawPath) path = decoded
+      } catch {
+        /* 非 legal 编码序列，保留原文 */
+      }
+      parts.push({
+        id: partId,
+        sessionID,
+        messageID,
+        type: "file",
+        ...(mime != null ? { mime } : {}),
+        url: fileUri,
+        ...(name ? { filename: name } : {}),
+        source: { type: "file", path, text: { value: "", start: 0, end: 0 } },
+      } as FileDisplayPart)
+      continue
+    }
+    const url = fileUri ?? (data != null && mime ? `data:${mime};base64,${data}` : undefined)
+    parts.push({
+      id: partId,
+      sessionID,
+      messageID,
+      type: "file",
+      ...(url != null ? { url } : {}),
+      ...(mime != null ? { mime } : {}),
+      ...(name ? { filename: name } : {}),
+    } as FileDisplayPart)
+  }
+  return parts
 }
 
 export function toInternalMessages(sessionID: string, entries: V2MessageEntry[]): MessageWithParts[] {
@@ -294,6 +343,10 @@ export function toInternalMessages(sessionID: string, entries: V2MessageEntry[])
       if (typeof e.text === "string" && e.text) {
         parts.push({ id: `${e.id}:text`, sessionID, messageID: e.id, type: "text", text: e.text })
       }
+      // files → file parts（2026-10-12 修复：此前整组丢弃——引导页流无 inbox
+      // 物化桥接兜底，投影合并 + 乐观按 id 锚消解后附件/chip 直接消失；冷加载
+      // 带附件的历史会话同不显示。形状/铸造规则见 wireFilesToFileParts）
+      parts.push(...wireFilesToFileParts(sessionID, e.id, Array.isArray(e.files) ? e.files : []))
       out.push({ info: { id: e.id, sessionID, role: "user", time: { created } }, parts })
     } else if (e.type === "synthetic") {
       out.push({

@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AppStore, diffTabKey, FILE_WATCH_DEBOUNCE_MS } from "./app-store"
 import { ApiError, RestClient } from "@shared/rest-client"
+import { toInternalMessages } from "@shared/v2-adapter"
 import { SseSubscriber } from "@shared/sse-subscriber"
 import type { ModelCatalog } from "@shared/model-catalog"
 import type { V2ModelInfo } from "@shared/api-v2-types"
@@ -1163,6 +1164,46 @@ describe("busy 补充发送（design-supplement-send / design-inbox-admission）
     expect(attachPart.mime).toBe("image/png")
     expect(attachPart.source).toBeUndefined()
     expect(store.chatEntries("s1").every((e) => e.kind !== "optimistic")).toBe(true)
+  })
+
+  // 2026-10-12 修复回归（引导页流附件消失）：无 inbox 物化桥接兜底的路径（引导页
+  // 发送 / 冷加载），附件存活完全依赖投影页转换——wire files 丢失即整组消失
+  it("投影页 user files 铸 file part 随合并保留：乐观按 id 锚消解后附件不丢（引导页流）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    const clientV2 = clientV2Of()
+    let mintedId = "unset"
+    clientV2.prompt = async (_sid: string, input: { id?: string }) => {
+      mintedId = input.id ?? "unset"
+      return { id: mintedId }
+    }
+    // 投影页走真适配器（wire 形状直出——toInternalMessages 丢 files 的回归在此变红）
+    clientV2.listMessagesPage = async () => ({
+      entries: toInternalMessages("s1", [
+        {
+          id: mintedId,
+          time: { created: 200 },
+          type: "user",
+          text: "\u200b",
+          files: [{ data: "AAAA", mime: "image/png", source: { type: "inline" }, name: "dot.png" }],
+        },
+      ]),
+      nextCursor: null,
+    })
+
+    const res = await store.sendPrompt("s1", "", [], [
+      { id: "att_1", mime: "image/png", filename: "dot.png", dataUrl: "data:image/png;base64,AAAA", isImage: true },
+    ])
+    expect(res.ok).toBe(true)
+    // 乐观消解（id 锚命中投影）后，合并消息携带 file part（chip/缩略图数据源）
+    await vi.waitFor(() => expect(store.chatEntries("s1").every((e) => e.kind !== "optimistic")).toBe(true))
+    const msg = store.chatEntries("s1").find((e) => e.kind === "message") as unknown as {
+      data: MessageWithParts
+    }
+    expect(msg.data.info.id).toBe(mintedId)
+    expect(
+      msg.data.parts.some((p) => p.type === "file" && p.url === "data:image/png;base64,AAAA" && !("source" in p)),
+    ).toBe(true)
   })
 
   it("inbox.cancelled：未投影物化项移除；投影确认后不删（历史不可撤）", async () => {

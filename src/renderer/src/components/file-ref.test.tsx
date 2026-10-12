@@ -108,6 +108,21 @@ describe("userFileChipItems（user 消息 file parts → chip 条目）", () => 
     ])
   })
 
+  it("引用回灌绝对 path（wire 投影铸造）：直接作 absolute 可点（2026-10-12：投影置换后不降级）", () => {
+    const items = userFileChipItems([refPart("prt_f1", "/repo/src/a.ts")], undefined)
+    expect(items).toEqual([
+      { key: "prt_f1", path: "/repo/src/a.ts", absolute: "/repo/src/a.ts", isDir: false, title: "/repo/src/a.ts" },
+    ])
+  })
+
+  it("绝对 path 标签归一：sessionDir 内剥前缀回相对（乐观→投影 chip 文本不跳变），目录外保持绝对", () => {
+    const items = userFileChipItems([refPart("prt_f1", "/repo/src/a.ts"), refPart("prt_f2", "/other/b.ts")], "/repo")
+    expect(items).toEqual([
+      { key: "prt_f1", path: "src/a.ts", absolute: "/repo/src/a.ts", isDir: false, title: "/repo/src/a.ts" },
+      { key: "prt_f2", path: "/other/b.ts", absolute: "/other/b.ts", isDir: false, title: "/other/b.ts" },
+    ])
+  })
+
   it("附件回灌（无 source）：非图片仅文件名 chip；图片进缩略图不进 chip（design-session-attachments §4）", () => {
     const pdf: Part = { ...attachPart("prt_a1", "doc.pdf"), mime: "application/pdf" }
     const items = userFileChipItems([pdf, attachPart("prt_a2", "logo.png")], "/repo")
