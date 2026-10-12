@@ -1,6 +1,10 @@
 # 乐观消息 ID 锚（client-minted msg_ id + 三层按 id 精确消解）— 设计文档
 
 > 状态：设计定稿（2026-10-11），随本分支落地。
+> **修订（2026-10-12）**：命令路径（opt_ 无锚乐观）增补受理信号消解（§4b）——
+> v2 对 `subagent` 命令（`/review` 类）把 user 消息整体投给**子会话**、父会话
+> 零写入（源码 + 活体双证），原「物化清全部 + 层 3 created>=」两通道对它
+> 全部失效，乐观永久悬挂。§6 边界 2 同步改写。
 > 修复问题：进入会话时一条乐观气泡恒挂消息流末尾、永不消解（实测
 > ses_ed553db5fffepV5F6qLCabcAiA，kind-cactus 新 worktree 新会话首条消息）。
 >
@@ -63,7 +67,8 @@
 - `localId` 保持 `msg_` 形状后 React key 在乐观→物化替换时**不变**
   （`msg_x → msg_x`）——气泡无重挂载闪烁（原 `opt_ → msg_` 是 key 跳变）
 - 命令路径（sendCommand）契约无 id：乐观维持 `opt_` 无锚形状，消解靠
-  物化清全部（既有）+ 层 3 快照兜底新增的「无锚条目 created>= 比对」
+  物化清全部（既有）+ 层 3 快照兜底「无锚条目 created>= 比对」+ §4b
+  受理信号（subagent 命令父会话零消息，前两者对它失效）
 
 ## 4. 三层防御（对齐 sse-event-surface §4 模式）
 
@@ -122,6 +127,47 @@ for 每条乐观条目 o（该会话）：
 - 无锚判定同时是层 2 防御的兜底（锚失配时 created>= 收敛）
 - 性能：每次合并 O(乐观数) 次查找，乐观通常 0–2 条，忽略
 
+### 4b. 命令乐观的受理信号消解（2026-10-12 修订）
+
+**触发问题**：subagent 命令（`/review` 类，`subtask: true`）的乐观气泡
+永久悬挂——父会话永远等不到「新 user 消息」。
+
+**契约事实（v2.0.18 源码 `packages/core/src/config/plugin/command.ts` + 本机
+活体双证）**：subagent 命令的执行链 = 建子会话（`sessions.create`，title =
+命令 description）→ `sessions.prompt({sessionID: child.id, text: 展开模板})`
+→ `subagents.start + background` → return。**user 消息（原始输入与展开
+模板）整体落子会话**；父会话零写入——无回显消息、无 subtask part（v1-only
+schema）、无 `session.inbox.enqueued`（事件的 sessionID = 子会话）。活体样本
+（15120，2026-10-12）：父会话 `ses_ed0840e4…`（跑过 `/review 143d0c7`）50 条
+消息 0 条 user；子会话首条 user = `"You are a subagent spawned by another
+session.\n<展开模板>"`。官方 GUI 同场景零命令乐观（`packages/app`
+`composer/submit.ts` 命令分支 fire-and-forget，outbox 仅 prompt/compact 写入）
+——它不受此问题影响；本端保留命令乐观（design-slash-command 既有裁定，
+即时反馈），消解锚换 server 受理信号。
+
+**两条受理信号（都只清 `opt_` 前缀无锚条目，msg_ 锚条目不动）**：
+
+1. **层 1b 事件（主路径）**：`onChildSessionCreated`（`session.created`，
+   parentID 命中）顶部——`clearUnanchoredOptimistic(parentID)`。与 bg-start
+   通知**同源同刻**：气泡消解、「已启动后台任务」通知 + 任务卡接管呈现。
+   server 时序保证：子会话创建先于 POST 返回。挂在呈现闸门
+   （parentLoaded/前台认领）**之前**——消解是数据语义不是呈现语义；agent
+   前台 subagent 与命令并发在途的误清面 = 物化亚秒补位的闪烁
+   （supplement-send 边界 4 同款，接受）
+2. **层 2b 回执（兜底）**：`sendCommand` POST 204 成功——subagent 命令的
+   handler 先建子会话后 return（204 到达时必已创建），覆盖 SSE 断线丢
+   `session.created` 的窗口。清除时**同步触发尾部重取**（已加载门内；
+   review 2026-10-12）：204 本身即 REST 成功，重取走 REST 直达——普通
+   命令在「REST 通、SSE 断」窗口的回显缺口从「等 60s 对账」缩到重取
+   RTT，subagent 命令扑空幂等；projector 晚于重取的残余（实测 ~80ms，
+   与重取 RTT 同量级、非保证顺序）由周期对账收敛。可见性定性：清除断
+   线窗口的**滞留占位泡**（乐观态气泡消失），换取真实回显最快 RTT 级
+   并入——比原「层 3 结算前一直挂乐观态」收敛更快
+
+残余漏洞 = 两信号同丢 = fetch 永久悬挂（server `kill -9`）——与
+design-slash-command 既有已接受边界同域，不设层 3 受理对账（会话快照查
+parentID 新子会话的判据留作记录，不做）。
+
 ## 5. 实现
 
 ### 5.1 id 铸造（`src/shared/v2-adapter.ts`）
@@ -137,7 +183,7 @@ for 每条乐观条目 o（该会话）：
 |---|---|
 | `src/shared/v2-adapter.ts` | `mintMessageID` 导出 |
 | `src/shared/rest-client.ts` | `prompt` 请求体带 `id`；返回 `Promise<{id: string}>`（204/无体防御返回 `{id: ""}`） |
-| `src/renderer/src/store/app-store.ts` | `sendPrompt`：localId=铸 id、POST 带 id、回执校验 warn；enqueued/delivered/cancelled 三 case 门外 `clearOptimisticAt`；delivered 补取 inboxID；cancelled 增乐观撤；`materializeInboxUser` 桥接锚优先；`refreshMessagesAfterPrompt` id 命中判定；`mergeRestSnapshot` 终兜底结算 |
+| `src/renderer/src/store/app-store.ts` | `sendPrompt`：localId=铸 id、POST 带 id、回执校验 warn；enqueued/delivered/cancelled 三 case 门外 `clearOptimisticAt`；delivered 补取 inboxID；cancelled 增乐观撤；`materializeInboxUser` 桥接锚优先；`refreshMessagesAfterPrompt` id 命中判定；`mergeRestSnapshot` 终兜底结算；§4b（2026-10-12）：`clearUnanchoredOptimistic` + `onChildSessionCreated` 顶部层 1b + `sendCommand` 成功分支层 2b |
 | `src/shared/message-merge.ts` | 无结构改动（`OptimisticMessage` 不增字段；注释更新锚语义） |
 
 `sendCommand` 的乐观生成（4782 行）**不动**——`opt_` 无锚形状是层 3 无锚
@@ -156,9 +202,11 @@ for 每条乐观条目 o（该会话）：
 1. **server 不尊重传入 id**（假想防御场景）：回执 id ≠ 铸 id 时精确清失配
    ——层 3 的 created>= 判定收敛（同旧逻辑），仅丢失精确性不悬挂。log warn
    留痕。官方客户端同依赖此行为，风险同级
-2. **命令乐观无精确锚**：`POST /command` 契约无 id。conv 已加载时物化清全部
-   （既有）覆盖；conv 未加载（guide 页发命令）时靠层 3 快照兜底消解
-   （进入会话即触发）。不悬挂，仅消解时机略晚
+2. **命令乐观无精确锚**：`POST /command` 契约无 id。消解 = 物化清全部
+   （既有，普通命令）+ 层 3 快照 created>= 兜底 + §4b 受理信号
+   （subagent 命令——前两者对它失效）。~~不悬挂，仅消解时机略晚~~
+   （2026-10-12 订正：subagent 命令父会话零消息，「略晚」永不到达，
+   原「不悬挂」结论只对普通命令成立）
 3. **client/server id 撞**（同毫秒 + 随机后缀碰撞，62^14 空间）：概率可忽略
    （官方客户端同级风险），不防御
 4. **并发在途误清闪烁**（supplement-send §4 既有边界）：门内物化「清全部」
@@ -181,6 +229,12 @@ for 每条乐观条目 o（该会话）：
   - mergeRestSnapshot 终兜底：有锚条目锚入快照即清；无锚条目 created>=
     命中即清；均不误清未落地条目
   - sendPrompt 失败回滚：localId（msg_ 形状）照常撤
+  - §4b（2026-10-12）：subagent 命令在途注入 `session.created`（parentID
+    命中）→ opt_ 清、并存的 msg_ 锚条目不动、bg-start 通知接管、随后 204
+    幂等；父会话未加载/未开 Tab 仍消解（呈现门外）；sendCommand POST 204
+    成功清 opt_（层 2b，斜杠命令用例同步改挂）；层 2b 断线兜底——SSE 无
+    事件（REST 通）时 204 后尾部重取并入真实回显（缺口 = 重取 RTT，
+    review 2026-10-12）
 
 ## 8. 验收
 
@@ -190,3 +244,6 @@ for 每条乐观条目 o（该会话）：
 3. 断连窗口内发送：重连对账后乐观消解（层 3）
 4. 他端取消排队项：本端乐观气泡即时撤回
 5. 既有用例全绿（乐观清除时机语义未变的部分回归）
+6. subagent 命令（§4b，2026-10-12）：发送 `/review` → 乐观气泡短暂出现 →
+   子会话出生即消解 + 「已启动后台任务」通知/任务卡接管；重进会话无残留；
+   busy 中并发补充发送的普通消息乐观不受动

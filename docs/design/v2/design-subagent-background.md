@@ -36,8 +36,11 @@ synthetic（源码核实 tag v2.0.18）：
 
 用户在输入框运行带 `subagent: true` 的命令（如 `/review`）。服务端
 （`config/plugin/command.ts`）建子会话（title = 命令 description 或名），
-模板展开后投给子会话执行，父 agent 不参与——父会话消息流里只有命令回显
-（subtask part），**没有 task/subagent tool part**。
+模板展开后投给子会话执行，父 agent 不参与——**父会话零消息写入**
+（2026-10-12 v2.0.18 源码 + 活体双证订正：user 消息整体落子会话首条，
+「父会话命令回显 subtask part」是 v1 行为，v2 无 subtask part、无 inbox
+事件发往父会话；本端命令乐观的消解锚 = 受理信号，见
+`design-optimistic-id-anchor.md` §4b），**没有 task/subagent tool part**。
 
 ### ② 工具型 `subagent` tool `background: true`
 

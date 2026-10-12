@@ -1549,6 +1549,54 @@ describe("乐观 ID 锚（design-optimistic-id-anchor）", () => {
     // 锚入页（投影确认）清；排队锚不动（等待事件/下次漏斗）；无锚 created>= 命中清
     expect(store.optimisticBySession.get("s1")!.map((o) => o.localId)).toEqual(["msg_x2"])
   })
+
+  it("subagent 命令（层 1）：session.created 子会话出生即清 opt_ 命令乐观——锚条目与 bg-start 通知各就各位", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    seedMessages("s1", {
+      info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 100 } },
+      parts: [],
+    })
+    const run = deferred<void>()
+    clientV2Of().sendCommand = () => run.promise
+    const p = store.sendCommand("s1", "review", "143d0c7")
+    await Promise.resolve()
+    // 并存在途锚乐观（busy 补充发送的普通消息，msg_ 形状）——不受命令消解动
+    store.optimisticBySession.set("s1", [
+      ...store.optimisticBySession.get("s1")!,
+      { optimistic: true, localId: "msg_anchor1", text: "补充", createdAt: 150 },
+    ])
+    // v2 事实（2026-10-12 源码 + 活体双证）：subagent 命令的 user 消息整体
+    // 落子会话、父会话零写入——消解信号 = 子会话出生（session.created）
+    dispatch({
+      type: "session.created",
+      properties: { sessionID: "ses_child1", projectID: "proj1", parentID: "s1", title: "审查改动" },
+    })
+    expect(store.optimisticBySession.get("s1")!.map((o) => o.localId)).toEqual(["msg_anchor1"])
+    // bg-start 通知接管呈现（conv 已加载 → 插入），与乐观消解同源同刻
+    expect(store.chatEntries("s1").some((e) => e.kind === "notice")).toBe(true)
+    run.resolve()
+    await p
+    // 层 2b（204 兜底）幂等：无 opt_ 可清，锚条目保留
+    expect(store.optimisticBySession.get("s1")!.map((o) => o.localId)).toEqual(["msg_anchor1"])
+  })
+
+  it("subagent 命令（层 1）：父会话未加载/未开 Tab 仍消解——乐观语义不依赖呈现门", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    const run = deferred<void>()
+    clientV2Of().sendCommand = () => run.promise
+    const p = store.sendCommand("s1", "review", "")
+    await Promise.resolve()
+    expect(store.messagesBySession.has("s1")).toBe(false)
+    dispatch({
+      type: "session.created",
+      properties: { sessionID: "ses_child2", projectID: "proj1", parentID: "s1", title: "审查改动" },
+    })
+    expect(store.optimisticBySession.has("s1")).toBe(false)
+    run.resolve()
+    await p
+  })
 })
 
 describe("合成 text part 过滤（design-file-reference §5，引用回显只画用户文本 + 文件 chip）", () => {
@@ -1724,7 +1772,7 @@ describe("斜杠命令发送（design-slash-command SC-4：同步端点无限等
     ;(store as unknown as { handleEvent: (dir: string, ev: unknown) => void }).handleEvent(ROOT, ev)
   }
 
-  it("长时执行在途：乐观保留不误判失败，完成后 ok:true；真实 user 事件到达即清乐观", async () => {
+  it("长时执行在途：乐观保留不误判失败，完成后 ok:true；204 受理即清命令乐观（层 2），enqueued 物化照常", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })
     store.sessionsByProject.set("proj1", sessionsOf(s1))
     seedMessages("s1")
@@ -1748,6 +1796,9 @@ describe("斜杠命令发送（design-slash-command SC-4：同步端点无限等
     expect(res.ok).toBe(true)
     // 第 4 参 = 引用 files（v2 {uri,name}；无引用时 undefined，design-file-reference §4）
     expect(sent).toEqual(["s1", "review", "--help", undefined])
+    // 层 2b（design-optimistic-id-anchor §4b）：204 = 受理证据，命令乐观即清
+    // ——subagent 命令父会话零消息、无 inbox 事件可等；普通命令此处幂等
+    expect(store.chatEntries("s1").some((e) => e.kind === "optimistic")).toBe(false)
 
     // 回显经 v2 inbox 链路落地（展开为 subtask part 的消息形态由重取页携带）
     clientV2.listMessagesPage = async () => ({
@@ -1776,6 +1827,32 @@ describe("斜杠命令发送（design-slash-command SC-4：同步端点无限等
     const res = await store.sendCommand("s1", "no-such", "")
     expect(res.ok).toBe(false)
     expect(store.chatEntries("s1")).toHaveLength(0)
+  })
+
+  it("层 2b 断线兜底：SSE 无事件（REST 通）时 204 后尾部重取并入真实回显，缺口不待 60s 对账", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    seedMessages("s1")
+    const run = deferred<void>()
+    clientV2Of().sendCommand = () => run.promise
+    // 204 到达时回显已投影（普通命令：204 = 执行完成）；SSE 断线——enqueued
+    // 不 dispatch，重取是唯一并入通道
+    clientV2Of().listMessagesPage = async () => ({
+      entries: [
+        { info: { id: "msg_u9", sessionID: "s1", role: "user", time: { created: 900 } }, parts: [] },
+      ],
+      nextCursor: null,
+    })
+    const p = store.sendCommand("s1", "init", "--foo")
+    await Promise.resolve()
+    run.resolve()
+    await p
+    // 204 清 opt_ + 尾部重取并入真实回显（review 2026-10-12：缺口 = 重取
+    // RTT，非 60s 对账周期）
+    await vi.waitFor(() =>
+      expect(store.chatEntries("s1").some((e) => e.kind === "message" && e.data.info.id === "msg_u9")).toBe(true),
+    )
+    expect(store.chatEntries("s1").some((e) => e.kind === "optimistic")).toBe(false)
   })
 })
 
