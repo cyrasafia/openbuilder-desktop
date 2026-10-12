@@ -4458,11 +4458,16 @@ export class AppStore {
     return childID
   }
 
+  /** 发送普通消息（design-optimistic-id-anchor：client-minted id 幂等准入，回执+重取消解乐观）。
+   *  skills = skill 类斜杠命令的激活通道（design-slash-command 2026-10-12 修订）：
+   *  text 仍为原始 `/cmd args`（回显/消解与普通 prompt 完全同源），server 按
+   *  id 回填 skill 正文入 user 消息 payload */
   async sendPrompt(
     sessionID: string,
     text: string,
     refs?: FileRef[],
     attachments?: Attachment[],
+    skills?: Array<{ id: string }>,
   ): Promise<{ ok: boolean; error?: string }> {
     if (!this.client) return { ok: false, error: "not connected" }
     const session = this.findSession(sessionID)
@@ -4514,6 +4519,7 @@ export class AppStore {
         id: optimistic.localId,
         text: text || "\u200b",
         files,
+        ...(skills?.length ? { skills } : {}),
       })
       // 回执校验（防御，design-optimistic-id-anchor §6 边界 1）：server 尊重
       // 传入 id 是官方客户端依赖的稳定行为；不匹配时精确消解失配，由层 3

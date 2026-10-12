@@ -68,8 +68,9 @@ vi.mock("./attachments", () => ({
 /** 测试内动态替换的 store 桩（vi.mock 提升导致闭包需经变量间接） */
 let storeStub: Record<string, unknown>
 
-/** 斜杠用例的命令注册表（makeStore 覆盖 commandsFor 可变） */
-let guideCommands: Array<{ name: string; description?: string }>
+/** 斜杠用例的命令注册表（makeStore 覆盖 commandsFor 可变；source 标记
+ *  skill 分流——listCommands 合并 /api/skill 时写入，rest-client 契约） */
+let guideCommands: Array<{ name: string; description?: string; source?: string }>
 
 function makeStore(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -501,5 +502,66 @@ describe("引导页斜杠命令（design-slash-command 2026-09-08 修订）", ()
     // 命中命令 + 附件的阻断路径（attachCmdBlocked 提示）在 ChatView 同构，
     // 此处只验非命令字面发送不拦
     expect(storeStub.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("命中 skill：走 sendPrompt + skills 附件（/command 不认 skill，2026-10-12 修复）", async () => {
+    guideCommands = [{ name: "codeup-mr", source: "skill" }]
+    const session = sessionStub()
+    ;(storeStub.createSession as ReturnType<typeof vi.fn>).mockResolvedValue(session)
+    ;(storeStub.sendPrompt as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true })
+    render(<Workspace />)
+    type("/codeup-mr 标题")
+    key("Enter")
+    await act(async () => {
+      await vi.waitFor(() => expect(storeStub.sendPrompt).toHaveBeenCalled())
+    })
+    // skill 分流：prompt 端点 + skills=[{id}]（text 原始文本），不碰 /command
+    expect(storeStub.sendPrompt).toHaveBeenCalledWith("s1", "/codeup-mr 标题", [], [], [
+      { id: "codeup-mr" },
+    ])
+    expect(storeStub.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("skill + 附件：守卫放行（prompt 契约附件已验证），非 skill 命中仍拦", async () => {
+    guideCommands = [
+      { name: "review" },
+      { name: "codeup-mr", source: "skill" },
+    ]
+    const session = sessionStub()
+    ;(storeStub.createSession as ReturnType<typeof vi.fn>).mockResolvedValue(session)
+    ;(storeStub.sendPrompt as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true })
+    const attach = { id: "a1", mime: "image/png", filename: "x.png", dataUrl: "data:image/png;base64,AAAA" }
+    ;(storeStub.attachmentsFor as ReturnType<typeof vi.fn>).mockReturnValue([attach])
+    render(<Workspace />)
+    // skill 命中 + 附件：放行发送（附件随 prompt files 消费）；带参数绕开
+    // 菜单补全模式（决策 7：无空白草稿 Enter = 补全不发送）
+    type("/codeup-mr 备注")
+    key("Enter")
+    await act(async () => {
+      await vi.waitFor(() => expect(storeStub.sendPrompt).toHaveBeenCalled())
+    })
+    expect(storeStub.sendPrompt).toHaveBeenCalledWith("s1", "/codeup-mr 备注", [], [attach], [
+      { id: "codeup-mr" },
+    ])
+    expect(storeStub.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("普通 command 命中 + 附件仍拦（守卫只对 skill 放行）", async () => {
+    guideCommands = [{ name: "review" }]
+    const session = sessionStub()
+    ;(storeStub.createSession as ReturnType<typeof vi.fn>).mockResolvedValue(session)
+    ;(storeStub.attachmentsFor as ReturnType<typeof vi.fn>).mockReturnValue([
+      { id: "a1", mime: "image/png", filename: "x.png", dataUrl: "data:image/png;base64,AAAA" },
+    ])
+    render(<Workspace />)
+    type("/review --help")
+    key("Enter")
+    // 守卫拦下：不建会话、不发送（attachCmdBlocked 提示通道在 ChatView 同构覆盖）
+    await act(async () => {
+      await vi.waitFor(() => expect(storeStub.refreshCommands).toHaveBeenCalled())
+    })
+    expect(storeStub.createSession).not.toHaveBeenCalled()
+    expect(storeStub.sendCommand).not.toHaveBeenCalled()
+    expect(storeStub.sendPrompt).not.toHaveBeenCalled()
   })
 })

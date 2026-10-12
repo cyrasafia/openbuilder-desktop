@@ -1,6 +1,7 @@
 # 会话 Tab 斜杠命令查询与发送 — 设计文档
 
 > **v2 迁移注记（2026-09-29，M6c）**：命令目录 = `GET /api/command` ∪ `GET /api/skill` 合并（skill 斜杠触发保留）；发送换 `POST /api/session/:id/command`（body `{name,text,files}`，timeoutMs: 0）；命令回显经 `session.inbox.enqueued` 转记。详见 plan-v2-protocol M6c 落地记录。
+> **2026-10-12 修订**：skill 命中不走 `/command`（server 只查 command 注册表，skill 必经 prompt 的 `skills` 字段激活）——见文末修订记录。
 
 
 > 参考移动端同类设计：`../openbuilder/docs/docs/design/v2/design-slash-command-refresh.md`（列表缓存与空响应防护）、
@@ -68,7 +69,10 @@ interface CommandCacheState {
 ### 发送
 
 - 输入 `/cmd args` 发送时：重拉注册表 → 按命令名（大小写不敏感）精确匹配 →
-  - 命中：`POST /session/:id/command {command, arguments}`（`sendCommand`）；
+  - 命中普通 command：`POST /session/:id/command {command, arguments}`（`sendCommand`）；
+  - 命中 skill（`source === "skill"`，2026-10-12 修订）：`sendPrompt` 原始文本
+    + `skills: [{id}]` 附件——v2 prompt 端点的 skill 激活通道（异步端点，
+    text/refs/attachments 与普通 prompt 完全同源，附件放行）；
   - 未命中：按字面文本走 `prompt_async`（服务端不会展开未注册命令，当普通消息处理是正确降级）。
 - 命令名与参数以**任意空白**分隔（空格/换行/Tab——Shift+Enter 多行参数可达），
   参数取首段空白之后的剩余文本（trim）。
@@ -86,9 +90,11 @@ interface CommandCacheState {
 
 ### 回显渲染
 
-- subtask 命令（如 `/review`）：真实 user 消息 part 为 `type:"subtask"`，渲染
-  `**subtask: <command>**` + prompt 正文（单一 Markdown 块）；
-- 非 subtask 命令（skill 等）：服务端展开为 `type:"text"` part，走既有纯文本渲染；
+- subtask 命令（如 `/review`，仍走 `/command`）：真实 user 消息 part 为
+  `type:"subtask"`，渲染 `**subtask: <command>**` + prompt 正文（单一 Markdown 块）；
+- 非 subtask 命令：服务端展开为 `type:"text"` part，走既有纯文本渲染（v1
+  `/command` 曾覆盖 skill；v2 起 skill 改走 prompt 激活，回显 = 原始
+  `/cmd args` 文本，与普通 user 消息渲染一致，2026-10-12 修订）；
 - 合并层（message-merge）：subtask part 在 REST/SSE 竞态合并时取 `prompt` 更完整者
   （SSE 早事件可能缺 prompt，与 text 的"取更长者"规则同理）。
 
@@ -266,6 +272,44 @@ server 源码核实无回填风险：`runner.cancel` 使在途 command 请求走
    共享一个命名空间，server 侧注册时已保证（同名后注册覆盖前注册），接受。
 
 ## 修订记录
+
+### 2026-10-12：skill 命中分流至 prompt + skills 附件（v2 修复）
+
+**症状**：skill 类斜杠命令（如 `/codeup-mr`）无法发送——乐观气泡闪现即撤、
+文本回填输入框。
+
+**根因**：M6c 合并命令目录（`/api/command` ∪ `/api/skill`）后，发送分流只认
+`/command` 端点。而 v2 server 的 `POST /api/session/:id/command` 只查
+**command 注册表**（builtin/config/MCP），skill 不在其中——`Command not
+found` 400（官方 `session/prompt.ts` `SessionPrompt.command`），客户端误当
+发送失败撤乐观 + 回填。即：**菜单能看到 skill、发送端点不认 skill**。
+
+**v2 契约事实（2026-10-12 活体验证，2.0.18）**：
+
+- skill 激活通道 = prompt 端点的 `skills` 字段（`PromptInput.SkillAttachment`，
+  required 仅 `id`）：`POST /api/session/:id/prompt`，body
+  `{text: 原始 "/cmd args", skills: [{id}], files?}`——server 按 id 查注册表
+  **回填 skill 正文**（name + `<skill_content>` text）入 user 消息 payload，
+  text 原样落库；
+- `skills` 与 `files` 并列无互斥：skills+files 同发实测 200，两者落同一条
+  user 消息（移动端 conversation_screen 同构在用）；
+- 另有 `POST /api/experimental/session/:id/skill`（body `{id, resume?}`，
+  空闲会话激活专用）——本端选 prompt+skills 路径（发送时同时携带文本/附件，
+  与移动端一致）。
+
+**修复**（ChatView/GuidePage 两处同构）：
+
+- 分流：命中 `source === "skill"`（`listCommands` 合并时写入）→
+  `sendPrompt(sessionID, text, refs, attachments, [{id}])`；普通 command →
+  `/command` 不变；未注册 → 字面降级不变。skill 走异步端点，乐观/消解
+  （id 锚定）与普通 prompt 完全同机制，无 commandEchoPending 展开消解参与；
+- 附件守卫放行 skill（原拦全部命中命令）：skill 走 prompt 契约，files 消费
+  已验证；普通 command 维持拦截（`/command` 附件消费未验证，P2-2 决策不变）；
+- `rest-client.prompt` / `store.sendPrompt` 增加 `skills` 参数（非空进 body）。
+
+**测试**：rest-client（skills 请求体/空省略）、app-store（sendPrompt 透传）、
+workspace-guide（skill 分流 / skill+附件放行 / 普通 command+附件仍拦）、
+workspace-bg-task（ChatView 分流）共 6 用例，全量 1314 通过。
 
 ### 2026-09-11：引导页命中命令「分发即开 Tab」（同步长端点不等响应）
 
