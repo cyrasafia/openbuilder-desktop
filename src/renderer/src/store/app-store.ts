@@ -495,7 +495,9 @@ export class AppStore {
   private pendingTaskDetail: string | null = null
   /**
    * 关闭栈（design-keyboard-shortcuts §2，Ctrl+Shift+T 恢复）：仅用户主动关闭入栈
-   * （pushClosed 选项），上限 20 弃最旧；纯内存不持久化（重启场景由 Tab 记忆覆盖）
+   * （pushClosed 选项），上限 20 弃最旧；纯内存不持久化（重启场景由 Tab 记忆覆盖）。
+   * 恢复是**作用域内**的（2026-10-12 修订）：只消费 directory = 当前作用域的条目，
+   * 其他作用域条目留在栈中
    */
   closedTabs: ClosedTabEntry[] = []
   /**
@@ -6446,24 +6448,30 @@ export class AppStore {
   }
 
   /**
-   * Ctrl+Shift+T 恢复刚关闭的 Tab：自栈顶逐项尝试，不可恢复（会话已删/所属
-   * 作用域已关）跳过下一项，直到成功或栈空。**全 kind 先过作用域落点判定**
-   * （§2.1）——恢复的 Tab 必须落在其所属作用域（chat 恢复 = openChatTab 自带
-   * 取消归档；file/diff 重开）；terminal/browser 待 M3/M4 接入。
+   * Ctrl+Shift+T 恢复**当前作用域内**上一个关闭的 Tab（2026-10-12 修订：
+   * 作用域内恢复，不跨项目/worktree——原 §2.1 ensureScopeFor 跨作用域切换
+   * 语义废弃，理由见 design-keyboard-shortcuts §2 修订）。自栈顶向下找第一个
+   * directory = 当前作用域的条目：其他作用域的条目**跳过保留**（切回该作用
+   * 域后仍可恢复）；当前作用域内不可恢复的条目（会话已删）弹出丢弃，继续
+   * 找下一项。
    */
   restoreClosedTab() {
-    while (this.closedTabs.length > 0) {
-      const entry = this.closedTabs.pop()!
+    const scope = this.scopeDirectory()
+    for (let i = this.closedTabs.length - 1; i >= 0; i--) {
+      const entry = this.closedTabs[i]!
+      // 跨作用域条目（其他项目/worktree）不恢复、不切换作用域，留在栈中
+      if (entry.directory !== scope) continue
       if (entry.kind === "chat") {
-        // 会话存在性是纯查询，先于作用域切换——跳过已删会话时不白切作用域
         const session = this.findSession(entry.key.slice(5))
-        if (session && this.ensureScopeFor(entry)) {
-          this.openChatTab(session)
-          return
+        if (!session) {
+          this.closedTabs.splice(i, 1)
+          continue
         }
-        continue
+        this.closedTabs.splice(i, 1)
+        this.openChatTab(session)
+        return
       }
-      if (!this.ensureScopeFor(entry)) continue
+      this.closedTabs.splice(i, 1)
       if (entry.kind === "file") {
         this.openFileTab(entry.key.slice(5))
         return
@@ -6474,7 +6482,8 @@ export class AppStore {
       }
       if (entry.kind === "terminal") {
         // 终端恢复 = 原 directory 新建 pty（原 pty 已随关 Tab 销毁，spec #2）；
-        // ensureScopeFor 已把作用域切到原目录（openTerminalTab 用当前作用域）
+        // 条目 directory 已 = 当前作用域（作用域内恢复），openTerminalTab 用
+        // 当前作用域
         void this.openTerminalTab()
         return
       }
@@ -6494,36 +6503,6 @@ export class AppStore {
         return
       }
     }
-  }
-
-  /**
-   * 恢复项作用域落点判定（design-keyboard-shortcuts §2.1）：directory ≠ 当前
-   * 作用域时**同步段**切过去（开 Tab 在其后立即执行，作用域已就位）。
-   * 返回 false = 所属项目/entry 已关闭，该项不可恢复。
-   */
-  private ensureScopeFor(entry: ClosedTabEntry): boolean {
-    const dir = entry.directory
-    if (!dir || this.scopeDirectory() === dir) return true
-    // 当前项目内：项目根或 worktree
-    const cur = this.currentProject
-    if (cur && entry.projectId === cur.id) {
-      if (dir === cur.worktree) void this.setCurrentWorkspace(null)
-      else if ((cur.sandboxes ?? []).includes(dir)) void this.setCurrentWorkspace(dir)
-      else return false
-      return true
-    }
-    // 其他已打开 entry：entry 根走 openEntry；项目 worktree 一步直达
-    // setCurrentProject（= openProject(projectId, dir)，同步段落位——先 openEntry
-    // 再补 setCurrentWorkspace 会把 Tab 开在项目根作用域）
-    const target = this.openedEntries.find(
-      (e) =>
-        e.project.id === entry.projectId &&
-        (e.directory === dir || (e.project.sandboxes ?? []).includes(dir)),
-    )
-    if (!target) return false
-    if (dir === target.directory) void this.openEntry(target.key)
-    else void this.setCurrentProject(target.project.id, dir)
-    return true
   }
 
   /** Ctrl+Tab / Ctrl+PgDn：作用域内可见 Tab 循环切换（无激活时取首/末） */

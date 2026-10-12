@@ -107,7 +107,7 @@ function dispatch(
     return true
   }
   if (alt || shift) {
-    // Ctrl+Shift+T：恢复刚关闭的 Tab
+    // Ctrl+Shift+T：恢复当前作用域内上一个关闭的 Tab（不跨项目/worktree）
     if (shift && !alt && key.toLowerCase() === "t") {
       store.restoreClosedTab()
       return true
