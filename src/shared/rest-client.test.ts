@@ -229,7 +229,7 @@ describe("会话域（M2）", () => {
     })
     await client.deleteWorktree("p1", "/repo/.wt")
     expect(seenBody).toBe(JSON.stringify({ projectID: "p1", directory: "/repo/.wt", force: false }))
-    // forceRequired 错误（脏 worktree）透传为 ApiError
+    // typed error（脏 worktree 的 WorktreeError 400）透传为 ApiError（body 保留）
     const dirty = mkClient(() => new Response(JSON.stringify({ name: "WorktreeError", data: { forceRequired: true } }), { status: 400 }))
     await expect(dirty.deleteWorktree("p1", "/repo/.wt")).rejects.toMatchObject({ status: 400 })
   })
@@ -269,6 +269,29 @@ describe("worktree 库存直连（2026-09-29：v2 权威源）", () => {
     // name 可选透传
     await client.createWorktree("p1", { name: "feat-x" })
     expect(seenBody).toBe(JSON.stringify({ projectID: "p1", name: "feat-x" }))
+  })
+
+  it("vcsStatus：GET /api/vcs/status?location[directory]=（deepObject query），裸 {location,data} 解包", async () => {
+    let seenUrl = ""
+    const client = mkClient((url) => {
+      seenUrl = url
+      // 2.0.18 活体：裸 Location+data，不包 envelope；未跟踪文件报 added +0/+0
+      return new Response(
+        JSON.stringify({
+          location: { directory: "/data/worktree/abc123/wt1" },
+          data: [
+            { file: "sample/Luna_Cat.png", additions: 0, deletions: 0, status: "added" },
+            { file: "src/a.ts", additions: 3, deletions: 1, status: "modified" },
+          ],
+        }),
+      )
+    })
+    const files = await client.vcsStatus("/data/worktree/abc123/wt1")
+    expect(seenUrl).toBe("http://server/api/vcs/status?location%5Bdirectory%5D=%2Fdata%2Fworktree%2Fabc123%2Fwt1")
+    expect(files).toEqual([
+      { file: "sample/Luna_Cat.png", additions: 0, deletions: 0, status: "added" },
+      { file: "src/a.ts", additions: 3, deletions: 1, status: "modified" },
+    ])
   })
 
   it("refreshWorktrees：POST /api/worktree/refresh，payload {projectID}，204 容忍空体", async () => {

@@ -38,6 +38,18 @@ export interface WorktreeDirectory {
 }
 
 /**
+ * GET /api/vcs/status 条目（Vcs.FileStatus，openapi v2 + 2.0.18 活体核对
+ * 2026-10-12）：`status` 三枚举——added 含未跟踪文件（活体：Luna_Cat.png 未跟踪
+ * 报 added +0/+0）。worktree 删除预检数据源（design-keyboard-shortcuts §4.1）。
+ */
+export interface VcsFileStatus {
+  file: string
+  additions: number
+  deletions: number
+  status: "added" | "deleted" | "modified"
+}
+
+/**
  * /api/shell wire（`{data}` envelope 内；2.0.18 活体核对 2026-09-29）：POST 创建
  * （`{command!, cwd?, timeout?}`）→ 轮询 `GET /api/shell/:id` 至
  * `status !== "running"` → `GET /api/shell/:id/output` 取累积输出。经用户登录

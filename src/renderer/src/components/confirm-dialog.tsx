@@ -11,6 +11,8 @@ import { useI18n, useStore } from "../app"
 export function ConfirmDialog({
   title,
   message,
+  hint,
+  hintTone = "default",
   confirmLabel,
   cancelLabel,
   loadingLabel,
@@ -20,6 +22,10 @@ export function ConfirmDialog({
 }: {
   title: string
   message: string
+  /** 补充状态行（主消息下方）：如 worktree 删除预检的 checking/clean/dirty/error
+   *  文案——默认普通样式，dirty 等需警示时传 "danger"（着色由 confirm-hint 承担） */
+  hint?: string
+  hintTone?: "default" | "danger"
   confirmLabel: string
   cancelLabel: string
   loadingLabel?: string
@@ -88,6 +94,9 @@ export function ConfirmDialog({
             </div>
           ) : (
             <p className="confirm-message">{message}</p>
+          )}
+          {hint && !loading && (
+            <p className={"confirm-hint" + (hintTone === "danger" ? " danger" : "")}>{hint}</p>
           )}
         </div>
         <div className="dialog-actions">

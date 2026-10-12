@@ -2,9 +2,10 @@ import { useEffect, useRef, useState, type CSSProperties } from "react"
 import { FolderGit2, FolderPlus, LoaderCircle, Plus, Settings, Trash2, TriangleAlert, X } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import { ConfirmDialog } from "./confirm-dialog"
-import { relativeTime } from "../i18n"
+import { relativeTime, type Catalog } from "../i18n"
 import type { Project, Session } from "@shared/api-types"
 import type { SessionDotState } from "@shared/pending-requests"
+import type { WorktreeDirtyCheck } from "../store/app-store"
 import { SessionDot } from "./session-dot"
 import { MIN_SERVER_VERSION_V2 } from "@shared/semver"
 import { managedNoticeText } from "./managed-notice"
@@ -172,6 +173,26 @@ function ServerStatus() {
  * 整体重排；实时预览式——拖动中列表即时重排、拖拽项在目标位渲染占位样式；
  * worktree 行不入拖拽、随项目组移动）。
  */
+/**
+ * worktree 删除确认的状态行文案（design-keyboard-shortcuts §4.1，2026-10-12
+ * 修订）：预检四态 checking/clean/dirty/error → i18n 文案；dirty 插值 {count}
+ * 文件数。undefined（无检查记录）不渲染状态行——渲染容忍，理论上不出现
+ * （requestWorktreeDelete 即置 checking）。
+ */
+function worktreeCheckHint(t: Catalog, check: WorktreeDirtyCheck | undefined): string | undefined {
+  if (!check) return undefined
+  switch (check.state) {
+    case "checking":
+      return t.workspaceCheckPending
+    case "clean":
+      return t.workspaceCheckClean
+    case "dirty":
+      return t.workspaceCheckDirty.replace("{count}", String(check.count))
+    case "error":
+      return t.workspaceCheckFailed
+  }
+}
+
 function ProjectTree() {
   const store = useStore()
   const { t } = useI18n()
@@ -440,21 +461,19 @@ function ProjectTree() {
 
       {store.pendingWorktreeDelete && (
         <ConfirmDialog
-          title={
-            store.isForceDeleteConfirm(store.pendingWorktreeDelete.projectId, store.pendingWorktreeDelete.directory)
-              ? t.forceDeleteWorkspace
-              : t.confirmDeleteWorkspace
+          title={t.confirmDeleteWorkspace}
+          message={t.confirmDeleteWorkspaceMsg}
+          hint={worktreeCheckHint(
+            t,
+            store.dirtyCheckFor(store.pendingWorktreeDelete.projectId, store.pendingWorktreeDelete.directory),
+          )}
+          hintTone={
+            store.dirtyCheckFor(store.pendingWorktreeDelete.projectId, store.pendingWorktreeDelete.directory)
+              ?.state === "dirty"
+              ? "danger"
+              : "default"
           }
-          message={
-            store.isForceDeleteConfirm(store.pendingWorktreeDelete.projectId, store.pendingWorktreeDelete.directory)
-              ? t.forceDeleteWorkspaceMsg
-              : t.confirmDeleteWorkspaceMsg
-          }
-          confirmLabel={
-            store.isForceDeleteConfirm(store.pendingWorktreeDelete.projectId, store.pendingWorktreeDelete.directory)
-              ? t.forceDeleteConfirm
-              : t.confirm
-          }
+          confirmLabel={t.confirm}
           cancelLabel={t.cancel}
           danger
           onConfirm={() => {
