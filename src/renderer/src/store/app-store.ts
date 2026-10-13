@@ -3389,21 +3389,31 @@ export class AppStore {
     if (this.deletingWorkspaces.has(deleteKey)) return { ok: false, error: "deleting" }
     const isCurrent = project.id === this.currentProject?.id
     this.deletingWorkspaces.add(deleteKey)
-    // 删的是当前作用域：同步段立即跳回项目根（先切换后加载，同 setCurrentWorkspace(null)
-    // 同步段）——左栏高亮/中栏标题/文件树/根 Tab 即时跟手，服务端清理在后台继续；
-    // 持久化后台执行（清理失败作用域仍停在根，与现状一致：worktree 已不可信）。
-    // 复位后 unloadWorktreeDirectory 的 restored 必为 false，不会二次恢复根 Tab
-    const ps = this.projectStateFor()
-    if (isCurrent && ps.currentWorkspaceId === directory) {
-      ps.currentWorkspaceId = null
-      this.projectStates[this.profileKey()] = ps
-      void this.persistProjectState()
-      this.resetFileTree()
-      this.restoreScopeTabs(project.worktree, true, true)
-      void this.backfillPending()
-    }
-    this.emit()
     try {
+      // location 请求屏障（design-worktree-sync §3.5，ref §3.4 三订）：带
+      // location[directory] 的请求打到死目录 = server 侧 boot location → resolve →
+      // 兜底建档伪行（一发一行）。整个删除窗口挂起该目录的新 location 请求
+      // （gate——作用域已切走，此时还来的只能是迟到 timer/竞态漏网），DELETE 前
+      // 等在途清零（barrier）。finally 解除（失败路径同样解除）
+      client.suspendLocationRequests(directory)
+      // 删的是当前作用域：同步段立即跳回项目根（先切换后加载，同 setCurrentWorkspace(null)
+      // 同步段）——左栏高亮/中栏标题/文件树/根 Tab 即时跟手，服务端清理在后台继续；
+      // 持久化后台执行（清理失败作用域仍停在根，与现状一致：worktree 已不可信）。
+      // 复位后 unloadWorktreeDirectory 的 restored 必为 false，不会二次恢复根 Tab
+      const ps = this.projectStateFor()
+      if (isCurrent && ps.currentWorkspaceId === directory) {
+        ps.currentWorkspaceId = null
+        this.projectStates[this.profileKey()] = ps
+        void this.persistProjectState()
+        this.resetFileTree()
+        this.restoreScopeTabs(project.worktree, true, true)
+        void this.backfillPending()
+      }
+      this.emit()
+      // §3.5：先杀该目录运行中 pty（deletePty 带 location，目录存活期发无害；
+      // 若留到 DELETE 后的 unload 再杀，恰好落在死目录上 = 确定性建一行——
+      // killPtyInDirectory 幂等，unload 处的二次调用不会再发）
+      this.killPtyInDirectory(directory)
       // 删除 worktree 前，先级联删除该目录全部会话（D2 语义，照搬 v1：服务器删
       // worktree 不级联会话，同名重建后会继承旧会话——服务器以 directory 路径
       // 关联，无 worktree 代次标识）。best-effort：单个删除失败不阻断 worktree 删除。
@@ -3423,6 +3433,9 @@ export class AppStore {
       // 提示由确认弹窗的 vcsStatus 预检承担（官方 GUI 模式），不再依赖 server 的
       // forceRequired 错误分支——其判别被中文 git locale 击穿（活体 2026-10-12），
       // 400 分支在这类环境永不触发
+      // barrier：在途 location 请求（文件树/vcs/diff 等）落地后再删——迟到
+      // 的一发即一行伪行；超时放行（best-effort，慢请求不阻塞删除）
+      await client.awaitLocationIdle(directory)
       await client.deleteWorktree(project.id, directory, { force: true })
       // warm location evict（design-worktree-sync §3.4，2026-10-12）：server 内存
       // 保留已打开目录的 location（idleTimeToLive=∞），每 5 分钟刷新重解析——目录
@@ -3451,6 +3464,8 @@ export class AppStore {
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     } finally {
       this.deletingWorkspaces.delete(deleteKey)
+      // 屏障解除（§3.5）：失败路径同样解除——目录未删成时恢复其 location 请求
+      client.resumeLocationRequests(directory)
       // 预检态随删除流程终结清位（弹窗此时已关，防同 key 重开残留旧结果）
       this.worktreeDirtyChecks.delete(deleteKey)
       this.emit()
@@ -5838,13 +5853,17 @@ export class AppStore {
     this.closeTab(key, { pushClosed: true })
   }
 
-  /** 目录卸载（关项目/删工作区/teardown）时杀该目录运行中 pty（fire-and-forget，防孤儿） */
+  /** 目录卸载（关项目/删工作区/teardown）时杀该目录运行中 pty（fire-and-forget，防孤儿）。
+   *  幂等（§3.5）：runtime 条目已删（先杀过）则跳过——removeWorkspace 删除前
+   *  预杀一次，unload 处的二次调用不得再发（deletePty 带 location，落在目录
+   *  删除之后即兜底建档伪行，ref §3.4） */
   private killPtyInDirectory(directory: string) {
     if (!this.client) return
     for (const tab of this.tabs) {
       if (tab.kind !== "terminal" || tab.directory !== directory) continue
       const id = tab.key.slice("terminal:".length)
-      if (!this.ptyRuntimes.get(id)?.exited) {
+      const rt = this.ptyRuntimes.get(id)
+      if (rt && !rt.exited) {
         void this.client.deletePty(id, directory).catch(() => {})
       }
       this.ptyRuntimes.delete(id)

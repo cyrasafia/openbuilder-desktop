@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest"
 import { ApiError, RestClient } from "./rest-client"
 
-function mkClient(handler: (url: string, init: RequestInit) => Response, opts?: { password?: string }) {
+function mkClient(handler: (url: string, init: RequestInit) => Response | Promise<Response>, opts?: { password?: string }) {
   return new RestClient({
     baseUrl: "http://server/",
     password: opts?.password,
@@ -871,5 +871,67 @@ describe("鉴权与错误分类", () => {
     const c400 = mkClient(() => new Response("{}", { status: 400 }))
     await expect(c400.listSessions({ cursor: "bad" })).rejects.toBeInstanceOf(ApiError)
     await expect(c400.listSessions({ cursor: "bad" })).rejects.toMatchObject({ status: 400 })
+  })
+})
+
+describe("location 请求屏障（design-worktree-sync §3.5，ref §3.4 三订）", () => {
+  it("gate：挂起目录的 location 请求立即拒绝且不发出；resume 后恢复", async () => {
+    let fetched = 0
+    const client = mkClient(() => {
+      fetched++
+      return new Response(JSON.stringify({ location: { directory: "/wt" }, data: [] }))
+    })
+    client.suspendLocationRequests("/wt")
+    await expect(client.listFiles("/wt", ".")).rejects.toThrow(/挂起/)
+    await expect(client.vcsStatus("/wt")).rejects.toThrow(/挂起/)
+    await expect(client.listVcsDiff("/wt", "git")).rejects.toThrow(/挂起/)
+    await expect(client.findFiles("q", "/wt")).rejects.toThrow(/挂起/)
+    expect(fetched).toBe(0)
+    client.resumeLocationRequests("/wt")
+    await expect(client.listFiles("/wt", ".")).resolves.toEqual([])
+    expect(fetched).toBe(1)
+  })
+
+  it("gate 豁免 evictLocation（删除链路自身要用，且其请求只 invalidate 不 boot）", async () => {
+    const client = mkClient(() => new Response(null, { status: 204 }))
+    client.suspendLocationRequests("/wt")
+    await expect(client.evictLocation("/wt")).resolves.toBeUndefined()
+  })
+
+  it("gate 不影响其他目录（按目录精确挂起）", async () => {
+    const client = mkClient(() =>
+      new Response(JSON.stringify({ location: { directory: "/other" }, data: [] })),
+    )
+    client.suspendLocationRequests("/wt")
+    await expect(client.listFiles("/other", ".")).resolves.toEqual([])
+  })
+
+  it("barrier：在途未清零时等满超时放行；清零后立即返回", async () => {
+    let release!: () => void
+    const held = new Promise<void>((r) => (release = r))
+    let fetched = 0
+    const client = mkClient(async () => {
+      fetched++
+      await held
+      return new Response(JSON.stringify({ location: { directory: "/wt" }, data: [] }))
+    })
+    const pending = client.listFiles("/wt", ".")
+    const t0 = Date.now()
+    await client.awaitLocationIdle("/wt", 120)
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(100) // 超时放行（在途未清零）
+    release()
+    await pending
+    const t1 = Date.now()
+    await client.awaitLocationIdle("/wt", 5000)
+    expect(Date.now() - t1).toBeLessThan(200) // 已清零：立即返回
+    expect(fetched).toBe(1)
+  })
+
+  it("计数在请求失败后归零（barrier 不悬挂）", async () => {
+    const client = mkClient(() => new Response("nope", { status: 500 }))
+    await expect(client.vcsStatus("/wt")).rejects.toBeInstanceOf(ApiError)
+    const t0 = Date.now()
+    await client.awaitLocationIdle("/wt", 5000)
+    expect(Date.now() - t0).toBeLessThan(200)
   })
 })

@@ -200,13 +200,15 @@ export class RestClient {
    * directory 省略 = server 默认 location（cwd）。
    */
   async resolveLocation(directory?: string): Promise<LocationInfo> {
-    let path = "/api/location"
-    if (directory !== undefined) {
-      const q = new URLSearchParams()
-      q.set("location[directory]", directory)
-      path += `?${q.toString()}`
-    }
-    return this.fetchJson<LocationInfo>(path)
+    return this.withLocation(directory, async () => {
+      let path = "/api/location"
+      if (directory !== undefined) {
+        const q = new URLSearchParams()
+        q.set("location[directory]", directory)
+        path += `?${q.toString()}`
+      }
+      return this.fetchJson<LocationInfo>(path)
+    })
   }
 
   /**
@@ -254,16 +256,20 @@ export class RestClient {
     agent?: string
     model?: ModelRef
   }): Promise<SessionInfo> {
-    const page = await this.fetchJson<{ data: SessionInfo }>("/api/session", {
-      method: "POST",
-      body: JSON.stringify({
-        location: { directory: input.directory },
-        ...(input.title !== undefined ? { title: input.title } : {}),
-        ...(input.agent !== undefined ? { agent: input.agent } : {}),
-        ...(input.model !== undefined ? { model: input.model } : {}),
-      }),
+    // withLocation（§3.5）：POST body 也带 location（session 创建在 server 侧
+    // resolve 目录，session.ts:271）——与 query 形式同等纳入屏障
+    return this.withLocation(input.directory, async () => {
+      const page = await this.fetchJson<{ data: SessionInfo }>("/api/session", {
+        method: "POST",
+        body: JSON.stringify({
+          location: { directory: input.directory },
+          ...(input.title !== undefined ? { title: input.title } : {}),
+          ...(input.agent !== undefined ? { agent: input.agent } : {}),
+          ...(input.model !== undefined ? { model: input.model } : {}),
+        }),
+      })
+      return page.data
     })
-    return page.data
   }
 
   /**
@@ -345,6 +351,61 @@ export class RestClient {
     })
   }
 
+  // ============ location 请求屏障（design-worktree-sync §3.5，ref §3.4 三订） ============
+
+  /** 删除窗口中的目录（gate）：新 location 请求一律拒绝 */
+  private suspendedLocationDirs = new Set<string>()
+  /** 按目录的在途 location 请求计数（barrier） */
+  private locationInflight = new Map<string, number>()
+
+  /**
+   * 包装带 location[directory] 的请求（design-worktree-sync §3.5）：
+   * - 目录在挂起集（removeWorkspace 删除窗口）→ **立即拒绝**——作用域已切走，
+   *   此时还打向该目录的只能是迟到 timer/竞态漏网；放行会在 server 侧按需
+   *   boot 该目录的 location → `project.resolve` → 死目录兜底建档伪行
+   *   （ref §3.4 三订：一发请求一行，与 warm/刷新无关）；
+   * - 否则按目录计数在途，供 `awaitLocationIdle` 屏障。
+   * evictLocation **不包装**（删除链路自身要用，且其请求只 invalidate 不 boot）。
+   */
+  private async withLocation<T>(directory: string | undefined, run: () => Promise<T>): Promise<T> {
+    if (!directory) return run()
+    if (this.suspendedLocationDirs.has(directory)) {
+      throw new ApiError(0, "unknown", `location 请求已挂起（删除窗口）：${directory}`)
+    }
+    const n = (this.locationInflight.get(directory) ?? 0) + 1
+    this.locationInflight.set(directory, n)
+    try {
+      return await run()
+    } finally {
+      const left = (this.locationInflight.get(directory) ?? 1) - 1
+      if (left <= 0) this.locationInflight.delete(directory)
+      else this.locationInflight.set(directory, left)
+    }
+  }
+
+  /** 挂起某目录的全部 location 请求（removeWorkspace 删除窗口开启；gate） */
+  suspendLocationRequests(directory: string): void {
+    this.suspendedLocationDirs.add(directory)
+  }
+
+  /** 解除挂起（removeWorkspace finally 兜底，失败路径也解除） */
+  resumeLocationRequests(directory: string): void {
+    this.suspendedLocationDirs.delete(directory)
+  }
+
+  /**
+   * 等某目录在途 location 请求清零（barrier）——removeWorkspace 在
+   * `DELETE /api/worktree` 前调用：在途请求落地后再删，防其落在删除之后
+   * （迟到的 location 请求 = 兜底建档，ref §3.4）。**超时放行**（best-effort，
+   * 同 evict 降级风格——慢请求如 30s 超时的 vcs diff 不阻塞删除）。
+   */
+  async awaitLocationIdle(directory: string, timeoutMs = 1500): Promise<void> {
+    const deadline = Date.now() + timeoutMs
+    while (this.locationInflight.get(directory) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 25))
+    }
+  }
+
   /**
    * GET /api/vcs/status（deepObject query，location 组专用风格——同
    * resolveLocation；URLSearchParams 编码括号，活体两种形式均可）：未提交
@@ -354,10 +415,12 @@ export class RestClient {
    * 100ms，300 脏文件 88ms——非阻塞预检性能前提成立）。
    */
   async vcsStatus(directory: string): Promise<VcsFileStatus[]> {
-    const q = new URLSearchParams()
-    q.set("location[directory]", directory)
-    const res = await this.fetchJson<{ location: unknown; data?: VcsFileStatus[] }>(`/api/vcs/status?${q.toString()}`)
-    return res.data ?? []
+    return this.withLocation(directory, async () => {
+      const q = new URLSearchParams()
+      q.set("location[directory]", directory)
+      const res = await this.fetchJson<{ location: unknown; data?: VcsFileStatus[] }>(`/api/vcs/status?${q.toString()}`)
+      return res.data ?? []
+    })
   }
 
   // ============ 消息域（M4a） ============
@@ -642,8 +705,8 @@ export class RestClient {
    * 过滤在 model-catalog。
    */
   async listAgents(directory: string): Promise<AgentInfo[]> {
-    const res = await this.fetchJson<{ data: V2AgentInfo[] }>(
-      `/api/agent${this.locationQuery(directory)}`,
+    const res = await this.withLocation(directory, () =>
+      this.fetchJson<{ data: V2AgentInfo[] }>(`/api/agent${this.locationQuery(directory)}`),
     )
     return res.data.map((a) => ({
       name: a.id,
@@ -660,8 +723,8 @@ export class RestClient {
    * 已不成立：65 模型跨 5 provider）。转换/过滤在 model-catalog.parseModelsV2。
    */
   async listModels(directory: string): Promise<V2ModelInfo[]> {
-    const res = await this.fetchJson<{ data: V2ModelInfo[] }>(
-      `/api/model${this.locationQuery(directory)}`,
+    const res = await this.withLocation(directory, () =>
+      this.fetchJson<{ data: V2ModelInfo[] }>(`/api/model${this.locationQuery(directory)}`),
     )
     return res.data
   }
@@ -673,8 +736,8 @@ export class RestClient {
    * server 进程环境变量在场生成。目录不存在 → data 空数组。
    */
   async listIntegrations(directory: string): Promise<V2IntegrationInfo[]> {
-    const res = await this.fetchJson<{ data: V2IntegrationInfo[] }>(
-      `/api/integration${this.locationQuery(directory)}`,
+    const res = await this.withLocation(directory, () =>
+      this.fetchJson<{ data: V2IntegrationInfo[] }>(`/api/integration${this.locationQuery(directory)}`),
     )
     return res.data
   }
@@ -685,12 +748,14 @@ export class RestClient {
    * 核对），单槽语义由调用方补 removeCredential 完成。2.0.18 起可用。
    */
   async connectIntegrationKey(integrationID: string, key: string, directory: string): Promise<void> {
-    await this.fetchResponse(
-      `/api/integration/${encodeURIComponent(integrationID)}/connect/key${this.locationQuery(directory)}`,
-      {
-        method: "POST",
-        body: JSON.stringify({ key }),
-      },
+    await this.withLocation(directory, () =>
+      this.fetchResponse(
+        `/api/integration/${encodeURIComponent(integrationID)}/connect/key${this.locationQuery(directory)}`,
+        {
+          method: "POST",
+          body: JSON.stringify({ key }),
+        },
+      ),
     )
   }
 
@@ -721,25 +786,27 @@ export class RestClient {
    * （v1 /file 的 ignored 字段），恒 false（弱化样式退役，同移动端）。
    */
   async listFiles(directory: string, path: string): Promise<FileNode[]> {
-    const q = new URLSearchParams()
-    q.set("location[directory]", directory)
-    if (path && path !== ".") q.set("path", path)
-    const res = await this.fetchJson<{
-      location: { directory: string }
-      data: V2FsEntry[]
-    }>(`/api/fs/list?${q.toString()}`)
-    const base = res.location.directory.replace(/\/+$/, "")
-    return res.data.map((e) => {
-      const isDir = e.type === "directory"
-      const withoutSlash = isDir && e.path.endsWith("/") ? e.path.slice(0, -1) : e.path
-      const segs = withoutSlash.split("/").filter(Boolean)
-      return {
-        name: segs.length === 0 ? withoutSlash : segs[segs.length - 1],
-        path: e.path,
-        absolute: withoutSlash ? `${base}/${withoutSlash}` : base,
-        type: e.type,
-        ignored: false,
-      }
+    return this.withLocation(directory, async () => {
+      const q = new URLSearchParams()
+      q.set("location[directory]", directory)
+      if (path && path !== ".") q.set("path", path)
+      const res = await this.fetchJson<{
+        location: { directory: string }
+        data: V2FsEntry[]
+      }>(`/api/fs/list?${q.toString()}`)
+      const base = res.location.directory.replace(/\/+$/, "")
+      return res.data.map((e) => {
+        const isDir = e.type === "directory"
+        const withoutSlash = isDir && e.path.endsWith("/") ? e.path.slice(0, -1) : e.path
+        const segs = withoutSlash.split("/").filter(Boolean)
+        return {
+          name: segs.length === 0 ? withoutSlash : segs[segs.length - 1],
+          path: e.path,
+          absolute: withoutSlash ? `${base}/${withoutSlash}` : base,
+          type: e.type,
+          ignored: false,
+        }
+      })
     })
   }
 
@@ -770,9 +837,11 @@ export class RestClient {
       .split("/")
       .map((s) => encodeURIComponent(s))
       .join("/")
-    const res = await this.fetchResponse(
-      `/api/fs/read/${encoded}${this.locationQuery(directory)}`,
-      { timeoutMs: 30000 },
+    const res = await this.withLocation(directory, () =>
+      this.fetchResponse(
+        `/api/fs/read/${encoded}${this.locationQuery(directory)}`,
+        { timeoutMs: 30000 },
+      ),
     )
     const mime = (res.headers.get("content-type") ?? "").split(";")[0].trim() || undefined
     const isImage = !!mime && mime.startsWith("image/") && mime !== "image/svg+xml"
@@ -878,14 +947,16 @@ export class RestClient {
    * 与 v1 /find/file 的返回形态对齐——@ 浮层数据源直接消费 string[]）。
    */
   async findFiles(query: string, directory: string, limit = 20): Promise<string[]> {
-    const q = new URLSearchParams()
-    q.set("location[directory]", directory)
-    q.set("query", query)
-    q.set("limit", String(limit))
-    const res = await this.fetchJson<{ data: V2FsEntry[] }>(
-      `/api/fs/find?${q.toString()}`,
-    )
-    return res.data.map((e) => e.path)
+    return this.withLocation(directory, async () => {
+      const q = new URLSearchParams()
+      q.set("location[directory]", directory)
+      q.set("query", query)
+      q.set("limit", String(limit))
+      const res = await this.fetchJson<{ data: V2FsEntry[] }>(
+        `/api/fs/find?${q.toString()}`,
+      )
+      return res.data.map((e) => e.path)
+    })
   }
 
   // ============ diff（M6b：vcs 组 deepObject + session turn 语义） ============
@@ -900,15 +971,17 @@ export class RestClient {
     mode: "git" | "branch",
     opts: { context?: number } = {},
   ): Promise<FileDiff[]> {
-    const q = new URLSearchParams()
-    q.set("location[directory]", directory)
-    q.set("mode", mode === "git" ? "working" : "branch")
-    q.set("context", String(opts.context ?? 3))
-    const res = await this.fetchJson<{ data: V2FileDiff[] }>(
-      `/api/vcs/diff?${q.toString()}`,
-      { timeoutMs: 30000 },
-    )
-    return res.data
+    return this.withLocation(directory, async () => {
+      const q = new URLSearchParams()
+      q.set("location[directory]", directory)
+      q.set("mode", mode === "git" ? "working" : "branch")
+      q.set("context", String(opts.context ?? 3))
+      const res = await this.fetchJson<{ data: V2FileDiff[] }>(
+        `/api/vcs/diff?${q.toString()}`,
+        { timeoutMs: 30000 },
+      )
+      return res.data
+    })
   }
 
   /**
@@ -943,23 +1016,30 @@ export class RestClient {
     directory: string,
     body: { command?: string; args?: string[]; cwd?: string; title?: string; env?: Record<string, string> } = {},
   ): Promise<Pty> {
-    const res = await this.fetchJson<{ data: Pty }>(`/api/pty${this.locationQuery(directory)}`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    })
+    const res = await this.withLocation(directory, () =>
+      this.fetchJson<{ data: Pty }>(`/api/pty${this.locationQuery(directory)}`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    )
     return res.data
   }
 
   /** PUT /api/pty/:ptyID（resize；失败静默由调用方 catch） */
   async updatePtySize(ptyID: string, directory: string, size: { rows: number; cols: number }): Promise<Pty> {
-    const res = await this.fetchJson<{ data: Pty }>(
-      `/api/pty/${encodeURIComponent(ptyID)}${this.locationQuery(directory)}`,
-      { method: "PUT", body: JSON.stringify({ size }) },
+    const res = await this.withLocation(directory, () =>
+      this.fetchJson<{ data: Pty }>(
+        `/api/pty/${encodeURIComponent(ptyID)}${this.locationQuery(directory)}`,
+        { method: "PUT", body: JSON.stringify({ size }) },
+      ),
     )
     return res.data
   }
 
-  /** DELETE /api/pty/:ptyID（关 Tab = 杀 pty；404 = 已退出，调用方视为成功） */
+  /** DELETE /api/pty/:ptyID（关 Tab = 杀 pty；404 = 已退出，调用方视为成功）。
+   *  §3.5 **豁免 withLocation**：pty 清理属删除链路自身（removeWorkspace 删
+   *  worktree 前先行 killPtyInDirectory），挂起会拒绝清理；顺序保证其落在
+   *  目录存活期。他端删除（syncWorktrees）路径的残留见 §3.5 兜底。 */
   async deletePty(ptyID: string, directory: string): Promise<void> {
     await this.fetchResponse(`/api/pty/${encodeURIComponent(ptyID)}${this.locationQuery(directory)}`, {
       method: "DELETE",
@@ -972,9 +1052,11 @@ export class RestClient {
    * 的客户端确认信号，v1 同规则沿用）；响应 envelope `{location, data}`。
    */
   async ptyConnectToken(ptyID: string, directory: string): Promise<PtyTicket> {
-    const res = await this.fetchJson<{ data: PtyTicket }>(
-      `/api/pty/${encodeURIComponent(ptyID)}/connect-token${this.locationQuery(directory)}`,
-      { method: "POST", headers: { "x-opencode-ticket": "1" } },
+    const res = await this.withLocation(directory, () =>
+      this.fetchJson<{ data: PtyTicket }>(
+        `/api/pty/${encodeURIComponent(ptyID)}/connect-token${this.locationQuery(directory)}`,
+        { method: "POST", headers: { "x-opencode-ticket": "1" } },
+      ),
     )
     return res.data
   }
@@ -987,16 +1069,18 @@ export class RestClient {
    * 单源失败保留该源空缺（不拖垮另一源）。
    */
   async listCommands(directory: string): Promise<CommandInfo[]> {
-    const [commands, skills] = await Promise.all([
-      this.fetchJson<{ data: CommandInfo[] }>(`/api/command${this.locationQuery(directory)}`)
-        .then((r) => r.data)
-        .catch(() => null),
-      this.fetchJson<{ data: Array<{ id: string; name?: string; description?: string }> }>(
-        `/api/skill${this.locationQuery(directory)}`,
-      )
-        .then((r) => r.data)
-        .catch(() => null),
-    ])
+    const [commands, skills] = await this.withLocation(directory, () =>
+      Promise.all([
+        this.fetchJson<{ data: CommandInfo[] }>(`/api/command${this.locationQuery(directory)}`)
+          .then((r) => r.data)
+          .catch(() => null),
+        this.fetchJson<{ data: Array<{ id: string; name?: string; description?: string }> }>(
+          `/api/skill${this.locationQuery(directory)}`,
+        )
+          .then((r) => r.data)
+          .catch(() => null),
+      ]),
+    )
     const out: CommandInfo[] = commands ?? []
     if (skills) {
       for (const s of skills) {
@@ -1038,15 +1122,19 @@ export class RestClient {
 
   /** GET /api/permission/request：目录级 pending 权限（Record[]，归一化在 pending-requests） */
   async listPendingPermissionRequests(directory: string): Promise<Record<string, unknown>[]> {
-    const res = await this.fetchJson<{ data: Record<string, unknown>[] }>(
-      `/api/permission/request${this.locationQuery(directory)}`,
+    const res = await this.withLocation(directory, () =>
+      this.fetchJson<{ data: Record<string, unknown>[] }>(
+        `/api/permission/request${this.locationQuery(directory)}`,
+      ),
     )
     return res.data
   }
 
   /** GET /api/form：目录级 pending 表单（Form.Info[] → 归一化 PendingQuestion） */
   async listPendingForms(directory: string): Promise<PendingQuestion[]> {
-    const res = await this.fetchJson<{ data: unknown[] }>(`/api/form${this.locationQuery(directory)}`)
+    const res = await this.withLocation(directory, () =>
+      this.fetchJson<{ data: unknown[] }>(`/api/form${this.locationQuery(directory)}`),
+    )
     return res.data
       .map((f) => normalizeForm(f as Record<string, unknown>, directory))
       .filter((q): q is PendingQuestion => q !== null)

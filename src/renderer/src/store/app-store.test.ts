@@ -157,6 +157,10 @@ beforeEach(() => {
     deleteWorktree: async () => {},
     // location evict（design-worktree-sync §3.4）：默认成功，用例按需覆盖/侦听
     evictLocation: async () => {},
+    // location 请求屏障（design-worktree-sync §3.5）：默认无操作，用例按需侦听顺序
+    suspendLocationRequests: () => {},
+    resumeLocationRequests: () => {},
+    awaitLocationIdle: async () => {},
     // 删除预检（design-keyboard-shortcuts §4.1）：默认干净，用例按需覆盖
     vcsStatus: async () => [],
     // M4a 消息域：typed union 已在真 client 收敛，fake 直接产内部形状
@@ -616,6 +620,9 @@ describe("非聊天 Tab 作用域化（design-tab-memory §18）", () => {
     expect(store.projectStates.default.currentWorkspaceId).toBeNull()
     expect(store.scopeQuery.directory).toBe(ROOT)
 
+    // §3.5 屏障在 DELETE 前多一跳 awaitLocationIdle：让微任务跑完、
+    // deleteWorktree 已被调用（resolveRemove 已赋值）再解除
+    await new Promise((r) => setTimeout(r, 0))
     resolveRemove()
     const res = await pending
     expect(res.ok).toBe(true)
@@ -921,6 +928,46 @@ describe("worktree 库存（v2 权威源，2026-09-29：sandboxes 冻结）", ()
     const res = await store.removeWorkspace(WT1)
     expect(res.ok).toBe(false)
     expect(evicted).toEqual([])
+  })
+
+  it("removeWorkspace location 屏障（design-worktree-sync §3.5）：suspend 先行、awaitIdle 紧贴 DELETE、finally resume", async () => {
+    snapshots.set(ROOT, [])
+    snapshots.set(WT2, [])
+    const calls: string[] = []
+    const cv2 = fakeClient()
+    cv2.deleteWorktree = async (_p: string, d: string) => {
+      calls.push(`delete:${d}`)
+    }
+    cv2.listWorktrees = async () => [{ directory: ROOT }, { directory: WT2, strategy: "git" }]
+    cv2.suspendLocationRequests = (d: string) => calls.push(`suspend:${d}`)
+    cv2.resumeLocationRequests = (d: string) => calls.push(`resume:${d}`)
+    cv2.awaitLocationIdle = async (d: string) => {
+      calls.push(`idle:${d}`)
+    }
+    projectList = [{ ...project(), sandboxes: [WT1, WT2] }]
+    await store.syncWorktrees()
+    const res = await store.removeWorkspace(WT1)
+    expect(res.ok).toBe(true)
+    // 顺序契约：挂起先于一切 await；idle 紧贴 DELETE 之前；resume 收尾（finally）
+    expect(calls[0]).toBe(`suspend:${WT1}`)
+    expect(calls.indexOf(`idle:${WT1}`)).toBeLessThan(calls.indexOf(`delete:${WT1}`))
+    expect(calls[calls.length - 1]).toBe(`resume:${WT1}`)
+  })
+
+  it("removeWorkspace 删除失败也 resume（屏障不悬挂——目录未删成须恢复请求）", async () => {
+    const calls: string[] = []
+    const cv2 = fakeClient()
+    cv2.deleteWorktree = async () => {
+      throw new Error("git worktree remove failed")
+    }
+    cv2.suspendLocationRequests = (d: string) => calls.push(`suspend:${d}`)
+    cv2.resumeLocationRequests = (d: string) => calls.push(`resume:${d}`)
+    cv2.awaitLocationIdle = async (d: string) => {
+      calls.push(`idle:${d}`)
+    }
+    const res = await store.removeWorkspace(WT1)
+    expect(res.ok).toBe(false)
+    expect(calls).toEqual([`suspend:${WT1}`, `idle:${WT1}`, `resume:${WT1}`])
   })
 
   it("removeWorkspace evict 失败不阻塞删除：端点被升级移除/网络失败（best-effort 降级兼容）", async () => {
@@ -5839,6 +5886,34 @@ describe("终端 Tab（design-terminal-tab）", () => {
     await store.closeProject("proj1")
     expect(calls.some((c) => c === "delete:pty_1")).toBe(true)
     expect(store.tabs.length).toBe(0)
+  })
+
+  it("removeWorkspace pty 预杀（§3.5 评审 blocker）：deletePty 先于 deleteWorktree 且仅一次（幂等，unload 二次调用不再发）", async () => {
+    const seq: string[] = []
+    const c = clientV2Of()
+    c.deleteWorktree = async (_p: string, d: string) => {
+      seq.push(`deleteWorktree:${d}`)
+    }
+    c.listWorktrees = async () => [{ directory: ROOT }, { directory: WT2, strategy: "git" }]
+    c.deletePty = async (id: string, d: string) => {
+      seq.push(`deletePty:${id}:${d}`)
+    }
+    c.ptyWsOrigin = () => "ws://127.0.0.1:1"
+    // 死目录上放一个 live 终端 Tab（未退出的 runtime）
+    store.tabs = [
+      { kind: "terminal", key: "terminal:pty_live", projectId: "proj1", directory: WT1, title: "bash" },
+    ]
+    ;(store as unknown as { ptyRuntimes: Map<string, { exited: boolean }> }).ptyRuntimes.set("pty_live", {
+      exited: false,
+    })
+    projectList = [{ ...project(), sandboxes: [WT1, WT2] }]
+    await store.syncWorktrees()
+    const res = await store.removeWorkspace(WT1)
+    expect(res.ok).toBe(true)
+    // 顺序：目录存活期预杀（deletePty 在 deleteWorktree 之前）
+    expect(seq.indexOf(`deletePty:pty_live:${WT1}`)).toBeLessThan(seq.indexOf(`deleteWorktree:${WT1}`))
+    // 幂等：unload 处的二次 killPtyInDirectory 不再发（总量恰一次）
+    expect(seq.filter((x) => x.startsWith("deletePty")).length).toBe(1)
   })
 
   it("ptyConnectUrl：ticket 组装；cursor 省略 = 全量回放、携带 = 续传（design-terminal-tab §1.2a；v2 路径 M6b）", async () => {
