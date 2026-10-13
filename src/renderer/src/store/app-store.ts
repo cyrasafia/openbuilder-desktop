@@ -5854,9 +5854,14 @@ export class AppStore {
   }
 
   /** 目录卸载（关项目/删工作区/teardown）时杀该目录运行中 pty（fire-and-forget，防孤儿）。
-   *  幂等（§3.5）：runtime 条目已删（先杀过）则跳过——removeWorkspace 删除前
-   *  预杀一次，unload 处的二次调用不得再发（deletePty 带 location，落在目录
-   *  删除之后即兜底建档伪行，ref §3.4） */
+   *  预杀后**置 exited 而非删条目**（§3.5 评审修订）：条目保留使三处消费方都走
+   *  「已退出跳过 DELETE」的既有状态判定——① unload 处的二次 kill 不重发；
+   *  ② WS close 1000 自动关 Tab（closeTerminalTab 守卫 `!exited`）不重发——
+   *  若删条目，「缺失」会被守卫误判为「存活」而重发 deletePty；removeWorkspace
+   *  预杀后 Tab 仍在（unload 才关），server 杀 pty 回 1000 触发自动关 Tab，
+   *  晚于 DELETE worktree 即打中死目录（deletePty 带 location，一发一行，
+   *  ref §3.4）；③ 条目由 closeTab 的 terminal 钩子兜底删除（unload 关 Tab
+   *  即清，无泄漏） */
   private killPtyInDirectory(directory: string) {
     if (!this.client) return
     for (const tab of this.tabs) {
@@ -5865,8 +5870,8 @@ export class AppStore {
       const rt = this.ptyRuntimes.get(id)
       if (rt && !rt.exited) {
         void this.client.deletePty(id, directory).catch(() => {})
+        rt.exited = true
       }
-      this.ptyRuntimes.delete(id)
     }
   }
 

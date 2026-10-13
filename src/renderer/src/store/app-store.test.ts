@@ -5912,8 +5912,29 @@ describe("终端 Tab（design-terminal-tab）", () => {
     expect(res.ok).toBe(true)
     // 顺序：目录存活期预杀（deletePty 在 deleteWorktree 之前）
     expect(seq.indexOf(`deletePty:pty_live:${WT1}`)).toBeLessThan(seq.indexOf(`deleteWorktree:${WT1}`))
-    // 幂等：unload 处的二次 killPtyInDirectory 不再发（总量恰一次）
+    // 幂等（状态判定）：预杀置 exited 后，unload 二次 kill 与关 Tab 全程零重发
+    // （条目随 unload 关 Tab 由 closeTab 钩子清理——ptyRuntimeFor 此刻为 null 属预期）
     expect(seq.filter((x) => x.startsWith("deletePty")).length).toBe(1)
+    expect(store.ptyRuntimeFor("pty_live")).toBeNull()
+  })
+
+  it("closeTerminalTab 守卫：runtime exited=true 不再发 deletePty（WS 1000 自动关 Tab 不重发——§3.5 预杀置态的下游语义）", async () => {
+    const seq: string[] = []
+    const c = clientV2Of()
+    c.deletePty = async (id: string, d: string) => {
+      seq.push(`deletePty:${id}:${d}`)
+    }
+    c.ptyWsOrigin = () => "ws://127.0.0.1:1"
+    store.tabs = [
+      { kind: "terminal", key: "terminal:pty_x", projectId: "proj1", directory: WT1, title: "bash" },
+    ]
+    // 预杀后的状态：条目在、exited=true（killPtyInDirectory 置态，非删条目）
+    ;(store as unknown as { ptyRuntimes: Map<string, { exited: boolean }> }).ptyRuntimes.set("pty_x", {
+      exited: true,
+    })
+    await store.closeTerminalTab("pty_x")
+    expect(seq).toEqual([]) // 守卫生效：不重发
+    expect(store.tabs.length).toBe(0) // Tab 照关
   })
 
   it("ptyConnectUrl：ticket 组装；cursor 省略 = 全量回放、携带 = 续传（design-terminal-tab §1.2a；v2 路径 M6b）", async () => {

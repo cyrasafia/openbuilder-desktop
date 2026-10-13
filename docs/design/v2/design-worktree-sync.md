@@ -170,7 +170,7 @@ DELETE 对**非 warm 目录同样返回 204**（幂等空 evict）——204 不�
 | 覆盖面 | rest-client **全部 17 个**带 location 的 fetch 方法：`resolveLocation` / `createSession`（body location）/ `vcsStatus` / `listVcsDiff` / `listFiles` / `findFiles` / `readFileContent` / `listAgents` / `listModels` / `listIntegrations` / `connectIntegrationKey` / `createPty` / `updatePtySize` / `ptyConnectToken` / `listCommands`（command+skill 双源）/ `listPendingPermissionRequests` / `listPendingForms`。**豁免**：`evictLocation`（删除链路自身要用，且只 invalidate 不 boot）、`deletePty`（清理动作，挂起会拒绝清理——改由顺序保证，见下）、pty WS connect（不走 fetch 层，终端清理另有链路） |
 | 接线 | `removeWorkspace`：`deletingWorkspaces.add` 后开 `try`（同步段抛错也走 finally）→ `suspend` → **pty 预杀**（`killPtyInDirectory`，目录存活期发 `deletePty` 无害；留到 DELETE 后 unload 再杀 = 确定性建一行——评审 blocker 修复，函数改幂等防 unload 二次重发）→ 级联删会话 → **`awaitLocationIdle` → `DELETE /api/worktree`** → evict/refresh/分支清理 → `finally` 里 `resume`（失败路径也解除） |
 | 顺序 | suspend 早于作用域切换后的任何 await；`awaitLocationIdle` 紧贴 `deleteWorktree` 之前——等清零后到删除落地之间不再有新请求（gate 已挡） |
-| 误伤面 | 挂起窗口 = 整个 removeWorkspace（亚秒级）；非当前项目删除时该目录的 file/diff Tab 在 unload 前仍在，窗口内事件驱动的重载会吃到拒绝、Tab 短暂呈错误态——与「目录正在被删除」的语义一致 |
+| 误伤面 | 挂起窗口 = 整个 removeWorkspace（常为亚秒级；慢路径上界 = awaitLocationIdle 1.5s + deleteWorktree 自身耗时——大目录 git remove 可观）；非当前项目删除时该目录的 file/diff Tab 在 unload 前仍在，窗口内事件驱动的重载会吃到拒绝、Tab 短暂呈错误态——与「目录正在被删除」的语义一致。**行为变化**：删除失败重试时该目录终端已被预杀（旧：删除成功后 unload 才杀）——删除经用户确认，可辩护 |
 | 兜底 | 漏网残留照旧按 ref §5.2 处置（本设计把概率压到接近零，不做删除后清行——无删除 API）。**已知残留**：他端删除（`syncWorktrees` 的 unload 路径）时目录在对账开始前已死，该路径的 pty 清理等 location 请求仍可能落死目录——由执行删除的一方防御（openbuilder 同构对齐中），本端接受偶发 |
 
 与 §3.4 的关系：evict 治 warm 死驻留（保留），本节治请求触发（预防）——两者正交，
