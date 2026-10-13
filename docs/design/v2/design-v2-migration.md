@@ -286,4 +286,4 @@ URL 归一化（project.ts:273-291）：HTTPS/SSH/scp 语法归一为 `host/path
 
 ### 设计评估（一句话：认血统修了认位置的病，但没配销户流程）
 
-身份模型本身自洽（修 v1 目录身份的搬家断链之痛，跨端同仓同 ID）；不合理在配套四点：① **upsert-only 无回收**（伪项目根源，B6）；② canonical 先到先得的任意仲裁；③ 零提交落 global 桶无提示；④ URL 归一化大小写不对称。本端处置见 ref-pseudo-project-cleanup §8——2026-10-12 裁定：项目列表过滤否决（易误伤且属上游问题），新增客户端要点为删 worktree 时卸载该目录全部引用 + 删除成功后显式 evict warm location（design-worktree-sync §3.4）。
+身份模型本身自洽（修 v1 目录身份的搬家断链之痛，跨端同仓同 ID）；不合理在配套五点：① **upsert-only 无回收**（伪项目根源，B6）；② canonical 先到先得的任意仲裁；③ 零提交落 global 桶无提示；④ URL 归一化大小写不对称；⑤ **身份输入变更无销户**——origin 的添加/变更会把身份从 `钉住文件 ?? 根提交` 切到 remote 哈希（remote 优先级压过钉住文件），旧身份行不迁移不回收，产生同路径双行（2026-10-13 anything 实证，ref §3.5）。本端处置见 ref-pseudo-project-cleanup §8——2026-10-12 裁定：项目列表过滤否决（易误伤且属上游问题），新增客户端要点为删 worktree 时卸载该目录全部引用 + 删除成功后显式 evict warm location（design-worktree-sync §3.4）。

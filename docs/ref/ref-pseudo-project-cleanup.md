@@ -1,6 +1,6 @@
 # ref: 伪项目（pseudo project）成因与清理方法
 
-> 性质：参考资料（数据中心运维手册）｜ 首版：2026-09-29，基于当日 v2.0.18 server（端口 15120）全量清理实战｜ 2026-09-30 增补：燃料模型实证（§3.3）、顽固行剥洋葱（§5.2）、worktree 开发测试善后实录（§7b）｜ 2026-10-12 增补：warm location 周期刷新燃料与 evict 端点（§3.4/§5.2）、当日实战（§7c）、项目列表过滤裁定否决（§8）；同日自动化落地——桌面端 removeWorkspace 删除成功后自动 evict（design-worktree-sync §3.4，原 todo-worktree-delete-location-evict）
+> 性质：参考资料（数据中心运维手册）｜ 首版：2026-09-29，基于当日 v2.0.18 server（端口 15120）全量清理实战｜ 2026-09-30 增补：燃料模型实证（§3.3）、顽固行剥洋葱（§5.2）、worktree 开发测试善后实录（§7b）｜ 2026-10-12 增补：warm location 周期刷新燃料与 evict 端点（§3.4/§5.2）、当日实战（§7c）、项目列表过滤裁定否决（§8）；同日自动化落地——桌面端 removeWorkspace 删除成功后自动 evict（design-worktree-sync §3.4，原 todo-worktree-delete-location-evict）｜ 2026-10-13 增补：git 身份输入变更的同路径双行（§3.5，非伪行）、§5.2 anything 处置实例、当日实战与 16 分钟观测（§7d）
 > 关联：`../openbuilder/docs/docs/todo/todo-ghost-worktree-projects.md`（客户端视角的同类问题记录，其「修复方向 3：一次性清理」本文即实施方法）
 
 ## 1. 定义与判定指纹
@@ -91,6 +91,33 @@
   `grep 'provider.updated' ~/.local/share/opencode/log/opencode.log | grep '<slug>' | grep -oE 'timestamp=[^ ]+'`
   时间戳呈 5 分钟节律即坐实。server 日志滚动只保留约一天，复盘要趁热。
 
+### 3.5 git 身份输入变更 → 同路径双行（合法身份行，非伪行；2026-10-13 实证）
+
+**机制**：git 身份 = `remote(origin) ?? 钉住文件(.git/opencode) ?? 根提交`
+（v2.0.18 `project.ts` resolve 的优先级）。**origin 的添加/变更会切换身份输入**：
+无 origin 时身份落到钉住文件或根提交；加了 origin 后身份变为 remote 哈希，且
+优先级压过钉住文件——防漂移机制失效。新身份 resolve 会 upsert 新行，并发出
+`Worktree.Event.Resolved{previous=老id}`，`session/projector.ts` 把该目录下挂在
+老身份的会话重挂到新身份（v2 表；重挂以 `workspace_id IS NULL` 为条件，
+workspace 作用域会话须手工重指向——订前例的 v2 1 条即此，推断未单独实证）；
+老行 upsert-only 不回收 → 同路径同名两行。
+
+**与伪行的区别**：两行 `vcs=git`、都对应真实仓库，不满足 §1 确诊组合，不要按
+伪行清。唯老行 id 是根提交、单看 §1 第 3 条公式会呈「高度可疑」——那是无
+origin 期的合法身份，勿据此动手。清法是 §5.2 同路径双行重指向（重指向后删老行），
+另需同步更新钉住文件与客户端持久化里的老 id，否则身份还会漂回。
+
+**实证（anything）**：老行 `6890936f…` = 仓库根提交（09-11 建行，当时无 origin）；
+09-28 12:05 server 把该身份写进钉住文件 `.git/opencode`（老行 `time_updated` 同秒）；
+10-12 17:22 `.git/config` 加 origin；10-13 00:08:42 一次 location evict→re-boot
+重新 resolve → 新行 `9e15fb7e…` = `sha1("git-remote:github.com/cyrasafia/anything")`。
+处置后：v1 表 23 条会话重指向新行、老行删除，钉住文件与客户端持久化老 id 已同步。
+
+同型第二例（订前Agent优化，09-28，时序更紧）：11:26:50 钉住文件写入老 id
+`c139e90b…` → 11:27:39 `.git/config` 设 origin（codeup）→ 14:13 新行
+`3dd5d7bc…` = 当前 origin 的 remote 哈希。处置同式：v1 2 条 + v2 1 条重指向、
+删老行、钉住文件同步。
+
 ## 4. 数据库速查（`~/.local/share/opencode/opencode.db`）
 
 ### 4.1 关键表与外键级联
@@ -166,6 +193,11 @@ UPDATE session    SET project_id='<同路径 git 行 id>' WHERE project_id='<伪
 UPDATE session_v2 SET project_id='<同路径 git 行 id>' WHERE project_id='<伪行 id>';
 -- 然后删伪行；2026-09-30 Agent-Engine 案例实证
 ```
+
+2026-10-13 anything 案例：双行**均为合法 git 身份行**（成因见 §3.5，origin 添加切换
+身份输入），同式重指向 23 条 v1 会话后删老行。另需同步两处，否则身份漂回：
+钉住文件 `.git/opencode` 改写为新 id；客户端持久化（store.json 的
+`project.state.*.opened` / `currentProjectId`）里的老 id 换成新 id。
 
 **顽固行剥洋葱**（删后仍再生的行，按序剥层，每剥一层删行重验）：
 
@@ -257,6 +289,15 @@ curl -s -u … http://127.0.0.1:15120/api/project | jq '[.[] | select(.canonical
 - 记录时点终态：项目表 76 行，伪行 24 条（23 条本轮 warm location 再生 + `/home/cyrasafia` 保留行）；`skills` 2 条伪行已不在表；现存活 worktree 为 `342507/eager-moon`、`342507/shiny-tiger`（当日新建）与 `926230a…/happy-forest`、`…/shiny-orchid`，库存无 stale 行。
 - 事后补：找到手动 evict 端点（§5.2；当日判「未文档化」系误查——实在 pin 内，见 §3.4 订正）并实测生效——`shiny-tiger` 当日删除后 location 未 evict（warm 集合仍含已删目录），evict 即消失，未及建档；当日自动化落地（design-worktree-sync §3.4：`removeWorkspace` 删除成功后 best-effort evict，原 todo-worktree-delete-location-evict 收编）。
 - **教训**：① 「删行 + 归档会话 + 断客户端」不足以断根——命中 warm location 必须等 server 重启或 location evict，删行只是等待窗口；② 复盘要趁热：server 日志滚动只留约一天，10-10 21:17 那批的触发现场已随滚动丢失，只能靠 10-11 的 kind-otter 反推；③ 桌面端持久化 Tab 里残留死 worktree 目录（glowing-engine、kind-lagoon）是下一轮的客户端侧燃料（燃料 4）。
+
+## 7d. 2026-10-13 实战记录（evict 自动化后首批清理与观测）
+
+**背景**：removeWorkspace 自动 evict 落地（design-worktree-sync §3.4）并随桌面端、手机端构建安装。存量待清：10-10/10-11 重建伪行 22 条（worktree 根 16 + `/tmp` 系 6；§7c 记的 23 条中 silent-island 已于当日先行处置）+ `/tmp` 测试产物 2 条（`vcs-bench`、`ob-review-fake-probe-xyz`）。
+
+- 清理 **24** 条：worktree 根伪行 16 + `/tmp` 系 8（`difftest`、revtest 三件套、bigtest、`/tmp/opencode`、vcs-bench、probe-xyz）；`/tmp/opencode` 挂的 13 条已归档 probe 测试会话随行级联删。
+- 同日另处置同路径双行 anything（§3.5）：v1 23 条重指向新身份行后删老行，钉住文件 `.git/opencode` 与客户端持久化老 id 同步更新。
+- 观测：每 60 秒采样 DB/API 行数、伪指纹行数、warm 集合目录存活，**16 分钟（≥3 个刷新周期）全零**——行数稳定 54、伪行 0（§5.3 正则口径，不含 `/home/cyrasafia` 保留行）、warm GONE 0。
+- **结论**：「自动 evict + 清存量」闭环成立。对照 10-10——当时 SQL 删行 15 秒内被 warm location 刷回 19 行（§3.4），本次删行后零再生，燃料 6 已由自动化断根；剩余再生风险只在非 `removeWorkspace` 路径的 worktree 删除（如 CLI 手工 `git worktree remove`）。
 
 ## 8. 客户端可防御点（与 openbuilder TODO 方向 2 的关系）
 
