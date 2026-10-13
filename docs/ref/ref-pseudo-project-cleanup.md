@@ -1,6 +1,6 @@
 # ref: 伪项目（pseudo project）成因与清理方法
 
-> 性质：参考资料（数据中心运维手册）｜ 首版：2026-09-29，基于当日 v2.0.18 server（端口 15120）全量清理实战｜ 2026-09-30 增补：燃料模型实证（§3.3）、顽固行剥洋葱（§5.2）、worktree 开发测试善后实录（§7b）｜ 2026-10-12 增补：warm location 周期刷新燃料与 evict 端点（§3.4/§5.2）、当日实战（§7c）、项目列表过滤裁定否决（§8）；同日自动化落地——桌面端 removeWorkspace 删除成功后自动 evict（design-worktree-sync §3.4，原 todo-worktree-delete-location-evict）｜ 2026-10-13 增补：git 身份输入变更的同路径双行（§3.5，非伪行）、§5.2 anything 处置实例、当日实战与 16 分钟观测（§7d）
+> 性质：参考资料（数据中心运维手册）｜ 首版：2026-09-29，基于当日 v2.0.18 server（端口 15120）全量清理实战｜ 2026-09-30 增补：燃料模型实证（§3.3）、顽固行剥洋葱（§5.2）、worktree 开发测试善后实录（§7b）｜ 2026-10-12 增补：warm location 周期刷新燃料与 evict 端点（§3.4/§5.2）、当日实战（§7c）、项目列表过滤裁定否决（§8）；同日自动化落地——桌面端 removeWorkspace 删除成功后自动 evict（design-worktree-sync §3.4，原 todo-worktree-delete-location-evict）｜ 2026-10-13 增补：git 身份输入变更的同路径双行（§3.5，非伪行）、§5.2 anything 处置实例、当日实战与 16 分钟观测（§7d）；同晚三易其稿——证伪「刷新即建档」后**定位真触发器**（location 请求 → resolve → 兜底建档，一发一行，§5.2 有诊断式），§3.4 定稿 + 实验记录（§7e）
 > 关联：`../openbuilder/docs/docs/todo/todo-ghost-worktree-projects.md`（客户端视角的同类问题记录，其「修复方向 3：一次性清理」本文即实施方法）
 
 ## 1. 定义与判定指纹
@@ -40,6 +40,7 @@
 
 | 入口 | 实证 |
 | --- | --- |
+| **带 `location[directory]` 的请求打到死目录**（vcs 面板轮询为代表） | **确定性触发，一发一行**（§3.4 三订；§5.2 两条 curl 可复现） |
 | `GET /api/project` 的目录扫描（解析未归档会话的 directory） | 一次调用后 3 秒起 1 行/秒 × 64 秒重建 105 行（704 次 realPath 探测） |
 | 客户端 SSE 订阅（`location.directory`=死目录） | 幽灵 Tab 每 5-20 秒触发一次 realPath |
 | 客户端持久化状态（打开的项目/Tab 引用已删 worktree） | 删行 12 秒后重生 |
@@ -57,39 +58,30 @@
 3. **`project_directory` 库存死登记**——挂在**父项目**下，删伪行不级联它，须补刀 SQL（§5.2）。注意：登记本身被内存回写后**不再触发行重建**（解析触发源才是关键，2026-09-30 实证）
 4. **客户端活动引用**（幽灵 Tab / 打开状态 / SSE 订阅）
 5. **server 内存态回写**（一次性：凭空重建后不再生——proud-cactus 无任何 DB 引用被重建一次，重删即断，无须重启 server）
-6. **server warm location 周期刷新**（§3.4，2026-10-12 实证）——已删 worktree 目录的 location 留在 server 内存，每 5 分钟刷新时重新解析 → 兜底建档。**与燃料 1-3 正交**：会话全归档、sandboxes/库存干净也拦不住；只有 server 重启或 location evict 能断
+6. **location 请求触发兜底建档**（§3.4，2026-10-13 三订：触发器已定位）——任何带 `location[directory]=<死目录>` 的请求（桌面端 vcs 轮询为代表）都会 boot location → `project.resolve` → 目录哈希建档；**一发一行**，与 warm/刷新/时机无关。**与燃料 1-3 正交**；预防 = 断请求源（删前停轮询），evict/重启只治死驻留、防不住本机制
 
-**燃料灭则火灭**：归档全部未归档会话 + 客户端断开后，删行实测 60-120 秒零再生（燃料 1-5 口径；若命中燃料 6 须按 §3.4 另断——归档会话与断客户端都无效）。
+**燃料灭则火灭**：归档全部未归档会话 + 客户端断开后，删行实测 60-120 秒零再生（燃料 1-5 口径；若命中燃料 6 须按 §3.4 另断——归档会话无效，仅断 SSE 订阅也不够，须停掉 location 请求源（vcs 轮询））。
 
 **单行可穿多层燃料**：quiet-mountain 依次穿透 1→3→2 三层才断根（归档 4 条会话→仍再生→补刀 6 条库存登记→仍再生→清 sandboxes 死条目→断根）。顽固行按 §5.2 剥洋葱处理，每剥一层删行重验。
 
 **归档判定陷阱**：未归档 = `time_archived IS NULL` **或 `time_archived = 0`**。v1 迁移产生大量 epoch 零值（`0` 非 NULL），按 `IS NULL` 归档会漏——漏网的恰好是手机端渲染出来、且持续再生的那批。app 侧判定同源：`time.archived != 0` 才算归档（openbuilder `models.dart`）。
 
-### 3.4 warm location 周期刷新（燃料 6，2026-10-12 实证）
+### 3.4 location 请求触发兜底建档（燃料 6；2026-10-13 深夜定位触发器，三订）
 
-**机制**：客户端把某目录作为 location 打开后，server 在内存保留该 location（warm）。worktree 目录随后被删除时，location **不随目录消失**，留在 warm 集合里；server 周期刷新每个 warm location 的 provider/model（实测 **5 分钟一次**），刷新即重新解析目录。目录已不存在 → `Worktree.DirectoryUnavailableError` → 走 §3.1 兜底建档，upsert 伪行。
+**机制（确定性复现，§7e）**：**任何携带 `location[directory]=<目录>` 的请求**都会让 server 的 location 中间件按需 boot 该目录的 location 服务——boot 即 `project.resolve(目录)`（`core/src/location.ts:24`）；而 `FSUtil.resolve` 对不存在的路径**回退返回原路径**（`util/fs-util.ts:105-111`；两处源码锚均 v2.0.24 tag 核对），因此对**已删除**的目录 resolve 照样走完 → git 解析失败 → §3.1 目录哈希兜底建档。**一发请求一行**，与 warm、5 分钟刷新、删除时机全部无关。请求本身多半 404（boot 后续失败），但**建档副作用已发生**——这是它隐蔽的根源。
 
-**证据（kind-otter）**：目录 2 条会话全归档、无 sandboxes 条目、无库存行——燃料 1/2/3 全断，行仍持续再生。日志 293 次 `provider.updated`，时间戳整齐间隔 5 分钟，自 2026-10-11 05:47Z 至 10-12 08:37Z 约 27 小时；窗口内**无**该目录的 `location services booted`，即早在窗口前已 boot、此后从未 evict。
+**桌面端的请求来源**：vcs 面板轮询 `GET /api/vcs/diff?location[directory]=…`（deepObject query）。删除 worktree 的瞬间/之后，对已删目录的最后一次轮询（在途或事件触发）即建一行。
+
+**背景事实（相关但非触发器）**：warm location 死驻留成立——`location-services.ts` `idleTimeToLive: Duration.infinity`（LayerMap 层永不闲置淘汰），死目录 location 实测驻留 ≥10 分钟、每 5 分钟照常发 `provider.updated`/`model.updated` 事件；但刷新本身**不建档**（实验证伪，§7e）。kind-otter 的 5 分钟事件节律（293 次/27 小时）是 warm 在场的**标记**，不是建档证据。
+
+**案例归因（三订）**：neon-wizard（10-13 删除同秒建 1 行）= vcs 轮询落在删除后的死目录上；quick-circuit 同日删除无行 = 恰好没有请求落上去——纯时序差异，非竞态窗口。10-10 21:17 批（15 秒 19 行、约 1 行/秒）= SQL 删行后，桌面端对账/轮询循环对 19 个死目录**串行各发了一发** location 请求。
 
 **断根口径**：
 
-- **手动 evict（首选，已实测生效）**：`GET /api/debug/location` 盘点 warm 集合 →
-  `DELETE /api/debug/location?location[directory]=<绝对路径>` 逐个 evict（204）。
-  debug 组端点——pin 的 openapi_v2.json **含**（GET `debug.location.list` / DELETE
-  `debug.location.evict`；原判「未文档化」是误查，2026-10-12 订正），升级随 pin
-  核对；取参兜底是 `process.cwd()`，**绝不可不带参数裸调**。桌面端已自动化：
-  `removeWorkspace` 删除成功后 best-effort evict（design-worktree-sync §3.4），
-  本节手动口径用于他端删除/外部 rm -rf 等漏 evict 场景的善后。
-- **server 重启即清** warm 集合：2026-10-12 14:10 重启后，kind-otter 的 5 分钟刷新立即停止（仅剩 1 次由扫描触发）。
-- **SQL 删行治标**：warm location 下一次刷新即原地重建。10-10 21:17 实测：删行后 15 秒内约 1 行/秒重建 19 行。
-- **客户端侧**：桌面端 `removeWorkspace` 删除成功后**显式 evict**（2026-10-12 落地，
-  design-worktree-sync §3.4）——「卸载引用 → server 自动 evict」因果链为推断且从未
-  实证，显式 evict 才是确定断法；同步卸载该目录全部引用（Tab/作用域/持久化记忆）
-  仍必要（断本端燃料 4）。他端删除 + 本端曾打开的目录仍会漏 evict（refresh 只清
-  库存不清 location）——靠 server 重启/上游 idleTimeToLive 收敛，或按 §5.2 手动善后。
-- **判别口径**：某死目录伪行反复再生、但会话全归档且 sandboxes/库存干净时，先查 `provider.updated`/`model.updated` 是否周期性落在该目录，不必再剥会话/库存：
-  `grep 'provider.updated' ~/.local/share/opencode/log/opencode.log | grep '<slug>' | grep -oE 'timestamp=[^ ]+'`
-  时间戳呈 5 分钟节律即坐实。server 日志滚动只保留约一天，复盘要趁热。
+- **客户端预防（治本，待落 design-worktree-sync §3.5）**：removeWorkspace 删除前停掉对该目录的 vcs 轮询 + 等 in-flight 的 location 请求落地（或短延迟）——删除后没有请求打向死目录，就不会建行。
+- **evict / server 重启**：只清 warm 驻留与事件噪声，**防不住本机制**（后续请求会 re-boot location 再 resolve）；自动化 evict 的保留价值 = 死驻留治理（§5.2 处置式仍适用）。
+- **SQL 删行**：若客户端还在向死目录发 location 请求，删了会被下一发重建；先断请求源再删。
+- **判别口径**：死目录行再生时，查客户端是否有带 `location[directory]` 的请求发向它（桌面端 = vcs 面板/作用域相关轮询）。server 日志难鉴证——2xx 不落日志，404 行不携带 location 参数、无法归因到具体目录；复现/验证一律用 §5.2 诊断式。
 
 ### 3.5 git 身份输入变更 → 同路径双行（合法身份行，非伪行；2026-10-13 实证）
 
@@ -218,8 +210,7 @@ curl -X POST …/api/worktree/refresh -d '{"projectID":"<pid>"}'   # 204 = 库�
 # refresh 只清 worktree 表；project_directory 残留须补刀 SQL 删
 ```
 
-**evict location**（断 §3.4 燃料 6；2026-10-12 新增。debug 组端点，pin 含——原判
-「未文档化」系误查，见 §3.4 订正）：
+**evict location**（清 warm 死驻留与事件噪声；2026-10-12 新增，2026-10-13 三订定位——evict **不防** location 请求建档，见 §3.4。debug 组端点，pin 含）：
 
 ```bash
 # 盘点 warm 集合，挑出目录已删的
@@ -229,10 +220,20 @@ curl -s -u … -X DELETE -G http://127.0.0.1:15120/api/debug/location \
   --data-urlencode "location[directory]=<已删目录>"
 ```
 
-evict 只断「再生」；已建的伪行仍按本节上式删。`POST /api/location/reload` 是
-invalidate 全部后立即重建，不能当清除用。桌面端 `removeWorkspace` 已内建 evict
-（design-worktree-sync §3.4）；本节手动口径用于他端删除/外部 `rm -rf` 等漏 evict
-场景的善后。
+evict 只清 warm 死驻留与事件噪声，**不断再生**（再生源 = location 请求，见 §3.4）；已建的伪行仍按本节上式删。`POST /api/location/reload` 是 invalidate 全部后立即重建，不能当清除用。桌面端 `removeWorkspace` 已内建 evict（design-worktree-sync §3.4）；本节手动口径用于他端删除/外部 `rm -rf` 等漏 evict 场景的善后。
+
+**location 请求触发建档（诊断式，§3.4 三订）**——两条命令确定性复现「一发请求一行」：
+
+```bash
+# ① 删一个 worktree（204，此刻无伪行）
+curl -s -u … -X DELETE http://127.0.0.1:15120/api/worktree \
+  -d '{"projectID":"<pid>","directory":"<worktree目录>","force":true}'
+# ② 对死目录发一发带 location 的请求——伪行立即出现
+curl -s -u … -G http://127.0.0.1:15120/api/vcs/diff \
+  --data-urlencode "location[directory]=<worktree目录>" --data-urlencode "mode=working"
+```
+
+②的响应码随版本可能不同（实测 2.0.26 为 404；pin 的 openapi responses 无 404），**以「伪行立即出现」为判据**，勿以状态码论成败。验证「删行后不再生」时，须先确认客户端（桌面端 vcs 面板）已无对该目录的轮询。
 
 ### 5.3 验证方法（重要——字段名）
 
@@ -256,7 +257,8 @@ curl -s -u … http://127.0.0.1:15120/api/project | jq '[.[] | select(.canonical
 | **server 重启 cwd 建档** | 重启解析 cwd（如 home 目录）→ 伪行复活 | 上游问题，删了治标；项目列表过滤已否决（§8 裁定），保留该行或接受其存在 |
 | **双表镜像** | `session` 与 `session_v2` 数据互为镜像，只改一张会出现 API/扫描不一致 | 始终双表同步写 |
 | **server 频繁自启** | 当日两次自行重启（19:33 / 20:36），疑与并发直写 DB 锁竞争有关 | 大事务前留意 `ps` 进程启动时间；必要时 `journalctl --user -u opencode-serve` 查因 |
-| **warm location 保活** | 已删 worktree 的 location 留在 server 内存，每 5 分钟刷新即重新解析 → 兜底建档（§3.4）。SQL 删行治标，下轮刷新原地重建（10-10 实测 15 秒重建 19 行） | server 重启即清；本端删除路径已内建 evict（design-worktree-sync §3.4）+ 治本 = 上游补回收（§8 待办）；他端删除/外部 rm -rf 漏口按 §5.2 手动善后 |
+| **location 请求建档** | 任何带 `location[directory]=<死目录>` 的请求（桌面端 vcs 轮询为代表）→ boot location → `project.resolve` → 目录哈希建档（§3.4 三订；根源 = `FSUtil.resolve` 对缺失路径回退原路径）。请求多 404 但行已建 | 客户端断请求源（删前停轮询，design-worktree-sync §3.5 待落）；evict/重启只治 warm 死驻留；治本 = 上游 resolve 失败不建档 + 回收（§8 上游 issue） |
+| **日志只记非 2xx** | `Sent HTTP response` 仅落 4xx/5xx（实测 404/400/401/409，零 200/204）——成功的 DELETE/evict（204）在日志中**不可见** | 勿从「日志无此请求」推断「没调用过」；调用鉴证要看 `spawning process` 的 git/shell 痕迹或 DB 副作用（2026-10-13 实证：曾误判 evict 未被调用） |
 
 ## 7. 2026-09-29 实战记录（数字摘要）
 
@@ -288,7 +290,8 @@ curl -s -u … http://127.0.0.1:15120/api/project | jq '[.[] | select(.canonical
 - 处置：server 已于 10-12 14:10 重启，warm 集合随之清空（重启后 5 分钟刷新停止）。
 - 记录时点终态：项目表 76 行，伪行 24 条（23 条本轮 warm location 再生 + `/home/cyrasafia` 保留行）；`skills` 2 条伪行已不在表；现存活 worktree 为 `342507/eager-moon`、`342507/shiny-tiger`（当日新建）与 `926230a…/happy-forest`、`…/shiny-orchid`，库存无 stale 行。
 - 事后补：找到手动 evict 端点（§5.2；当日判「未文档化」系误查——实在 pin 内，见 §3.4 订正）并实测生效——`shiny-tiger` 当日删除后 location 未 evict（warm 集合仍含已删目录），evict 即消失，未及建档；当日自动化落地（design-worktree-sync §3.4：`removeWorkspace` 删除成功后 best-effort evict，原 todo-worktree-delete-location-evict 收编）。
-- **教训**：① 「删行 + 归档会话 + 断客户端」不足以断根——命中 warm location 必须等 server 重启或 location evict，删行只是等待窗口；② 复盘要趁热：server 日志滚动只留约一天，10-10 21:17 那批的触发现场已随滚动丢失，只能靠 10-11 的 kind-otter 反推；③ 桌面端持久化 Tab 里残留死 worktree 目录（glowing-engine、kind-lagoon）是下一轮的客户端侧燃料（燃料 4）。
+- **2026-10-13 订正（当日三订终态）**：本节把再生归因于「warm location 5 分钟刷新重新解析建档」——已证伪；同晚实验**定位了触发器**：带 `location[directory]=<死目录>` 的请求（桌面端 vcs 轮询）→ boot location → resolve → 兜底建档，**一发一行**（§3.4、§7e）。21:17 批 = 删行后客户端对账对 19 个死目录串行各发一发。
+- **教训**：① 「删行 + 归档会话 + 断客户端」不足以断根——真断法是**断请求源**：删除后没有带 `location[directory]` 的请求打向死目录（§3.4 三订；重启/evict 只清 warm 驻留，防不住请求建档）；② 复盘要趁热：server 日志滚动只留约一天，10-10 21:17 那批的触发现场已随滚动丢失，只能靠 10-11 的 kind-otter 反推；③ 桌面端持久化 Tab 里残留死 worktree 目录（glowing-engine、kind-lagoon）是下一轮的客户端侧燃料（燃料 4）；④ 机制归因要有实验支撑再落文档——「刷新即建档」从推断写成实证，一轮实验即翻。
 
 ## 7d. 2026-10-13 实战记录（evict 自动化后首批清理与观测）
 
@@ -297,7 +300,27 @@ curl -s -u … http://127.0.0.1:15120/api/project | jq '[.[] | select(.canonical
 - 清理 **24** 条：worktree 根伪行 16 + `/tmp` 系 8（`difftest`、revtest 三件套、bigtest、`/tmp/opencode`、vcs-bench、probe-xyz）；`/tmp/opencode` 挂的 13 条已归档 probe 测试会话随行级联删。
 - 同日另处置同路径双行 anything（§3.5）：v1 23 条重指向新身份行后删老行，钉住文件 `.git/opencode` 与客户端持久化老 id 同步更新。
 - 观测：每 60 秒采样 DB/API 行数、伪指纹行数、warm 集合目录存活，**16 分钟（≥3 个刷新周期）全零**——行数稳定 54、伪行 0（§5.3 正则口径，不含 `/home/cyrasafia` 保留行）、warm GONE 0。
-- **结论**：「自动 evict + 清存量」闭环成立。对照 10-10——当时 SQL 删行 15 秒内被 warm location 刷回 19 行（§3.4），本次删行后零再生，燃料 6 已由自动化断根；剩余再生风险只在非 `removeWorkspace` 路径的 worktree 删除（如 CLI 手工 `git worktree remove`）。
+- **结论（三订后）**：「自动 evict + 清存量」后删行零再生（16 分钟观测）——当晚定位真触发器（§3.4：location 请求 → resolve → 建档）后回看，本批零再生的实际原因是**删除后没有带 location 的请求打向死目录**，evict 并非决定因素（只治 warm 死驻留）。剩余再生风险 = 删除后有 location 请求落向死目录（vcs 轮询在途/事件触发），预防方案待落 design-worktree-sync §3.5。
+
+## 7e. 2026-10-13 实验记录（机制三订：定位触发器 = location 请求；内含二订→三订全程）
+
+**背景**：neon-wizard 伪行建于删除同秒（17:20:23，app 驱动删除、location 热）。为定位触发器，当晚做受控实验（本机 server 2.0.26，`race-probe-*` 系列探针：隔离、并发、warm、shell 时序、官方 GUI 对照多组）。
+
+- **隔离实验（location 冷）**：仅 `DELETE /api/worktree`；仅 evict / 仅 `GET /api/project` / 仅 `GET /api/worktree` / 仅 `POST refresh`；删除 + 上述并发组合 ×3——**全部零建行**。
+- **shell 清理隔离（×2，location 冷）**：A = 挂分支（`POST /api/shell` `git switch -c`）→ DELETE → shell show-ref + `branch -D`；B = 完整 removeWorkspace 时序（挂分支 → DELETE → evict → `GET /api/project` → `GET /api/worktree` → shell ×2）——**均零建行**。客户端删除时序至此洗清（指调用序列本身，location 冷、无 vcs 轮询在跑；真实会话中 vcs 轮询仍是触发源，见 §3.4）：与调用序列无关，官方 GUI 的「零对账」与本端的「全对账」同样安全。
+- **官方 GUI 时序对照**（`packages/app/src/pages/layout.tsx:1377` deleteWorkspace，HEAD 源码）：删后 **零 server 调用**——`serverSync().set("project")` 本地乐观滤掉 sandboxes、workspaceOrder/布局本地更新；**不做**会话级联删（恰好留燃料 1）、不做分支清理（不挂分支）、不重拉。仅作时序参照，不照搬。
+- **偶发性佐证（二订口径，已作废——见下「推论订正」）**：同日（10-13）经同一流程删除的 quick-circuit **未**产生伪行，neon-wizard 中招——当时归因为半删窗口碰撞的概率事件。
+- **warm 受控实验**：探针建好 → 桌面端真实切进（warm 确认 + entries/AGENTS.md watcher 挂上）→ API 直删。结果：
+  - 删除瞬间 location **重建**（config/provider/model/command/agent 事件连发）——**无建行**；
+  - 死目录 location **驻留 warm ≥10 分钟**不退（无 evict 时）；**5 分钟刷新照常触发**（事件 +2）——**仍无建行**；
+  - 收尾 evict（204）后 warm 清零。
+- **推论（二订口径，已作废——见「推论订正」）**：行只能由 `projects.resolve` 在「realpath 可达但 git 解析失败」的目录状态下产生；目录**彻底消失后 resolve 提前失败、不建档**。可建行的唯一窗口是删除过程的**半删态**（目录在、`.git` 已没）——亚秒级 + 须恰有并发 resolve，故各轮探针零复现；21:17 批与 neon-wizard 的具体触发器**未定位**（现场日志已滚动）。
+- **源码锚（v2.0.18 tag；运行版 2.0.26 未逐行核对）**：`Worktree.remove` 链路（strategy.remove → ops.remove → 发事件）**不调 `projects.resolve`**——core 内调用方仅 session 创建/移动/转移三处；唯一确定的 resolve 点 = **location（重）建**（`core/src/location.ts:24`：`project.resolve(ref.directory)`）；SSE 全局单流纯下行，事件发布链不触发 resolve；watcher 消费者（`vcs.ts:151` 只刷分支、config/AGENTS.md 热重载）亦不 resolve。与「触发器未定位」自洽：候选只剩 location 重建与 session 三处，且须恰好落在半删窗口。
+- **对上游 issue 的影响**：主张不变（upsert-only 无回收 = 行删了会回来/永久残留，铁的事实；「删一个 worktree 反而制造伪行」有实证），但证据链从「机制明确」降级为「现象确凿、触发器未定位」——issue 措辞按此写。
+- **教训**：归因要有受控实验支撑；本次若非实验，错误机制会一路带进上游 issue。
+- **最终复现（三订，race-probe-vcs）**：读 v2.0.24 源码发现两处关键事实——① 所有带 `location[directory]` 的请求经 location 中间件按需 boot → `project.resolve(目录)`；② `FSUtil.resolve` 对缺失路径**回退原路径**（`util/fs-util.ts:105-111`）。据此重测：DELETE worktree → 对死目录发 `GET /api/vcs/diff?location[directory]=…`（404）→ **伪行立即出现**。确定性复现，一发一行。
+- **推论订正**：「半删窗口」推论作废——不需要窗口，彻底删除后照样建档；warm/刷新/时机全部无关，唯一条件是「有请求带着该目录的 location 参数打过来」。此前各轮探针零复现的原因：仅 evict / `GET /api/project` / `GET /api/worktree` / `POST refresh` 及其并发组合**均不带 location 参数**（boot 的是 server cwd）、一发带 location 的 session 调用未实际执行成功、warm 实验后未再发过 location 请求——**触发条件从未被打中**。
+- **客户端可防（待落 design-worktree-sync §3.5）**：删前停 vcs 轮询 + 等 in-flight location 请求；evict/重启防不住本机制（请求会 re-boot location）。上一条「对上游 issue 的影响」中「触发器未定位」一句随之作废——issue 可按确定性机制写。
 
 ## 8. 客户端可防御点（与 openbuilder TODO 方向 2 的关系）
 
