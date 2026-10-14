@@ -8,6 +8,12 @@ export interface ProjectTime {
   created: number
   updated: number
   initialized?: number
+  /**
+   * 最近活动时刻（epoch ms，v2 wire 必填）：会话事件触发打点，server 侧
+   * 60s 节流；updated 只反映元数据写入（改名/图标/sandboxes），两者语义
+   * 分离（server activate 刻意不动 time_updated）。0 = 从未活动。
+   */
+  active?: number
 }
 
 export interface Project {

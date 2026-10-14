@@ -43,6 +43,8 @@ export function mintMessageID(): string {
 
 /** v2 ProjectInfo → 内部 Project：canonical → worktree 字段名（basename 展示/
  *  作用域键逻辑不变）；v2 无 initialized（active 取代），置 undefined。
+ *  time.active = 活动打点（会话事件、server 60s 节流）——列表「最近使用」
+ *  显示/排序的数据源，与 updated（元数据写入时刻）语义分离。
  *  v2 无 global 项目行（用户裁定 2026-09-28：非 git 目录 = 目录哈希伪项目行，
  *  以普通项目进列表——v1 global 拆分语义退役，特殊路径 M1b 删除）。 */
 export function toInternalProject(p: ProjectInfo): Project {
@@ -55,6 +57,7 @@ export function toInternalProject(p: ProjectInfo): Project {
     time: {
       created: p.time.created,
       updated: p.time.updated,
+      active: p.time.active,
       initialized: undefined,
     },
     sandboxes: p.sandboxes ?? [],

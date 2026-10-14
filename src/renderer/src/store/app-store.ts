@@ -2730,11 +2730,12 @@ export class AppStore {
     const ps = this.projectStateFor()
     ps.opened = ps.opened.filter((id) => id !== projectId)
     if (ps.currentProjectId === projectId) {
-      // 回退候选 = 剩余打开项目（含伪项目行），按最近活跃排序
+      // 回退候选 = 剩余打开项目（含伪项目行），按最近活跃（time.active，从未
+      // 活动回退 updated）排序——active 语义与 server list 排序一致
       const candidates = this.projects
         .filter((p) => ps.opened.includes(p.id))
-        .map((p) => ({ id: p.id, updated: p.time.updated }))
-        .sort((a, b) => b.updated - a.updated)
+        .map((p) => ({ id: p.id, active: p.time.active || p.time.updated }))
+        .sort((a, b) => b.active - a.active)
       const top = candidates[0]
       if (top) {
         ps.currentProjectId = top.id
