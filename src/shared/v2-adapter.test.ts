@@ -9,6 +9,7 @@ import {
   inboxItemToUserMessage,
   mintMessageID,
   toInternalMessages,
+  toInternalProject,
   toInternalSession,
 } from "./v2-adapter"
 
@@ -184,6 +185,38 @@ describe("contentText / errorMessage", () => {
 })
 
 // 回滚暂存映射（design-sse-event-surface 层 3）：快照整条替换不得抹 staged 态
+describe("toInternalProject", () => {
+  it("canonical→worktree、time 三时刻透传（active = 活动打点）、initialized 恒空", () => {
+    const p = toInternalProject({
+      id: "proj1",
+      canonical: "/repo",
+      vcs: "git",
+      name: "repo",
+      time: { created: 1, updated: 2, active: 3 },
+      sandboxes: ["/repo/wt"],
+    })
+    expect(p).toEqual({
+      id: "proj1",
+      worktree: "/repo",
+      vcs: "git",
+      name: "repo",
+      time: { created: 1, updated: 2, active: 3, initialized: undefined },
+      sandboxes: ["/repo/wt"],
+    })
+  })
+
+  it("vcs 非 git 归一 undefined", () => {
+    const p = toInternalProject({
+      id: "proj2",
+      canonical: "/plain",
+      time: { created: 1, updated: 1, active: 1 },
+      sandboxes: [],
+    })
+    expect(p.vcs).toBeUndefined()
+    expect(p.sandboxes).toEqual([])
+  })
+})
+
 describe("toInternalSession revert 映射", () => {
   const base = {
     id: "ses_1",

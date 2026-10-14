@@ -39,13 +39,14 @@ function project(): Project {
   return { id: "proj1", worktree: ROOT, vcs: "git", time: { created: 0, updated: 0 }, sandboxes: [WT1, WT2] }
 }
 
-/** v1 形状 fixture → v2 wire 形状（ProjectInfo）：覆盖 clientV2.listProjects mock 时使用 */
+/** v1 形状 fixture → v2 wire 形状（ProjectInfo）：覆盖 clientV2.listProjects mock 时使用。
+ *  active 缺省回退 updated（贴近 server 首建档时三时刻同源的实况） */
 function wireProject(p: Project) {
   return {
     ...p,
     canonical: p.worktree,
     sandboxes: p.sandboxes ?? [],
-    time: { created: p.time.created, updated: p.time.updated, active: p.time.updated },
+    time: { created: p.time.created, updated: p.time.updated, active: p.time.active ?? p.time.updated },
   }
 }
 
@@ -579,6 +580,28 @@ describe("非聊天 Tab 作用域化（design-tab-memory §18）", () => {
     await store.closeProject("proj1")
     expect(store.tabs.map((t) => t.key)).toEqual(["file:/other/x.md"])
     expect(store.activeTabKey).toBe("file:/other/x.md")
+  })
+
+  it("closeProject 关当前项目：回退候选取最近活跃（time.active 优先于 updated）", async () => {
+    // stale 元数据最新（updated 最大）但活动最旧；fresh 相反——按 updated 排
+    // 会误选 stale（旧行为），按 active 才落 fresh
+    const stale: Project = {
+      id: "stale",
+      worktree: "/stale",
+      time: { created: 1, updated: 900, active: 10 },
+      sandboxes: [],
+    }
+    const fresh: Project = {
+      id: "fresh",
+      worktree: "/fresh",
+      time: { created: 1, updated: 2, active: 800 },
+      sandboxes: [],
+    }
+    store.projects = [project(), stale, fresh]
+    store.projectStates.default.opened = ["proj1", "stale", "fresh"]
+
+    await store.closeProject("proj1")
+    expect(store.currentProject?.id).toBe("fresh")
   })
 
   it("removeWorkspace 随 worktree 关闭 file Tab（无事件兜底的 kind 不残留孤儿）", async () => {

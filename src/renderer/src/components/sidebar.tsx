@@ -562,11 +562,12 @@ interface PickerCandidate {
   key: string
   name: string
   path: string
-  updated: number
+  /** 「最近使用」时刻：time.active（活动打点）；active 0/缺省回退 updated（防御——现役 server 不会出现 0） */
+  active: number
   icon?: Project["icon"]
 }
 
-function ProjectPicker({ onClose }: { onClose: () => void }) {
+export function ProjectPicker({ onClose }: { onClose: () => void }) {
   const store = useStore()
   const { t, locale } = useI18n()
   const [query, setQuery] = useState("")
@@ -592,7 +593,11 @@ function ProjectPicker({ onClose }: { onClose: () => void }) {
   }, [])
 
   const opened = new Set(store.openedEntries.map((e) => e.key))
-  // v2/A：选择器候选 = 全部项目行（含伪项目——非 git 目录），v1 global 行已退役
+  // v2/A：选择器候选 = 全部项目行（含伪项目——非 git 目录），v1 global 行已退役。
+  // 时间显示/排序用 time.active（会话事件打点，server list 同序——对「最近在用」
+  // 敏感）；updated 只反映元数据写入，会造成旧项目沉在顶部（2026-10-14 改）。
+  // active 0/缺省回退 updated：现役 server 插入即打点（2.0.18 迁移回填存量），
+  // 实际不会出现，此处为未校验 JSON/异常 server 的防御。
   const candidates: PickerCandidate[] = [
     ...store.projects
       .filter((p) => !opened.has(p.id))
@@ -600,10 +605,10 @@ function ProjectPicker({ onClose }: { onClose: () => void }) {
         key: p.id,
         name: p.name || p.worktree.split("/").pop() || p.id,
         path: p.worktree,
-        updated: p.time.updated,
+        active: p.time.active || p.time.updated,
         icon: p.icon,
       })),
-  ].sort((a, b) => b.updated - a.updated)
+  ].sort((a, b) => b.active - a.active)
 
   const kw = query.trim().toLowerCase()
   const visible = kw
@@ -706,7 +711,7 @@ function ProjectPicker({ onClose }: { onClose: () => void }) {
                 <span className="project-name">{c.name}</span>
                 <span className="project-path">{c.path}</span>
               </span>
-              <span className="tree-meta">{relativeTime(locale, c.updated)}</span>
+              <span className="tree-meta">{relativeTime(locale, c.active)}</span>
             </div>
           ))}
         </div>

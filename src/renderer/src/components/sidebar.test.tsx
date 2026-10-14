@@ -6,24 +6,38 @@
  * - 未读纳入 chip：idle 计数扣未读，chip 数字之和 = 会话总数。
  */
 import { cleanup, render } from "@testing-library/react"
-import { afterEach, describe, expect, it, vi } from "vitest"
-import { SessionIndicator } from "./sidebar"
-import type { Session } from "@shared/api-types"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { ProjectPicker, SessionIndicator } from "./sidebar"
+import type { Project, Session } from "@shared/api-types"
 import type { SessionDotState } from "@shared/pending-requests"
 
 /** id → dot 状态（store stub 数据面；缺省 idle） */
 const stateFor: Record<string, SessionDotState> = {}
+
+/** 测试内动态替换的 store 桩（vi.mock 提升导致闭包需经变量间接——workspace-empty 同例） */
+let storeStub: Record<string, unknown>
 
 vi.mock("../app", () => ({
   useI18n: () => ({
     t: {
       sessionIndicatorTitle:
         "会话 {count}，进行中 {busy}，重试 {error}，失败 {failed}，待输入 {waiting}，未读 {unread}",
+      openProject: "打开项目",
+      close: "关闭",
+      projectSearchPlaceholder: "搜索项目…",
+      empty: "无项目",
+      noProjectMatch: "无匹配项目",
+      newProject: "新建项目",
+      newProjectCreating: "创建中…",
     },
     locale: "zh" as const,
   }),
-  useStore: () => ({ dotStateFor: (id: string) => stateFor[id] ?? "idle" }),
+  useStore: () => storeStub,
 }))
+
+beforeEach(() => {
+  storeStub = { dotStateFor: (id: string) => stateFor[id] ?? "idle" }
+})
 
 /** 投影只消费 id；其余字段与本组件无关 */
 const session = (id: string): Session => ({ id }) as Session
@@ -104,5 +118,36 @@ describe("SessionIndicator >4 聚合计数 chip", () => {
     ])
     const sum = chips.reduce((acc, c) => acc + Number(c.textContent), 0)
     expect(sum).toBe(5)
+  })
+})
+
+describe("ProjectPicker「最近使用」时间（2026-10-14 改 time.active）", () => {
+  const proj = (id: string, path: string, time: Project["time"]): Project => ({
+    id,
+    worktree: path,
+    time,
+    sandboxes: [],
+  })
+
+  it("排序与显示用 time.active；从未活动（0）回退 updated；已打开项目不出列表", () => {
+    const now = Date.now()
+    storeStub = {
+      projects: [
+        proj("old", "/old", { created: 0, updated: 0, active: now - 3 * 3600_000 }),
+        proj("current", "/current", { created: 0, updated: 0, active: now - 5 * 60_000 }),
+        // 从未活动（active 0）：回退 updated（10 天前的元数据写入时刻）
+        proj("never", "/never", { created: 0, updated: now - 10 * 86400_000, active: 0 }),
+        // 已打开（active 最新）：被 opened 过滤，不进候选
+        proj("opened", "/opened", { created: 0, updated: 0, active: now }),
+      ],
+      openedEntries: [{ key: "opened" }],
+      syncWorktrees: vi.fn(async () => {}),
+      openEntry: vi.fn(),
+    }
+    const { container } = render(<ProjectPicker onClose={() => {}} />)
+    const names = [...container.querySelectorAll(".project-row .project-name")].map((n) => n.textContent)
+    expect(names).toEqual(["current", "old", "never"])
+    const times = [...container.querySelectorAll(".project-row .tree-meta")].map((n) => n.textContent)
+    expect(times).toEqual(["5 分钟前", "3 小时前", "10 天前"])
   })
 })
