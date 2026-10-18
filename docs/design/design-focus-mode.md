@@ -11,6 +11,12 @@
 > 增补三（同日）：⑦ 专注模式隐藏 Agent 切换、模型切换与思考强度切换（§6.3）。
 > 增补四（同日）：⑧ 各抑制面（卡片/引用附件/切换条）隐藏与恢复须有渐隐/
 > 渐显动画（§6.4）。
+> 增补五（同日，交互改版）：⑨ 由全屏弹窗改为**嵌入 tab 内容区**的面板——
+> 专注模式下 Tab 栏/左栏（项目、worktree）/右栏（文件树）保持可见可交互，
+> 可切 Tab/开新 Tab/切项目，切走再回**原 Tab 仍处于专注模式**（§3.2b 记忆
+> 语义）；⑩ 编辑列宽统一与会话页普通输入框同栅格（≤800px，§3.2）；⑪ 动画
+> 改为输入框纵向展开——会话页（输入框在底部）向上展开、引导页（输入框在
+> 上 1/3）向下为主展开，引导页面板铺满内容区（hero 被覆盖，§7）。
 >
 > 参考先例核查（按 AGENTS.md 约定检索 `../openbuilder`；移动端设计文档实际
 > 布局是 `docs/design/design-*.md`，含 v1/v2 子目录——AGENTS.md 原文的
@@ -37,10 +43,11 @@
 ## 2. 方案总览
 
 ```
-ChatView / GuidePage（各自局部 state：focusPhase 四相位，§6.4）
+ChatView / GuidePage（局部 state：focusPhase 四相位，§6.4；初值经专注态记忆
+                                store.focusModeFor 读回，§3.2b）
  ├─ 普通 composer（保持挂载，不变）
  │    └─ .composer-input 尾部新增「进入专注模式」icon 按钮
- └─ focusPhase !== "off" && <FocusComposer …/>（新组件，视图内浮层）
+ └─ focusPhase !== "off" && <FocusComposer …/>（新组件，视图内嵌面板）
       ├─ 顶行（尾部右置「退回普通模式」icon 钮，lucide Minimize2，
       │    title = t.focusModeExit——与 Esc 同一 onClose 路径）
       ├─ CM6 编辑器（markdown 高亮，Enter 一律换行）
@@ -55,7 +62,12 @@ ChatView / GuidePage（各自局部 state：focusPhase 四相位，§6.4）
   CM 生命周期/doc 同步模式复刻 code-view.tsx（挂载创建/卸载销毁/长度快路径
   全量比对整体替换）
 - 底层普通 composer 在专注模式期间**保持挂载**：关闭动画需要实时量测其
-  rect（§7）；draft 已是同一 state，无第二数据通路。遮罩覆盖不可交互
+  rect（§7）；draft 已是同一 state，无第二数据通路。面板不透明覆盖其上，
+  不可交互
+- **嵌入几何（2026-10-18 交互改版）**：面板是视图根的绝对定位子元素
+  （`.chat-view` / `.guide-view` 加 `position: relative`；引导页滚动下沉到
+  内层 `.guide-scroll`，面板不随存档列表滚动），铺满 tab 内容区——Tab 栏、
+  左栏、右栏保持可见可交互（弹窗语义退役）
 
 ## 3. 入口与层级
 
@@ -68,23 +80,50 @@ ChatView / GuidePage（各自局部 state：focusPhase 四相位，§6.4）
   busy 不禁用（模式切换与发送状态正交）
 - 两视图同款（ChatView / GuidePage 共用样式类，同 `.composer-input` 共用先例）
 
-### 3.2 浮层层级
+### 3.2 面板几何与层级（2026-10-18 交互改版改写，原「浮层层级」作废）
 
-- FocusComposer 渲染为 `position: fixed`，`inset: 0; top: var(--titlebar-h)`，
-  `z-index: 90`——**保留标题栏可见可交互**（frameless 窗口控制/拖拽区不可缺），
-  覆盖 Tab 栏、左/右栏与中栏内容（沉浸语义）
-- z 序核查：`.dialog-mask` 100 / `.popover` 200 / `.context-menu` 210 均在其上
-  ——专注模式期间关 Tab 确认、右键菜单等照常浮于其上
-- 面板几何：居中列，宽 `min(calc(100vw - 48px), var(--chat-max) + 48px)`、
-  上下 inset 24px；`--surface` 底 + `--outline-variant` 边 +
-  `--radius-dialog` 圆角 + 投影（`.dialog` 同惯例）；遮罩
-  `rgba(0,0,0,0.5)`（`.dialog-mask` 同值）
-- **不注册 overlayCount**：专注模式不是打断式弹窗，是编辑模式切换。全局快捷键
-  （Ctrl+Tab 切 Tab、Ctrl+W 关 Tab、Alt 域、Ctrl+B）照常生效——切走即视图卸载，
-  草稿经 compose-draft 暂存，切回重挂载回**普通模式**（focusPhase 是局部 state，
-  不跨卸载记忆，§10）。Ctrl+W 流式确认弹窗（z 100）盖在专注模式上，语义不冲突
-- aria：浮层根 `role="dialog"` + `aria-modal="true"` + `aria-label`；打开时焦点
-  入 CM，关闭时焦点还给普通 textarea
+- 面板渲染为视图根的绝对定位子元素：`position: absolute; left/right: 24px;
+  top: 0; bottom: 8px`（横向 24px 与 `.composer` 内边距同值、底部 8px 呼吸），
+  列约束 = `max-width: var(--chat-max)`（800px）、`min-width:
+  var(--chat-min)`（600px）、`margin: 0 auto` 居中——**与会话页普通输入框
+  同一栅格且左缘右缘在全部宽度带对齐**（横向 inset 使窄带内面板宽 = 列宽 −
+  48 = `.composer-input` 盒宽，FLIP 横向 sx 恒 1；引导页输入框 640，展开时
+  横向微放 0.8→1）。两视图统一 800（需求 ⑩，用户 2026-10-18 裁定；review
+  non-blocking 2 修订：原「inset 0」在 (648, 848) 带内面板比输入盒宽 48px）
+- 视图根改造：`.chat-view` 增 `position: relative`；`.guide-view` 拆为
+  「外层定位容器（relative + overflow hidden）+ 内层 `.guide-scroll` 承接
+  原滚动」——面板不随存档列表滚动、恒覆盖引导页可视区
+- 层级：面板 z 5，盖视图内全部内容（消息流/卡片槽位/composer）。Tab 栏、
+  左栏、右栏在面板外——专注模式下切 Tab/开新 Tab/切项目 worktree/右栏浏览
+  与打开文件照常可用，切走即视图卸载、切回复位（§3.2b）。`.dialog-mask`
+  100 / `.popover` 200 / `.context-menu` 210 均在文档级其上——专注模式期间
+  关 Tab 确认、右键菜单等照常浮于其上
+- 视觉：`--surface-container-low` 底 + `--outline-variant` 边 +
+  `--radius-card` 圆角（输入框材质的放大体，无投影——贴合内容区的面不是
+  悬浮卡）；内容列（编辑器 + 操作行）在面板内 `max-width: 800px` 居中
+- **不注册 overlayCount**：专注模式不是打断式弹窗，是编辑模式切换（改版后
+  更名符实——面板都不出 tab 内容区）。全局快捷键（Ctrl+Tab 切 Tab、Ctrl+W
+  关 Tab、Alt 域、Ctrl+B、Ctrl+T）照常生效
+- aria：面板根 `role="region"` + `aria-label`（有标签的地标、非模态——无
+  `role="dialog"`/`aria-modal`，Tab 栏/侧栏仍可达）；打开时焦点入 CM，
+  关闭时焦点还给普通 textarea
+
+### 3.2b 专注态记忆（2026-10-18 交互改版增）
+
+- **语义**：专注态按编辑面键存内存 store（chat = sessionID、引导页 = 作用域
+  目录，`focusModeFor`/`setFocusMode` 单 Map）——切 Tab/切作用域再回，
+  视图重挂载直接以 `focusPhase === "on"` 复位（无开启动画）；退出意图
+  （Esc/按钮/发送后收口）即清标记。**纯内存、不跨重启**（编辑模式是会话内
+  现场不是文档内容；草稿仍由 compose-draft 落盘兜底）
+- 清理挂点同 chatScrollTops/guideDrafts 惯例（五处）：closeTab 的 chat 分支、
+  会话运行时卸载、项目关闭的目录卸载循环、worktree 删除、disconnect 清空
+  ——防 Map 无界增长与僵尸标记
+- 已知边界：重挂载不复原 CM 选区（textarea 选区不跨卸载存活）——光标置
+  文末续编（§5 已知边界族）；opening/closing 动画窗内切走 = 按当刻标记
+  复位（进入即置标记、退出意图即清，两窗语义自洽）；**发送在途切走再回**
+  （review 留痕）：`await send()` 窗口内完成切走 + 切回时，旧 sendFromFocus
+  闭包恢复执行会迟到清标记（setFocusPhase 对已卸载实例 no-op，面板仍在）——
+  标记与面板一次性失配、再切走一次自愈，接受
 
 ## 4. 编辑器装配（CodeMirror）
 
@@ -152,6 +191,8 @@ EditorState.tabSize 2 / 编辑区 contenteditable = CM 默认
   生灭；textarea 的 value 编程设置本就清原生栈）。已知边界，接受（§10）
 - 已知边界：退出后普通框是 200px 上限内滚区，长文光标可能不在首屏——不做
   光标行对齐（Keep Lean；退出后通常直接发送或继续编辑首屏）
+- 重挂载复位（§3.2b，2026-10-18 交互改版）：切回复位时光标置文末——
+  textarea 选区不跨卸载存活，无映射源（同族已知边界，接受）
 
 ## 6. 发送与生命周期联动
 
@@ -254,25 +295,29 @@ EditorState.tabSize 2 / 编辑区 contenteditable = CM 默认
   两层视觉语义不同（§6.1–§6.3 的「隐藏」指后者）
 - `prefers-reduced-motion: reduce`：无渐变直切（卸载/挂载即时，同 §7 惯例）
 
-## 7. 模式切换动画
+## 7. 模式切换动画（2026-10-18 交互改版改写）
 
-**选型：FLIP grow-from-origin（transform + opacity 纯合成器动画）**。
+**选型不变：FLIP grow-from-origin（transform + opacity 纯合成器动画）**——
+遮罩层随弹窗形态退役，动画主体 = 面板自输入框盒纵向展开。
 
 - 打开：入口点击时量测 `.composer-input` rect（R1，含入口按钮的盒子）→
-  挂载浮层 → layout effect 量测 `.focus-composer` 面板 rect（R2）→ 面板置
-  初始 `transform: translate(R1↔R2 差) scale(sx, sy)`（transform-origin:
-  top left）+ 内容（编辑器/操作行）opacity 0 → 强制回流后去 transform 过渡
-  到 identity；遮罩 opacity 0→1
+  挂载面板 → layout effect 量测 `.focus-composer` 自然 rect（R2，§3.2 列盒）
+  → 面板置初始 `transform: translate(R1↔R2 差) scale(sx, sy)`
+  （transform-origin: top left）+ 内容（编辑器/操作行）opacity 0 → 强制回流
+  后去 transform 过渡到 identity。会话页输入框在底部 → 面板上缘位移远大于
+  下缘 = **向上展开**；引导页输入框在上 1/3 → 下缘位移大于上缘 = **向下
+  为主展开**（横向 sx：会话页恒 1——面板左右 24px inset 与 .composer 内边距
+  同值，全部宽度带与输入盒对齐，展开纯纵向；引导页 0.8→1 微放）
 - 关闭：反向——重新量测底层 composer rect（保持挂载的原因，§2），面板过渡
-  回 R1 位置尺寸，过渡结束卸载浮层
+  回 R1 位置尺寸，过渡结束卸载面板
 - 参数：面板 transform 200ms `cubic-bezier(0.2, 0, 0, 1)`（emphasized 系）；
-  遮罩 120ms；内容淡入 140ms 延迟 40ms 起；抑制面渐隐/渐显 150ms 同窗
-  （§6.4）。只动 transform/opacity——合成器属性，无布局抖动；sx≠sy 非均匀
-  缩放允许（盒变形，内容另有淡入不参与拉伸观感）
+  内容淡入 140ms 延迟 40ms 起；抑制面渐隐/渐显 150ms 同窗（§6.4）。只动
+  transform/opacity——合成器属性，无布局抖动；sx≠sy 非均匀缩放允许（盒
+  变形，内容另有淡入不参与拉伸观感）
 - 守卫：动画期间重复开关由 `focusPhase` 相位机吸收（opening/closing 不再
   触发，§6.4——原 closingRef 职责并入）；`transitionend` + 300ms 超时兜底
   清理（transitionend 不保证必达）；`prefers-reduced-motion: reduce` 直接切换
-  无动画（app.css 2933 行既有 media 惯例）
+  无动画（app.css 既有 media 惯例）
 - **弃选 View Transitions API**（Electron 43 / Chromium 174 可用但不用）：
   快照动画需 `startViewTransition` 回调内 `flushSync` 保证 DOM 已变（React
   协调耦合）；每开一次全窗截图成本；关闭反向动画同样要包一层。FLIP 代码量
@@ -280,12 +325,16 @@ EditorState.tabSize 2 / 编辑区 contenteditable = CM 默认
 
 ## 8. 决策记录
 
-- **D1 浮层而非新 Tab kind**：专注模式是输入态不是导航目标——Everything is a
-  tab 不适用于此（无独立内容/历史，退出即消亡；Tab 注册制的稳定标识无从谈起）。
-  视图内 fixed 浮层 + 局部 state，卸载即重置
-- **D2 z-index 90、保留标题栏**：窗口控制不可失（frameless）；遮 Tab 栏/侧栏
-  足够沉浸。全局快捷键不闸（专注模式非打断弹窗，Ctrl+Tab 临时切走是合法操作，
-  草稿有 compose-draft 兜底）
+- **D1 视图内嵌面板而非新 Tab kind（2026-10-18 交互改版改写）**：专注模式是
+  输入态不是导航目标——Everything is a tab 不适用于此（无独立内容/历史，退出
+  即消亡；Tab 注册制的稳定标识无从谈起）。面板是视图根的绝对定位子元素
+  （§3.2），不出 tab 内容区；专注态经内存 store 记忆跨切换复位（§3.2b）。
+  原「fixed 浮层 + 局部 state、卸载即重置」方案作废（用户改版需求 ⑨）
+- **D2 弹窗沉浸语义退役（2026-10-18 交互改版改写）**：原「z-index 90 遮
+  Tab 栏/侧栏」作废——专注模式下 Tab/项目/worktree/右栏照常可用（切走再回
+  原地专注），沉浸面收敛为「tab 内容区被写作面占满」。全局快捷键不闸
+  （专注模式非打断弹窗，Ctrl+Tab 临时切走是合法操作，草稿有 compose-draft
+  兜底）；标题栏可达性不再是问题（面板本就不出内容区）
 - **D3 编辑器选 CodeMirror 6、复用既有装配**：markdown 语言包与 class 化主题
   已在依赖树内（.md 文件查看同源）；不引 basicSetup 封装，扩展集白盒列举
   （code-view 同风格）
@@ -315,24 +364,31 @@ EditorState.tabSize 2 / 编辑区 contenteditable = CM 默认
   恢复用 opacity 150ms 渐变，与浮层开合同窗，不做瞬时切换——卡片面因需
   卸载灭监听采用两段式（渐隐后卸载/先挂载再渐显），composer 内面恒挂载
   单类双向；focusMode 布尔升级为四相位机统一驱动（§6.4）
+- **D13 编辑列宽统一 800px 栅格（2026-10-18 交互改版，用户裁定）**：两视图
+  专注面板同一列约束（§3.2）——引导页输入框 640，展开带 0.8→1 横向微放；
+  字面满足「与会话页普通输入框相同」，编辑行长与消息列栅格一致
+- **D14 专注态记忆 = 内存级 per 编辑面（2026-10-18 交互改版）**：切 Tab/
+  切作用域再回原 Tab 仍专注（§3.2b）；不落盘不跨重启（编辑模式是会话内
+  现场不是内容，草稿另有 compose-draft 兜底）；清理挂点同 chatScrollTops
+  惯例防僵尸标记
 
 ## 9. 场景验证表
 
 | # | 场景 | 行为 |
 |---|---|---|
-| 1 | 会话页输入 → 点入口 | 浮层自输入框位置放大展开；文本/光标保留；markdown 高亮可见 |
+| 1 | 会话页输入 → 点入口 | 面板自输入框盒向上展开（§7）；文本/光标保留；markdown 高亮可见 |
 | 2 | 专注模式编辑 → 退回（按钮/Esc） | 反向动画收拢回输入框；文本/选区保留；焦点回 textarea |
 | 3 | 专注模式 Enter / Shift+Enter / Ctrl+Enter | 一律换行；无任何组合触发发送 |
 | 4 | 专注模式点发送 | 走既有 send()；成功退回普通模式、气泡入流；失败退回、草稿回填 |
 | 5 | busy 中专注模式补输并发送 | supplement 语义照常（不打断 run） |
-| 6 | 专注模式 Ctrl+Tab 切走再回 | 草稿恢复（compose-draft）；回到普通模式（focusPhase 不跨卸载） |
+| 6 | 专注模式 Ctrl+Tab 切走再回 | 草稿恢复（compose-draft）；**仍处专注模式**（§3.2b 记忆复位，光标置文末） |
 | 7 | 专注模式 Ctrl+W（流式中） | ConfirmDialog（z 100）盖于浮层上，确认/取消语义不变 |
 | 8 | `/cmd` 草稿进专注模式 | 无菜单按字面编辑；退回后菜单重现；发送分流不受影响 |
 | 9 | 拖文件入浮层 / chips / 附件按钮 | 全部不进场：drop 零效果无导航；按钮与 chips 不渲染（§6.2） |
 | 10 | fcitx5 中文输入（组合→上屏） | CM contenteditable 组合正常；组合中 Esc 取消组合不退出 |
 | 11 | `prefers-reduced-motion` | 无动画直切，内容即时可用 |
-| 12 | 窗口缩放/面板拖宽 | 浮层 fixed 不受布局影响；动画中 resize 至多畸变一帧（无守卫，接受） |
-| 13 | 引导页全链路 | 入口/编辑/发送同构；成功开 Tab（浮层随卸载消失）；失败留页草稿回填 |
+| 12 | 窗口缩放/面板拖宽 | 面板随列宽自适应（列约束 §3.2）；动画中 resize 至多畸变一帧（无守卫，接受） |
+| 13 | 引导页全链路 | 入口/编辑/发送同构（向下为主展开，hero 被覆盖）；成功开 Tab（面板随卸载消失）；失败留页草稿回填 |
 | 14 | 重启应用后进入 | 草稿经磁盘层恢复（§5 既有机制，无新面） |
 | 15 | 授权/问题/后台任务卡在场 → 打开专注模式 | 卡片渐隐后卸载；退回先挂载再渐显，原样恢复（含详情窗开合态） |
 | 16 | 专注模式期间新卡到达（asked/created/后台任务启动） | 不弹；退出后按最新状态呈现 |
@@ -341,7 +397,9 @@ EditorState.tabSize 2 / 编辑区 contenteditable = CM 默认
 | 19 | 专注模式期间右键文件引用 | 生效但不可见；退出后 chip 呈现 |
 | 20 | 隐藏态引用/附件随专注模式发送 | 照常携带（不可见但生效）；tooLarge 时发送按钮置灰 |
 | 21 | 专注模式底部操作行 | 只有发送按钮；agent/模型/思考强度切换条渐隐隐藏（§6.3），退回渐显恢复 |
-| 22 | 抑制面进/出动画 | 隐藏 = 渐隐 150ms、恢复 = 渐显，与浮层开合同窗；reduced-motion 直切 |
+| 22 | 抑制面进/出动画 | 隐藏 = 渐隐 150ms、恢复 = 渐显，与面板开合同窗；reduced-motion 直切 |
+| 23 | 专注模式切项目/切 worktree/右栏打开文件 | 左右栏与 Tab 栏照常交互；原 Tab 卸载、切回复位仍专注（§3.2b） |
+| 24 | 引导页专注态切作用域再回 | 按目录键记忆复位（仍专注）；项目关闭/worktree 删除随目录清标记 |
 
 ## 10. 不做的事
 
@@ -349,8 +407,10 @@ EditorState.tabSize 2 / 编辑区 contenteditable = CM 默认
 - 围栏代码块内嵌语言高亮（markdown 的 codeLanguages——静态全量引入增包体、
   动态注册表已被 cm-lang 明确弃用；围栏内容纯文本着色）
 - 字数统计、专注模式内的错误/流式状态呈现（D7）
-- 专注模式状态跨卸载记忆（重挂载恒普通模式——与"打开 Tab = 恢复现场"的 Tab
-  记忆体系无关，编辑模式不是现场）
+- 专注态跨**重启**持久化（内存 Map，重启回普通模式——会话内跨切换已记忆
+  §3.2b；**原「状态不跨卸载记忆」条目已被 2026-10-18 交互改版取代**）
+- 重挂载的 CM 选区复原（textarea 选区不跨卸载存活，光标置文末——§5 已知
+  边界族）
 - 光标行对齐到普通框可视区（§5 已知边界）
 - 跨模式 undo 历史保留（§5 已知边界——两编辑面的历史随各自实例生灭）
 - OS 窗口全屏（fullscreen）联动、暗色加深的"打字机模式"等氛围功能
@@ -359,19 +419,21 @@ EditorState.tabSize 2 / 编辑区 contenteditable = CM 默认
 - 卡片抑制期间的到达/挂起提示（专注期间 run 因卡片阻塞无感知——退出即见，
   Keep Lean）
 
-## 11. 涉及文件
+## 11. 涉及文件（初版 + 2026-10-18 交互改版增量）
 
 | 文件 | 改动 |
 |---|---|
-| `src/renderer/src/components/focus-composer.tsx` | 新：FocusComposer（CM 生命周期/doc 同步/FLIP/Esc/操作行插槽、onClose 携选区；拖放吞掉层） |
-| `src/renderer/src/components/workspace.tsx` | ChatView/GuidePage：`.focus-enter` 按钮 + `focusPhase` 四相位 state + 浮层挂载 + send 包装退回；composer-input ref 供动画量测；ChatFooter / bg-task-slot 渲染并入相位（§6.1/§6.4 两段式）；composer 抑制面挂抑制类（§6.2/§6.3） |
-| `src/renderer/src/styles/app.css` | `.focus-overlay` / `.focus-composer` / `.focus-editor-host` / `.focus-enter`；语法 token 选择器组并入 `.focus-editor-host`；抑制类 opacity 渐变 + reduced-motion 块（§6.4） |
-| `src/renderer/src/i18n/index.ts` | focusModeEnter / focusModeExit / focusPlaceholder（zh+en，提示 Enter 换行） |
-| `src/renderer/src/components/focus-composer.test.tsx` | 渲染冒烟（jsdom + RO stub，code-view.test 惯例）：初始 doc/选区、markdown token class、doc 同步不重建、Enter 换行无发送路径、Esc onClose |
-| `src/renderer/src/components/workspace-guide.test.tsx` | 专注模式集成 3 例（2026-10-18 实施加）：入口→浮层/抑制类/草稿承接、Esc 退出→卸载/类移除/草稿保留、Enter 换行不发送。ChatView 卡片闸门无渲染 harness，留联调（场景 #15/#21） |
-| `package.json` / `package-lock.json` | 新增 `@codemirror/commands@^6.11.1`（§4.1 依赖事实） |
-| `docs/design/v2/design-pending-cards.md` / `docs/design/design-keyboard-shortcuts.md` | 实施时同步补注：卡片渲染/快捷键适用条件加「专注模式抑制期间不渲染不响应」（§1.1b"恒为卡动作"的条件边界，§6.1） |
-| `docs/spec/spec-v0.6.md`（实施时开篇） | 功能范围补录；design-layout 输入区条目指向本文 |
+| `src/renderer/src/components/focus-composer.tsx` | FocusComposer（CM 生命周期/doc 同步/FLIP/Esc/操作行插槽、onClosed 携选区；拖放吞掉）。改版：`.focus-overlay` 遮罩退役，面板根直接绝对定位（§3.2）；FLIP 去遮罩支路；aria 非模态化 |
+| `src/renderer/src/components/workspace.tsx` | ChatView/GuidePage：`.focus-enter` 按钮 + `focusPhase` 四相位 state + 面板挂载 + send 包装退回；卡片槽位/抑制类接线（§6.1–§6.4）。改版：专注态记忆接线（初值读回/进入置/退出意图清/引导页 settle 清，§3.2b）；GuidePage 根拆 `.guide-scroll` 承接滚动（面板不随存档滚动） |
+| `src/renderer/src/store/app-store.ts` | 改版增：`focusModes` 内存 Map + `focusModeFor`/`setFocusMode`；五处清理挂点（closeTab chat 分支、会话运行时卸载、项目关闭目录循环、worktree 删除、disconnect，§3.2b） |
+| `src/renderer/src/styles/app.css` | `.focus-composer` / `.focus-editor-host` / `.focus-enter`；语法 token 选择器组；抑制类渐变 + reduced-motion（§6.4）。改版：`.chat-view` relative；`.guide-view` 拆层；`.focus-composer` 列约束 + 材质（§3.2）；删 `.focus-overlay` 块 |
+| `src/renderer/src/i18n/index.ts` | focusModeEnter / focusModeExit / focusPlaceholder（zh+en，提示 Enter 换行）——改版无新增文案 |
+| `src/renderer/src/components/focus-composer.test.tsx` | 渲染冒烟（jsdom + RO stub）：初始 doc/选区、markdown token class、doc 同步、Enter 换行、Esc、相位回调 |
+| `src/renderer/src/components/workspace-guide.test.tsx` | 专注模式集成（入口/退出/Enter 换行）+ 改版增：记忆复位用例；`.focus-overlay` 断言改 `.focus-composer`。ChatView 卡片闸门留联调（#15/#21） |
+| `src/renderer/src/store/app-store.test.ts` | 改版增：focusModeFor/setFocusMode + 卸载清理用例（§3.2b） |
+| `package.json` / `package-lock.json` | `@codemirror/commands@^6.11.1`（§4.1 依赖事实，初版已入） |
+| `docs/design/v2/design-pending-cards.md` / `docs/design/design-keyboard-shortcuts.md` | 初版补注：卡片渲染/快捷键适用条件加「专注模式抑制期间不渲染不响应」（§1.1b 边界，§6.1）——改版无变化 |
+| `docs/spec/spec-v0.6.md`（实施时开篇） | 功能范围补录；design-layout 输入区条目指向本文（两版合并处理） |
 
 ## 12. 验证要点（实施门）
 
@@ -408,3 +470,27 @@ EditorState.tabSize 2 / 编辑区 contenteditable = CM 默认
   两视图同构）；design-layout 输入区条目与 spec-v0.6 一并延期至版本开篇
   （原 §11 计划口径在此留痕对齐）；焦点圈闭不 trap 与仓库既有弹窗一致，
   忽略（nit 2）
+
+## 14. 验证记录（2026-10-18 交互改版）
+
+- 范围：§3.2/§3.2b/§7/D1/D2/D13/D14、场景表 #6/#12/#13/#23/#24——浮层改
+  tab 内嵌、专注态跨切换记忆、列宽统一 800、纵向展开动画
+- vitest 1364/1364 全绿（新增 4 用例：guide 记忆复位 1 + ChatView 记忆
+  复位 1 + store 写读/清理 1 + 既有断言随改）；typecheck 双侧、build 全绿
+- review（reviewer 子代理，2026-10-18）：可以合入、无阻塞。修订落点：
+  - non-blocking 1（发送在途切走再回的迟到清标——一次性失配、再切自愈）
+    接受并 §3.2b 已知边界留痕
+  - non-blocking 2（(648, 848) 带内面板比输入盒宽 48px、FLIP 带横向缩放）
+    ——已修：面板左右改 24px inset（与 .composer 内边距同值），全部宽度
+    带与输入盒对齐、会话页 sx 恒 1，§3.2/§7 措辞同步
+  - nit 3（aria-label 挂无 role 的 div 读不到）——已修：`role="region"`
+  - nit 4（清理挂点计数不全）——已修：§3.2b/§11 列全五处
+  - nit 5（--chat-min/max 双视图重复定义）——保留（注释已自认同值，
+    上提 workspace-body 收益有限）
+- 二轮 review（reviewer 子代理，2026-10-18）：可以合入、无阻塞——复位
+  挂载相位机、sendFromFocus 清标时序、CSS 全宽度带对齐、键空间无碰撞均
+  逐一核对通过；non-blocking 2（requestFocusClose 闭包直读是隐性契约）
+  已修：两视图函数注释点明「调用方须经最新闭包（requestCloseRef 模式）」，
+  non-blocking 1（发送在途迟到清标）维持 §3.2b 已知边界留痕口径
+- 已知留联调：动画帧率/展开方向手感（Wayland 实机）、fcitx5 组合、
+  #15–#17 卡片抑制在嵌入形态下的观感——场景表手动过

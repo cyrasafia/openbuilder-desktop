@@ -739,7 +739,23 @@
 }
 
 /* ---------- 新 Tab 引导页（无激活 Tab 的默认视图） ---------- */
+/* 外层定位容器（design-focus-mode §3.2，2026-10-18 交互改版）：滚动职责下沉
+   到 .guide-scroll——专注面板作本元素的绝对定位子元素，不随存档列表滚动、
+   恒覆盖可视区；列宽变量与 .chat-view 同值（专注面板统一 800px 栅格，
+   design-focus-mode §3.2 用户裁定） */
 .guide-view {
+  --chat-min: 600px;
+  --chat-max: 800px;
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 滚动内层：原 .guide-view 的滚动与三区布局职责（对齐/间距/内边距随迁） */
+.guide-scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -874,10 +890,12 @@
 }
 
 /* ---------- 聊天 ---------- */
-/* 消息区/输入区动态宽度：[600, 800]px（不含 padding），相对工作区居中 */
+/* 消息区/输入区动态宽度：[600, 800]px（不含 padding），相对工作区居中。
+   relative：专注面板（design-focus-mode §3.2）的定位容器 */
 .chat-view {
   --chat-min: 600px;
   --chat-max: 800px;
+  position: relative;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -1756,33 +1774,31 @@
   flex-shrink: 0;
 }
 
-/* 浮层（§3.2）：遮罩盖住标题栏以下全部（Tab 栏/侧栏/中栏），z 90 居
-   dialog-mask(100)/popover(200)/context-menu(210) 之下——确认弹窗等照常浮于其上；
-   遮罩半透明：未抑制内容（消息流/composer-input 本体）呈压暗上下文 */
-.focus-overlay {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  top: var(--titlebar-h);
-  z-index: 90;
-  background: rgba(0, 0, 0, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: opacity 120ms ease;
-}
-
-/* 面板（§3.2/§4.1）：居中列，与消息列同一视觉栅格；transform 过渡 = FLIP
-   开合（§7，transform-origin 由 JS 动画前置 top left） */
+/* 面板（§3.2，2026-10-18 交互改版）：视图根的绝对定位子元素，铺满 tab
+   内容区（inset 24px 0 8px——横向 24px 与 .composer 内边距同值）+ 列约束：
+   max/min-width = 会话页普通输入框同栅格（800/600，引导页输入框 640 展开
+   时横向微放 0.8→1），margin auto 居中（.composer 同法）——左缘右缘与
+   .composer-input 盒在全部宽度带对齐（review non-blocking 2 修订：左右
+   inset 24px 使窄带内面板宽 = 列宽 − 48 = 输入盒宽，FLIP sx 恒为 1，
+   会话页展开纯纵向）。输入框材质的放大体（container-low 底 + outline 边 +
+   radius-card 圆角，无投影——贴合内容区的面不是悬浮卡）；transform 过渡 =
+   FLIP 开合（§7，transform-origin 由 JS 动画前置 top left）；z 5 盖视图内
+   全部内容，dialog-mask(100)/popover(200)/context-menu(210) 在文档级更高层
+   照常浮于其上 */
 .focus-composer {
-  width: min(calc(100vw - 48px), calc(var(--chat-max) + 48px));
-  height: calc(100vh - var(--titlebar-h) - 48px);
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  top: 0;
+  bottom: 8px;
+  z-index: 5;
+  max-width: var(--chat-max);
+  min-width: var(--chat-min);
+  margin: 0 auto;
   box-sizing: border-box;
-  background: var(--surface);
+  background: var(--surface-container-low);
   border: 1px solid var(--outline-variant);
-  border-radius: var(--radius-dialog);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  border-radius: var(--radius-card);
   display: flex;
   flex-direction: column;
   transition: transform 200ms cubic-bezier(0.2, 0, 0, 1);
@@ -1895,7 +1911,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .focus-overlay,
   .focus-composer,
   .focus-body,
   .ref-chips,

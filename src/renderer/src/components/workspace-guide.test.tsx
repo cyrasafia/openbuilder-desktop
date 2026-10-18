@@ -109,6 +109,34 @@ function makeStore(overrides: Record<string, unknown> = {}): Record<string, unkn
     refreshCommands: vi.fn(async () => {}),
     commandsDegraded: false,
     commandsRefreshing: false,
+    // ChatView 挂载所需（专注态记忆用例切激活 chat Tab，bg-task 测试同源字段）
+    dotStateFor: vi.fn(() => null),
+    isBrowserWelcome: vi.fn(() => false),
+    setActiveTab: vi.fn(),
+    sessionPages: new Map(),
+    chatDraftFor: vi.fn(() => ""),
+    setChatDraft: vi.fn(),
+    chatEntries: vi.fn(() => []),
+    statusOf: vi.fn(() => "idle"),
+    runningBackgroundTasks: vi.fn(() => []),
+    taskDetailVersion: 0,
+    consumeTaskDetailRequest: vi.fn(() => null),
+    findSession: vi.fn(() => null),
+    chatScrollFor: vi.fn(() => null),
+    setChatScroll: vi.fn(),
+    canLoadEarlier: vi.fn(() => false),
+    loadEarlierMessages: vi.fn(),
+    loadSessionMessages: vi.fn(),
+    revertDraftVersion: 0,
+    takeRevertDraft: vi.fn(() => null),
+    abortSession: vi.fn(async () => {}),
+    pendingPermissions: new Map(),
+    childPermissionFor: vi.fn(() => null),
+    questionsForSession: vi.fn(() => []),
+    childQuestionsFor: vi.fn(() => []),
+    // 专注态记忆（design-focus-mode §3.2b）
+    focusModeFor: vi.fn(() => false),
+    setFocusMode: vi.fn(),
     ...overrides,
   }
 }
@@ -570,12 +598,13 @@ describe("引导页斜杠命令（design-slash-command 2026-09-08 修订）", ()
 })
 
 /**
- * 专注模式集成（design-focus-mode，2026-10-18 增）：入口点击 → 浮层挂载 +
- * 视图根抑制类（§6.2/§6.3）+ CM 承接草稿（§5 状态单源）；Esc 退出 → 浮层
- * 卸载、抑制类移除、草稿保留。jsdom 无布局 → FLIP 分支跳过、相位回调走
- * 300ms 兜底（waitFor 真实定时器）；Range 几何 API 缺失由 stub 补（CM 选区
- * 量测，focus-composer.test 同例）。ChatView 的卡片闸门（focusPhase !== "on"）
- * 无 ChatView 级渲染 harness，留联调（场景表 #15/#21）。
+ * 专注模式集成（design-focus-mode，2026-10-18 增；同日交互改版随改）：入口
+ * 点击 → 面板挂载 + 视图根抑制类（§6.2/§6.3）+ CM 承接草稿（§5 状态单源）；
+ * Esc 退出 → 面板卸载、抑制类移除、草稿保留；专注态记忆（§3.2b）切走再回
+ * 复位仍专注。jsdom 无布局 → FLIP 分支跳过、相位回调走 300ms 兜底（waitFor
+ * 真实定时器）；Range 几何 API 缺失由 stub 补（CM 选区量测，focus-composer.test
+ * 同例）。ChatView 的卡片闸门（focusPhase !== "on"）无 ChatView 级渲染 harness，
+ * 留联调（场景表 #15/#21）。
  */
 describe("专注模式（design-focus-mode）", () => {
   beforeEach(() => {
@@ -586,22 +615,24 @@ describe("专注模式（design-focus-mode）", () => {
       Range.prototype.getBoundingClientRect = () =>
         ({ width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 }) as DOMRect
     }
+    // 记忆用例会挂载 ChatView（切激活 chat Tab）：jsdom 缺 scrollTo（bg-task 同例）
+    Element.prototype.scrollTo = Element.prototype.scrollTo ?? (() => {})
   })
 
-  it("入口点击 → 浮层挂载 + 根抑制类 + CM 承接草稿", () => {
+  it("入口点击 → 面板挂载 + 根抑制类 + CM 承接草稿", () => {
     render(<Workspace />)
     const ta = document.querySelector<HTMLTextAreaElement>(".composer-input textarea")
     expect(ta).not.toBeNull()
     fireEvent.change(ta!, { target: { value: "# 草稿标题" } })
     fireEvent.click(document.querySelector<HTMLButtonElement>(".focus-enter")!)
-    expect(document.querySelector(".focus-overlay")).not.toBeNull()
+    expect(document.querySelector(".focus-composer")).not.toBeNull()
     const root = document.querySelector(".guide-view")
     expect(root?.classList.contains("focus-suppressing")).toBe(true)
     const cm = document.querySelector<HTMLElement>(".focus-editor-host .cm-content")
     expect(cm?.textContent).toContain("草稿标题")
   })
 
-  it("Esc 退出 → 浮层卸载、抑制类移除、草稿保留", async () => {
+  it("Esc 退出 → 面板卸载、抑制类移除、草稿保留", async () => {
     render(<Workspace />)
     const ta = document.querySelector<HTMLTextAreaElement>(".composer-input textarea")
     fireEvent.change(ta!, { target: { value: "保留我" } })
@@ -611,7 +642,7 @@ describe("专注模式（design-focus-mode）", () => {
     })
     // closing 相位 300ms 兜底定时器 → onClosed → 卸载（真实定时器等待）
     await waitFor(() => {
-      expect(document.querySelector(".focus-overlay")).toBeNull()
+      expect(document.querySelector(".focus-composer")).toBeNull()
     })
     expect(document.querySelector(".guide-view")?.classList.contains("focus-suppressing")).toBe(
       false,
@@ -634,5 +665,63 @@ describe("专注模式（design-focus-mode）", () => {
     ).toContain("\n")
     expect(storeStub.sendPrompt).not.toHaveBeenCalled()
     expect(storeStub.createSession).not.toHaveBeenCalled()
+  })
+
+  it("专注态记忆（§3.2b）：切走（激活 chat Tab）再回引导页，复位仍专注；退出清标记", async () => {
+    // 有状态 focus 桩：模拟内存 Map（setFocusMode 写、focusModeFor 读）；
+    // 引导页草稿同做有状态桩（重挂载读回路径，真实 store 同构）
+    const focusMemo = new Set<string>()
+    const drafts = new Map<string, string>()
+    const focusStubs = () => ({
+      focusModeFor: vi.fn((k: string) => focusMemo.has(k)),
+      setFocusMode: vi.fn((k: string, on: boolean) => {
+        if (on) focusMemo.add(k)
+        else focusMemo.delete(k)
+      }),
+      guideDraftFor: vi.fn((k: string) => drafts.get(k) ?? ""),
+      setGuideDraft: vi.fn((k: string, v: string) => {
+        if (v) drafts.set(k, v)
+        else drafts.delete(k)
+      }),
+    })
+    storeStub = makeStore(focusStubs())
+    const { rerender } = render(<Workspace />)
+    fireEvent.change(document.querySelector<HTMLTextAreaElement>(".composer-input textarea")!, {
+      target: { value: "跨切换保留" },
+    })
+    fireEvent.click(document.querySelector<HTMLButtonElement>(".focus-enter")!)
+    expect(document.querySelector(".focus-composer")).not.toBeNull()
+
+    // 切走：激活 chat Tab → 引导页卸载（Tab 栏/作用域外交互照常，§3.2）
+    const chatTab = { key: "chat:s1", kind: "chat", title: "T", directory: "/repo/a" }
+    storeStub = makeStore({
+      tabs: [chatTab],
+      activeTab: chatTab,
+      activeTabKey: "chat:s1",
+      ...focusStubs(),
+    })
+    rerender(<Workspace />)
+    expect(document.querySelector(".focus-composer")).toBeNull()
+
+    // 切回：无激活 Tab → 引导页重挂载，直接复位专注稳态（无开启动画）+ 草稿承接
+    storeStub = makeStore(focusStubs())
+    rerender(<Workspace />)
+    expect(focusMemo.has("/repo/a")).toBe(true)
+    expect(document.querySelector(".focus-composer")).not.toBeNull()
+    expect(
+      document.querySelector<HTMLElement>(".focus-editor-host .cm-content")?.textContent,
+    ).toContain("跨切换保留")
+
+    // Esc 退出 → 退出意图即清标记（再回是普通模式）
+    fireEvent.keyDown(document.querySelector<HTMLElement>(".focus-editor-host .cm-content")!, {
+      key: "Escape",
+    })
+    await waitFor(() => {
+      expect(document.querySelector(".focus-composer")).toBeNull()
+    })
+    expect(focusMemo.has("/repo/a")).toBe(false)
+    storeStub = makeStore(focusStubs())
+    rerender(<Workspace />)
+    expect(document.querySelector(".focus-composer")).toBeNull()
   })
 })

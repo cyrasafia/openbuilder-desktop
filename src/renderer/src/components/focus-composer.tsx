@@ -1,16 +1,19 @@
 /**
- * 专注模式浮层（design-focus-mode）：会话页/引导页的大段 prompt 编辑面。
+ * 专注模式面板（design-focus-mode，2026-10-18 交互改版）：会话页/引导页的
+ * 大段 prompt 编辑面，嵌入 tab 内容区（视图根的绝对定位子元素，§3.2——
+ * 非弹窗：Tab 栏/左栏/右栏照常可见可交互）。
  *
  * - CM6 编辑器（§4）：markdown 高亮复用 cm-lang 同源语言包 + cm-theme class 化
  *   主题（颜色走 app.css --syntax-* 令牌）；Enter 一律换行、无发送命令（D4）
  *   ——defaultKeymap 的 insertNewlineAndIndent 即语义本身；Esc = 退回普通模式
- *   （CM 内 Prec.highest 压过选区折叠，浮层根 bubble 监听兜底焦点不在编辑器
+ *   （CM 内 Prec.highest 压过选区折叠，面板根 bubble 监听兜底焦点不在编辑器
  *   的场景——bubble 保证内层先消费，"已 preventDefault 不处理"既有约定）
  * - FLIP grow-from-origin 开合动画（§7）：opening 自 origin rect（入口点击时
- *   量测的 composer-input 盒）变换到 identity；closing 反向收拢回实时量测的
- *   composer rect（getOriginRect）。只动 transform/opacity（合成器属性）；
- *   transitionend + 300ms 兜底定时器驱动 onOpened/onClosed（不保证必达）
- * - 拖放吞掉层（§6.2）：浮层根 preventDefault + stopPropagation，落文件零效果
+ *   量测的 composer-input 盒）变换到 identity——会话页向上展开、引导页向下
+ *   为主展开；closing 反向收拢回实时量测的 composer rect（getOriginRect）。
+ *   只动 transform/opacity（合成器属性）；transitionend + 300ms 兜底定时器
+ *   驱动 onOpened/onClosed（不保证必达）
+ * - 拖放吞掉层（§6.2）：面板根 preventDefault + stopPropagation，落文件零效果
  *   ——不挂 fileDragProps/dragProps（禁用而非接收），will-navigate 只作兜底
  * - focusSurfaceFadeClass（§6.4）：卡片两槽位的两段式渐变类，供 ChatView
  *   在 opening/closing 期间挂载渐隐/渐显
@@ -123,7 +126,6 @@ export function FocusComposer({
   onSend: () => void
   ariaLabel: string
 }) {
-  const overlayRef = useRef<HTMLDivElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
   const hostRef = useRef<HTMLDivElement>(null)
@@ -202,13 +204,12 @@ export function FocusComposer({
     }
   }, [value])
 
-  // FLIP 打开（§7）：挂载帧执行——面板置 origin 变换 + 遮罩/内容透明，强制
+  // FLIP 打开（§7）：挂载帧执行——面板置 origin 变换 + 内容透明，强制
   // 回流后清初始态 → CSS 过渡到 identity；transitionend + 兜底定时器 → onOpened
   useLayoutEffect(() => {
     const panel = panelRef.current
-    const overlay = overlayRef.current
     const body = bodyRef.current
-    if (!panel || !overlay || !body) return
+    if (!panel || !body) return
     const reduced = prefersReducedMotion()
     const r2 = panel.getBoundingClientRect()
     naturalRectRef.current = r2
@@ -219,15 +220,11 @@ export function FocusComposer({
       panel.style.transformOrigin = "top left"
       panel.style.transition = "none"
       panel.style.transform = `translate(${from.left - r2.left}px, ${from.top - r2.top}px) scale(${sx}, ${sy})`
-      overlay.style.transition = "none"
-      overlay.style.opacity = "0"
       body.style.transition = "none"
       body.style.opacity = "0"
       void panel.offsetHeight // 强制回流，锁定初始态后再起过渡
       panel.style.transition = ""
       panel.style.transform = ""
-      overlay.style.transition = ""
-      overlay.style.opacity = ""
       body.style.transition = ""
       body.style.opacity = ""
     }
@@ -251,13 +248,12 @@ export function FocusComposer({
   }, [])
 
   // FLIP 关闭（§7）：closing 相位触发——重新量测底层 composer rect，面板自
-  // identity 过渡回该 rect；遮罩/内容渐隐；完成后携 CM 主选区回调卸载
+  // identity 过渡回该 rect；内容渐隐；完成后携 CM 主选区回调卸载
   useLayoutEffect(() => {
     if (phase !== "closing") return
     const panel = panelRef.current
-    const overlay = overlayRef.current
     const body = bodyRef.current
-    if (!panel || !overlay || !body) return
+    if (!panel || !body) return
     const reduced = prefersReducedMotion()
     const r1 = getOriginRectRef.current()
     // 自然盒基准（review minor 2）：面板布局盒恒定（宽高固定），opening 首帧
@@ -268,12 +264,11 @@ export function FocusComposer({
       const sy = r1.height / r2.height
       panel.style.transformOrigin = "top left"
       panel.style.transform = `translate(${r1.left - r2.left}px, ${r1.top - r2.top}px) scale(${sx}, ${sy})`
-      overlay.style.opacity = "0"
       body.style.opacity = "0"
     } else {
-      // jsdom / 无 origin / reduced-motion：无动画直切（遮罩瞬时隐）
-      overlay.style.transition = "none"
-      overlay.style.opacity = "0"
+      // jsdom / 无 origin / reduced-motion：无动画直切（内容瞬时隐）
+      body.style.transition = "none"
+      body.style.opacity = "0"
     }
     let done = false
     const finish = (e?: Event) => {
@@ -300,13 +295,12 @@ export function FocusComposer({
 
   return (
     <div
-      ref={overlayRef}
-      className="focus-overlay"
-      role="dialog"
-      aria-modal="true"
+      ref={panelRef}
+      className="focus-composer"
+      role="region"
       aria-label={ariaLabel}
       onKeyDown={(e) => {
-        // bubble 兜底（§4.2）：焦点在浮层按钮等处时 Esc 仍可退回；内层
+        // bubble 兜底（§4.2）：焦点在面板按钮等处时 Esc 仍可退回；内层
         // （CM keymap 等）先消费并 preventDefault 则不重复触发
         if (e.key !== "Escape" || e.nativeEvent.isComposing || e.defaultPrevented) return
         e.preventDefault()
@@ -315,25 +309,23 @@ export function FocusComposer({
       onDragOver={swallowDrag}
       onDrop={swallowDrag}
     >
-      <div ref={panelRef} className="focus-composer">
-        <div className="focus-toolbar">
-          <button
-            type="button"
-            className="icon-btn"
-            title={exitTitle}
-            aria-label={exitTitle}
-            onClick={() => requestCloseRef.current()}
-          >
-            <Minimize2 size={16} aria-hidden />
+      <div className="focus-toolbar">
+        <button
+          type="button"
+          className="icon-btn"
+          title={exitTitle}
+          aria-label={exitTitle}
+          onClick={() => requestCloseRef.current()}
+        >
+          <Minimize2 size={16} aria-hidden />
+        </button>
+      </div>
+      <div ref={bodyRef} className="focus-body">
+        <div ref={hostRef} className="focus-editor-host" />
+        <div className="focus-actions">
+          <button type="button" className="btn-primary" disabled={sendDisabled} onClick={onSend}>
+            {sendLabel}
           </button>
-        </div>
-        <div ref={bodyRef} className="focus-body">
-          <div ref={hostRef} className="focus-editor-host" />
-          <div className="focus-actions">
-            <button type="button" className="btn-primary" disabled={sendDisabled} onClick={onSend}>
-              {sendLabel}
-            </button>
-          </div>
         </div>
       </div>
     </div>
