@@ -136,6 +136,9 @@ function makeStore(tabs: ReturnType<typeof chatTab>[], scopeDir = DIR_A) {
     findSession: vi.fn(() => null),
     chatScrollFor: vi.fn(() => null),
     setChatScroll: vi.fn(),
+    // 专注态记忆（design-focus-mode §3.2b，2026-10-18 交互改版）
+    focusModeFor: vi.fn(() => false),
+    setFocusMode: vi.fn(),
     canLoadEarlier: vi.fn(() => false),
     loadEarlierMessages: vi.fn(),
     loadSessionMessages: vi.fn(),

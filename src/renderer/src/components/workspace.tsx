@@ -901,8 +901,12 @@ function GuidePage() {
   // 聚焦）才走默认（光标置末尾）
   const guideSel = useSelectionRestore()
 
-  // ---- 专注模式（design-focus-mode）：同 ChatView，无卡片面（会话域 UI）----
-  const [focusPhase, setFocusPhase] = useState<FocusPhase>("off")
+  // ---- 专注模式（design-focus-mode）：四相位 + FLIP origin/选区快照。
+  // 初值经专注态记忆读回（§3.2b，2026-10-18 交互改版）：切作用域再回直接
+  // 复位专注稳态（无开启动画、光标置文末）；进入置标记、退出意图即清 ----
+  const [focusPhase, setFocusPhase] = useState<FocusPhase>(() =>
+    store.focusModeFor(directory) ? "on" : "off",
+  )
   const [focusOrigin, setFocusOrigin] = useState<DOMRect | null>(null)
   const [focusSelection, setFocusSelection] = useState<FocusSelection | null>(null)
   const guideComposerInputRef = useRef<HTMLDivElement>(null)
@@ -915,14 +919,20 @@ function GuidePage() {
   const enterFocus = () => {
     if (focusPhase !== "off") return
     focusGenRef.current++
+    store.setFocusMode(directory, true)
     setFocusOrigin(guideComposerInputRef.current?.getBoundingClientRect() ?? null)
     const ta = guideTaRef.current
     setFocusSelection(ta ? { start: ta.selectionStart, end: ta.selectionEnd } : null)
     setFocusPhase("opening")
   }
 
+  /** 退出意图（Esc/按钮）：置 closing + 清专注标记。闭包直读 focusPhase——
+   *  调用方须经最新闭包（FocusComposer 的 requestCloseRef 每渲染刷新，
+   *  同 ChatView review 二轮 non-blocking 2 留痕） */
   const requestFocusClose = () => {
-    setFocusPhase((p) => (p === "opening" || p === "on" ? "closing" : p))
+    if (focusPhase !== "opening" && focusPhase !== "on") return
+    store.setFocusMode(directory, false)
+    setFocusPhase("closing")
   }
 
   const handleFocusClosed = (sel: FocusSelection) => {
@@ -933,12 +943,14 @@ function GuidePage() {
   }
 
   /** 发送后无条件退回普通模式（D7）；成功路径 openChatTab 使引导页整个卸载，
-   * 浮层随之消失（setState 对已卸载组件是 no-op，无需显式退出）。
+   * 面板随之消失（setState 对已卸载组件是 no-op，无需显式退出；专注标记在
+   * 卸载前已清——否则切回复位会带着空草稿进专注态）。
    * 代际守卫（review 二轮 #1）：同 ChatView */
   const sendFromFocus = async () => {
     const gen = focusGenRef.current
     await send()
     if (focusGenRef.current !== gen) return
+    store.setFocusMode(directory, false)
     setFocusPhase((p) => (p === "opening" || p === "on" ? "closing" : p))
   }
 
@@ -1139,229 +1151,236 @@ function GuidePage() {
         (focusPhase === "opening" || focusPhase === "on" ? " focus-suppressing" : "")
       }
     >
-      {/* 居中层 = 会话区 + 操作区（顶部 32vh 定值空白使其大致居中） */}
-      <div className="guide-main">
-        <div className="guide-session">
-          <div className="hero">{scopeName}</div>
-          <div className="guide-hint">{t.guideHint}</div>
-          <div
-            className="guide-composer"
-            onDragOver={(e) => {
-              refInput.dragProps.onDragOver(e)
-              attachInput.fileDragProps.onDragOver(e)
-            }}
-            onDrop={(e) => {
-              refInput.dragProps.onDrop(e)
-              attachInput.fileDragProps.onDrop(e)
-            }}
-            onDragLeave={refInput.dragProps.onDragLeave}
-          >
-            {/* 斜杠命令菜单（design-slash-command 2026-09-08 修订）：锚定/交互同
-                ChatView（.guide-composer 已有 position:relative 锚，design-file-reference H1） */}
-            {cmdMode && (
-              <CommandHints
-                matches={matches}
-                loading={store.commandsRefreshing && commands.length === 0}
-                selIndex={sel}
-                onPick={pickCommand}
-              />
-            )}
-            {refInput.chips}
-            {attachInput.chips}
-            <div className="composer-input" ref={guideComposerInputRef}>
-              {attachInput.pickerButton}
-              <textarea
-                ref={guideTaRef}
-                onPaste={attachInput.pasteProps.onPaste}
-                value={draft}
-                placeholder={t.guidePlaceholder}
-                rows={1}
-                autoFocus
-                onFocus={(e) => {
-                  // 同一编辑会话（value 未变）恢复光标续编辑；无保存（首次
-                  // 聚焦）光标置于末尾而非开头（有草稿时，原 autoFocus 语义）
-                  const el = e.currentTarget
-                  // 专注模式退出恢复（design-focus-mode §5，review major 1）：
-                  // 优先于 selection-restore——其默认分支的 rAF 置末尾会覆盖退出选区
-                  if (focusExitSel.current) {
-                    const s = focusExitSel.current
-                    focusExitSel.current = null
-                    el.setSelectionRange(s.start, s.end)
-                    return
-                  }
-                  if (guideSel.restore(el)) return
-                  requestAnimationFrame(() => {
-                    const len = el.value.length
-                    el.setSelectionRange(len, len)
-                  })
-                }}
-                onBlur={(e) => guideSel.save(e.currentTarget)}
-                onChange={(e) => {
-                  setDraft(e.target.value)
-                  setCmdDismissed(false)
-                  setSelIndex(0)
-                  refInput.onTextChange(e.target.value, e.target.selectionStart)
-                }}
-                onKeyUp={(e) => {
-                  if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
-                  if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
-                    refInput.onTextChange(e.currentTarget.value, e.currentTarget.selectionStart)
-                  }
-                }}
-                onKeyDown={(e) => {
-                  // IME 组合中（如 fcitx5 上屏）不触发发送
-                  if (e.nativeEvent.isComposing) return
-                  // @ 浮层键盘交互优先（消费则终止）
-                  if (refInput.onKeyDown(e)) return
-                  // 命令菜单打开且有匹配：↑/↓ 移动、Enter/Tab 选中补全、Esc 关闭
-                  // （同 ChatView；修饰键组合是全局快捷键域，不在此拦截）
-                  if (cmdMode && matches.length > 0) {
-                    const noMod = !e.ctrlKey && !e.metaKey && !e.altKey
-                    if (noMod && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
-                      e.preventDefault()
-                      const len = matches.length
-                      setSelIndex(e.key === "ArrowDown" ? (sel + 1) % len : (sel - 1 + len) % len)
+      {/* 滚动内层（design-focus-mode §3.2，2026-10-18 交互改版）：滚动从
+          .guide-view 下沉至此——外层成为专注面板的定位容器（relative +
+          overflow hidden），面板不随存档列表滚动、恒覆盖可视区 */}
+      <div className="guide-scroll">
+        {/* 居中层 = 会话区 + 操作区（顶部 32vh 定值空白使其大致居中） */}
+        <div className="guide-main">
+          <div className="guide-session">
+            <div className="hero">{scopeName}</div>
+            <div className="guide-hint">{t.guideHint}</div>
+            <div
+              className="guide-composer"
+              onDragOver={(e) => {
+                refInput.dragProps.onDragOver(e)
+                attachInput.fileDragProps.onDragOver(e)
+              }}
+              onDrop={(e) => {
+                refInput.dragProps.onDrop(e)
+                attachInput.fileDragProps.onDrop(e)
+              }}
+              onDragLeave={refInput.dragProps.onDragLeave}
+            >
+              {/* 斜杠命令菜单（design-slash-command 2026-09-08 修订）：锚定/交互同
+                  ChatView（.guide-composer 已有 position:relative 锚，design-file-reference H1） */}
+              {cmdMode && (
+                <CommandHints
+                  matches={matches}
+                  loading={store.commandsRefreshing && commands.length === 0}
+                  selIndex={sel}
+                  onPick={pickCommand}
+                />
+              )}
+              {refInput.chips}
+              {attachInput.chips}
+              <div className="composer-input" ref={guideComposerInputRef}>
+                {attachInput.pickerButton}
+                <textarea
+                  ref={guideTaRef}
+                  onPaste={attachInput.pasteProps.onPaste}
+                  value={draft}
+                  placeholder={t.guidePlaceholder}
+                  rows={1}
+                  autoFocus
+                  onFocus={(e) => {
+                    // 同一编辑会话（value 未变）恢复光标续编辑；无保存（首次
+                    // 聚焦）光标置于末尾而非开头（有草稿时，原 autoFocus 语义）
+                    const el = e.currentTarget
+                    // 专注模式退出恢复（design-focus-mode §5，review major 1）：
+                    // 优先于 selection-restore——其默认分支的 rAF 置末尾会覆盖退出选区
+                    if (focusExitSel.current) {
+                      const s = focusExitSel.current
+                      focusExitSel.current = null
+                      el.setSelectionRange(s.start, s.end)
                       return
                     }
-                    if (
-                      (noMod && e.key === "Tab") ||
-                      (e.key === "Enter" && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey)
-                    ) {
-                      e.preventDefault()
-                      pickCommand(matches[sel])
-                      return
+                    if (guideSel.restore(el)) return
+                    requestAnimationFrame(() => {
+                      const len = el.value.length
+                      el.setSelectionRange(len, len)
+                    })
+                  }}
+                  onBlur={(e) => guideSel.save(e.currentTarget)}
+                  onChange={(e) => {
+                    setDraft(e.target.value)
+                    setCmdDismissed(false)
+                    setSelIndex(0)
+                    refInput.onTextChange(e.target.value, e.target.selectionStart)
+                  }}
+                  onKeyUp={(e) => {
+                    if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
+                    if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
+                      refInput.onTextChange(e.currentTarget.value, e.currentTarget.selectionStart)
                     }
-                    if (e.key === "Escape") {
-                      e.preventDefault()
-                      setCmdDismissed(true)
-                      return
+                  }}
+                  onKeyDown={(e) => {
+                    // IME 组合中（如 fcitx5 上屏）不触发发送
+                    if (e.nativeEvent.isComposing) return
+                    // @ 浮层键盘交互优先（消费则终止）
+                    if (refInput.onKeyDown(e)) return
+                    // 命令菜单打开且有匹配：↑/↓ 移动、Enter/Tab 选中补全、Esc 关闭
+                    // （同 ChatView；修饰键组合是全局快捷键域，不在此拦截）
+                    if (cmdMode && matches.length > 0) {
+                      const noMod = !e.ctrlKey && !e.metaKey && !e.altKey
+                      if (noMod && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+                        e.preventDefault()
+                        const len = matches.length
+                        setSelIndex(e.key === "ArrowDown" ? (sel + 1) % len : (sel - 1 + len) % len)
+                        return
+                      }
+                      if (
+                        (noMod && e.key === "Tab") ||
+                        (e.key === "Enter" && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey)
+                      ) {
+                        e.preventDefault()
+                        pickCommand(matches[sel])
+                        return
+                      }
+                      if (e.key === "Escape") {
+                        e.preventDefault()
+                        setCmdDismissed(true)
+                        return
+                      }
                     }
+                    if (e.key === "Enter") {
+                      // 修饰键组合（Ctrl/Shift/Alt/Meta）= 换行；裸 Enter = 发送（与聊天输入区一致）
+                      if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return
+                      e.preventDefault()
+                      void send()
+                    }
+                  }}
+                />
+                {/* 专注模式入口（design-focus-mode §3.1）：同 ChatView */}
+                <button
+                  type="button"
+                  className="icon-btn focus-enter"
+                  title={t.focusModeEnter}
+                  aria-label={t.focusModeEnter}
+                  onClick={enterFocus}
+                >
+                  <Maximize2 size={16} aria-hidden />
+                </button>
+              </div>
+              {refInput.picker}
+              <div className="composer-actions">
+                {/* pendingSession 时切会话绑定；会话记录从 store 重读（乐观补丁是新对象，
+                    ref 持有的是创建时快照——AM-FIX-2：UI 不依赖父组件传参快照）。
+                    目录用该会话自身的：引导页已按作用域 key 隔离（design-compose-draft §2），
+                    挂载期内作用域不变、二者恒等，保留会话目录作防御（原 AM-IMPL3-3
+                    跨作用域存活场景随 key 隔离消失） */}
+                <ModelSwitcherBar
+                  directory={pendingSession.current?.directory ?? store.scopeQuery.directory}
+                  mode={pendingSession.current ? "session" : "defaults"}
+                  session={
+                    pendingSession.current
+                      ? (store.findSession(pendingSession.current.id) ?? pendingSession.current)
+                      : undefined
                   }
-                  if (e.key === "Enter") {
-                    // 修饰键组合（Ctrl/Shift/Alt/Meta）= 换行；裸 Enter = 发送（与聊天输入区一致）
-                    if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return
-                    e.preventDefault()
-                    void send()
+                  disabled={sending}
+                />
+                <button
+                  className="btn-primary"
+                  disabled={
+                    (!draft.trim() && guideRefs.length === 0 && store.attachmentsFor(directory).length === 0) ||
+                    sending ||
+                    // 超限占位置灰（design-session-attachments §2b）：删除占位后恢复
+                    guideRefs.some((r) => r.tooLarge) ||
+                    store.attachmentsFor(directory).some((a) => a.tooLarge)
                   }
-                }}
-              />
-              {/* 专注模式入口（design-focus-mode §3.1）：同 ChatView */}
-              <button
-                type="button"
-                className="icon-btn focus-enter"
-                title={t.focusModeEnter}
-                aria-label={t.focusModeEnter}
-                onClick={enterFocus}
-              >
-                <Maximize2 size={16} aria-hidden />
-              </button>
-            </div>
-            {refInput.picker}
-            <div className="composer-actions">
-              {/* pendingSession 时切会话绑定；会话记录从 store 重读（乐观补丁是新对象，
-                  ref 持有的是创建时快照——AM-FIX-2：UI 不依赖父组件传参快照）。
-                  目录用该会话自身的：引导页已按作用域 key 隔离（design-compose-draft §2），
-                  挂载期内作用域不变、二者恒等，保留会话目录作防御（原 AM-IMPL3-3
-                  跨作用域存活场景随 key 隔离消失） */}
-              <ModelSwitcherBar
-                directory={pendingSession.current?.directory ?? store.scopeQuery.directory}
-                mode={pendingSession.current ? "session" : "defaults"}
-                session={
-                  pendingSession.current
-                    ? (store.findSession(pendingSession.current.id) ?? pendingSession.current)
-                    : undefined
-                }
-                disabled={sending}
-              />
-              <button
-                className="btn-primary"
-                disabled={
-                  (!draft.trim() && guideRefs.length === 0 && store.attachmentsFor(directory).length === 0) ||
-                  sending ||
-                  // 超限占位置灰（design-session-attachments §2b）：删除占位后恢复
-                  guideRefs.some((r) => r.tooLarge) ||
-                  store.attachmentsFor(directory).some((a) => a.tooLarge)
-                }
-                onClick={() => void send()}
-              >
-                {t.send}
-              </button>
+                  onClick={() => void send()}
+                >
+                  {t.send}
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-        {/* 操作区（design-diff-view §4.4 / design-layout §4）：diff 单入口（页内
-            segment 切换三种来源）；.btn-tile 磁贴等宽 96px、5:4，icon 在上、
-            名称在磁贴内 icon 下方（DESIGN.md §按钮）。快捷键角标：Ctrl 按住期间
-            显示对应数字（§1 Ctrl+1/2/3），禁用磁贴不显示（快捷键同样不动作） */}
-        <div className="guide-actions">
-          <button type="button" className="btn-tile" onClick={() => store.openDiffTab()}>
-            {ctrlHeld && (
-              <span className="btn-tile-badge" aria-hidden>
-                1
-              </span>
-            )}
-            <FileDiff size={20} aria-hidden />
-            <span className="btn-tile-label">{t.diffTitle}</span>
-          </button>
-          <button
-            type="button"
-            className="btn-tile"
-            onClick={() => void store.openTerminalTab()}
-            disabled={!store.activeProfile}
-          >
-            {ctrlHeld && store.activeProfile && (
-              <span className="btn-tile-badge" aria-hidden>
-                2
-              </span>
-            )}
-            <SquareTerminal size={20} aria-hidden />
-            <span className="btn-tile-label">{t.openTerminal}</span>
-          </button>
-          <button
-            type="button"
-            className="btn-tile"
-            disabled={!store.activeProfile || window.desktop.platform === "browser"}
-            title={window.desktop.platform === "browser" ? t.comingSoon : undefined}
-            onClick={() => void store.openNewBrowserTab()}
-          >
-            {ctrlHeld &&
-              store.activeProfile &&
-              window.desktop.platform !== "browser" && (
+          {/* 操作区（design-diff-view §4.4 / design-layout §4）：diff 单入口（页内
+              segment 切换三种来源）；.btn-tile 磁贴等宽 96px、5:4，icon 在上、
+              名称在磁贴内 icon 下方（DESIGN.md §按钮）。快捷键角标：Ctrl 按住期间
+              显示对应数字（§1 Ctrl+1/2/3），禁用磁贴不显示（快捷键同样不动作） */}
+          <div className="guide-actions">
+            <button type="button" className="btn-tile" onClick={() => store.openDiffTab()}>
+              {ctrlHeld && (
                 <span className="btn-tile-badge" aria-hidden>
-                  3
+                  1
                 </span>
               )}
-            <Globe size={20} aria-hidden />
-            <span className="btn-tile-label">{t.openBrowser}</span>
-          </button>
-        </div>
-      </div>
-      {/* 存档区：随页面向下扩展，不挤占上方 */}
-      {archived.length > 0 && (
-        <div className="guide-archived">
-          <div className="guide-archived-header">
-            <span>{t.archivedSessions}</span>
-          </div>
-          {archived.map((s) => (
-            <div key={s.id} className="guide-card" onClick={() => store.openChatTab(s)}>
-              <div className="guide-card-title">{s.title || s.slug || t.untitled}</div>
-                <div className="guide-card-meta">
-                  <span>{relativeTime(locale, s.time.archived ?? s.time.updated)}</span>
-                </div>
-            </div>
-          ))}
-          {hasMoreArchived && (
+              <FileDiff size={20} aria-hidden />
+              <span className="btn-tile-label">{t.diffTitle}</span>
+            </button>
             <button
               type="button"
-              className="guide-load-more"
-              onClick={() => setArchivedLimit((n) => n + ARCHIVE_PAGE_SIZE)}
+              className="btn-tile"
+              onClick={() => void store.openTerminalTab()}
+              disabled={!store.activeProfile}
             >
-              {t.loadMore}
+              {ctrlHeld && store.activeProfile && (
+                <span className="btn-tile-badge" aria-hidden>
+                  2
+                </span>
+              )}
+              <SquareTerminal size={20} aria-hidden />
+              <span className="btn-tile-label">{t.openTerminal}</span>
             </button>
-          )}
+            <button
+              type="button"
+              className="btn-tile"
+              disabled={!store.activeProfile || window.desktop.platform === "browser"}
+              title={window.desktop.platform === "browser" ? t.comingSoon : undefined}
+              onClick={() => void store.openNewBrowserTab()}
+            >
+              {ctrlHeld &&
+                store.activeProfile &&
+                window.desktop.platform !== "browser" && (
+                  <span className="btn-tile-badge" aria-hidden>
+                    3
+                  </span>
+                )}
+              <Globe size={20} aria-hidden />
+              <span className="btn-tile-label">{t.openBrowser}</span>
+            </button>
+          </div>
         </div>
-      )}
-      {/* 专注模式浮层（design-focus-mode）：禁用条件同普通发送钮（含 sending） */}
+        {/* 存档区：随页面向下扩展，不挤占上方 */}
+        {archived.length > 0 && (
+          <div className="guide-archived">
+            <div className="guide-archived-header">
+              <span>{t.archivedSessions}</span>
+            </div>
+            {archived.map((s) => (
+              <div key={s.id} className="guide-card" onClick={() => store.openChatTab(s)}>
+                <div className="guide-card-title">{s.title || s.slug || t.untitled}</div>
+                  <div className="guide-card-meta">
+                    <span>{relativeTime(locale, s.time.archived ?? s.time.updated)}</span>
+                  </div>
+              </div>
+            ))}
+            {hasMoreArchived && (
+              <button
+                type="button"
+                className="guide-load-more"
+                onClick={() => setArchivedLimit((n) => n + ARCHIVE_PAGE_SIZE)}
+              >
+                {t.loadMore}
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      {/* 专注模式面板（design-focus-mode §3.2，2026-10-18 交互改版）：视图根的
+          绝对定位子元素（Tab 栏/左右栏外——切走再回经 §3.2b 记忆复位仍专注）；
+          禁用条件同普通发送钮（含 sending） */}
       {focusPhase !== "off" && (
         <FocusComposer
           phase={focusPhase}
@@ -1476,8 +1495,12 @@ function ChatView({ sessionID }: { sessionID: string }) {
   // 同 GuidePage：失焦保存光标、回焦恢复（selection-restore），首次聚焦置末尾
   const composerSel = useSelectionRestore()
 
-  // ---- 专注模式（design-focus-mode）：四相位 + FLIP origin/选区快照 ----
-  const [focusPhase, setFocusPhase] = useState<FocusPhase>("off")
+  // ---- 专注模式（design-focus-mode）：四相位 + FLIP origin/选区快照。
+  // 初值经专注态记忆读回（§3.2b，2026-10-18 交互改版）：切 Tab 再回直接复位
+  // 专注稳态（无开启动画、光标置文末）；进入置标记、退出意图即清 ----
+  const [focusPhase, setFocusPhase] = useState<FocusPhase>(() =>
+    store.focusModeFor(sessionID) ? "on" : "off",
+  )
   const [focusOrigin, setFocusOrigin] = useState<DOMRect | null>(null)
   const [focusSelection, setFocusSelection] = useState<FocusSelection | null>(null)
   const composerInputRef = useRef<HTMLDivElement>(null)
@@ -1493,14 +1516,21 @@ function ChatView({ sessionID }: { sessionID: string }) {
   const enterFocus = () => {
     if (focusPhase !== "off") return
     focusGenRef.current++
+    store.setFocusMode(sessionID, true)
     setFocusOrigin(composerInputRef.current?.getBoundingClientRect() ?? null)
     const ta = composerTaRef.current
     setFocusSelection(ta ? { start: ta.selectionStart, end: ta.selectionEnd } : null)
     setFocusPhase("opening")
   }
 
+  /** 退出意图（Esc/按钮）：置 closing + 清专注标记。闭包直读 focusPhase 而非
+   *  函数式 setState——调用方须经最新闭包（FocusComposer 的 requestCloseRef
+   *  每渲染刷新）；不经 ref 的旧引用会静默绕过守卫而非报错（review 二轮
+   *  non-blocking 2 留痕，新增调用方须走 ref 模式） */
   const requestFocusClose = () => {
-    setFocusPhase((p) => (p === "opening" || p === "on" ? "closing" : p))
+    if (focusPhase !== "opening" && focusPhase !== "on") return
+    store.setFocusMode(sessionID, false)
+    setFocusPhase("closing")
   }
 
   const handleFocusClosed = (sel: FocusSelection) => {
@@ -1516,6 +1546,7 @@ function ChatView({ sessionID }: { sessionID: string }) {
     const gen = focusGenRef.current
     await send()
     if (focusGenRef.current !== gen) return
+    store.setFocusMode(sessionID, false)
     setFocusPhase((p) => (p === "opening" || p === "on" ? "closing" : p))
   }
 
@@ -2047,8 +2078,10 @@ function ChatView({ sessionID }: { sessionID: string }) {
           )}
         </div>
       </div>
-      {/* 专注模式浮层（design-focus-mode）：发送钮禁用条件同普通 composer
-          （引用/附件照常计入——不可见但生效，§6.2）；busy 不拦（supplement） */}
+      {/* 专注模式面板（design-focus-mode §3.2，2026-10-18 交互改版）：视图根的
+          绝对定位子元素（Tab 栏/左右栏外——切走再回经 §3.2b 记忆复位仍专注）；
+          发送钮禁用条件同普通 composer（引用/附件照常计入——不可见但生效，
+          §6.2）；busy 不拦（supplement） */}
       {focusPhase !== "off" && (
         <FocusComposer
           phase={focusPhase}

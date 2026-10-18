@@ -670,6 +670,13 @@ export class AppStore {
    */
   private chatScrollTops = new Map<string, { top: number; headId: string | null }>()
   /**
+   * 专注态记忆（design-focus-mode §3.2b，2026-10-18 交互改版）：编辑面键 →
+   * 在专注模式（chat = sessionID、引导页 = 作用域目录）。切 Tab/切作用域再回
+   * 由视图重挂载读回复位；进入置位、退出意图即清。纯内存、不跨重启
+   * （chatScrollTops 同模式）；写入不 emit（低频，相位由视图局部驱动）
+   */
+  private focusModes = new Map<string, boolean>()
+  /**
    * TOC 状态（design-tab-state-memory §2.4）：绝对路径 → {visible 用户显式显隐
    *（缺省 = 随宽度默认），folded 折叠章节的标题文本}。折叠按文本标识——重挂载
    * 后标题元素重建，按文本匹配仍存活的章节；章节文本重复则同折叠。低频写入不 emit
@@ -1147,6 +1154,7 @@ export class AppStore {
     this.scopeActiveKeys.clear()
     this.fileViewStates.clear()
     this.chatScrollTops.clear()
+    this.focusModes.clear()
     this.tocStates.clear()
     this.diffViewStates.clear()
     this.tabs = []
@@ -2760,6 +2768,8 @@ export class AppStore {
         this.guideDrafts.delete(d)
         this.fileRefs.delete(d)
         this.attachments.delete(d)
+        // 专注态标记同随目录卸载（design-focus-mode §3.2b，引导页按目录键）
+        this.focusModes.delete(d)
         this.killPtyInDirectory(d)
         this.disposeBrowserViewsInDirectory(d)
       }
@@ -3283,8 +3293,10 @@ export class AppStore {
     // 引用同随会话卸载（design-file-reference §2 清理挂点）
     this.fileRefs.delete(sessionID)
     this.attachments.delete(sessionID)
-    // 消息流滚动位置同随会话卸载（design-tab-state-memory §3）
+    // 消息流滚动位置同随会话卸载（design-tab-state-memory §3）；
+    // 专注态标记同卸载（design-focus-mode §3.2b——关 Tab 即退出，重开不复活）
     this.chatScrollTops.delete(sessionID)
+    this.focusModes.delete(sessionID)
   }
 
   private resetFileTree() {
@@ -3657,11 +3669,13 @@ export class AppStore {
     }
     this.purgeStatusForDirectories([directory])
     this.snapshottedDirs.delete(directory)
-    // 目录已死，引导页草稿同灭（design-compose-draft §3）
+    // 目录已死，引导页草稿同灭（design-compose-draft §3）；
+    // 专注态标记同灭（design-focus-mode §3.2b）
     this.guideDrafts.delete(directory)
     this.scheduleDraftPersist()
     this.fileRefs.delete(directory)
     this.attachments.delete(directory)
+    this.focusModes.delete(directory)
     this.killPtyInDirectory(directory)
     this.disposeBrowserViewsInDirectory(directory)
     // 显式关闭该目录全部 live Tab：订阅即将拆除，chat 的 session.deleted 事件
@@ -6398,8 +6412,12 @@ export class AppStore {
       this.attachments.delete(closed.key.slice(5))
     }
     // 视图状态随 Tab 关闭终结（同草稿"关闭 = 决断"语义，design-tab-state-memory §3）：
-    // chat 滚动位置、文件模式/滚动。死会话收敛只经 closeTab，须在此清
-    if (closed.kind === "chat") this.chatScrollTops.delete(closed.key.slice(5))
+    // chat 滚动位置、文件模式/滚动、专注态标记（design-focus-mode §3.2b——关 Tab
+    // 即退出，重开不复活）。死会话收敛只经 closeTab，须在此清
+    if (closed.kind === "chat") {
+      this.chatScrollTops.delete(closed.key.slice(5))
+      this.focusModes.delete(closed.key.slice(5))
+    }
     // pty 运行时随 Tab 关闭终结（用户路径经 closeTerminalTab 已清，此处兜底卸载路径）
     if (closed.kind === "terminal") this.ptyRuntimes.delete(closed.key.slice("terminal:".length))
     // 最近访问首地址标记随 Tab 关闭终结（design-browser-tab §1.5 review：用户路径
@@ -6894,6 +6912,17 @@ export class AppStore {
   setChatScroll(sessionID: string, value: { top: number; headId: string | null } | null) {
     if (value) this.chatScrollTops.set(sessionID, value)
     else this.chatScrollTops.delete(sessionID)
+  }
+
+  /** 专注态读（design-focus-mode §3.2b）：无条目 = 普通模式 */
+  focusModeFor(key: string): boolean {
+    return this.focusModes.get(key) ?? false
+  }
+
+  /** 专注态写：false = 删条目。不 emit（见字段注释） */
+  setFocusMode(key: string, on: boolean) {
+    if (on) this.focusModes.set(key, true)
+    else this.focusModes.delete(key)
   }
 
   /** TOC 状态读（挂载恢复显隐选择 + 章节折叠） */

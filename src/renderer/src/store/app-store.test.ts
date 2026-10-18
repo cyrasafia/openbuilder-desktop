@@ -3968,6 +3968,36 @@ describe("Tab 状态记忆（design-tab-state-memory）", () => {
     expect(store.chatScrollFor("gone")).toBeNull()
   })
 
+  it("专注态记忆（design-focus-mode §3.2b）：写读往返；false 删条目；卸载随清", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    store.setFocusMode("s1", true)
+    store.setFocusMode(ROOT, true)
+    expect(store.focusModeFor("s1")).toBe(true)
+    expect(store.focusModeFor(ROOT)).toBe(true)
+    expect(store.focusModeFor("unknown")).toBe(false)
+
+    store.setFocusMode("s1", false)
+    expect(store.focusModeFor("s1")).toBe(false)
+
+    // 关 chat Tab → 会话运行时卸载清标记（重开不复活专注态）
+    store.openChatTab(s1)
+    store.setFocusMode("s1", true)
+    store.closeTab("chat:s1")
+    expect(store.focusModeFor("s1")).toBe(false)
+    expect(store.focusModeFor(ROOT)).toBe(true)
+
+    // 项目关闭 → 引导页目录标记随目录卸载
+    snapshots.set(ROOT, [])
+    await store.closeProject("proj1")
+    expect(store.focusModeFor(ROOT)).toBe(false)
+
+    // 拆连接：内存记忆整体清空（chatScrollTops 同挂点）
+    store.setFocusMode(WT1, true)
+    await store.disconnect()
+    expect(store.focusModeFor(WT1)).toBe(false)
+  })
+
   it("激活态关项目再重开：落规则 2 激活 chat（回退钩子重建的记录已被最终清除，不误落引导页）", async () => {
     seedTwoScopes()
     await store.setCurrentWorkspace(WT1)

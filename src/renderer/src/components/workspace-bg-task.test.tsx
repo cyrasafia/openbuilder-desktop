@@ -7,7 +7,7 @@
  * （review：target 守卫，Enter 停止不得变开详情）；全部结束复位展开态
  * （含详情开着任务清零的窗口——复位归 ChatView）。
  */
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { Workspace } from "./workspace"
 import { ResizeObserverStub } from "./resize-observer-stub"
@@ -38,6 +38,9 @@ vi.mock("../app", () => ({
       bgTaskStop: "停止",
       subagentLoading: "加载中…",
       subagentNoSession: "无会话",
+      focusModeEnter: "专注模式",
+      focusModeExit: "退回普通模式（Esc）",
+      focusPlaceholder: "输入消息…（Enter 换行，发送用按钮）",
     },
     locale: "zh" as const,
   }),
@@ -137,6 +140,9 @@ function makeStore(taskIds: string[]) {
     ),
     chatScrollFor: vi.fn(() => null),
     setChatScroll: vi.fn(),
+    // 专注态记忆（design-focus-mode §3.2b，2026-10-18 交互改版）
+    focusModeFor: vi.fn(() => false),
+    setFocusMode: vi.fn(),
     canLoadEarlier: vi.fn(() => false),
     loadEarlierMessages: vi.fn(),
     loadSessionMessages: vi.fn(),
@@ -271,5 +277,67 @@ describe("后台任务卡（展开态跨详情保留 + 键盘路径）", () => {
     rerender(<Workspace />)
     expect(screen.getByText("后台任务")).toBeTruthy()
     expect(screen.queryByText("新任务")).toBeNull()
+  })
+
+  it("专注态记忆（design-focus-mode §3.2b）：切 Tab 再回仍专注、退出清标记", async () => {
+    // jsdom 缺 Range 几何 API（CM 选区量测），focus-composer.test 同例 stub
+    if (!Range.prototype.getClientRects) {
+      Range.prototype.getClientRects = () => [] as unknown as DOMRectList
+    }
+    if (!Range.prototype.getBoundingClientRect) {
+      Range.prototype.getBoundingClientRect = () =>
+        ({ width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 }) as DOMRect
+    }
+    // 有状态桩：focus 记忆（内存 Map）+ 草稿（挂载读回路径）——模拟真实 store
+    const focusMemo = new Set<string>()
+    const drafts = new Map<string, string>()
+    const applyFocus = () => {
+      storeStub.focusModeFor = vi.fn((k: string) => focusMemo.has(k))
+      storeStub.setFocusMode = vi.fn((k: string, on: boolean) => {
+        if (on) focusMemo.add(k)
+        else focusMemo.delete(k)
+      })
+      storeStub.chatDraftFor = vi.fn((k: string) => drafts.get(k) ?? "")
+      storeStub.setChatDraft = vi.fn((k: string, v: string) => {
+        if (v) drafts.set(k, v)
+        else drafts.delete(k)
+      })
+    }
+    storeStub = makeStore([])
+    applyFocus()
+    const { rerender } = render(<Workspace />)
+    fireEvent.change(screen.getByPlaceholderText("输入…"), { target: { value: "切走保留" } })
+    fireEvent.click(document.querySelector<HTMLButtonElement>(".focus-enter")!)
+    expect(document.querySelector(".focus-composer")).not.toBeNull()
+
+    // 切到另一 chat Tab：s1 视图卸载（专注标记与草稿留存 store，§3.2b）
+    const t1 = { key: "chat:s1", kind: "chat", title: "A", directory: DIR_A }
+    const t2 = { key: "chat:s2", kind: "chat", title: "B", directory: DIR_A }
+    storeStub = makeStore([])
+    applyFocus()
+    storeStub.tabs = [t1, t2]
+    storeStub.activeTab = t2
+    storeStub.activeTabKey = "chat:s2"
+    rerender(<Workspace />)
+    expect(document.querySelector(".focus-composer")).toBeNull()
+
+    // 切回 s1：重挂载直接复位专注稳态（无开启动画）+ 草稿承接
+    storeStub.activeTab = t1
+    storeStub.activeTabKey = "chat:s1"
+    rerender(<Workspace />)
+    expect(focusMemo.has("s1")).toBe(true)
+    expect(document.querySelector(".focus-composer")).not.toBeNull()
+    expect(
+      document.querySelector<HTMLElement>(".focus-editor-host .cm-content")?.textContent,
+    ).toContain("切走保留")
+
+    // Esc 退出 → 面板卸载 + 标记清（再切走回复位是普通模式）
+    fireEvent.keyDown(document.querySelector<HTMLElement>(".focus-editor-host .cm-content")!, {
+      key: "Escape",
+    })
+    await waitFor(() => {
+      expect(document.querySelector(".focus-composer")).toBeNull()
+    })
+    expect(focusMemo.has("s1")).toBe(false)
   })
 })
