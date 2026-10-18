@@ -48,7 +48,13 @@ const A = {
       type: "tool",
       id: "tool_2",
       name: "bash",
-      state: { status: "error", input: {}, error: { name: "ExitError", message: "exit 1" } },
+      // error 态 metadata 可选（v2 schema）：失败 subagent 的 sessionID 在此
+      state: {
+        status: "error",
+        input: {},
+        error: { name: "ExitError", message: "exit 1" },
+        metadata: { sessionID: "ses_child" },
+      },
       time: { created: 230 },
     },
     {
@@ -85,9 +91,13 @@ describe("toInternalMessages", () => {
     expect(a.parts).toHaveLength(5)
     const done = a.parts[2] as unknown as { state: { status: string; output: string; title: string } }
     expect(done.state).toMatchObject({ status: "completed", output: "file body", title: "read" })
-    const failed = a.parts[3] as unknown as { state: { status: string; error: string; aborted?: boolean } }
+    const failed = a.parts[3] as unknown as {
+      state: { status: string; error: string; aborted?: boolean; metadata?: Record<string, unknown> }
+    }
     expect(failed.state).toMatchObject({ status: "error", error: "exit 1" })
     expect(failed.state.aborted).toBeUndefined()
+    // 失败 subagent 的认领依据随 error 态一起保留
+    expect(failed.state.metadata).toEqual({ sessionID: "ses_child" })
     // 打断未结算工具（design-error-message §3.1 修订）：error 文案保留忠实 +
     // aborted 标记驱动渲染层「已停止」中性呈现
     const aborted = a.parts[4] as unknown as { state: { status: string; error: string; aborted?: boolean } }

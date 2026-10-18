@@ -8740,3 +8740,35 @@ describe("未读标记（design-unread-marker）", () => {
     expect(called).toBe(0)
   })
 })
+
+describe("findChildSession 降级匹配（design-subagent-status §D3）", () => {
+  const child = (id: string, title: string, created: number): Session => ({
+    id,
+    projectID: "proj1",
+    directory: ROOT,
+    parentID: "parent",
+    title,
+    time: { created, updated: created },
+  })
+
+  it("描述命中 title 前缀：取 created 最新", () => {
+    store.sessionsByProject.set(
+      "proj1",
+      sessionsOf(child("ses_a", "评审 A", 1), child("ses_b", "评审 B", 2)),
+    )
+    expect(store.findChildSession("parent", "评审")?.id).toBe("ses_b")
+  })
+
+  it("描述不命中：返回 null，不猜最新子会话", () => {
+    store.sessionsByProject.set("proj1", sessionsOf(child("ses_a", "完全不同的标题", 1)))
+    expect(store.findChildSession("parent", "评审")).toBeNull()
+  })
+
+  it("无描述：仍取 created 最新", () => {
+    store.sessionsByProject.set(
+      "proj1",
+      sessionsOf(child("ses_a", "A", 1), child("ses_b", "B", 2)),
+    )
+    expect(store.findChildSession("parent")?.id).toBe("ses_b")
+  })
+})

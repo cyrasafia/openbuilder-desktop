@@ -127,8 +127,8 @@ export function filterRevertedEntries(
  * REST 快照与本地 SSE 状态合并（不清空重置——openbuilder design-message-accumulation：
  * clear()+addAll() 会在 async gap 擦掉新到的 SSE 事件）。
  * - info 取 REST 权威
- * - parts 按 part-id 字段级并集：text 取更长者，tool 状态见 mergePart（快照
- *   非 pending 优先），其余取快照
+ * - parts 按 part-id 字段级并集：text 取更长者，tool 状态见 mergePart（状态秩
+ *   单调：终态 ≥ running ≥ pending），其余取快照
  * - preserveIds（design-inbox-admission §3.3）：未投影 inbox 物化项豁免窗口
  *   区间删除——busy 中 in-flight assistant 的 created 会前移越过排队消息
  *   created（retry 重启 step），把它圈进 (min, max) 开区间；投影确认后由
@@ -185,6 +185,13 @@ export function mergeParts(localParts: Part[], snapshotParts: Part[]): Part[] {
   return [...byId.values()]
 }
 
+/** tool 状态秩：终态 2 > running 1 > pending/未知 0。 */
+function toolStatusRank(status: string | undefined): number {
+  if (status === "completed" || status === "error") return 2
+  if (status === "running" || status === "streaming") return 1
+  return 0
+}
+
 function mergePart(a: Part, b: Part): Part {
   if (a.type === "text" || a.type === "reasoning") {
     const t1 = a as { text?: string }
@@ -198,16 +205,18 @@ function mergePart(a: Part, b: Part): Part {
     return (len(b) >= len(a) ? b : a) as Part
   }
   if (a.type === "tool" && b.type === "tool") {
-    // tool 状态：b=快照（REST）非 pending 优先（快照 pending 视为拉取窗口
-    // 残影，回退本地）。已知代价（design-subagent-background 契约表，
+    // tool 状态单调：终态（completed/error）> running > pending/未知（streaming
+    // 已由适配层归入 running）。快照秩不低于本地才覆盖——旧 REST 页的 running
+    // 不得把本端 completed/error 降级（openbuilder todo-tool-chip-duplicate
+    // 修复点 4 同口径）。已知代价（design-subagent-background 契约表，
     // 2026-10-08 正名）：运行中 part 的 live progress metadata 会被快照的
     // metadata:{} 覆盖——认领判据由 input.sessionID（续跑）与 success/failed
     // 持久化 metadata 兜住，兜底 description 前缀不依赖 metadata
-    const bState = b.state as { status?: string; output?: unknown }
-    const aState = a.state as { status?: string; output?: unknown }
-    const bBetter =
-      bState.status !== "pending" ||
-      (bState.output != null && aState.output == null)
+    const bState = b.state as { status?: string }
+    const aState = a.state as { status?: string }
+    // 同秩由快照胜出（终态 vs 终态取服务端权威值）；秩低一律不覆盖，
+    // 不再用 output 做旁路（会让低秩 running/pending 绕过单调性降级终态）
+    const bBetter = toolStatusRank(bState.status) >= toolStatusRank(aState.status)
     return { ...b, state: bBetter ? b.state : a.state } as Part
   }
   return b

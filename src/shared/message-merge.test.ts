@@ -125,7 +125,7 @@ describe("mergeParts", () => {
     expect((merged[0] as { text: string }).text).toBe("hello world!")
   })
 
-  it("tool 状态 SSE 非 pending 优先", () => {
+  it("快照 completed 覆盖本地 pending", () => {
     const rest = [
       {
         id: "prt_t1",
@@ -150,6 +150,90 @@ describe("mergeParts", () => {
     ]
     const merged = mergeParts(rest, sse)
     expect((merged[0] as { state: { status: string } }).state.status).toBe("completed")
+  })
+
+  it("旧快照 running 不降级本端 completed（状态单调）", () => {
+    const local = [
+      {
+        id: "prt_t1",
+        sessionID: "ses_1",
+        messageID: "msg_1",
+        type: "tool" as const,
+        callID: "call_1",
+        tool: "read",
+        state: { status: "completed", input: {}, output: "data", title: "read" },
+      },
+    ]
+    const snapshot = [
+      {
+        id: "prt_t1",
+        sessionID: "ses_1",
+        messageID: "msg_1",
+        type: "tool" as const,
+        callID: "call_1",
+        tool: "read",
+        state: { status: "running", input: {} },
+      },
+    ]
+    const merged = mergeParts(local, snapshot)
+    const state = (merged[0] as { state: { status: string; output?: string } }).state
+    expect(state.status).toBe("completed")
+    // 用户可见症状是输出丢失，不只状态字
+    expect(state.output).toBe("data")
+  })
+
+  it("本端 running + 快照 completed：仍取快照终态", () => {
+    const local = [
+      {
+        id: "prt_t1",
+        sessionID: "ses_1",
+        messageID: "msg_1",
+        type: "tool" as const,
+        callID: "call_1",
+        tool: "read",
+        state: { status: "running", input: {} },
+      },
+    ]
+    const snapshot = [
+      {
+        id: "prt_t1",
+        sessionID: "ses_1",
+        messageID: "msg_1",
+        type: "tool" as const,
+        callID: "call_1",
+        tool: "read",
+        state: { status: "completed", input: {}, output: "data", title: "read" },
+      },
+    ]
+    const merged = mergeParts(local, snapshot)
+    expect((merged[0] as { state: { status: string } }).state.status).toBe("completed")
+  })
+
+  it("旧快照 pending 不降级本端 error", () => {
+    const local = [
+      {
+        id: "prt_t1",
+        sessionID: "ses_1",
+        messageID: "msg_1",
+        type: "tool" as const,
+        callID: "call_1",
+        tool: "read",
+        state: { status: "error", input: {}, error: "boom" },
+      },
+    ]
+    const snapshot = [
+      {
+        id: "prt_t1",
+        sessionID: "ses_1",
+        messageID: "msg_1",
+        type: "tool" as const,
+        callID: "call_1",
+        tool: "read",
+        state: { status: "pending", input: {} },
+      },
+    ]
+    const merged = mergeParts(local, snapshot)
+    expect((merged[0] as { state: { status: string } }).state.status).toBe("error")
   })
 
   it("REST-only part 不丢失（SSE 中途建连场景）", () => {

@@ -158,6 +158,9 @@ function toToolPartState(name: string, state: { status?: string } & Record<strin
         // failed 非出错——与 SSE 路径（app-store session.tool.failed）同用
         // isAbortError 单一判定源（review 2026-10-09，不内联重复键集）
         ...(isAbortError(err) ? { aborted: true } : {}),
+        // error 态 metadata 可选（v2 schema）；失败 subagent part 靠它认领子会话，
+        // 冷启动 REST 载入时不得丢（与 completed 分支同口径）
+        ...(state.metadata != null ? { metadata: state.metadata as Record<string, unknown> } : {}),
       }
     }
     default:
