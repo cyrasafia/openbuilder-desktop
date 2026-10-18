@@ -30,6 +30,7 @@ import {
   Globe,
   ListTree,
   LoaderCircle,
+  Maximize2,
   Plus,
   Rocket,
   RotateCcw,
@@ -84,6 +85,12 @@ import { FileRefChips, useFileRefInput, userFileChipItems } from "./file-ref"
 import { AttachmentChips, AttachmentThumb, useAttachmentInput, userImageParts } from "./attachments"
 import { useCtrlHeld } from "./ctrl-held"
 import { useSelectionRestore } from "./selection-restore"
+import {
+  FocusComposer,
+  focusSurfaceFadeClass,
+  type FocusPhase,
+  type FocusSelection,
+} from "./focus-composer"
 
 /** .tab 最小宽（px）——与 app.css `.tab` 的 min-width 同值，改一处须同步另一处 */
 const TAB_MIN_W = 96
@@ -893,6 +900,48 @@ function GuidePage() {
   // 恢复续编辑（IME 切换的瞬时 blur→focus 反弹自然覆盖）；无保存（首次
   // 聚焦）才走默认（光标置末尾）
   const guideSel = useSelectionRestore()
+
+  // ---- 专注模式（design-focus-mode）：同 ChatView，无卡片面（会话域 UI）----
+  const [focusPhase, setFocusPhase] = useState<FocusPhase>("off")
+  const [focusOrigin, setFocusOrigin] = useState<DOMRect | null>(null)
+  const [focusSelection, setFocusSelection] = useState<FocusSelection | null>(null)
+  const guideComposerInputRef = useRef<HTMLDivElement>(null)
+  /** 退出选区恢复旁路（review major 1，同 ChatView） */
+  const focusExitSel = useRef<FocusSelection | null>(null)
+
+  /** 专注会话代际（review 二轮 #1）：同 ChatView */
+  const focusGenRef = useRef(0)
+
+  const enterFocus = () => {
+    if (focusPhase !== "off") return
+    focusGenRef.current++
+    setFocusOrigin(guideComposerInputRef.current?.getBoundingClientRect() ?? null)
+    const ta = guideTaRef.current
+    setFocusSelection(ta ? { start: ta.selectionStart, end: ta.selectionEnd } : null)
+    setFocusPhase("opening")
+  }
+
+  const requestFocusClose = () => {
+    setFocusPhase((p) => (p === "opening" || p === "on" ? "closing" : p))
+  }
+
+  const handleFocusClosed = (sel: FocusSelection) => {
+    setFocusPhase((p) => (p === "closing" ? "off" : p))
+    focusExitSel.current = sel
+    // rAF 等普通模式 DOM 稳定；focus() 同步派发 onFocus → 旁路分支恢复选区
+    requestAnimationFrame(() => guideTaRef.current?.focus())
+  }
+
+  /** 发送后无条件退回普通模式（D7）；成功路径 openChatTab 使引导页整个卸载，
+   * 浮层随之消失（setState 对已卸载组件是 no-op，无需显式退出）。
+   * 代际守卫（review 二轮 #1）：同 ChatView */
+  const sendFromFocus = async () => {
+    const gen = focusGenRef.current
+    await send()
+    if (focusGenRef.current !== gen) return
+    setFocusPhase((p) => (p === "opening" || p === "on" ? "closing" : p))
+  }
+
   const refInput = useFileRefInput({
     refKey: directory,
     directory,
@@ -1083,7 +1132,13 @@ function GuidePage() {
   }
 
   return (
-    <div className="guide-view">
+    <div
+      className={
+        "guide-view" +
+        // 专注模式抑制类（§6.2/§6.3）：chips/附件钮/切换条渐隐（同 ChatView）
+        (focusPhase === "opening" || focusPhase === "on" ? " focus-suppressing" : "")
+      }
+    >
       {/* 居中层 = 会话区 + 操作区（顶部 32vh 定值空白使其大致居中） */}
       <div className="guide-main">
         <div className="guide-session">
@@ -1113,7 +1168,7 @@ function GuidePage() {
             )}
             {refInput.chips}
             {attachInput.chips}
-            <div className="composer-input">
+            <div className="composer-input" ref={guideComposerInputRef}>
               {attachInput.pickerButton}
               <textarea
                 ref={guideTaRef}
@@ -1126,6 +1181,14 @@ function GuidePage() {
                   // 同一编辑会话（value 未变）恢复光标续编辑；无保存（首次
                   // 聚焦）光标置于末尾而非开头（有草稿时，原 autoFocus 语义）
                   const el = e.currentTarget
+                  // 专注模式退出恢复（design-focus-mode §5，review major 1）：
+                  // 优先于 selection-restore——其默认分支的 rAF 置末尾会覆盖退出选区
+                  if (focusExitSel.current) {
+                    const s = focusExitSel.current
+                    focusExitSel.current = null
+                    el.setSelectionRange(s.start, s.end)
+                    return
+                  }
                   if (guideSel.restore(el)) return
                   requestAnimationFrame(() => {
                     const len = el.value.length
@@ -1182,6 +1245,16 @@ function GuidePage() {
                   }
                 }}
               />
+              {/* 专注模式入口（design-focus-mode §3.1）：同 ChatView */}
+              <button
+                type="button"
+                className="icon-btn focus-enter"
+                title={t.focusModeEnter}
+                aria-label={t.focusModeEnter}
+                onClick={enterFocus}
+              >
+                <Maximize2 size={16} aria-hidden />
+              </button>
             </div>
             {refInput.picker}
             <div className="composer-actions">
@@ -1288,6 +1361,31 @@ function GuidePage() {
           )}
         </div>
       )}
+      {/* 专注模式浮层（design-focus-mode）：禁用条件同普通发送钮（含 sending） */}
+      {focusPhase !== "off" && (
+        <FocusComposer
+          phase={focusPhase}
+          value={draft}
+          onChange={setDraft}
+          origin={focusOrigin}
+          getOriginRect={() => guideComposerInputRef.current?.getBoundingClientRect() ?? null}
+          initialSelection={focusSelection}
+          onOpened={() => setFocusPhase((p) => (p === "opening" ? "on" : p))}
+          onClosed={handleFocusClosed}
+          onRequestClose={requestFocusClose}
+          placeholder={t.focusPlaceholder}
+          exitTitle={t.focusModeExit}
+          sendLabel={t.send}
+          sendDisabled={
+            (!draft.trim() && guideRefs.length === 0 && store.attachmentsFor(directory).length === 0) ||
+            sending ||
+            guideRefs.some((r) => r.tooLarge) ||
+            store.attachmentsFor(directory).some((a) => a.tooLarge)
+          }
+          onSend={() => void sendFromFocus()}
+          ariaLabel={t.focusModeEnter}
+        />
+      )}
     </div>
   )
 }
@@ -1377,6 +1475,50 @@ function ChatView({ sessionID }: { sessionID: string }) {
   const composerTaRef = useRef<HTMLTextAreaElement>(null)
   // 同 GuidePage：失焦保存光标、回焦恢复（selection-restore），首次聚焦置末尾
   const composerSel = useSelectionRestore()
+
+  // ---- 专注模式（design-focus-mode）：四相位 + FLIP origin/选区快照 ----
+  const [focusPhase, setFocusPhase] = useState<FocusPhase>("off")
+  const [focusOrigin, setFocusOrigin] = useState<DOMRect | null>(null)
+  const [focusSelection, setFocusSelection] = useState<FocusSelection | null>(null)
+  const composerInputRef = useRef<HTMLDivElement>(null)
+  /** 专注模式退出的选区恢复旁路（review major 1）：onFocus 的
+   * selection-restore 默认分支（rAF 光标置末尾）会覆盖退出选区——本 ref
+   * 非空时 onFocus 优先消费（同步 setSelectionRange，无 rAF 竞态） */
+  const focusExitSel = useRef<FocusSelection | null>(null)
+
+  /** 专注会话代际（review 二轮 #1）：进入专注 +1——发送在途期间用户退出
+   * 重进（新代际）时，旧 sendFromFocus 的收口不得强制关闭新会话 */
+  const focusGenRef = useRef(0)
+
+  const enterFocus = () => {
+    if (focusPhase !== "off") return
+    focusGenRef.current++
+    setFocusOrigin(composerInputRef.current?.getBoundingClientRect() ?? null)
+    const ta = composerTaRef.current
+    setFocusSelection(ta ? { start: ta.selectionStart, end: ta.selectionEnd } : null)
+    setFocusPhase("opening")
+  }
+
+  const requestFocusClose = () => {
+    setFocusPhase((p) => (p === "opening" || p === "on" ? "closing" : p))
+  }
+
+  const handleFocusClosed = (sel: FocusSelection) => {
+    setFocusPhase((p) => (p === "closing" ? "off" : p))
+    focusExitSel.current = sel
+    // rAF 等普通模式 DOM 稳定；focus() 同步派发 onFocus → 旁路分支恢复选区
+    requestAnimationFrame(() => composerTaRef.current?.focus())
+  }
+
+  /** 发送后无条件退回普通模式（D7）：反馈面（成功气泡/失败错误）都在普通视图。
+   * 代际守卫（review 二轮 #1）：在途期间退出重进（代际已换）不收口新会话 */
+  const sendFromFocus = async () => {
+    const gen = focusGenRef.current
+    await send()
+    if (focusGenRef.current !== gen) return
+    setFocusPhase((p) => (p === "opening" || p === "on" ? "closing" : p))
+  }
+
   const refInput = useFileRefInput({
     refKey: sessionID,
     directory: store.findSession(sessionID)?.directory ?? null,
@@ -1680,7 +1822,14 @@ function ChatView({ sessionID }: { sessionID: string }) {
   }
 
   return (
-    <div className="chat-view">
+    <div
+      className={
+        "chat-view" +
+        // 专注模式抑制类（§6.2/§6.3）：chips/附件钮/切换条渐隐——元素恒挂载，
+        // 类移除（closing/off）即渐显（单类双向，§6.4）
+        (focusPhase === "opening" || focusPhase === "on" ? " focus-suppressing" : "")
+      }
+    >
       {/* 全宽滚动层：空白处滚轮可滚（限宽在内层，见 app.css .message-list 注释）。
           tabIndex=-1：Chromium 把滚动容器纳入焦点序列（Shift+Tab 会给整层画环，
           实证见 2026-08-24 会话），移出后键盘焦点直达输入框/Tab 条 */}
@@ -1710,9 +1859,17 @@ function ChatView({ sessionID }: { sessionID: string }) {
       </div>
       {/* 后台任务槽位（design-subagent-background D1/D2，2026-10-08 修订）：
           分隔线上方、与授权/问题卡同域（原 composer 顶行在分隔线下方）。
-          详情窗与任务卡互斥渲染：查看窗口替代任务列表，不同时存在 */}
-      {(taskDetail || backgroundTasks.length > 0) && (
-        <div className="bg-task-slot">
+          详情窗与任务卡互斥渲染：查看窗口替代任务列表，不同时存在。
+          专注模式抑制（design-focus-mode §6.1/§6.4）：稳态（on）不渲染（卸载
+          灭 §1.1b 快捷键监听）；opening 渐隐保留、closing 挂载即渐显（两段式） */}
+      {focusPhase !== "on" && (taskDetail || backgroundTasks.length > 0) && (
+        <div
+          className={
+            focusSurfaceFadeClass(focusPhase) === ""
+              ? "bg-task-slot"
+              : `bg-task-slot ${focusSurfaceFadeClass(focusPhase)}`
+          }
+        >
           {taskDetail ? (
             <TaskDetailPanel
               childID={taskDetail.childID}
@@ -1734,7 +1891,10 @@ function ChatView({ sessionID }: { sessionID: string }) {
           )}
         </div>
       )}
-      <ChatFooter sessionID={sessionID} />
+      {/* 待处理卡闸门同 bg-task-slot（§6.1/§6.4）：稳态卸载、开合窗渐隐/渐显 */}
+      {focusPhase !== "on" && (
+        <ChatFooter sessionID={sessionID} fadeClass={focusSurfaceFadeClass(focusPhase)} />
+      )}
       <div
         className="composer"
         onDragOver={(e) => {
@@ -1762,7 +1922,7 @@ function ChatView({ sessionID }: { sessionID: string }) {
         {/* 引用 chip 条（design-file-reference §5）+ 附件条（design-session-attachments §4） */}
         {refInput.chips}
         {attachInput.chips}
-        <div className="composer-input">
+        <div className="composer-input" ref={composerInputRef}>
           {attachInput.pickerButton}
           <textarea
             ref={composerTaRef}
@@ -1775,6 +1935,14 @@ function ChatView({ sessionID }: { sessionID: string }) {
               // 同一编辑会话（value 未变）恢复光标续编辑；无保存（首次
               // 聚焦）光标置于末尾而非开头（有草稿时，原 autoFocus 语义）
               const el = e.currentTarget
+              // 专注模式退出恢复（design-focus-mode §5，review major 1）：
+              // 优先于 selection-restore——其默认分支的 rAF 置末尾会覆盖退出选区
+              if (focusExitSel.current) {
+                const s = focusExitSel.current
+                focusExitSel.current = null
+                el.setSelectionRange(s.start, s.end)
+                return
+              }
               if (composerSel.restore(el)) return
               requestAnimationFrame(() => {
                 const len = el.value.length
@@ -1835,6 +2003,16 @@ function ChatView({ sessionID }: { sessionID: string }) {
               }
             }}
           />
+          {/* 专注模式入口（design-focus-mode §3.1）：尾部后缀钮，锚定首行同 attach-pick */}
+          <button
+            type="button"
+            className="icon-btn focus-enter"
+            title={t.focusModeEnter}
+            aria-label={t.focusModeEnter}
+            onClick={enterFocus}
+          >
+            <Maximize2 size={16} aria-hidden />
+          </button>
         </div>
         <div className="composer-actions">
           {/* busy 不禁切换：服务端 next 语义（下一条消息生效）是预期行为（设计"不做的事"） */}
@@ -1869,6 +2047,33 @@ function ChatView({ sessionID }: { sessionID: string }) {
           )}
         </div>
       </div>
+      {/* 专注模式浮层（design-focus-mode）：发送钮禁用条件同普通 composer
+          （引用/附件照常计入——不可见但生效，§6.2）；busy 不拦（supplement） */}
+      {focusPhase !== "off" && (
+        <FocusComposer
+          phase={focusPhase}
+          value={draft}
+          onChange={setDraft}
+          origin={focusOrigin}
+          getOriginRect={() => composerInputRef.current?.getBoundingClientRect() ?? null}
+          initialSelection={focusSelection}
+          onOpened={() => setFocusPhase((p) => (p === "opening" ? "on" : p))}
+          onClosed={handleFocusClosed}
+          onRequestClose={requestFocusClose}
+          placeholder={t.focusPlaceholder}
+          exitTitle={t.focusModeExit}
+          sendLabel={t.send}
+          sendDisabled={
+            (!draft.trim() &&
+              store.fileRefsFor(sessionID).length === 0 &&
+              store.attachmentsFor(sessionID).length === 0) ||
+            store.fileRefsFor(sessionID).some((r) => r.tooLarge) ||
+            store.attachmentsFor(sessionID).some((a) => a.tooLarge)
+          }
+          onSend={() => void sendFromFocus()}
+          ariaLabel={t.focusModeEnter}
+        />
+      )}
     </div>
   )
 }
@@ -1965,7 +2170,7 @@ function CommandHints({
  * 任务卡（design-task-list）是第三类：有待处理人机交互时不渲染（授权/问题卡
  * 需用户动作，不得被遮挡或推高），全部完成也不渲染（todosActive 闸门）。
  */
-function ChatFooter({ sessionID }: { sessionID: string }) {
+function ChatFooter({ sessionID, fadeClass = "" }: { sessionID: string; fadeClass?: string }) {
   const store = useStore()
   // 子会话（subagent）待处理路由（design-subagent-status §D6）：授权/问题请求
   // 挂在子会话 ID 上，子会话无 ChatView——并入父会话底部面板展示（应答走
@@ -1977,7 +2182,7 @@ function ChatFooter({ sessionID }: { sessionID: string }) {
   const queueTotal = (permission ? 1 : 0) + questions.length
   if (queueTotal === 0) return null
   return (
-    <div className="chat-footer">
+    <div className={fadeClass ? `chat-footer ${fadeClass}` : "chat-footer"}>
       {permission && (
         <PermissionCard key={permission.id} permission={permission} queueTotal={queueTotal} />
       )}

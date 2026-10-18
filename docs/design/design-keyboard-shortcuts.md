@@ -73,7 +73,7 @@
 
 > 用户需求：授权/问题卡可键盘应答，Ctrl 按住显键位提示（同引导页磁贴的角标 idiom）。移动端无硬件键盘，无同类先例（头部既有核查结论复用）。
 
-- **作用域 = 待处理卡存活期**：监听（window keydown）挂 `PermissionCard` / `QuestionCard` 组件内，随卡片挂载/卸载；卡片仅在 ChatView（激活 chat Tab）内渲染——`{active?.kind === "chat" && <ChatView/>}` 条件渲染，切走即卸载，**天然仅会话页生效**，不经全局 useShortcuts 分发（同 §1.1 引导页磁贴先例）。授权/问题卡互斥渲染（授权优先），同屏至多一个监听
+- **作用域 = 待处理卡存活期**：监听（window keydown）挂 `PermissionCard` / `QuestionCard` 组件内，随卡片挂载/卸载；卡片仅在 ChatView（激活 chat Tab）内渲染——`{active?.kind === "chat" && <ChatView/>}` 条件渲染，切走即卸载，**天然仅会话页生效**，不经全局 useShortcuts 分发（同 §1.1 引导页磁贴先例）。授权/问题卡互斥渲染（授权优先），同屏至多一个监听。**专注模式抑制期间不渲染不响应（2026-10-18 增）**：专注稳态 ChatFooter/bg-task-slot 不渲染（design-focus-mode §6.1——卸载灭监听，防编辑键 Ctrl+A/Ctrl+Enter 被"恒为卡动作"劫持），"卡存在且展开"隐含"未被专注模式抑制"；开合动画窗（opening/closing ≤300ms）内监听随挂载短暂存活，接受的低概率窗口（design-focus-mode §6.4）
 - **键位（与按钮点击同路径、同禁用态）**：
   - 授权卡：**Ctrl+N = 拒绝、Ctrl+A = 总是允许、Ctrl+Y = 允许一次**（动作首字母语义，NO/YES/ALWAYS 一般习惯；2026-09-28 同日自 Ctrl+1/2/3 改字母——用户决策，为语义与习惯而非让位数字域：两卡互斥渲染（授权优先），本无键位冲突）
   - 问题卡（v2 form 体系，M6a 起字段六型）：**Ctrl+1..9 = 切换选中选项**（radio 单选替换 / checkbox 增删，与点击同 toggle 语义；第 10+ 项无快捷键；**text/number 输入步无选项可切，放行**——2026-09-29 rebase 适配 v2 form 增）、**Ctrl+0 = 拒绝**（0 = 否定语义，与选项数字域相邻）、**Ctrl+Enter = 下一步/提交**（当前步未答不动作，同按钮禁用态——选项步未选恒禁、输入步 required 空禁/可空不禁；多字段步进；NumpadEnter 经 `e.key==="Enter"` 一并覆盖）

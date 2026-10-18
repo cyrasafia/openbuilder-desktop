@@ -35,6 +35,10 @@ const zh = {
   // 聊天
   inputPlaceholder: "输入消息…（Enter 发送，Shift+Enter 换行）",
   send: "发送",
+  // 专注模式（design-focus-mode）
+  focusModeEnter: "专注模式",
+  focusModeExit: "退回普通模式（Esc）",
+  focusPlaceholder: "输入消息…（Enter 换行，发送用按钮）",
   sending: "发送中",
   abort: "停止",
   // 中止系统提示行（design-error-message §3.1 修订，2026-10-09）
@@ -376,6 +380,9 @@ const en: typeof zh = {
   untitled: "(untitled)",
   inputPlaceholder: "Message… (Enter to send, Shift+Enter for newline)",
   send: "Send",
+  focusModeEnter: "Focus mode",
+  focusModeExit: "Back to normal mode (Esc)",
+  focusPlaceholder: "Message… (Enter for newline; send with button)",
   sending: "Sending",
   abort: "Stop",
   abortedNotice: "Stopped",
