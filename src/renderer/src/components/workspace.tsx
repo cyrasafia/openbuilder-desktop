@@ -42,7 +42,7 @@ import { format, relativeTime } from "../i18n"
 import type { Catalog } from "../i18n"
 import { filterRevertedEntries, type ChatEntry } from "@shared/message-merge"
 import { extractErrorMessage, extractRetryMessage, isAbortError } from "@shared/message-error"
-import type { SessionNotice } from "@shared/session-notices"
+import { toolChildSessionId, type SessionNotice } from "@shared/session-notices"
 import type {
   CommandInfo,
   Part,
@@ -2943,22 +2943,32 @@ export function SubagentPanel({ part, parentSessionID }: { part: ToolPart; paren
   const status = state.status
 
   // 子会话 ID 来源（design-subagent-status §D3）：
-  // 1. tool.state.metadata.sessionId（running/completed 后 server 写入）
-  // 2. 降级：findChildSession 按 parentID + description 匹配
-  const metadata = "metadata" in state ? (state as { metadata?: Record<string, unknown> }).metadata : undefined
-  const metadataSessionId = typeof metadata?.sessionId === "string" ? metadata.sessionId : undefined
-  const description = typeof (state as { input?: { description?: string } }).input?.description === "string"
-    ? (state as { input?: { description?: string } }).input!.description!
-    : ""
-  const subagentType = typeof (state as { input?: { subagent_type?: string } }).input?.subagent_type === "string"
-    ? (state as { input?: { subagent_type?: string } }).input!.subagent_type!
-    : ""
+  // 1. tool.state.metadata.sessionId / sessionID（双键；v2 `subagent` 实测大写）
+  //    或续跑 input.sessionID（progress metadata 不持久化时的权威认据）
+  // 2. 降级：工具 input 已解析（called 之后）才按 parentID + description 匹配
+  //    title 前缀；不命中返回 null——宁可显示未就绪，不展示别的子会话。
+  //    流式输入窗口（input 仍是字符串）不做启发式，避免贴错同回合另一条子会话
+  const authoritativeSessionId = toolChildSessionId(part)
+  const rawInput = (state as { input?: unknown }).input
+  const input =
+    rawInput != null && typeof rawInput === "object"
+      ? (rawInput as { description?: string; agent?: string; subagent_type?: string })
+      : undefined
+  const description = typeof input?.description === "string" ? input.description : ""
+  // 标题键：v2 `subagent` 用 agent，旧 `task` 用 subagent_type（双键兼容）
+  const subagentType =
+    typeof input?.agent === "string"
+      ? input.agent
+      : typeof input?.subagent_type === "string"
+        ? input.subagent_type
+        : ""
 
-  // 启发式降级：metadata 无 sessionId 时从 sessionsByProject 查找
-  const childSession = metadataSessionId
-    ? store.findSession(metadataSessionId)
-    : store.findChildSession(parentSessionID, description || undefined)
-  const childSessionId = metadataSessionId ?? childSession?.id
+  const childSession = authoritativeSessionId
+    ? store.findSession(authoritativeSessionId)
+    : input
+      ? store.findChildSession(parentSessionID, description || undefined)
+      : null
+  const childSessionId = authoritativeSessionId ?? childSession?.id
 
   // 子会话消息列表（SSE 惰性累积；展开/停止补拉后含 REST 快照）
   const childEntries = childSessionId ? store.chatEntries(childSessionId) : []

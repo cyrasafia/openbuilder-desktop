@@ -2,11 +2,14 @@
 
 ## 背景
 
-主 agent 通过 `task` 工具启动 subagent（子会话）。`task` 工具是一个特殊的 tool part：
-- `part.tool === "task"`
-- `part.state.input.subagent_type`：agent 类型（如 explore / general）
+主 agent 通过 `task` 工具（v2 起为独立 `subagent` 工具）启动 subagent（子会话）。
+两者都是特殊的 tool part：
+- `part.tool === "task"`（旧）/ `"subagent"`（v2）
+- agent 类型：`input.agent`（v2 `subagent`，如 reviewer）/ `input.subagent_type`（旧 `task`，如 explore / general）
 - `part.state.input.description`：任务描述
-- `part.state.metadata.sessionId`：子会话 ID（运行后由 server 写入 metadata）
+- 子会话 ID：`metadata.sessionID`（v2 `subagent`，2026-10-18 实测 v2.0.26）/
+  `metadata.sessionId`（旧 `task`），续跑另有 `input.sessionID`——
+  读取统一走 `toolChildSessionId`（见 D3）
 
 子会话（`Session.parentID` 指向父会话）与父会话共享同一 directory，因此其 SSE 事件
 （`message.part.updated`、`message.updated` 等）**会通过现有事件闸门**（`isOpenedDirectory`）。
@@ -49,10 +52,13 @@
 
 ### D3：数据加载
 
-子会话 ID 来源优先级：
-1. `tool.state.metadata.sessionId`（running/completed 后 server 写入）
-2. 降级：在 `sessionsByProject` 中按 `parentID === 父会话 ID` + `input.description`
-   前缀匹配（参考 opencode `taskSession`）
+子会话 ID 来源优先级（来源 1–2 统一收口在 `toolChildSessionId`）：
+1. `tool.state.metadata.sessionId` / `sessionID`（双键；completed 后必定存在）
+2. 续跑 `input.sessionID`（progress metadata 不持久化时的权威认据）
+3. 降级：工具 input 已解析（called 之后，对象形态）时，在 `sessionsByProject` 中按
+   `parentID === 父会话 ID` + `input.description` 前缀匹配（参考 opencode
+   `taskSession`）；有描述但无 title 命中时返回 null，不猜「最新子会话」。
+   input 仍是流式字符串时不做启发式（避免贴错同回合另一条子会话）
 
 首次展开时触发 `loadSessionMessages(childSessionId, directory)`（REST 快照）。
 后续 SSE 事件已通过现有闸门自动累积到 `messagesBySession`，无需额外订阅。
@@ -144,9 +150,15 @@ ChatView——请求原本无处展示，subagent 静默阻塞。路由规则（
 
 ## 坑
 
-- **metadata.sessionId 时序**：tool part 初始状态为 pending/running 时 metadata 可能
-  尚无 sessionId。展开按钮在无 sessionId 时禁用（或降级到启发式匹配）。一旦 completed，
-  metadata.sessionId 必定存在。
+- **子会话 ID 时序与键名**（2026-10-18 修订）：tool part 初始状态为 pending/running 时
+  metadata 可能尚无子会话 ID，降级到启发式匹配；running 窗口的 metadata 只有 live
+  SSE 侧可信，REST 快照会洗成 `{}`（progress 不持久化），续跑场景由
+  `input.sessionID` 兜住。一旦 completed，`subagent` 的 `metadata.sessionID` /
+  `task` 的 `metadata.sessionId` 必定存在；error 态的 metadata 为可选字段，REST
+  适配层与 completed 同口径透传（失败 subagent 冷启动仍可认领）。面板早期只读小写
+  `sessionId`，导致 v2 `subagent` 权威路径恒失效（同 openbuilder
+  todo-subagent-not-ready）；现统一走 `toolChildSessionId`（metadata 双键 →
+  `input.sessionID`）。
 - **子会话未入 sessionsByProject**：`session.created` 事件到达时 `sessionsByProject`
   会记录子会话（按 projectID 归属，与父同 project），但左栏会话列表过滤掉 `parentID`
   非空的会话（`sessionsInDirectory` 等），子会话仅作内部数据存在。
@@ -158,9 +170,11 @@ ChatView——请求原本无处展示，subagent 静默阻塞。路由规则（
 - **加载 id 记录**（review R2-#1）：REST 触发以 ref 记录**已加载 id** 而非布尔——
   childSessionId 漂移（启发式命中在先 → metadata.sessionId 到达切换）时对新 id 重新
   触发；收起即重置，再展开是 REST 失败后的重试入口（面板无错误态渲染）。
-- **启发式匹配局限**（已知取舍）：`findChildSession` description 前缀匹配不上时回退
-  "该父会话最新创建的子会话"——父会话并发跑多个 task 工具时可能挂到别的任务的子会话
-  （`metadata.sessionId` 权威路径不受影响）；同 created 并列时排序结果不稳定。
+- **启发式匹配局限**（2026-10-18 修订）：`findChildSession` 只在 description 命中
+  某个子会话 title 前缀时认领，取 created 最新；描述不命中返回 null（面板显示
+  「子会话未就绪」）。旧行为回退「该父会话最新创建的子会话」，并发多个 task 时可能
+  挂到别的任务上、展示错误的子会话消息流——比未就绪更误导，已删除。同 created 并列
+  时排序结果不稳定（仅影响并列时的选择，不影响是否认领）。
 - **中断 part 永卡 running**（2026-09-07，D4 停止投影的动因）：用户停止父会话后
   server 取消子会话，但父消息的 task part 可能不回写终态（半截消息，completed
   恒 null）——UI 只看 `part.state.status` 会永久转圈。修复 = D4 停止投影

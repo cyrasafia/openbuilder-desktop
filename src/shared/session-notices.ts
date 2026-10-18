@@ -59,6 +59,15 @@ function toolInputSessionId(part: ToolPart): string | undefined {
 }
 
 /**
+ * tool part 的权威子会话 ID：metadata（双键）优先，续跑 `input.sessionID` 兜底。
+ * 面板与认领遍历共用，避免两处判据漂移（对应 openbuilder `DisplayPart.childSessionId`
+ * 与 `_partClaimsChild` 的判据并集）。
+ */
+export function toolChildSessionId(part: ToolPart): string | undefined {
+  return toolMetadataSessionId(part) ?? toolInputSessionId(part)
+}
+
+/**
  * 遍历父会话 tool part 对子会话的**认领**（design-subagent-background 2026-10-08
  * 升格修订）：
  * - 权威：part 的 `metadata.sessionId` / `sessionID`——progress 写入、success
@@ -77,7 +86,7 @@ function forEachClaim(
     if (part.type !== "tool") continue
     const tool = part as ToolPart
     if (!TOOL_FORM_TOOLS.has(tool.tool)) continue
-    const authoritative = toolMetadataSessionId(tool) ?? toolInputSessionId(tool)
+    const authoritative = toolChildSessionId(tool)
     if (authoritative) {
       visit(authoritative, tool)
       continue

@@ -9,6 +9,7 @@ import {
   foregroundClaimedChildIds,
   activeClaimedChildIds,
   convertedBackgroundChildIds,
+  toolChildSessionId,
   toolMetadataSessionId,
   withdrawForegroundStartNotices,
   type SessionNotice,
@@ -38,6 +39,23 @@ describe("toolMetadataSessionId", () => {
     expect(toolMetadataSessionId(toolPart("task", {}, { sessionId: "ses_a" }) as ToolPart)).toBe("ses_a")
     expect(toolMetadataSessionId(toolPart("subagent", {}, { sessionID: "ses_b" }) as ToolPart)).toBe("ses_b")
     expect(toolMetadataSessionId(toolPart("task", {}, undefined) as ToolPart)).toBeUndefined()
+  })
+})
+
+describe("toolChildSessionId（面板/认领共用权威判据）", () => {
+  it("metadata 双键优先，续跑 input.sessionID 兜底", () => {
+    expect(toolChildSessionId(toolPart("subagent", {}, { sessionID: "ses_a" }) as ToolPart)).toBe("ses_a")
+    expect(toolChildSessionId(toolPart("subagent", { sessionID: "ses_b" }) as ToolPart)).toBe("ses_b")
+    // metadata 在场时不被 input.sessionID 顶掉
+    expect(
+      toolChildSessionId(
+        toolPart("subagent", { sessionID: "ses_input" }, { sessionID: "ses_meta" }) as ToolPart,
+      ),
+    ).toBe("ses_meta")
+  })
+
+  it("两路都缺失（流式字符串 input / 无 metadata）返回 undefined", () => {
+    expect(toolChildSessionId(toolPart("subagent", "") as ToolPart)).toBeUndefined()
   })
 })
 

@@ -469,4 +469,4 @@ runningBackgroundTasks(parent) =
 |---|---|---|---|
 | 1 | 🟢 nit | live 插入的 `bg-start` 其 `created` 取 SSE 信封时间，重建取会话行权威时间——「与 live 插入同值」依赖两时间戳相等的假设，不等则既有 notice 永不校正（按 id 去重跳过） | 重建改为**不查重直推权威值**：mergeNotices 同 id 校正一次（created/label 均收敛），之后幂等——假设升级为不变量；补校正回归用例 |
 | 2 | 🟢 nit | 重启恢复 Tab 时 `loadSessionMessages` 先于会话快照落地（children 未进注册表）→ 首轮 merge 不产启动提示，下一拍才补 | 接受：与完成提示（synthetic 抽取）同节拍，对账哲学内既定行为；D3 重建段补记 |
-| — | 附注 | `message-merge.ts` 的 tool part 合并方向：调用点以（本地 SSE, REST 快照）传入而 mergePart 注释称「SSE 优先」——名义与实际相反，即「REST 把 live 的 progress metadata 洗成 `{}`」的根源 | 正名不改行为：参数更名 `localParts`/`snapshotParts`、注释改写为「快照非 pending 优先」并记录已知代价（认领由 `input.sessionID` 与持久化 metadata 兜住）；方向翻转属独立议题，超出本轮 |
+| — | 附注 | `message-merge.ts` 的 tool part 合并方向：调用点以（本地 SSE, REST 快照）传入而 mergePart 注释称「SSE 优先」——名义与实际相反，即「REST 把 live 的 progress metadata 洗成 `{}`」的根源 | 正名不改行为：参数更名 `localParts`/`snapshotParts`、注释改写为「快照非 pending 优先」并记录已知代价（认领由 `input.sessionID` 与持久化 metadata 兜住）；方向翻转属独立议题，超出本轮。**2026-10-18 后续**：合并改为状态秩单调（终态 > running > pending），旧快照 running 不再降级本端 completed/error（同 openbuilder todo-tool-chip-duplicate 修复点 4） |

@@ -4,7 +4,7 @@
  * 各状态下收起态 header 的图标与 aria 断言；面板默认收起，不触子会话加载。
  * ResizeObserver/IntersectionObserver jsdom 缺失，补 stub（workspace 模块图所需）。
  */
-import { render } from "@testing-library/react"
+import { fireEvent, render } from "@testing-library/react"
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { SubagentPanel } from "./workspace"
 import type { ToolPart } from "@shared/api-types"
@@ -23,6 +23,9 @@ vi.mock("../app", () => ({
       subagentError: "出错",
       subagentStopped: "已停止",
       subagentExpand: "展开子会话",
+      subagentCollapse: "收起子会话",
+      subagentNoSession: "子会话未就绪",
+      subagentLoading: "子会话加载中",
     },
     locale: "zh" as const,
   }),
@@ -221,5 +224,95 @@ describe("SubagentPanel 报错上浮（§D6）", () => {
     storeStub = makeStore([PARENT])
     renderPanel(taskPart("running"))
     expect(storeStub.loadSessionMessages).not.toHaveBeenCalled()
+  })
+})
+
+describe("SubagentPanel 子会话解析（openbuilder todo-subagent-not-ready 对齐）", () => {
+  beforeEach(() => {
+    chatEntriesStub = []
+  })
+
+  function subagentPart(opts: {
+    status: ToolPart["state"]["status"]
+    metadata?: Record<string, unknown>
+    input?: unknown
+  }): ToolPart {
+    return {
+      id: "prt_sub",
+      messageID: "msg_1",
+      sessionID: PARENT,
+      type: "tool",
+      callID: "call_sub",
+      tool: "subagent",
+      state: {
+        status: opts.status,
+        input: "input" in opts ? opts.input : { agent: "reviewer", description: "探查仓库结构" },
+        ...(opts.status === "completed" || opts.status === "error"
+          ? { time: { start: 1, end: 2 } }
+          : { time: { start: 1 } }),
+        ...(opts.metadata ? { metadata: opts.metadata } : {}),
+        ...(opts.status === "completed" ? { output: "done", title: "探查完成" } : {}),
+        ...(opts.status === "error" ? { error: "boom" } : {}),
+      } as ToolPart["state"],
+    }
+  }
+
+  const expand = (container: HTMLElement) => {
+    fireEvent.click(container.querySelector<HTMLElement>(".subagent-header")!)
+  }
+
+  it("metadata.sessionID（v2 subagent 大小写）+ input.agent：解析子会话并显示 agent 名", () => {
+    // 降级路径故意指向另一个子会话：证明 metadata 权威路径优先，不是碰巧命中
+    storeStub = { ...makeStore([]), findChildSession: () => ({ id: "ses_wrong", directory: "/wrong" }) }
+    const part = subagentPart({ status: "completed", metadata: { sessionID: CHILD } })
+    const { container } = render(<SubagentPanel part={part} parentSessionID={PARENT} />)
+    expect(container.querySelector(".subagent-agent-label")?.textContent).toBe("Reviewer")
+    expand(container)
+    expect(container.textContent).toContain("子会话加载中")
+    expect(container.textContent).not.toContain("子会话未就绪")
+    expect(storeStub.loadSessionMessages).toHaveBeenCalledWith(CHILD, "/repo")
+  })
+
+  it("续跑 input.sessionID 作权威认据：metadata 缺失也能解析", () => {
+    storeStub = { ...makeStore([]), findChildSession: () => null }
+    const part = subagentPart({
+      status: "running",
+      input: { agent: "reviewer", description: "续跑评审", sessionID: CHILD },
+    })
+    const { container } = render(<SubagentPanel part={part} parentSessionID={PARENT} />)
+    expand(container)
+    expect(container.textContent).toContain("子会话加载中")
+    expect(storeStub.loadSessionMessages).toHaveBeenCalledWith(CHILD, "/repo")
+  })
+
+  it("输入流式窗口（input 仍是字符串）不做启发式：显示未就绪，不贴别的子会话", () => {
+    storeStub = { ...makeStore([]), findChildSession: vi.fn(() => ({ id: "ses_wrong", directory: "/wrong" })) }
+    const part = subagentPart({ status: "running", input: "" })
+    const { container } = render(<SubagentPanel part={part} parentSessionID={PARENT} />)
+    expand(container)
+    expect(container.textContent).toContain("子会话未就绪")
+    expect(storeStub.findChildSession).not.toHaveBeenCalled()
+    expect(storeStub.loadSessionMessages).not.toHaveBeenCalled()
+  })
+
+  it("旧 task 的 input.subagent_type 仍作标题（双键兼容）", () => {
+    storeStub = makeStore([])
+    const { container } = render(<SubagentPanel part={taskPart("completed")} parentSessionID={PARENT} />)
+    expect(container.querySelector(".subagent-agent-label")?.textContent).toBe("Explore")
+  })
+
+  // 注意：本用例只证明组件不闩锁首次结果（rerender 模拟 App 层 store.subscribe
+  // 的整树重渲染），不是本次键名/优先级修复的回归护栏——撤回到修复前它也通过。
+  it("子会话晚注册：重渲染后从「未就绪」切到消息流", () => {
+    storeStub = { ...makeStore([]), findChildSession: () => null }
+    const part = subagentPart({ status: "running" })
+    const { container, rerender } = render(<SubagentPanel part={part} parentSessionID={PARENT} />)
+    expand(container)
+    expect(container.textContent).toContain("子会话未就绪")
+    // 注册表晚到（桌面端整树重渲染即重算 childSessionId）
+    storeStub.findChildSession = () => ({ id: CHILD, parentID: PARENT, directory: "/repo" })
+    rerender(<SubagentPanel part={part} parentSessionID={PARENT} />)
+    expect(container.textContent).toContain("子会话加载中")
+    expect(container.textContent).not.toContain("子会话未就绪")
   })
 })

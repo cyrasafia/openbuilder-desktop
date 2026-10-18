@@ -4240,8 +4240,11 @@ export class AppStore {
 
   /**
    * 查找子会话（design-subagent-status §D3 降级路径）：
-   * metadata.sessionId 缺失时按 parentID 在 sessionsByProject 中匹配，
+   * metadata.sessionId/sessionID 缺失时按 parentID 在 sessionsByProject 中匹配，
    * title 前缀消歧（server title 派生自 task description），取 created 最新。
+   * 有 description 但无 title 命中时返回 null（不猜最新子会话——错配会展示
+   * 另一条子会话消息流，比「子会话未就绪」更误导）。本端比 openbuilder
+   * findChildSession 更严：上游无命中仍回退最新子会话，此处故意收紧。
    */
   findChildSession(parentSessionID: string, description?: string): Session | null {
     const candidates: Session[] = []
@@ -4251,15 +4254,11 @@ export class AppStore {
       }
     }
     if (candidates.length === 0) return null
-    if (description) {
-      const matched = candidates.filter((s) =>
-        (s.title ?? "").startsWith(description),
-      )
-      if (matched.length > 0) {
-        return matched.sort((a, b) => (b.time.created ?? 0) - (a.time.created ?? 0))[0]
-      }
-    }
-    return candidates.sort((a, b) => (b.time.created ?? 0) - (a.time.created ?? 0))[0]
+    const newestOf = (list: Session[]) =>
+      [...list].sort((a, b) => (b.time.created ?? 0) - (a.time.created ?? 0))[0]
+    if (!description) return newestOf(candidates)
+    const matched = candidates.filter((s) => (s.title ?? "").startsWith(description))
+    return matched.length > 0 ? newestOf(matched) : null
   }
 
   // ============ 用户后台任务（design-subagent-background） ============

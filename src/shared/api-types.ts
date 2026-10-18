@@ -164,6 +164,8 @@ export interface ToolStatePending {
 export interface ToolStateRunning {
   status: "running"
   input: unknown
+  /** progress 事件可携带（subagent 的 sessionID 等）；REST running 快照通常为 {} */
+  metadata?: Record<string, unknown>
 }
 export interface ToolStateCompleted {
   status: "completed"
@@ -179,6 +181,8 @@ export interface ToolStateError {
   /** 工具因会话中止而失败（v2 wire error `type:"aborted"`，design-error-message
    *  §3.1 修订 2026-10-09）：中断非出错——渲染层据此降级为「已停止」中性呈现 */
   aborted?: boolean
+  /** v2 `ToolState.Error.metadata` 可选：失败 subagent 的 sessionID 认领依据 */
+  metadata?: Record<string, unknown>
 }
 export type ToolState = ToolStatePending | ToolStateRunning | ToolStateCompleted | ToolStateError
 
