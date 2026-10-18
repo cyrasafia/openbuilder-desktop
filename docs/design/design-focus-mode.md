@@ -103,6 +103,13 @@ EditorState.tabSize 2 / 编辑区 contenteditable = CM 默认
 ```
 
 - **不装**：lineNumbers / foldGutter / search（纯写作面，见 §10）
+- 依赖事实（2026-10-18 实施修正）：`@codemirror/commands`（history/
+  defaultKeymap/historyKeymap/indentWithTab/insertNewlineAndIndent）原不在
+  依赖树（code-view 只用 language/search/view）——实施时新增
+  `@codemirror/commands@^6`，与既有 CM 6.x 系同版本段；Enter 修饰变体
+  （Mod/Alt/Shift+Enter）显式前置绑 `insertNewlineAndIndent`——defaultKeymap
+  的 Mod-Enter 绑 `insertBlankLine`（插空行，非单换行），裸 Enter 才是
+  insertNewlineAndIndent
 - 样式作用域：app.css 语法 token 块（§2434 起）的选择器组从
   `.code-view-host .cm-x, .diff-text .cm-x` 扩为含 `.focus-editor-host .cm-x`
   ——同一令牌体系，data-theme 切换即时生效（cm-theme 注释的既定架构）
@@ -361,6 +368,8 @@ EditorState.tabSize 2 / 编辑区 contenteditable = CM 默认
 | `src/renderer/src/styles/app.css` | `.focus-overlay` / `.focus-composer` / `.focus-editor-host` / `.focus-enter`；语法 token 选择器组并入 `.focus-editor-host`；抑制类 opacity 渐变 + reduced-motion 块（§6.4） |
 | `src/renderer/src/i18n/index.ts` | focusModeEnter / focusModeExit / focusPlaceholder（zh+en，提示 Enter 换行） |
 | `src/renderer/src/components/focus-composer.test.tsx` | 渲染冒烟（jsdom + RO stub，code-view.test 惯例）：初始 doc/选区、markdown token class、doc 同步不重建、Enter 换行无发送路径、Esc onClose |
+| `src/renderer/src/components/workspace-guide.test.tsx` | 专注模式集成 3 例（2026-10-18 实施加）：入口→浮层/抑制类/草稿承接、Esc 退出→卸载/类移除/草稿保留、Enter 换行不发送。ChatView 卡片闸门无渲染 harness，留联调（场景 #15/#21） |
+| `package.json` / `package-lock.json` | 新增 `@codemirror/commands@^6.11.1`（§4.1 依赖事实） |
 | `docs/design/v2/design-pending-cards.md` / `docs/design/design-keyboard-shortcuts.md` | 实施时同步补注：卡片渲染/快捷键适用条件加「专注模式抑制期间不渲染不响应」（§1.1b"恒为卡动作"的条件边界，§6.1） |
 | `docs/spec/spec-v0.6.md`（实施时开篇） | 功能范围补录；design-layout 输入区条目指向本文 |
 
@@ -374,3 +383,28 @@ EditorState.tabSize 2 / 编辑区 contenteditable = CM 默认
   动画双向 + reduced-motion
 - 动画帧率目测（Wayland 合成器）：200ms 内无可感知掉帧；输入延迟与普通模式
   无感差异（长草稿 ≥20KB 打字对比）
+
+## 13. 验证记录（2026-10-18 实施）
+
+- vitest 1348/1348（新增 10 用例：focus-composer 7 + workspace 集成 3）；
+  typecheck 双侧、build 全绿
+- review 一轮修订（reviewer 子代理）：
+  - major 1：退出选区恢复被 selection-restore 默认分支（rAF 置末尾）覆盖
+    ——改 focusExitSel 旁路（onFocus 优先消费，同步 setSelectionRange 无
+    rAF 竞态），ChatView/GuidePage 同修
+  - minor 2：opening 窗口内关闭的 FLIP retarget 以中途视觉盒为基准致落点
+    偏移——缓存 opening 首帧的自然盒 rect 作 closing 基准
+  - minor 3：opening 的 transitionend/兜底回调在 closing 抢跑后仍可能报
+    onOpened——组件内 phaseRef 守卫 + 父级 onOpened 函数式相位闸
+  - minor 4：附件 notice 行（.form-note）不在渐变过渡组——补入（含
+    reduced-motion 侧）
+  - minor 5：design-pending-cards / design-keyboard-shortcuts §1.1b 补注
+    「专注模式抑制期间不渲染不响应」边界
+- 已知留联调：ChatView 卡片闸门（§6.1 focusPhase !== "on"）无组件级测试
+  （ChatView 未导出、渲染 harness 成本高）——场景表 #15/#21 手动过；
+  spec-v0.6 开篇补录（§11）待版本规划时一并处理
+- 二轮 review（reviewer 子代理，2026-10-18）：可以合入、无阻塞——非阻塞 1
+  （sendFromFocus 在途退出重进的代际串扰）已修（focusGenRef 代际守卫，
+  两视图同构）；design-layout 输入区条目与 spec-v0.6 一并延期至版本开篇
+  （原 §11 计划口径在此留痕对齐）；焦点圈闭不 trap 与仓库既有弹窗一致，
+  忽略（nit 2）

@@ -8,7 +8,7 @@
  * （按需拉取 + 前缀过滤 + Enter 补全/Esc 关闭），发送命中命令走 sendCommand、
  * 未注册按字面 prompt、发送前强制重拉。
  */
-import { act, cleanup, fireEvent, render } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { Workspace } from "./workspace"
 import { ResizeObserverStub } from "./resize-observer-stub"
@@ -33,6 +33,9 @@ vi.mock("../app", () => ({
       commandListLoading: "加载中…",
       attachCmdBlocked: "斜杠命令不支持附件",
       inputPlaceholder: "输入…",
+      focusModeEnter: "专注模式",
+      focusModeExit: "退回普通模式（Esc）",
+      focusPlaceholder: "输入消息…（Enter 换行，发送用按钮）",
     },
     locale: "zh" as const,
   }),
@@ -563,5 +566,73 @@ describe("引导页斜杠命令（design-slash-command 2026-09-08 修订）", ()
     expect(storeStub.createSession).not.toHaveBeenCalled()
     expect(storeStub.sendCommand).not.toHaveBeenCalled()
     expect(storeStub.sendPrompt).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * 专注模式集成（design-focus-mode，2026-10-18 增）：入口点击 → 浮层挂载 +
+ * 视图根抑制类（§6.2/§6.3）+ CM 承接草稿（§5 状态单源）；Esc 退出 → 浮层
+ * 卸载、抑制类移除、草稿保留。jsdom 无布局 → FLIP 分支跳过、相位回调走
+ * 300ms 兜底（waitFor 真实定时器）；Range 几何 API 缺失由 stub 补（CM 选区
+ * 量测，focus-composer.test 同例）。ChatView 的卡片闸门（focusPhase !== "on"）
+ * 无 ChatView 级渲染 harness，留联调（场景表 #15/#21）。
+ */
+describe("专注模式（design-focus-mode）", () => {
+  beforeEach(() => {
+    if (!Range.prototype.getClientRects) {
+      Range.prototype.getClientRects = () => [] as unknown as DOMRectList
+    }
+    if (!Range.prototype.getBoundingClientRect) {
+      Range.prototype.getBoundingClientRect = () =>
+        ({ width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 }) as DOMRect
+    }
+  })
+
+  it("入口点击 → 浮层挂载 + 根抑制类 + CM 承接草稿", () => {
+    render(<Workspace />)
+    const ta = document.querySelector<HTMLTextAreaElement>(".composer-input textarea")
+    expect(ta).not.toBeNull()
+    fireEvent.change(ta!, { target: { value: "# 草稿标题" } })
+    fireEvent.click(document.querySelector<HTMLButtonElement>(".focus-enter")!)
+    expect(document.querySelector(".focus-overlay")).not.toBeNull()
+    const root = document.querySelector(".guide-view")
+    expect(root?.classList.contains("focus-suppressing")).toBe(true)
+    const cm = document.querySelector<HTMLElement>(".focus-editor-host .cm-content")
+    expect(cm?.textContent).toContain("草稿标题")
+  })
+
+  it("Esc 退出 → 浮层卸载、抑制类移除、草稿保留", async () => {
+    render(<Workspace />)
+    const ta = document.querySelector<HTMLTextAreaElement>(".composer-input textarea")
+    fireEvent.change(ta!, { target: { value: "保留我" } })
+    fireEvent.click(document.querySelector<HTMLButtonElement>(".focus-enter")!)
+    fireEvent.keyDown(document.querySelector<HTMLElement>(".focus-editor-host .cm-content")!, {
+      key: "Escape",
+    })
+    // closing 相位 300ms 兜底定时器 → onClosed → 卸载（真实定时器等待）
+    await waitFor(() => {
+      expect(document.querySelector(".focus-overlay")).toBeNull()
+    })
+    expect(document.querySelector(".guide-view")?.classList.contains("focus-suppressing")).toBe(
+      false,
+    )
+    const taAfter = document.querySelector<HTMLTextAreaElement>(".composer-input textarea")
+    expect(taAfter?.value).toBe("保留我")
+  })
+
+  it("专注模式 Enter 换行不发送（D4，走 CM keymap）", () => {
+    render(<Workspace />)
+    fireEvent.change(document.querySelector<HTMLTextAreaElement>(".composer-input textarea")!, {
+      target: { value: "abc" },
+    })
+    fireEvent.click(document.querySelector<HTMLButtonElement>(".focus-enter")!)
+    const cm = document.querySelector<HTMLElement>(".focus-editor-host .cm-content")!
+    fireEvent.keyDown(cm, { key: "Enter" })
+    // onChange 回流 draft：textarea 同步为含换行文本；无发送调用
+    expect(
+      document.querySelector<HTMLTextAreaElement>(".composer-input textarea")?.value,
+    ).toContain("\n")
+    expect(storeStub.sendPrompt).not.toHaveBeenCalled()
+    expect(storeStub.createSession).not.toHaveBeenCalled()
   })
 })
