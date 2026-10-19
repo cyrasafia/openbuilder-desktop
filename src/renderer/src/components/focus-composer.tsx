@@ -1,7 +1,9 @@
 /**
- * 专注模式面板（design-focus-mode，2026-10-18 交互改版）：会话页/引导页的
+ * 专注模式面板（design-focus-mode，2026-10-19 变形改版）：会话页/引导页的
  * 大段 prompt 编辑面，嵌入 tab 内容区（视图根的绝对定位子元素，§3.2——
- * 非弹窗：Tab 栏/左栏/右栏照常可见可交互）。
+ * 非弹窗：Tab 栏/左栏/右栏照常可见可交互）。变形语义（§3.2 改写）：面板
+ * 底缘经 bottomInset 钉在输入盒底缘——观感是「输入框本体长大撑满页面」，
+ * 原发送行（composer-actions）原位保留在面板下方，面板内无发送按钮。
  *
  * - CM6 编辑器（§4）：markdown 高亮复用 cm-lang 同源语言包 + cm-theme class 化
  *   主题（颜色走 app.css --syntax-* 令牌）；Enter 一律换行、无发送命令（D4）
@@ -9,8 +11,9 @@
  *   （CM 内 Prec.highest 压过选区折叠，面板根 bubble 监听兜底焦点不在编辑器
  *   的场景——bubble 保证内层先消费，"已 preventDefault 不处理"既有约定）
  * - FLIP grow-from-origin 开合动画（§7）：opening 自 origin rect（入口点击时
- *   量测的 composer-input 盒）变换到 identity——会话页向上展开、引导页向下
- *   为主展开；closing 反向收拢回实时量测的 composer rect（getOriginRect）。
+ *   量测的 composer-input 盒）变换到 identity——两视图同为向上展开（底缘
+ *   钉输入盒底缘、上缘扫到页面顶边距，2026-10-19 变形改版）；closing 反向
+ *   收拢回实时量测的 composer rect（getOriginRect）。
  *   只动 transform/opacity（合成器属性）；transitionend + 300ms 兜底定时器
  *   驱动 onOpened/onClosed（不保证必达）
  * - 拖放吞掉层（§6.2）：面板根 preventDefault + stopPropagation，落文件零效果
@@ -100,9 +103,7 @@ export function FocusComposer({
   onRequestClose,
   placeholder,
   exitTitle,
-  sendLabel,
-  sendDisabled,
-  onSend,
+  bottomInset,
   ariaLabel,
 }: {
   /** opening/on/closing（off 时父级不渲染本组件） */
@@ -121,9 +122,9 @@ export function FocusComposer({
   onRequestClose: () => void
   placeholder: string
   exitTitle: string
-  sendLabel: string
-  sendDisabled: boolean
-  onSend: () => void
+  /** 面板底缘距视图底的距离（px，§3.2 变形语义）：调用方实测输入盒底缘所得，
+   *  面板底缘与输入盒底缘重合——CSS 类的 calc 值仅为兜底 */
+  bottomInset: number
   ariaLabel: string
 }) {
   const panelRef = useRef<HTMLDivElement>(null)
@@ -256,9 +257,14 @@ export function FocusComposer({
     if (!panel || !body) return
     const reduced = prefersReducedMotion()
     const r1 = getOriginRectRef.current()
-    // 自然盒基准（review minor 2）：面板布局盒恒定（宽高固定），opening 首帧
-    // 已缓存；中途关闭时当前视觉 rect 是变换中间态，不得用作 FLIP 基准
-    const r2 = naturalRectRef.current ?? panel.getBoundingClientRect()
+    // 自然盒基准（review minor 2，2026-10-19 修订）：identity 态（on 稳态，
+    // computed transform none）下当前盒即自然盒——resize 后的几何漂移（inset
+    // 重测/列宽变化）自然吸收；开合动画窗内（computed 为插值矩阵）视觉盒是
+    // 变换中间态，退回 opening 首帧缓存（2026-10-18 review minor 2 原修）
+    const r2 =
+      getComputedStyle(panel).transform === "none"
+        ? panel.getBoundingClientRect()
+        : (naturalRectRef.current ?? panel.getBoundingClientRect())
     if (r1 && r2.width > 0 && r2.height > 0 && !reduced) {
       const sx = r1.width / r2.width
       const sy = r1.height / r2.height
@@ -299,6 +305,7 @@ export function FocusComposer({
       className="focus-composer"
       role="region"
       aria-label={ariaLabel}
+      style={{ bottom: `${bottomInset}px` }}
       onKeyDown={(e) => {
         // bubble 兜底（§4.2）：焦点在面板按钮等处时 Esc 仍可退回；内层
         // （CM keymap 等）先消费并 preventDefault 则不重复触发
@@ -322,11 +329,6 @@ export function FocusComposer({
       </div>
       <div ref={bodyRef} className="focus-body">
         <div ref={hostRef} className="focus-editor-host" />
-        <div className="focus-actions">
-          <button type="button" className="btn-primary" disabled={sendDisabled} onClick={onSend}>
-            {sendLabel}
-          </button>
-        </div>
       </div>
     </div>
   )

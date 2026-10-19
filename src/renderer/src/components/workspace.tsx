@@ -861,6 +861,56 @@ function parseSlash(text: string): { token: string; args: string } {
 }
 
 /**
+ * 专注面板底缘 inset 实测（design-focus-mode §3.2 变形语义，2026-10-19）：
+ * 面板底缘 = 发送行（锚元素）上缘 − 6px（与会话页 composer 行距同值的呼吸
+ * 间隙），inset = 视图底 − 锚上缘 + 6。两视图同构：会话页锚原
+ * composer-actions（列尾锚定，上缘随 ms-bar 换行/增删而动）、引导页锚
+ * 专注发送行 .focus-sendbar（五轮，视图底部流内行）。非静态值——active
+ * 上升沿（进入 / §3.2b 复位挂载）与窗口 resize 实测；active 落下沿清回
+ * null（每次进入以当刻几何重测，面板挂载闸门 inset !== null 保证 FLIP
+ * 自然盒量测在最终几何上）。
+ * ResizeObserver（active 期间观察锚盒）：**锚盒尺寸变化即重测**——ms-bar
+ * 换行（模型名跨阈值、thinking pill 增删）使发送行高变、上缘动，RO 抓高
+ * 度变化（review 三轮 #1：观察输入盒抓不到纯位移，锚必须在发送行上）；
+ * 专注期切模型是可交互路径（§6.3 三轮起），换行失锚由 RO 恢复（帧级延迟，
+ * 一帧闪接受）。RO 不报纯位移——位移必伴随 resize（列宽锚定），listener 兜。
+ * 负值 clamp 0：几何退化（面板底缘贴视图底）但挂载闸门放行——Esc/发送等
+ * 退出路径完整（review minor 1：静默不设值会让面板永不挂载、专注态无出口）
+ */
+function useFocusBottomInset(
+  viewRef: RefObject<HTMLDivElement | null>,
+  anchorRef: RefObject<HTMLDivElement | null>,
+  active: boolean,
+): number | null {
+  const [inset, setInset] = useState<number | null>(null)
+  const measure = useCallback(() => {
+    const view = viewRef.current
+    const anchor = anchorRef.current
+    if (!view || !anchor) return
+    setInset(Math.max(0, view.getBoundingClientRect().bottom - anchor.getBoundingClientRect().top + 6))
+  }, [viewRef, anchorRef])
+  useLayoutEffect(() => {
+    if (active) measure()
+    else setInset(null)
+  }, [active, measure])
+  useEffect(() => {
+    if (!active) return
+    const onResize = () => measure()
+    window.addEventListener("resize", onResize)
+    let ro: ResizeObserver | null = null
+    if (typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(() => measure())
+      if (anchorRef.current) ro.observe(anchorRef.current)
+    }
+    return () => {
+      window.removeEventListener("resize", onResize)
+      ro?.disconnect()
+    }
+  }, [active, measure, anchorRef])
+  return inset
+}
+
+/**
  * 新 Tab 引导页：无激活 Tab 时的默认视图（design-layout §4）。
  * 输入消息发送 = 新建会话 + 发送首条消息（Tab 自动打开激活，引导页退出）；
  * 输入区固定纵向居中（不受存档列表影响），下方依次为操作区与已归档会话
@@ -910,6 +960,10 @@ function GuidePage() {
   const [focusOrigin, setFocusOrigin] = useState<DOMRect | null>(null)
   const [focusSelection, setFocusSelection] = useState<FocusSelection | null>(null)
   const guideComposerInputRef = useRef<HTMLDivElement>(null)
+  /** 面板底缘 inset（§3.2 变形语义）：引导页输入盒在页面中部（32vh 定位），
+   *  无静态底缘值——实测视图底到输入盒底的距离，面板底缘与之重合；
+   *  调用在 refs/chips 之后（watchKey 签名，review 二轮 non-blocking 1） */
+  const guideViewRef = useRef<HTMLDivElement>(null)
   /** 退出选区恢复旁路（review major 1，同 ChatView） */
   const focusExitSel = useRef<FocusSelection | null>(null)
 
@@ -965,6 +1019,10 @@ function GuidePage() {
   const guideRefs = store.fileRefsFor(directory)
   // 会话附件输入接线（design-session-attachments §3）：粘贴/拖拽/按钮 → 管线 → store
   const attachInput = useAttachmentInput(directory)
+  /** 专注发送行（§3.2 五轮）：面板整屏延展后原 composer 行（页面中部）被盖，
+   *  发送/切换钉到视图底部——面板底缘锚其上缘（useFocusBottomInset） */
+  const focusSendbarRef = useRef<HTMLDivElement>(null)
+  const focusInset = useFocusBottomInset(guideViewRef, focusSendbarRef, focusPhase !== "off")
 
   // 引导页快捷键（design-keyboard-shortcuts §1，2026-09-06 增）：Ctrl+1/2/3 =
   // 磁贴三入口（diff/终端/网页），与磁贴点击同路径、同禁用态；监听挂组件内随
@@ -1143,8 +1201,47 @@ function GuidePage() {
     }
   }
 
+  /** 发送行内容（单一来源，两处渲染）：原 composer 行（普通模式 / 专注期被
+   *  面板覆盖）+ 专注发送行 .focus-sendbar（§3.2 五轮，视图底部）——ms-bar
+   *  dim（§6.3）对两处同样生效，可达的只有 sendbar */
+  const renderSendRow = () => (
+    <>
+      {/* pendingSession 时切会话绑定；会话记录从 store 重读（乐观补丁是新对象，
+          ref 持有的是创建时快照——AM-FIX-2：UI 不依赖父组件传参快照）。
+          目录用该会话自身的：引导页已按作用域 key 隔离（design-compose-draft §2），
+          挂载期内作用域不变、二者恒等，保留会话目录作防御（原 AM-IMPL3-3
+          跨作用域存活场景随 key 隔离消失） */}
+      <ModelSwitcherBar
+        directory={pendingSession.current?.directory ?? store.scopeQuery.directory}
+        mode={pendingSession.current ? "session" : "defaults"}
+        session={
+          pendingSession.current
+            ? (store.findSession(pendingSession.current.id) ?? pendingSession.current)
+            : undefined
+        }
+        disabled={sending}
+      />
+      <button
+        className="btn-primary"
+        disabled={
+          (!draft.trim() && guideRefs.length === 0 && store.attachmentsFor(directory).length === 0) ||
+          sending ||
+          // 超限占位置灰（design-session-attachments §2b）：删除占位后恢复
+          guideRefs.some((r) => r.tooLarge) ||
+          store.attachmentsFor(directory).some((a) => a.tooLarge)
+        }
+        // 专注模式复用本按钮发送（§3.2 变形语义：面板内无发送钮）：
+        // 走 sendFromFocus（发送后无条件退回普通模式，D7）
+        onClick={() => (focusPhase === "off" ? void send() : void sendFromFocus())}
+      >
+        {t.send}
+      </button>
+    </>
+  )
+
   return (
     <div
+      ref={guideViewRef}
       className={
         "guide-view" +
         // 专注模式抑制类（§6.2/§6.3）：chips/附件钮/切换条渐隐（同 ChatView）
@@ -1273,36 +1370,9 @@ function GuidePage() {
                 </button>
               </div>
               {refInput.picker}
-              <div className="composer-actions">
-                {/* pendingSession 时切会话绑定；会话记录从 store 重读（乐观补丁是新对象，
-                    ref 持有的是创建时快照——AM-FIX-2：UI 不依赖父组件传参快照）。
-                    目录用该会话自身的：引导页已按作用域 key 隔离（design-compose-draft §2），
-                    挂载期内作用域不变、二者恒等，保留会话目录作防御（原 AM-IMPL3-3
-                    跨作用域存活场景随 key 隔离消失） */}
-                <ModelSwitcherBar
-                  directory={pendingSession.current?.directory ?? store.scopeQuery.directory}
-                  mode={pendingSession.current ? "session" : "defaults"}
-                  session={
-                    pendingSession.current
-                      ? (store.findSession(pendingSession.current.id) ?? pendingSession.current)
-                      : undefined
-                  }
-                  disabled={sending}
-                />
-                <button
-                  className="btn-primary"
-                  disabled={
-                    (!draft.trim() && guideRefs.length === 0 && store.attachmentsFor(directory).length === 0) ||
-                    sending ||
-                    // 超限占位置灰（design-session-attachments §2b）：删除占位后恢复
-                    guideRefs.some((r) => r.tooLarge) ||
-                    store.attachmentsFor(directory).some((a) => a.tooLarge)
-                  }
-                  onClick={() => void send()}
-                >
-                  {t.send}
-                </button>
-              </div>
+              {/* 发送行内容单一来源（renderSendRow）：普通模式原位；专注期本行
+                  被面板覆盖、由底部 .focus-sendbar 承接（§3.2 五轮） */}
+              <div className="composer-actions">{renderSendRow()}</div>
             </div>
           </div>
           {/* 操作区（design-diff-view §4.4 / design-layout §4）：diff 单入口（页内
@@ -1378,10 +1448,23 @@ function GuidePage() {
           </div>
         )}
       </div>
-      {/* 专注模式面板（design-focus-mode §3.2，2026-10-18 交互改版）：视图根的
-          绝对定位子元素（Tab 栏/左右栏外——切走再回经 §3.2b 记忆复位仍专注）；
-          禁用条件同普通发送钮（含 sending） */}
+      {/* 专注发送行（§3.2 五轮）：视图底部流内行（guide-scroll 收缩腾位），
+          与面板同栅格对齐左右缘——ms-bar（dim §6.3）+ 原发送钮（相位分流，
+          renderSendRow 单一来源）；两段式渐变类随相位（closing 渐出后卸载）。
+          渲染无 inset 闸门：面板底缘锚本行上缘，须先挂载供实测 */}
       {focusPhase !== "off" && (
+        <div
+          ref={focusSendbarRef}
+          className={"focus-sendbar " + (focusPhase === "closing" ? "focus-fade-out" : "focus-fade-in")}
+        >
+          {renderSendRow()}
+        </div>
+      )}
+      {/* 专注模式面板（design-focus-mode §3.2，2026-10-19 变形改版）：视图根的
+          绝对定位子元素（Tab 栏/左右栏外——切走再回经 §3.2b 记忆复位仍专注）；
+          五轮：整屏延展（上 16px 边距 → 底缘钉专注发送行上缘，磁贴/存档被盖）；
+          inset 闸门：未实测不挂载（FLIP 自然盒量测须在最终几何上执行） */}
+      {focusPhase !== "off" && focusInset !== null && (
         <FocusComposer
           phase={focusPhase}
           value={draft}
@@ -1394,14 +1477,7 @@ function GuidePage() {
           onRequestClose={requestFocusClose}
           placeholder={t.focusPlaceholder}
           exitTitle={t.focusModeExit}
-          sendLabel={t.send}
-          sendDisabled={
-            (!draft.trim() && guideRefs.length === 0 && store.attachmentsFor(directory).length === 0) ||
-            sending ||
-            guideRefs.some((r) => r.tooLarge) ||
-            store.attachmentsFor(directory).some((a) => a.tooLarge)
-          }
-          onSend={() => void sendFromFocus()}
+          bottomInset={focusInset}
           ariaLabel={t.focusModeEnter}
         />
       )}
@@ -1504,6 +1580,12 @@ function ChatView({ sessionID }: { sessionID: string }) {
   const [focusOrigin, setFocusOrigin] = useState<DOMRect | null>(null)
   const [focusSelection, setFocusSelection] = useState<FocusSelection | null>(null)
   const composerInputRef = useRef<HTMLDivElement>(null)
+  /** 发送行（§3.2 五轮统一锚）：面板底缘 = 本行上缘 − 6（与输入盒底缘等价，
+   *  但锚在换行源上——RO 观察本行可抓 ms-bar 换行的高度变化，review 三轮 #1） */
+  const composerActionsRef = useRef<HTMLDivElement>(null)
+  /** 面板底缘 inset（§3.2 变形语义）：实测视图底到发送行上缘的距离 */
+  const chatViewRef = useRef<HTMLDivElement>(null)
+  const focusInset = useFocusBottomInset(chatViewRef, composerActionsRef, focusPhase !== "off")
   /** 专注模式退出的选区恢复旁路（review major 1）：onFocus 的
    * selection-restore 默认分支（rAF 光标置末尾）会覆盖退出选区——本 ref
    * 非空时 onFocus 优先消费（同步 setSelectionRange，无 rAF 竞态） */
@@ -1854,6 +1936,7 @@ function ChatView({ sessionID }: { sessionID: string }) {
 
   return (
     <div
+      ref={chatViewRef}
       className={
         "chat-view" +
         // 专注模式抑制类（§6.2/§6.3）：chips/附件钮/切换条渐隐——元素恒挂载，
@@ -2045,7 +2128,7 @@ function ChatView({ sessionID }: { sessionID: string }) {
             <Maximize2 size={16} aria-hidden />
           </button>
         </div>
-        <div className="composer-actions">
+        <div className="composer-actions" ref={composerActionsRef}>
           {/* busy 不禁切换：服务端 next 语义（下一条消息生效）是预期行为（设计"不做的事"） */}
           <ModelSwitcherBar
             directory={store.findSession(sessionID)?.directory ?? ""}
@@ -2071,18 +2154,21 @@ function ChatView({ sessionID }: { sessionID: string }) {
                 store.fileRefsFor(sessionID).some((r) => r.tooLarge) ||
                 store.attachmentsFor(sessionID).some((a) => a.tooLarge)
               }
-              onClick={() => void send()}
+              // 专注模式复用本按钮发送（§3.2 变形语义：面板内无发送钮）：
+              // 走 sendFromFocus（发送后无条件退回普通模式，D7；引用/附件
+              // 照常计入——不可见但生效，§6.2）
+              onClick={() => (focusPhase === "off" ? void send() : void sendFromFocus())}
             >
               {t.send}
             </button>
           )}
         </div>
       </div>
-      {/* 专注模式面板（design-focus-mode §3.2，2026-10-18 交互改版）：视图根的
+      {/* 专注模式面板（design-focus-mode §3.2，2026-10-19 变形改版）：视图根的
           绝对定位子元素（Tab 栏/左右栏外——切走再回经 §3.2b 记忆复位仍专注）；
-          发送钮禁用条件同普通 composer（引用/附件照常计入——不可见但生效，
-          §6.2）；busy 不拦（supplement） */}
-      {focusPhase !== "off" && (
+          底缘钉在输入盒底缘（bottomInset 实测），原发送行原位保留在面板下方；
+          inset 闸门：未实测不挂载（FLIP 自然盒量测须在最终几何上执行） */}
+      {focusPhase !== "off" && focusInset !== null && (
         <FocusComposer
           phase={focusPhase}
           value={draft}
@@ -2095,15 +2181,7 @@ function ChatView({ sessionID }: { sessionID: string }) {
           onRequestClose={requestFocusClose}
           placeholder={t.focusPlaceholder}
           exitTitle={t.focusModeExit}
-          sendLabel={t.send}
-          sendDisabled={
-            (!draft.trim() &&
-              store.fileRefsFor(sessionID).length === 0 &&
-              store.attachmentsFor(sessionID).length === 0) ||
-            store.fileRefsFor(sessionID).some((r) => r.tooLarge) ||
-            store.attachmentsFor(sessionID).some((a) => a.tooLarge)
-          }
-          onSend={() => void sendFromFocus()}
+          bottomInset={focusInset}
           ariaLabel={t.focusModeEnter}
         />
       )}
