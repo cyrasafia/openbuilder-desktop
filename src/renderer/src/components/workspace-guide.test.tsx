@@ -667,6 +667,106 @@ describe("专注模式（design-focus-mode）", () => {
     expect(storeStub.createSession).not.toHaveBeenCalled()
   })
 
+  it("专注模式复用原发送按钮（§3.2 变形语义）：面板内无发送钮，点底部发送行发送并退回", async () => {
+    // 有状态 focus 桩（断言发送后退回清标记）；createSession 返回会话供 settle
+    const focusMemo = new Set<string>()
+    storeStub = makeStore({
+      focusModeFor: vi.fn((k: string) => focusMemo.has(k)),
+      setFocusMode: vi.fn((k: string, on: boolean) => {
+        if (on) focusMemo.add(k)
+        else focusMemo.delete(k)
+      }),
+      createSession: vi.fn(async () => ({ id: "s1", title: "T", directory: "/repo/a" })),
+    })
+    render(<Workspace />)
+    fireEvent.change(document.querySelector<HTMLTextAreaElement>(".composer-input textarea")!, {
+      target: { value: "专注内发送" },
+    })
+    fireEvent.click(document.querySelector<HTMLButtonElement>(".focus-enter")!)
+    // 面板内无发送按钮（发送不进面板）；底部专注发送行挂载（§3.2 五轮）
+    expect(document.querySelector(".focus-composer .btn-primary")).toBeNull()
+    expect(document.querySelector(".focus-sendbar")).not.toBeNull()
+
+    // 底部发送行的发送钮（renderSendRow 单一来源，与原行同条件/分流）：
+    // 走 sendFromFocus
+    const send = document.querySelector<HTMLButtonElement>(".focus-sendbar .btn-primary")!
+    expect(send.disabled).toBe(false)
+    fireEvent.click(send)
+
+    await waitFor(() => expect(storeStub.createSession).toHaveBeenCalledTimes(1))
+    expect(storeStub.sendPrompt).toHaveBeenCalledWith(
+      "s1",
+      "专注内发送",
+      expect.anything(),
+      expect.anything(),
+    )
+    // 发送后无条件退回普通模式（D7）：closing 兜底定时器后面板/发送行卸载 + 标记清
+    await waitFor(() => {
+      expect(document.querySelector(".focus-composer")).toBeNull()
+    })
+    expect(document.querySelector(".focus-sendbar")).toBeNull()
+    expect(focusMemo.has("/repo/a")).toBe(false)
+  })
+
+  /** 元素级 rect stub 共享 helper（jsdom 无布局）：给指定 top/bottom 造全 0 宽高 rect */
+  function stubRect(edge: { top?: number; bottom?: number }): DOMRect {
+    return {
+      width: 0,
+      height: 0,
+      top: edge.top ?? 0,
+      left: 0,
+      right: 0,
+      bottom: edge.bottom ?? 0,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as unknown as DOMRect
+  }
+
+  it("底缘实测落点（§3.2 五轮）：面板 inline bottom = 视图底 − 发送行上缘 + 6", () => {
+    // 元素级 rect stub：guide-view 底 600 / focus-sendbar 上缘 564 → inset 42
+    // （564 = 600 − 8 底 padding − 28 钮高）。其余元素（面板自身 FLIP 量测/
+    // CM 内部）回落原生（jsdom 全 0——FLIP 分支自动跳过，同本 describe 口径）
+    const orig = Element.prototype.getBoundingClientRect
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      const cls = (this as HTMLElement).classList
+      if (cls?.contains("guide-view")) return stubRect({ bottom: 600 })
+      if (cls?.contains("focus-sendbar")) return stubRect({ top: 564, bottom: 592 })
+      return orig.call(this)
+    }
+    try {
+      render(<Workspace />)
+      fireEvent.click(document.querySelector<HTMLButtonElement>(".focus-enter")!)
+      const panel = document.querySelector<HTMLElement>(".focus-composer")!
+      expect(panel.style.bottom).toBe("42px")
+    } finally {
+      Element.prototype.getBoundingClientRect = orig
+    }
+  })
+
+  it("底缘不随输入盒动（§3.2 五轮）：chips 增删推动输入盒，面板底缘锚发送行不变", () => {
+    const orig = Element.prototype.getBoundingClientRect
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      const cls = (this as HTMLElement).classList
+      if (cls?.contains("guide-view")) return stubRect({ bottom: 600 })
+      if (cls?.contains("focus-sendbar")) return stubRect({ top: 564, bottom: 592 })
+      return orig.call(this)
+    }
+    try {
+      const { rerender } = render(<Workspace />)
+      fireEvent.click(document.querySelector<HTMLButtonElement>(".focus-enter")!)
+      expect(document.querySelector<HTMLElement>(".focus-composer")!.style.bottom).toBe("42px")
+
+      // 专注期右键加引用 chip（直写 store，生效但不可见 §6.2）：输入盒被推动，
+      // 但面板底缘锚 .focus-sendbar（视图底部流内行，不随内容动）——保持 42px
+      storeStub.fileRefsFor = vi.fn(() => [{ path: "/a.ts", tooLarge: false }])
+      rerender(<Workspace />)
+      expect(document.querySelector<HTMLElement>(".focus-composer")!.style.bottom).toBe("42px")
+    } finally {
+      Element.prototype.getBoundingClientRect = orig
+    }
+  })
+
   it("专注态记忆（§3.2b）：切走（激活 chat Tab）再回引导页，复位仍专注；退出清标记", async () => {
     // 有状态 focus 桩：模拟内存 Map（setFocusMode 写、focusModeFor 读）；
     // 引导页草稿同做有状态桩（重挂载读回路径，真实 store 同构）

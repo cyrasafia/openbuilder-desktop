@@ -48,9 +48,7 @@ const baseProps: FocusProps = {
   onRequestClose: () => {},
   placeholder: "占位",
   exitTitle: "退回普通模式（Esc）",
-  sendLabel: "发送",
-  sendDisabled: false,
-  onSend: () => {},
+  bottomInset: 42,
   ariaLabel: "专注模式",
 }
 
@@ -115,6 +113,15 @@ describe("FocusComposer（design-focus-mode）", () => {
     const r = renderFocus()
     fireEvent.keyDown(cmContent(r.container), { key: "Escape" })
     expect(r.onRequestClose).toHaveBeenCalledTimes(1)
+  })
+
+  it("面板内无发送按钮（§3.2 变形语义：发送回归原 composer 操作行）", () => {
+    const r = renderFocus()
+    expect(r.container.querySelector(".focus-composer button.btn-primary")).toBeNull()
+    // 唯一按钮 = 顶行退出钮（Minimize2）；底缘 inset 以 inline style 落在面板根
+    const panel = r.container.querySelector<HTMLElement>(".focus-composer")!
+    expect(panel.style.bottom).toBe("42px")
+    expect(panel.querySelectorAll("button")).toHaveLength(1)
   })
 
   it("相位回调：opening → onOpened；closing → onClosed 携选区", async () => {
