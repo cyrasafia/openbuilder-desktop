@@ -8,6 +8,7 @@
 - **v0.5.1 目标 = 全部功能稳定，可 daily drive**（补丁版收口，不扩范围；0.6 功能范围另行确定，恢复项归属见降级表注记）。
 - **v0.5.2 主题 = 新增未读标记功能**（功能 #11：服务端 `time.viewed` 水位判定 + `POST /api/session/:id/view` 标记已读，左栏/chat Tab 蓝点、点开即清；配套聚合 chip 重设计同版落地——状态圆点领头 + 中性数字，未读纳入 chip）。
 - **v0.5.3 主题 = 修复删除 worktree 后残留伪项目问题**（2026-10-13 定位真触发器后的成套防御：删除窗口在途 location 请求挂起等清零 + 删除成功后 evict warm location，design-worktree-sync §3.4/§3.5、ref-pseudo-project-cleanup §3.4/§7e；期间另有 pty 预杀置退出态、`time.active` 选择器排序等稳定性修复随版）。
+- **v0.5.4 主题 = 新增专注模式**（design-focus-mode：会话页/引导页专注输入态——tab 内嵌面板、切走再回保持专注态、输入框变形撑满页面、guide 整屏延展，三连迭代收敛形态；随版含 v2 subagent 面板未就绪修复、tool 状态合并单调化等稳定性改进）。
 
 ## 范围内
 
