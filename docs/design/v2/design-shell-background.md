@@ -10,7 +10,8 @@
 > 停止破坏性预告、信息丢失空态文案按因二分（见决策 5-8）。同日 review 修订
 > （两条 non-blocking + 一 nit 全采纳）：尾部取数改两段式（server cursor 无
 > 尾部语义、size 仅在响应内）、运行期增量缓冲截断（1MB 上限丢头部）、
-> `ShellInfo` 扩字段清单明化。
+> `ShellInfo` 扩字段清单明化。实现后 review 修订（2026-10-20，1 blocking +
+> 2 non-blocking + nits 全采纳）见文末 Review 记录。
 >
 > 范围：agent 经 `shell` tool `background: true`（或前台转后台）派发的后台命令。
 > **不含**用户 `!` 命令路径（session shell 端点——桌面端无此入口，见「不做的事」）。
@@ -321,3 +322,24 @@ deleteShell(id): Promise<void>                   // DELETE /api/shell/:id
 | `src/renderer/src/styles/app.css` | 输出窗、终态行与尾部截断提示行样式（任务行复用 `.bg-task-row`） |
 | `src/renderer/src/i18n/index.ts` | `bgCmd*` 键组（含 TimedOut/StopDiscardWarning/OutputTailOnly/OutputDiscarded/OutputGone）中英 |
 | `docs/spec/spec-v0.5.md` | 功能范围 #10 扩写 + 验收清单 |
+
+## Review 记录
+
+### 第一轮（2026-10-20，设计评审）
+
+结论：可合入。两条 non-blocking + 一 nit 全采纳（两段式取数 / 运行期缓冲
+截断 / ShellInfo 扩字段清单，见决策 7 与详情窗节）；2.0.28 上 C9 复核无漂移。
+
+### 第二轮（2026-10-20，实现后 reviewer 子代理审查）
+
+结论：需修订→已修订。1 blocking + 2 non-blocking + nits 全处置：
+
+| # | 级别 | 问题 | 处置 |
+|---|---|---|---|
+| 1 | 🔴 | ShellOutputPanel 双闭包竞态：输出闭包结尾无条件 `setPhase("done")` 覆盖状态闭包的 `running` → 2s 增量永不启动（主场景失效且静默） | 改函数式更新 `setPhase(p => p === "running" ? "running" : "done")`；补「info 先回 running、output 后回仍 running」回归测试 |
+| 2 | 🟠 | SSE 缺口下 success 的 state.input 是原始 JSON 字符串 → ②误判③且无撤回（bg-shell-convert 与 REST 重建的 bg-shell-start 并存） | 双修：判据函数对字符串 input 尝试 JSON.parse；live 挂点（onShellToolPartSettled）input 非对象**不插**——误插源头消除，缺口序交 REST 对账重建（快照 input 恒为 parsed 对象）；补缺口序不插测试 |
+| 3 | 🟠 | loadShellOutput/loadShellInfo 一切错误归 null → 断网也落「服务器已重启」误导文案 | 404（`ApiError.kind === "not-found"`）才归 null；其他 rethrow，组件维持加载态（重开重试） |
+| 4 | 🟢 | 全量补齐 while 无进展守卫（server 读流出错 cursor 不前进 → 死循环） | `if (page.cursor <= cursor) break` |
+| 5 | 🟢 | setOmitted 在 setText updater 内（StrictMode 双调用 omitted 双计） | textRef 镜像 + applyOutput 纯函数化，副作用移出 updater |
+| 6 | 🟢 | 停止后对账挂点缺失（设计四挂点 vs 实现三处）；终态行在滚动体内随滚动离开视口；killed 无 signal 落「退出码 0」误导 | stopBackgroundShell 尾部补 reconcileShellTasks；终态行移 header 下固定区 + running spinner 行；`bgCmdKilled` 单列文案 |
+| — | 附注 | 首拉 first.output 漏入缓冲（#1 修复重构引入，测试抓住） | applyOutput(first.output) 补齐 |

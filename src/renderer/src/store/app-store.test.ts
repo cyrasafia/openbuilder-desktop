@@ -12,7 +12,7 @@ import { ApiError, RestClient } from "@shared/rest-client"
 import { toInternalMessages } from "@shared/v2-adapter"
 import { SseSubscriber } from "@shared/sse-subscriber"
 import type { ModelCatalog } from "@shared/model-catalog"
-import type { V2ModelInfo } from "@shared/api-v2-types"
+import type { V2ModelInfo, ShellInfo } from "@shared/api-v2-types"
 import type {
   AgentInfo,
   FileContentData,
@@ -171,6 +171,11 @@ beforeEach(() => {
     ): Promise<{ entries: MessageWithParts[]; nextCursor: string | null }> => ({ entries: [], nextCursor: null }),
     prompt: async () => ({ id: "" }),
     interrupt: async () => {},
+    // 后台 shell（design-shell-background）：默认无运行中 shell，用例按需覆盖
+    listShells: async (_directory: string): Promise<ShellInfo[]> => [],
+    getShellOutput: async () => ({ output: "", cursor: 0, size: 0, truncated: false }),
+    getShell: async (id: string): Promise<ShellInfo> => ({ id, status: "exited" }),
+    deleteShell: async () => {},
     createWorktree: async (_pid: string, _opts: { name?: string } = {}) => ({
       directory: `/wt-${Math.random().toString(36).slice(2, 6)}`,
     }),
@@ -8224,13 +8229,13 @@ describe("用户后台任务（design-subagent-background）", () => {
     setStatus("bg", "busy")
     setStatus("tool", "busy")
     expect(store.dotStateFor("p")).toBe("running")
-    expect(store.runningBackgroundTasks("p").map((s) => s.id)).toEqual(["bg", "tool"])
+    expect(store.runningBackgroundTasks("p").map((t) => (t.kind === "shell" ? t.shell.id : t.session.id))).toEqual(["bg", "tool"])
     // 工具型子会话被 task tool part 权威认领 → 排除
     seedMessages("p", {
       info: { id: "msg_a", sessionID: "p", role: "assistant", time: { created: 1 } },
       parts: [toolPart("task", { sessionId: "tool" }) as Part],
     })
-    expect(store.runningBackgroundTasks("p").map((s) => s.id)).toEqual(["bg"])
+    expect(store.runningBackgroundTasks("p").map((t) => (t.kind === "shell" ? t.shell.id : t.session.id))).toEqual(["bg"])
   })
 
   it("D3：session.created 合成启动提示；工具型 tool part 到达后按同判据撤回", () => {
@@ -8397,7 +8402,7 @@ describe("用户后台任务（design-subagent-background）", () => {
       info: { id: "msg_a", sessionID: "p", role: "assistant", time: { created: 1 } },
       parts: [subagentPart({ description: "bg1", background: true }, { sessionID: "bg1" }, "completed") as Part],
     })
-    expect(store.runningBackgroundTasks("p").map((s) => s.id)).toEqual(["bg1"])
+    expect(store.runningBackgroundTasks("p").map((t) => (t.kind === "shell" ? t.shell.id : t.session.id))).toEqual(["bg1"])
     // REST 对账（60s 周期/重连兜底）带回同一 completed part → 启动提示保留
     //（2026-10-07 现场病灶回归钉：旧判据 completed 认领即撤 → 闪现消失）
     clientV2Of().listMessagesPage = async () => ({
@@ -8411,7 +8416,7 @@ describe("用户后台任务（design-subagent-background）", () => {
     })
     await store.loadSessionMessages("p", ROOT)
     expect(store.noticesForSession("p").map((n) => n.id)).toEqual(["bg-start:bg1"])
-    expect(store.runningBackgroundTasks("p").map((s) => s.id)).toEqual(["bg1"])
+    expect(store.runningBackgroundTasks("p").map((t) => (t.kind === "shell" ? t.shell.id : t.session.id))).toEqual(["bg1"])
   })
 
   it("升格：前台转后台——运行中前台 part 排除任务条，转换（part completed）后纳入", () => {
@@ -8429,7 +8434,7 @@ describe("用户后台任务（design-subagent-background）", () => {
       info: { id: "msg_a", sessionID: "p", role: "assistant", time: { created: 1 } },
       parts: [subagentPart({ description: "fg1" }, { sessionID: "fg1" }, "completed") as Part],
     })
-    expect(store.runningBackgroundTasks("p").map((s) => s.id)).toEqual(["fg1"])
+    expect(store.runningBackgroundTasks("p").map((t) => (t.kind === "shell" ? t.shell.id : t.session.id))).toEqual(["fg1"])
   })
 
   it("转后台提示（③对齐裁定 2026-10-08）：part completed 事件合成 bg-convert；幂等不重插", () => {
@@ -8496,7 +8501,7 @@ describe("用户后台任务（design-subagent-background）", () => {
     })
     await store.loadSessionMessages("p", ROOT)
     expect(store.noticesForSession("p").map((n) => n.id)).toEqual(["bg-convert:fg5"])
-    expect(store.runningBackgroundTasks("p").map((s) => s.id)).toEqual(["fg5"])
+    expect(store.runningBackgroundTasks("p").map((t) => (t.kind === "shell" ? t.shell.id : t.session.id))).toEqual(["fg5"])
   })
 
   it("启动提示 REST 重建（2026-10-08 重建修订）：窗口内①②补 bg-start、前台认领不补、窗口外待翻页", async () => {
@@ -8800,5 +8805,185 @@ describe("findChildSession 降级匹配（design-subagent-status §D3）", () =>
       sessionsOf(child("ses_a", "A", 1), child("ses_b", "B", 2)),
     )
     expect(store.findChildSession("parent")?.id).toBe("ses_b")
+  })
+})
+
+describe("后台 shell 任务（design-shell-background，2026-10-20）", () => {
+  function dispatch(ev: { type: string; properties: unknown }, dir = ROOT) {
+    ;(store as unknown as { handleEvent: (d: string, e: unknown) => void }).handleEvent(dir, ev)
+  }
+  function seedParent() {
+    store.sessionsByProject.set("proj1", sessionsOf(session("p", ROOT, { created: 1, updated: 1 })))
+    seedMessages("p")
+  }
+  const shellPartCompleted = (shellID: string, background: boolean) => ({
+    id: `prt_sh_${shellID}`,
+    sessionID: "p",
+    messageID: "msg_a",
+    type: "tool" as const,
+    callID: `c_${shellID}`,
+    tool: "shell",
+    state: {
+      status: "completed",
+      input: { command: `cmd-${shellID}`, ...(background ? { background: true } : {}) },
+      output: "",
+      title: "shell",
+      metadata: { shellID, status: "running", truncated: false },
+    },
+  })
+
+  it("SSE 派发即返回（②）：called → success（metadata status running）合成启动通知", () => {
+    seedParent()
+    seedMessages("p", {
+      info: { id: "msg_a", sessionID: "p", role: "assistant", time: { created: 1 } },
+      parts: [],
+    })
+    // 真实事件序：input.started（建 part 带 tool 名）→ called（parsed input）→ success
+    dispatch({ type: "session.tool.input.started", properties: { sessionID: "p", assistantMessageID: "msg_a", id: "prt_sh_x", name: "shell" } })
+    dispatch({ type: "session.tool.called", properties: { sessionID: "p", assistantMessageID: "msg_a", id: "prt_sh_x", name: "shell", input: { command: "npm run dev", background: true } } })
+    dispatch({
+      type: "session.tool.success",
+      properties: { sessionID: "p", assistantMessageID: "msg_a", id: "prt_sh_x", content: [], metadata: { shellID: "sh_x", status: "running", truncated: false } },
+    })
+    const notices = store.noticesForSession("p")
+    expect(notices).toHaveLength(1)
+    expect(notices[0]).toMatchObject({
+      id: "bg-shell-start:sh_x",
+      kind: "background-started",
+      label: "npm run dev",
+      shellID: "sh_x",
+    })
+  })
+
+  it("前台正常完成（metadata status completed）：不合成通知", () => {
+    seedParent()
+    seedMessages("p", {
+      info: { id: "msg_a", sessionID: "p", role: "assistant", time: { created: 1 } },
+      parts: [],
+    })
+    dispatch({ type: "session.tool.input.started", properties: { sessionID: "p", assistantMessageID: "msg_a", id: "prt_sh_y", name: "shell" } })
+    dispatch({ type: "session.tool.called", properties: { sessionID: "p", assistantMessageID: "msg_a", id: "prt_sh_y", name: "shell", input: { command: "ls" } } })
+    dispatch({
+      type: "session.tool.success",
+      properties: { sessionID: "p", assistantMessageID: "msg_a", id: "prt_sh_y", content: [], metadata: { shellID: "sh_y", status: "completed", truncated: false } },
+    })
+    expect(store.noticesForSession("p")).toHaveLength(0)
+  })
+
+  it("inbox synthetic source:shell → finished 通知（timedOut 细分 + label 取 XML command）", () => {
+    seedParent()
+    dispatch({
+      type: "session.inbox.enqueued",
+      properties: {
+        sessionID: "p",
+        inboxID: "msg_fin",
+        item: {
+          type: "synthetic",
+          time: { created: 9 },
+          payload: {
+            text: '<shell id="sh_x" state="completed" command="npm run build">\nok\n</shell>',
+            metadata: { source: "shell", shellID: "sh_x", state: "completed", timeout: true, truncated: false },
+          },
+        },
+      },
+    })
+    const notices = store.noticesForSession("p")
+    expect(notices).toHaveLength(1)
+    expect(notices[0]).toMatchObject({
+      id: "msg_fin",
+      kind: "background-finished",
+      label: "npm run build",
+      state: "completed",
+      shellID: "sh_x",
+      timedOut: true,
+    })
+  })
+
+  it("reconcileShellTasks：listShells 按 metadata.sessionID 归属过滤入卡，dotStateFor 点亮", async () => {
+    seedParent()
+    clientV2Of().listShells = async () => [
+      { id: "sh_1", status: "running", command: "npm run dev", metadata: { sessionID: "p" }, time: { started: 1 } },
+      { id: "sh_2", status: "running", command: "other session", metadata: { sessionID: "ses_other" }, time: { started: 1 } },
+    ]
+    ;(store as unknown as { reconcileShellTasks: (s: string) => void }).reconcileShellTasks("p")
+    await vi.waitFor(() => {
+      expect(store.runningBackgroundTasks("p")).toHaveLength(1)
+    })
+    expect(store.runningBackgroundTasks("p")[0]).toMatchObject({ kind: "shell", shell: { id: "sh_1" } })
+    // 指示器点亮（不动 sessionActivity——输入锁口径零波及）
+    expect(store.dotStateFor("p")).toBe("running")
+    expect(store.sessionActivity("p")).toBe("idle")
+
+    // finished 通知到达 → 终态集过滤，卡移除、指示器熄灭
+    clientV2Of().listShells = async () => [
+      { id: "sh_1", status: "running", command: "npm run dev", metadata: { sessionID: "p" }, time: { started: 1 } },
+    ]
+    seedMessages(
+      "p",
+      {
+        info: { id: "msg_fin", sessionID: "p", role: "user", time: { created: 9 }, metadata: { source: "shell", shellID: "sh_1", state: "completed" } },
+        parts: [{ id: "msg_fin:text", sessionID: "p", messageID: "msg_fin", type: "text", text: "<shell>", synthetic: true } as Part],
+      },
+    )
+    ;(store as unknown as { extractSyntheticNotices: (s: string, m: unknown) => void }).extractSyntheticNotices("p", [...store.messagesBySession.get("p")!.values()])
+    ;(store as unknown as { reconcileShellTasks: (s: string) => void }).reconcileShellTasks("p")
+    await vi.waitFor(() => {
+      expect(store.runningBackgroundTasks("p")).toHaveLength(0)
+    })
+    expect(store.dotStateFor("p")).not.toBe("running")
+  })
+
+  it("stopBackgroundShell：deleteShell + deletedShellIds 记忆 + 本地即时移除", async () => {
+    seedParent()
+    clientV2Of().listShells = async () => [
+      { id: "sh_1", status: "running", command: "npm run dev", metadata: { sessionID: "p" }, time: { started: 1 } },
+    ]
+    ;(store as unknown as { reconcileShellTasks: (s: string) => void }).reconcileShellTasks("p")
+    await vi.waitFor(() => {
+      expect(store.runningBackgroundTasks("p")).toHaveLength(1)
+    })
+    const deleted: string[] = []
+    clientV2Of().deleteShell = async (id: string) => {
+      deleted.push(id)
+    }
+    await store.stopBackgroundShell("p", "sh_1")
+    expect(deleted).toEqual(["sh_1"])
+    expect(store.runningBackgroundTasks("p")).toHaveLength(0)
+    // 404 空态文案二分判据（决策 6）
+    expect(store.shellDeletedLocally("sh_1")).toBe(true)
+    expect(store.shellDeletedLocally("sh_2")).toBe(false)
+  })
+
+  it("rebuildShellNotices（REST 重建）：part 判据持久——②③终态后均可重建", () => {
+    seedParent()
+    seedMessages("p", {
+      info: { id: "msg_a", sessionID: "p", role: "assistant", time: { created: 100 } },
+      parts: [shellPartCompleted("sh_a", true) as Part, shellPartCompleted("sh_b", false) as Part],
+    })
+    ;(store as unknown as { rebuildShellNotices: (s: string) => void }).rebuildShellNotices("p")
+    const ids = store.noticesForSession("p").map((n) => n.id)
+    expect(ids).toContain("bg-shell-start:sh_a")
+    expect(ids).toContain("bg-shell-convert:sh_b")
+  })
+})
+
+describe("后台 shell——SSE 缺口 input 守卫（review #2）", () => {
+  function dispatch(ev: { type: string; properties: unknown }, dir = ROOT) {
+    ;(store as unknown as { handleEvent: (d: string, e: unknown) => void }).handleEvent(dir, ev)
+  }
+
+  it("success 时 input 是原始 JSON 字符串（缺口吞掉 called）：live 不插——②③分流无依据，REST 对账重建", () => {
+    store.sessionsByProject.set("proj1", sessionsOf(session("p", ROOT, { created: 1, updated: 1 })))
+    seedMessages("p", {
+      info: { id: "msg_a", sessionID: "p", role: "assistant", time: { created: 1 } },
+      parts: [],
+    })
+    dispatch({ type: "session.tool.input.started", properties: { sessionID: "p", assistantMessageID: "msg_a", id: "prt_sh_z", name: "shell" } })
+    dispatch({ type: "session.tool.input.ended", properties: { sessionID: "p", assistantMessageID: "msg_a", id: "prt_sh_z", text: '{"command":"npm run dev","background":true}' } })
+    dispatch({
+      type: "session.tool.success",
+      properties: { sessionID: "p", assistantMessageID: "msg_a", id: "prt_sh_z", content: [], metadata: { shellID: "sh_z", status: "running", truncated: false } },
+    })
+    expect(store.noticesForSession("p")).toHaveLength(0)
   })
 })

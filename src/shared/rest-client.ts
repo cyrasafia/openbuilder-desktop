@@ -21,6 +21,7 @@ import type {
   V2ModelInfo,
   V2PermissionDecision,
   ShellInfo,
+  ShellOutput,
   VcsFileStatus,
   WorktreeDirectory,
 } from "./api-v2-types"
@@ -588,6 +589,44 @@ export class RestClient {
       // best-effort 清理（退出态 shell 记录；失败吞掉不影响结果）
       void this.fetchResponse(`/api/shell/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => {})
     }
+  }
+
+  /**
+   * GET /api/shell?location[directory]=：**仅返回 status === "running"** 的 shell
+   * （server list 过滤，design-shell-background C7）——运行中任务的盘点源；
+   * 历史盘点不可行（终态不在此列）。归属过滤由调用方按 metadata.sessionID 做。
+   */
+  async listShells(directory: string): Promise<ShellInfo[]> {
+    const q = new URLSearchParams()
+    q.set("location[directory]", directory)
+    const res = await this.fetchJson<{ data: ShellInfo[] }>(`/api/shell?${q.toString()}`)
+    return Array.isArray(res.data) ? res.data : []
+  }
+
+  /**
+   * GET /api/shell/:id/output：按 byte cursor 分页取累积输出（默认 limit 64KB，
+   * 详情窗首拉/增量复用）。404 = 记录已失（停止删除 / server 重启 / 7 天清理）。
+   */
+  async getShellOutput(id: string, cursor?: number, limit?: number): Promise<ShellOutput> {
+    const q = new URLSearchParams()
+    if (cursor !== undefined) q.set("cursor", String(cursor))
+    if (limit !== undefined) q.set("limit", String(limit))
+    const qs = q.toString()
+    const res = await this.fetchJson<{ data: ShellOutput }>(
+      `/api/shell/${encodeURIComponent(id)}/output${qs ? `?${qs}` : ""}`,
+    )
+    return res.data
+  }
+
+  /** DELETE /api/shell/:id：终止并删除（杀进程 + 删记录 + 删输出——停止即删档） */
+  async deleteShell(id: string): Promise<void> {
+    await this.fetchResponse(`/api/shell/${encodeURIComponent(id)}`, { method: "DELETE" })
+  }
+
+  /** GET /api/shell/:id：单个 shell 状态（详情窗终态行；404 同 output 语义） */
+  async getShell(id: string): Promise<ShellInfo> {
+    const res = await this.fetchJson<{ data: ShellInfo }>(`/api/shell/${encodeURIComponent(id)}`)
+    return res.data
   }
 
   /**

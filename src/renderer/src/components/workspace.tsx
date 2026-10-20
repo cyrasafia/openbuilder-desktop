@@ -19,6 +19,7 @@ import {
   ChevronRight,
   ChevronUp,
   ChevronsRight,
+  CircleAlert,
   CircleCheck,
   CircleHelp,
   CircleStop,
@@ -43,7 +44,7 @@ import { format, relativeTime } from "../i18n"
 import type { Catalog } from "../i18n"
 import { filterRevertedEntries, type ChatEntry } from "@shared/message-merge"
 import { extractErrorMessage, extractRetryMessage, isAbortError } from "@shared/message-error"
-import { toolChildSessionId, type SessionNotice } from "@shared/session-notices"
+import { toolChildSessionId, type BackgroundTask, type SessionNotice } from "@shared/session-notices"
 import type {
   CommandInfo,
   Part,
@@ -1422,11 +1423,13 @@ function ChatView({ sessionID }: { sessionID: string }) {
   const entries = store.chatEntries(sessionID)
   const status = store.statusOf(sessionID)
   const busy = status.type !== "idle"
-  // 用户后台任务（design-subagent-background D1）：运行中的命令型子会话 → 常驻任务条
+  // 用户后台任务（design-subagent-background D1 + design-shell-background）：
+  // 运行中的命令型子会话 + 后台 shell → 常驻任务条
   const backgroundTasks = store.runningBackgroundTasks(sessionID)
   // 任务详情窗（D2/D4，2026-10-08 修订）：任务行点击或完成提示「查看结果」触发；
-  // 与任务卡互斥渲染（详情替代任务列表，同槽位切换）
-  const [taskDetail, setTaskDetail] = useState<{ childID: string; label: string } | null>(null)
+  // 与任务卡互斥渲染（详情替代任务列表，同槽位切换）。shell 详情 = 输出流
+  // （design-shell-background：id 前缀分流——`sh_` 输出窗 / 子会话消息流）
+  const [taskDetail, setTaskDetail] = useState<TaskDetailView | null>(null)
   // 任务列表展开态（受控，挂 ChatView 而非卡内，2026-10-08 裁定）：详情窗开合
   // 会替代/恢复任务卡（组件随之卸载/重挂载），展开态活在卡外才能跨详情保留——
   // 展开中点行查看、关闭详情后列表仍展开
@@ -1441,9 +1444,17 @@ function ChatView({ sessionID }: { sessionID: string }) {
   useEffect(() => {
     if (store.taskDetailVersion === lastTaskDetailVersion.current) return
     lastTaskDetailVersion.current = store.taskDetailVersion
-    const childID = store.consumeTaskDetailRequest()
-    if (!childID) return
-    setTaskDetail({ childID, label: store.findSession(childID)?.title || childID })
+    const detail = store.consumeTaskDetailRequest()
+    if (!detail) return
+    if (detail.id.startsWith("sh_")) {
+      setTaskDetail({ kind: "shell", shellID: detail.id, label: detail.label ?? detail.id })
+    } else {
+      setTaskDetail({
+        kind: "session",
+        childID: detail.id,
+        label: store.findSession(detail.id)?.title || detail.label || detail.id,
+      })
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store.taskDetailVersion, sessionID])
   // 回滚暂存态（design-message-revert）：回滚点起消息从消息流隐藏（对齐官方
@@ -1902,21 +1913,34 @@ function ChatView({ sessionID }: { sessionID: string }) {
           }
         >
           {taskDetail ? (
-            <TaskDetailPanel
-              childID={taskDetail.childID}
-              label={taskDetail.label}
-              onClose={() => setTaskDetail(null)}
-            />
+            taskDetail.kind === "shell" ? (
+              <ShellOutputPanel
+                shellID={taskDetail.shellID}
+                label={taskDetail.label}
+                onClose={() => setTaskDetail(null)}
+              />
+            ) : (
+              <TaskDetailPanel
+                childID={taskDetail.childID}
+                label={taskDetail.label}
+                onClose={() => setTaskDetail(null)}
+              />
+            )
           ) : (
             <BackgroundTaskBar
               tasks={backgroundTasks}
               open={taskListOpen}
               onOpenChange={setTaskListOpen}
-              onOpenDetail={(childID) =>
-                setTaskDetail({
-                  childID,
-                  label: store.findSession(childID)?.title || childID,
-                })
+              onOpenDetail={(task) =>
+                setTaskDetail(
+                  task.kind === "shell"
+                    ? { kind: "shell", shellID: task.shell.id, label: task.shell.command || task.shell.id }
+                    : {
+                        kind: "session",
+                        childID: task.session.id,
+                        label: task.session.title || task.session.id,
+                      },
+                )
               }
             />
           )}
@@ -3352,42 +3376,54 @@ function formatDuration(ms: number): string {
 }
 
 /**
- * 系统提示行（design-subagent-background D5）：低强调行式 notice，
- * 承载后台任务启动/转后台/完成。可选 trailing「查看」（有 childID 时）。
+ * 系统提示行（design-subagent-background D5 + design-shell-background）：低强调
+ * 行式 notice，承载后台任务启动/转后台/完成。可选 trailing「查看」（childID/
+ * shellID 任一存在时）。shell 文案独立键组 bgCmd*（「后台命令」与「后台任务」
+ * 一词一义）；超时细分呈现（缺口 #1）：completed ∧ timedOut → TimedOut 文案 +
+ * CircleAlert 第四分支。
  */
 export function NoticeRow({ notice }: { notice: SessionNotice }) {
   const store = useStore()
   const { t } = useI18n()
+  const isShell = !!notice.shellID
   let icon = <Rocket size={14} aria-hidden />
   let text: string
   if (notice.kind === "background-started") {
-    text = format(t.bgTaskStarted, { label: notice.label })
+    text = format(isShell ? t.bgCmdStarted : t.bgTaskStarted, { label: notice.label })
   } else if (notice.kind === "background-converted") {
     icon = <CornerUpRight size={14} aria-hidden />
-    text = format(t.bgTaskConverted, { label: notice.label })
+    text = format(isShell ? t.bgCmdConverted : t.bgTaskConverted, { label: notice.label })
   } else {
     switch (notice.state) {
       case "error":
         icon = <CircleX size={14} aria-hidden />
-        text = format(t.bgTaskFailed, { label: notice.label })
+        text = format(isShell ? t.bgCmdFailed : t.bgTaskFailed, { label: notice.label })
         break
       case "cancelled":
         icon = <CircleStop size={14} aria-hidden />
-        text = format(t.bgTaskCancelled, { label: notice.label })
+        text = format(isShell ? t.bgCmdCancelled : t.bgTaskCancelled, { label: notice.label })
         break
       default:
-        icon = <CircleCheck size={14} aria-hidden />
-        text = format(t.bgTaskCompleted, { label: notice.label })
+        if (isShell && notice.timedOut) {
+          // 超时终态（缺口 #1）：state 是 completed + metadata.timeout:true——
+          // 直接归「完成」会误导
+          icon = <CircleAlert size={14} aria-hidden />
+          text = format(t.bgCmdTimedOut, { label: notice.label })
+        } else {
+          icon = <CircleCheck size={14} aria-hidden />
+          text = format(isShell ? t.bgCmdCompleted : t.bgTaskCompleted, { label: notice.label })
+        }
     }
   }
+  const detailID = notice.shellID ?? notice.childID
   return (
     <div className={"system-notice " + notice.kind} role="status">
       <span className="system-notice-icon">{icon}</span>
       <span className="system-notice-text">{text}</span>
-      {notice.childID && (
+      {detailID && (
         <button
           className="system-notice-action"
-          onClick={() => store.requestTaskDetail(notice.childID!)}
+          onClick={() => store.requestTaskDetail(detailID, notice.label)}
         >
           {t.bgTaskView}
         </button>
@@ -3397,12 +3433,13 @@ export function NoticeRow({ notice }: { notice: SessionNotice }) {
 }
 
 /**
- * 常驻后台任务卡（design-subagent-background D1/D2）：分隔线上方 `.bg-task-slot`
- * 槽位（2026-10-08 修订，原 composer 顶行）。无运行中任务返回 null（全部完成后
- * 自动消失）。通栏折叠卡（2026-10-07 修订：复用 .pending-card 结构，同授权/
- * 问题卡；默认收起），展开体在卡内列出任务：整行点击「查看」（嵌入详情，
- * 与任务卡互斥渲染）、行尾「停止」（interrupt 该子会话，stopPropagation
- * 防误触发行点击）。任务行不带图标（与卡头部 Rocket 重复，2026-10-08 裁定）。
+ * 常驻后台任务卡（design-subagent-background D1/D2 + design-shell-background）：
+ * 分隔线上方 `.bg-task-slot` 槽位（2026-10-08 修订，原 composer 顶行）。无运行中
+ * 任务返回 null（全部完成后自动消失）。通栏折叠卡（2026-10-07 修订：复用
+ * .pending-card 结构，同授权/问题卡；默认收起），展开体在卡内列出任务：整行点击
+ * 「查看」（嵌入详情，与任务卡互斥渲染）、行尾「停止」（子会话 interrupt /
+ * shell DELETE——后者停止即删档，title 预告），stopPropagation 防误触发行点击。
+ * 任务行不带图标（与卡头部 Rocket 重复，2026-10-08 裁定）。
  */
 export function BackgroundTaskBar({
   tasks,
@@ -3410,13 +3447,13 @@ export function BackgroundTaskBar({
   onOpenChange,
   onOpenDetail,
 }: {
-  tasks: Session[]
+  tasks: BackgroundTask[]
   /** 展开态受控（挂 ChatView，2026-10-08 裁定）：详情窗开合会替代/恢复任务卡
       （组件随之卸载/重挂载），展开态活在卡外才能跨详情保留——展开中点行查看、
       关闭详情后列表仍展开 */
   open: boolean
   onOpenChange: (open: boolean) => void
-  onOpenDetail: (childID: string) => void
+  onOpenDetail: (task: BackgroundTask) => void
 }) {
   const store = useStore()
   const { t } = useI18n()
@@ -3432,10 +3469,12 @@ export function BackgroundTaskBar({
 
   if (tasks.length === 0) return null
 
-  const stop = async (childID: string) => {
+  const stop = async (task: BackgroundTask) => {
+    const key = task.kind === "shell" ? task.shell.id : task.session.id
     if (stopping) return
-    setStopping(childID)
-    await store.abortSession(childID)
+    setStopping(key)
+    if (task.kind === "shell") await store.stopBackgroundShell(task.parentSessionID, task.shell.id)
+    else await store.abortSession(task.session.id)
     setStopping(null)
   }
 
@@ -3460,52 +3499,300 @@ export function BackgroundTaskBar({
       </button>
       {open && (
         <div className="pending-card-body">
-          {tasks.map((task) => (
-            <div
-              className="bg-task-row"
-              key={task.id}
-              role="button"
-              tabIndex={0}
-              onClick={() => onOpenDetail(task.id)}
-              onKeyDown={(e) => {
-                // 事件来自内层「停止」钮（keydown 冒泡）不劫持——Enter/Space 是
-                // 钮的激活键，行级 preventDefault 会吞掉激活，停止变开详情
-                //（review：键盘路径回归）
-                if (e.target !== e.currentTarget) return
-                // IME 组合中不触发（同 composer Enter 守卫）；Space 兼滚动页惯例
-                if (e.nativeEvent.isComposing) return
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault()
-                  onOpenDetail(task.id)
-                }
-              }}
-            >
-              <div className="bg-task-row-meta">
-                <span className="bg-task-row-label">{task.title || task.id}</span>
-                <span className="bg-task-row-sub">
-                  {task.agent ? `${task.agent} · ` : ""}
-                  {formatDuration(now - (task.time.created ?? now))}
-                </span>
-              </div>
-              <button
-                className="icon-btn bg-task-row-action danger"
-                title={t.bgTaskStop}
-                aria-label={t.bgTaskStop}
-                disabled={stopping === task.id}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  void stop(task.id)
+          {tasks.map((task) => {
+            const key = task.kind === "shell" ? task.shell.id : task.session.id
+            const label =
+              task.kind === "shell" ? task.shell.command || task.shell.id : task.session.title || task.session.id
+            const started = task.kind === "shell" ? task.shell.time?.started : task.session.time.created
+            const sub =
+              task.kind === "shell"
+                ? ""
+                : task.session.agent
+                  ? `${task.session.agent} · `
+                  : ""
+            const stopTitle =
+              task.kind === "shell" ? t.bgCmdStopDiscardWarning : t.bgTaskStop
+            return (
+              <div
+                className="bg-task-row"
+                key={key}
+                role="button"
+                tabIndex={0}
+                onClick={() => onOpenDetail(task)}
+                onKeyDown={(e) => {
+                  // 事件来自内层「停止」钮（keydown 冒泡）不劫持——Enter/Space 是
+                  // 钮的激活键，行级 preventDefault 会吞掉激活，停止变开详情
+                  //（review：键盘路径回归）
+                  if (e.target !== e.currentTarget) return
+                  // IME 组合中不触发（同 composer Enter 守卫）；Space 兼滚动页惯例
+                  if (e.nativeEvent.isComposing) return
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault()
+                    onOpenDetail(task)
+                  }
                 }}
               >
-                {stopping === task.id ? (
-                  <LoaderCircle size={14} className="spin" aria-hidden />
-                ) : (
-                  <CircleStop size={14} aria-hidden />
-                )}
-              </button>
-            </div>
-          ))}
+                <div className="bg-task-row-meta">
+                  <span className="bg-task-row-label">{label}</span>
+                  <span className="bg-task-row-sub">
+                    {sub}
+                    {formatDuration(now - (started ?? now))}
+                  </span>
+                </div>
+                <button
+                  className="icon-btn bg-task-row-action danger"
+                  title={stopTitle}
+                  aria-label={stopTitle}
+                  disabled={stopping === key}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    void stop(task)
+                  }}
+                >
+                  {stopping === key ? (
+                    <LoaderCircle size={14} className="spin" aria-hidden />
+                  ) : (
+                    <CircleStop size={14} aria-hidden />
+                  )}
+                </button>
+              </div>
+            )
+          })}
         </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * 后台任务详情窗视图模型（design-shell-background）：子会话消息流 / shell
+ * 输出流二选一——id 前缀分流（`sh_` / `ses`）在 ChatView 消费端。
+ */
+type TaskDetailView =
+  | { kind: "session"; childID: string; label: string }
+  | { kind: "shell"; shellID: string; label: string }
+
+/** 后台 shell 输出展示上限（字节口径近似——决策 7：首拉与运行期缓冲同一上限） */
+const SHELL_OUTPUT_TAIL_LIMIT = 1024 * 1024
+
+/** shell 详情窗终态行文案（exit / killed by 信号 / 无信号 killed / 超时） */
+function shellTerminalLine(sh: { status: string; exit?: number; signal?: string }, t: Catalog): string {
+  if (sh.status === "timeout") return t.bgCmdTimedOut
+  if (sh.signal) return format(t.bgCmdKilledBy, { signal: sh.signal })
+  if (sh.status === "killed") return t.bgCmdKilled
+  return format(t.bgCmdExitCode, { code: sh.exit ?? 0 })
+}
+
+/**
+ * 后台 shell 输出详情窗（design-shell-background）：`.bg-task-slot` 槽位内与
+ * 任务卡互斥渲染（同 TaskDetailPanel）。等宽纯文本（不引 xterm——决策 4），
+ * 两段式取数（首段 64KB 探 size → 补齐全量/转尾部 1MB 重拉，review #1），
+ * 运行中 2s 增量（缓冲超限丢头部保尾部，review #2），404 空态按因二分
+ * （决策 6：deletedShellIds 判别 Discarded/Gone）。
+ */
+function ShellOutputPanel({
+  shellID,
+  label,
+  onClose,
+}: {
+  shellID: string
+  label: string
+  onClose: () => void
+}) {
+  const store = useStore()
+  const { t } = useI18n()
+  const [text, setText] = useState("")
+  const [omitted, setOmitted] = useState(0)
+  const [phase, setPhase] = useState<"loading" | "running" | "done" | "unavailable">("loading")
+  const [terminal, setTerminal] = useState<string | null>(null)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const pinnedRef = useRef(true)
+  const cursorRef = useRef(0)
+  // text 的 ref 镜像：增量拍在 updater 外算截断（StrictMode updater 双调用会把
+  // omitted 双计——review nit #5），纯函数 setText 消费
+  const textRef = useRef("")
+  const applyOutput = (chunk: string) => {
+    const next = textRef.current + chunk
+    if (next.length > SHELL_OUTPUT_TAIL_LIMIT) {
+      const dropped = next.length - SHELL_OUTPUT_TAIL_LIMIT
+      setOmitted((o) => o + dropped)
+      textRef.current = next.slice(dropped)
+    } else {
+      textRef.current = next
+    }
+    setText(textRef.current)
+  }
+
+  // 打开即拉：两段式首拉（探 size → 补齐/转尾部）
+  useEffect(() => {
+    let cancelled = false
+    setPhase("loading")
+    setText("")
+    textRef.current = ""
+    setOmitted(0)
+    setTerminal(null)
+    pinnedRef.current = true
+    cursorRef.current = 0
+    void (async () => {
+      let first: Awaited<ReturnType<typeof store.loadShellOutput>> = null
+      try {
+        // 首段探测（默认 64KB）——响应带回 size（Shell.Info 无此字段，review #1）
+        first = await store.loadShellOutput(shellID)
+      } catch {
+        return // 瞬时错误（非 404）：维持加载态，重开重试（review #3）
+      }
+      if (cancelled) return
+      if (!first) {
+        setPhase("unavailable")
+        return
+      }
+      if (first.size > SHELL_OUTPUT_TAIL_LIMIT) {
+        // 转尾部重拉（丢头部；omitted 按字节口径——server cursor 权威）
+        let tail: Awaited<ReturnType<typeof store.loadShellOutput>> = null
+        try {
+          tail = await store.loadShellOutput(shellID, first.size - SHELL_OUTPUT_TAIL_LIMIT, SHELL_OUTPUT_TAIL_LIMIT)
+        } catch {
+          return
+        }
+        if (cancelled) return
+        if (!tail) {
+          setPhase("unavailable")
+          return
+        }
+        applyOutput(tail.output)
+        setOmitted(first.size - SHELL_OUTPUT_TAIL_LIMIT)
+        cursorRef.current = tail.cursor
+      } else {
+        // 补齐全量（64KB/次翻页至 size）；cursor 无进展即断（server 读流
+        // 出错返回 0 字节——防死循环，review nit #4）
+        applyOutput(first.output)
+        let cursor = first.cursor
+        while (cursor < first.size && !cancelled) {
+          let page: Awaited<ReturnType<typeof store.loadShellOutput>> = null
+          try {
+            page = await store.loadShellOutput(shellID, cursor)
+          } catch {
+            return
+          }
+          if (!page || page.cursor <= cursor) break
+          applyOutput(page.output)
+          cursor = page.cursor
+        }
+        if (cancelled) return
+        cursorRef.current = cursor
+      }
+      // 状态闭包可能已置 running——不覆写（phase 竞态，review blocking #1）
+      setPhase((p) => (p === "running" ? "running" : "done"))
+    })()
+    // 终态行（running 时由增量节拍接管）
+    void (async () => {
+      let sh: Awaited<ReturnType<typeof store.loadShellInfo>> = null
+      try {
+        sh = await store.loadShellInfo(shellID)
+      } catch {
+        return
+      }
+      if (cancelled || !sh) return
+      if (sh.status === "running") {
+        setPhase("running")
+        setTerminal(null)
+      } else {
+        setTerminal(shellTerminalLine(sh, t))
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shellID])
+
+  // 运行中增量：2s 拉余量 + 刷状态；终态即停（下一拍自然跳过）
+  useEffect(() => {
+    if (phase !== "running") return
+    const id = window.setInterval(() => {
+      void (async () => {
+        try {
+          const sh = await store.loadShellInfo(shellID)
+          const page = await store.loadShellOutput(shellID, cursorRef.current)
+          if (!page) return
+          if (page.output) applyOutput(page.output)
+          cursorRef.current = page.cursor
+          if (sh && sh.status !== "running") {
+            setPhase("done")
+            setTerminal(shellTerminalLine(sh, t))
+          }
+        } catch {
+          // 单次失败静默：下一拍重试（终态由 synthetic/list 兜底）
+        }
+      })()
+    }, 2000)
+    return () => window.clearInterval(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, shellID])
+
+  // 自动滚底（用户上滚则停驻）
+  useEffect(() => {
+    const el = scrollRef.current
+    if (el && pinnedRef.current) el.scrollTop = el.scrollHeight
+  }, [text])
+
+  // Esc 关闭（同 TaskDetailPanel：焦点在 composer，挂 window；overlayCount 让位）
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== "Escape" || e.isComposing) return
+      if (store.overlayCount > 0) return
+      onClose()
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onClose])
+
+  return (
+    <div className="task-detail shell-output" role="region" aria-label={label}>
+      <div className="task-detail-header">
+        <SquareTerminal className="bg-task-icon" size={14} aria-hidden />
+        <span className="task-detail-title">{label}</span>
+        <button className="icon-btn" title={t.close} aria-label={t.close} onClick={onClose}>
+          <X size={14} aria-hidden />
+        </button>
+      </div>
+      {phase === "unavailable" ? (
+        <div className="subagent-empty">
+          {store.shellDeletedLocally(shellID) ? t.bgCmdOutputDiscarded : t.bgCmdOutputGone}
+        </div>
+      ) : (
+        <>
+          {/* 终态行固定区（header 下、滚动体外——长输出不随滚动离开视口）；
+              running = spinner 行（设计：详情窗头部状态行） */}
+          <div className="shell-output-status">
+            {phase === "running" ? (
+              <>
+                <LoaderCircle size={12} className="spin" aria-hidden />
+                <span className="shell-output-status-text">{t.subagentLoading}</span>
+              </>
+            ) : (
+              terminal && <span className="shell-output-status-text">{terminal}</span>
+            )}
+          </div>
+          <div
+            className="shell-output-body"
+            ref={scrollRef}
+            onScroll={(e) => {
+              const el = e.currentTarget
+              pinnedRef.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 8
+            }}
+          >
+            {omitted > 0 && (
+              <div className="shell-output-notice">{format(t.bgCmdOutputTailOnly, { bytes: omitted })}</div>
+            )}
+            {phase === "loading" ? (
+              <div className="shell-output-loading">{t.subagentLoading}</div>
+            ) : (
+              <pre className="shell-output-text">{text}</pre>
+            )}
+          </div>
+        </>
       )}
     </div>
   )
