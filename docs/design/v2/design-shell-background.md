@@ -43,10 +43,13 @@ agent 跑长命令（dev server、构建）用 shell 工具 `background: true` �
 | C10 | env 特带 `AGENT=1` / `OPENCODE=1` / `OPENCODE_SESSION_ID`（与本设计无直接消费，记档） | execute 213-216 |
 | C11 | 终态收敛不依赖轮询实时性：自然退出 / 超时（status `timeout` → settled 带 `timeout:true`）/ 外部 kill 都走 job 终态 → C5 synthetic 恒发 | `notifyWhenDone` 挂 job.wait |
 
-**DELETE（停止）行为推演（实现时活体复核）**：remove 使 `done` Deferred 以
-`ShellNotFoundError` 失败 → job run 失败 → `notifyWhenDone` 的 `info.status === "error"`
-→ synthetic `state:"error"`（完成消息呈「失败」而非「取消」样式）。落地时以实测
-为准（若 server 后续把 kill 路径改走 `cancelled`，客户端只消费 state 不受影响）。
+**DELETE（停止）行为（2026-10-21 活体证实）**：remove 使 `done` Deferred 以
+`ShellNotFoundError` 失败 → job run 失败 → `notifyWhenDone` 的 `info.status ===
+"error"` → synthetic `state:"error"` + text `Shell.NotFoundError`——完成消息呈
+「失败」样式（CircleX）。**呈现备注**：用户主动停止显示为「失败」语义不理想，
+但这是 server 契约（state 无 stopped/interrupted 终态）；客户端可做的归一
+（本端 `deletedShellIds` 命中 ∧ state error → 呈「取消」样式）列为可选优化，
+未实施——通知 label 带 command，用户可关联。
 
 ## 与 subagent 模型的映射
 
@@ -283,8 +286,9 @@ deleteShell(id): Promise<void>                   // DELETE /api/shell/:id
 
 ## 已知限制 / 坑
 
-- **DELETE 后 synthetic 的 state 实测待验证**（C11 推演 error；若 server 语义
-  调整，客户端只消费 state 不改代码）。
+- **DELETE 后 synthetic `state:"error"`**（2026-10-21 活体证实，见契约事实节
+  DELETE 段）——用户主动停止呈「失败」样式；客户端归一（deletedShellIds 命中
+  ∧ error → 取消样式）为可选优化，未实施。
 - **`output.status` 字段名依赖**：C2 的 StructuredOutput 是 server 工具层包装，
   非公开契约 schema——升级 pin 后按活体复核（同 subagent 对 metadata 形状的
   活体核对惯例）。
