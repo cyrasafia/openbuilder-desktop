@@ -1916,6 +1916,7 @@ function ChatView({ sessionID }: { sessionID: string }) {
             taskDetail.kind === "shell" ? (
               <ShellOutputPanel
                 shellID={taskDetail.shellID}
+                directory={store.findSession(sessionID)?.directory ?? ""}
                 label={taskDetail.label}
                 onClose={() => setTaskDetail(null)}
               />
@@ -3592,10 +3593,13 @@ function shellTerminalLine(sh: { status: string; exit?: number; signal?: string 
  */
 function ShellOutputPanel({
   shellID,
+  directory,
   label,
   onClose,
 }: {
   shellID: string
+  /** shell 所属目录（location-scoped 端点必传——2026-10-21 活体） */
+  directory: string
   label: string
   onClose: () => void
 }) {
@@ -3637,7 +3641,7 @@ function ShellOutputPanel({
       let first: Awaited<ReturnType<typeof store.loadShellOutput>> = null
       try {
         // 首段探测（默认 64KB）——响应带回 size（Shell.Info 无此字段，review #1）
-        first = await store.loadShellOutput(shellID)
+        first = await store.loadShellOutput(shellID, directory)
       } catch {
         return // 瞬时错误（非 404）：维持加载态，重开重试（review #3）
       }
@@ -3650,7 +3654,7 @@ function ShellOutputPanel({
         // 转尾部重拉（丢头部；omitted 按字节口径——server cursor 权威）
         let tail: Awaited<ReturnType<typeof store.loadShellOutput>> = null
         try {
-          tail = await store.loadShellOutput(shellID, first.size - SHELL_OUTPUT_TAIL_LIMIT, SHELL_OUTPUT_TAIL_LIMIT)
+          tail = await store.loadShellOutput(shellID, directory, first.size - SHELL_OUTPUT_TAIL_LIMIT, SHELL_OUTPUT_TAIL_LIMIT)
         } catch {
           return
         }
@@ -3670,7 +3674,7 @@ function ShellOutputPanel({
         while (cursor < first.size && !cancelled) {
           let page: Awaited<ReturnType<typeof store.loadShellOutput>> = null
           try {
-            page = await store.loadShellOutput(shellID, cursor)
+            page = await store.loadShellOutput(shellID, directory, cursor)
           } catch {
             return
           }
@@ -3688,7 +3692,7 @@ function ShellOutputPanel({
     void (async () => {
       let sh: Awaited<ReturnType<typeof store.loadShellInfo>> = null
       try {
-        sh = await store.loadShellInfo(shellID)
+        sh = await store.loadShellInfo(shellID, directory)
       } catch {
         return
       }
@@ -3704,7 +3708,7 @@ function ShellOutputPanel({
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shellID])
+  }, [shellID, directory])
 
   // 运行中增量：2s 拉余量 + 刷状态；终态即停（下一拍自然跳过）
   useEffect(() => {
@@ -3712,8 +3716,8 @@ function ShellOutputPanel({
     const id = window.setInterval(() => {
       void (async () => {
         try {
-          const sh = await store.loadShellInfo(shellID)
-          const page = await store.loadShellOutput(shellID, cursorRef.current)
+          const sh = await store.loadShellInfo(shellID, directory)
+          const page = await store.loadShellOutput(shellID, directory, cursorRef.current)
           if (!page) return
           if (page.output) applyOutput(page.output)
           cursorRef.current = page.cursor
@@ -3728,7 +3732,7 @@ function ShellOutputPanel({
     }, 2000)
     return () => window.clearInterval(id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase, shellID])
+  }, [phase, shellID, directory])
 
   // 自动滚底（用户上滚则停驻）
   useEffect(() => {

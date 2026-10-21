@@ -8942,12 +8942,13 @@ describe("后台 shell 任务（design-shell-background，2026-10-20）", () => 
     await vi.waitFor(() => {
       expect(store.runningBackgroundTasks("p")).toHaveLength(1)
     })
-    const deleted: string[] = []
-    clientV2Of().deleteShell = async (id: string) => {
-      deleted.push(id)
+    const deleted: Array<[string, string]> = []
+    clientV2Of().deleteShell = async (id: string, directory: string) => {
+      deleted.push([id, directory])
     }
     await store.stopBackgroundShell("p", "sh_1")
-    expect(deleted).toEqual(["sh_1"])
+    // location-scoped（2026-10-21 活体）：DELETE 必带 shell 所属目录，缺省恒 404
+    expect(deleted).toEqual([["sh_1", ROOT]])
     expect(store.runningBackgroundTasks("p")).toHaveLength(0)
     // 404 空态文案二分判据（决策 6）
     expect(store.shellDeletedLocally("sh_1")).toBe(true)

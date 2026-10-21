@@ -606,26 +606,34 @@ export class RestClient {
   /**
    * GET /api/shell/:id/output：按 byte cursor 分页取累积输出（默认 limit 64KB，
    * 详情窗首拉/增量复用）。404 = 记录已失（停止删除 / server 重启 / 7 天清理）。
+   * **location-scoped（2026-10-21 活体）**：缺 `location[directory]` 时 server 按
+   * 默认 location 解析 → 恒 404——必须带 shell 所属目录。
    */
-  async getShellOutput(id: string, cursor?: number, limit?: number): Promise<ShellOutput> {
+  async getShellOutput(id: string, directory: string, cursor?: number, limit?: number): Promise<ShellOutput> {
     const q = new URLSearchParams()
+    q.set("location[directory]", directory)
     if (cursor !== undefined) q.set("cursor", String(cursor))
     if (limit !== undefined) q.set("limit", String(limit))
-    const qs = q.toString()
     const res = await this.fetchJson<{ data: ShellOutput }>(
-      `/api/shell/${encodeURIComponent(id)}/output${qs ? `?${qs}` : ""}`,
+      `/api/shell/${encodeURIComponent(id)}/output?${q.toString()}`,
     )
     return res.data
   }
 
-  /** DELETE /api/shell/:id：终止并删除（杀进程 + 删记录 + 删输出——停止即删档） */
-  async deleteShell(id: string): Promise<void> {
-    await this.fetchResponse(`/api/shell/${encodeURIComponent(id)}`, { method: "DELETE" })
+  /** DELETE /api/shell/:id：终止并删除（杀进程 + 删记录 + 删输出——停止即删档）。
+   *  location-scoped 同上。 */
+  async deleteShell(id: string, directory: string): Promise<void> {
+    const q = new URLSearchParams()
+    q.set("location[directory]", directory)
+    await this.fetchResponse(`/api/shell/${encodeURIComponent(id)}?${q.toString()}`, { method: "DELETE" })
   }
 
-  /** GET /api/shell/:id：单个 shell 状态（详情窗终态行；404 同 output 语义） */
-  async getShell(id: string): Promise<ShellInfo> {
-    const res = await this.fetchJson<{ data: ShellInfo }>(`/api/shell/${encodeURIComponent(id)}`)
+  /** GET /api/shell/:id：单个 shell 状态（详情窗终态行；404 同 output 语义）。
+   *  location-scoped 同上。exited 记录保留在 map（FIFO 25 个，2026-10-21 活体）。 */
+  async getShell(id: string, directory: string): Promise<ShellInfo> {
+    const q = new URLSearchParams()
+    q.set("location[directory]", directory)
+    const res = await this.fetchJson<{ data: ShellInfo }>(`/api/shell/${encodeURIComponent(id)}?${q.toString()}`)
     return res.data
   }
 

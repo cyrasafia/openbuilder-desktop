@@ -4639,8 +4639,9 @@ export class AppStore {
   async stopBackgroundShell(sessionID: string, shellID: string): Promise<void> {
     const client = this.client
     if (!client) return
+    const directory = this.findSession(sessionID)?.directory
     try {
-      await client.deleteShell(shellID)
+      if (directory) await client.deleteShell(shellID, directory)
       if (this.client !== client) return
       this.deletedShellIds.add(shellID)
       const shells = this.runningShellTasks.get(sessionID)
@@ -4663,15 +4664,17 @@ export class AppStore {
   }
 
   /** 详情窗取 shell 输出（薄封装：client 私有，组件经 store）。null = 记录已失
-   *  （404——停止删除/server 重启/7 天清理，空态 404 语义，决策 6）；瞬时错误
-   *  （断网/5xx）rethrow——组件维持加载态，不落误导文案（review #3） */
+   *  （404——停止删除/server 重启/清理，空态 404 语义，决策 6）；瞬时错误
+   *  （断网/5xx）rethrow——组件维持加载态，不落误导文案（review #3）。
+   *  location-scoped：directory 必传（2026-10-21 活体）。 */
   async loadShellOutput(
     shellID: string,
+    directory: string,
     cursor?: number,
     limit?: number,
   ): Promise<ShellOutput | null> {
     try {
-      return await this.client!.getShellOutput(shellID, cursor, limit)
+      return await this.client!.getShellOutput(shellID, directory, cursor, limit)
     } catch (e) {
       if (e instanceof ApiError && e.kind === "not-found") return null
       throw e
@@ -4679,9 +4682,9 @@ export class AppStore {
   }
 
   /** 详情窗取 shell 状态（终态行；null/错误语义同 loadShellOutput） */
-  async loadShellInfo(shellID: string): Promise<ShellInfo | null> {
+  async loadShellInfo(shellID: string, directory: string): Promise<ShellInfo | null> {
     try {
-      return await this.client!.getShell(shellID)
+      return await this.client!.getShell(shellID, directory)
     } catch (e) {
       if (e instanceof ApiError && e.kind === "not-found") return null
       throw e

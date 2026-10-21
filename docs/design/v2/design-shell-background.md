@@ -37,7 +37,7 @@ agent 跑长命令（dev server、构建）用 shell 工具 `background: true` �
 | C4 | `context.progress({shellID})` 在 spawn 后立即发——SSE `session.tool.progress`（metadata 仅 shellID；**不持久化**，REST Running 态 metadata 为 `{}`） | `shell.ts:220` + subagent 设计同款事实 |
 | C5 | **完成通知**：`notifyWhenDone` 等 job 终态 → `sessions.synthetic` + `ShellResult.notification`：metadata `{source:"shell", shellID, jobID?, state:"completed"\|"cancelled"\|"error", exit?, signal?, timeout?, truncated}`，text = `<shell id="…" state="…" command="…">…输出…</shell>`。**resume 缺省 true → `execution.wake` 唤醒父会话**（agent 自动恢复，与工具描述「you will be resumed automatically」一致） | `notifyWhenDone` / `result.ts` / `session.ts` synthetic |
 | C6 | synthetic 走 inbox admission：SSE `session.inbox.enqueued`（item.type `synthetic`）+ REST 消息快照 `type:"synthetic"` 条目（metadata 同）——与 subagent 完成回执同构。桌面端 v2-adapter 已透传 info.metadata；synthetic text part 统一滤空 + 空消息守卫隐藏（原消息不渲染，无双份问题） | 既有 `isSyntheticTextPart` / `syntheticDroppedBySession` |
-| C7 | REST 资源面：`GET /api/shell?location[directory]=`（**仅返回 `status==="running"`**——源码 list 过滤，非 running 不在列）；`GET /api/shell/:id`（running 或已退出未清理，记录保留 7 天 `RETENTION` 后 cleanup）；`GET /api/shell/:id/output`（byte cursor 分页，**默认 limit 64KB，可传大值**；返回 `{output, cursor, size, truncated}`）；`DELETE /api/shell/:id`（terminate + remove：杀进程 + 删记录 + **删输出文件** + fail done） | `shell.ts` list/get/output/remove |
+| C7 | REST 资源面：`GET /api/shell?location[directory]=`（**仅返回 `status==="running"`**——源码 list 过滤，非 running 不在列）；`GET /api/shell/:id`（exited 记录保留在内存 map——**FIFO 25 个 exited 淘汰最老**（`EXITED_LIMIT`），文件侧另有 7 天 `RETENTION` 清理）；`GET /api/shell/:id/output`（byte cursor 分页，**默认 limit 64KB，可传大值**；返回 `{location, data:{output,cursor,size,truncated}}`）；`DELETE /api/shell/:id`（terminate + remove：杀进程 + 删记录 + **删输出文件** + fail done）。**全部端点 location-scoped（2026-10-21 活体）**：缺 `location[directory]` 时 server 按默认 location 解析 → 恒 404——get/output/delete 必带 shell 所属目录 | `shell.ts` list/get/output/remove + 活体 curl（15120，2.0.26） |
 | C8 | shell 资源 metadata 恒带 `{sessionID}`（父会话 id）——list 后按它过滤归属 | `shell.create` 调用点 `metadata: { sessionID: context.sessionID }` |
 | C9 | `session.shell.started/ended` 事件**仅用户 `!` 命令路径**（session shell 端点）发；agent 工具路径不发——运行态无事件，只有 REST 轮询 + C5 synthetic | `session.ts:199-208`（review 于 2.0.28 复核仍成立，无漂移） |
 | C10 | env 特带 `AGENT=1` / `OPENCODE=1` / `OPENCODE_SESSION_ID`（与本设计无直接消费，记档） | execute 213-216 |
@@ -343,3 +343,22 @@ deleteShell(id): Promise<void>                   // DELETE /api/shell/:id
 | 5 | 🟢 | setOmitted 在 setText updater 内（StrictMode 双调用 omitted 双计） | textRef 镜像 + applyOutput 纯函数化，副作用移出 updater |
 | 6 | 🟢 | 停止后对账挂点缺失（设计四挂点 vs 实现三处）；终态行在滚动体内随滚动离开视口；killed 无 signal 落「退出码 0」误导 | stopBackgroundShell 尾部补 reconcileShellTasks；终态行移 header 下固定区 + running spinner 行；`bgCmdKilled` 单列文案 |
 | — | 附注 | 首拉 first.output 漏入缓冲（#1 修复重构引入，测试抓住） | applyOutput(first.output) 补齐 |
+
+### 第三轮（2026-10-21，实测发现的缺陷修复）
+
+**现场**：测试包实测——启动/完成消息、任务卡均正常，**输出详情窗看不到内容**。
+
+**根因**（活体 curl 15120 定位）：`/api/shell/:id`、`/:id/output`、`DELETE /:id`
+都是 **location-scoped** 端点——缺 `location[directory]` query 时 server 按默认
+location 解析，shell 不在 → 恒 404 → 输出窗落 Gone 空态。实现里只有 `listShells`
+带了 location（任务卡因此正常），get/output/delete 三个端点全漏——C7 契约事实
+当初只从源码读参数表、未核对 scoped 语义，活体补记（上表已修订）。
+
+**修复**：三端点签名加 `directory` 必填参数并拼 `location[directory]` query；
+`loadShellOutput` / `loadShellInfo` / `ShellOutputPanel` 透传（ChatView 从
+`findSession(sessionID).directory` 供给）；`stopBackgroundShell` 内部解析目录。
+store 测试断言 DELETE 携带目录钉住契约。
+
+**顺带活体修订**：exited 记录保留 = 内存 map FIFO 25 个（超限淘汰最老）∩ 文件
+7 天清理——比原「7 天」表述先到期的是 FIFO；get/output 响应为 `{location, data}`
+envelope（data 内即 Shell.Info / Shell.Output，与实现解析一致）。
