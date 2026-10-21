@@ -55,12 +55,31 @@ export interface VcsFileStatus {
  * `status !== "running"` → `GET /api/shell/:id/output` 取累积输出。经用户登录
  * shell 执行（实测 fish）——命令须跨 shell 可移植：单命令下发 + exit code 判定，
  * 不用组合语法（fish 无 POSIX 分组/`$?`）。
+ * 字段宽松可选（design-shell-background：wire 上 command/time.started 必填，
+ * 防御读取惯例同 SessionInfo）；metadata 恒带 `{sessionID}`（发起会话——
+ * list 归属过滤判据）。
  */
 export interface ShellInfo {
   id: string
   status: string
   /** 终态才有（活体：status "exited" + exit 0） */
   exit?: number
+  /** 任务行 label / 详情窗头部 */
+  command?: string
+  cwd?: string
+  /** killed 终态的信号名（详情窗终态行 "killed by SIGTERM"） */
+  signal?: string
+  /** `{sessionID}`（发起会话）——list 归属过滤 */
+  metadata?: Record<string, unknown>
+  time?: { started?: number; completed?: number }
+}
+
+/** GET /api/shell/:id/output 响应（`{data}` 内；byte cursor 分页，默认 limit 64KB） */
+export interface ShellOutput {
+  output: string
+  cursor: number
+  size: number
+  truncated: boolean
 }
 
 /**

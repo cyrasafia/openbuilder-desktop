@@ -3,7 +3,7 @@
  * 事件闸门、乐观消息、SSE 生命周期都在这里收敛。
  */
 import { RestClient, ApiError } from "@shared/rest-client"
-import type { V2ModelInfo } from "@shared/api-v2-types"
+import type { ShellInfo, ShellOutput, V2ModelInfo } from "@shared/api-v2-types"
 import {
   archivedAtOf,
   contentText as contentTextOf,
@@ -64,10 +64,15 @@ import {
   backgroundConvertedNotice,
   mergeNotices,
   subagentSyntheticNotice,
+  shellBackgroundDispatchFromPart,
+  shellStartedNotice,
+  shellConvertedNotice,
+  shellSyntheticNotice,
   foregroundClaimedChildIds,
   activeClaimedChildIds,
   convertedBackgroundChildIds,
   withdrawForegroundStartNotices,
+  type BackgroundTask,
   type SessionNotice,
 } from "@shared/session-notices"
 import { isAbortError } from "@shared/message-error"
@@ -117,6 +122,7 @@ import type {
   SessionRevert,
   SessionStatusValue,
   TextPart,
+  ToolPart,
   Workspace,
 } from "@shared/api-types"
 import { isSyntheticTextPart } from "@shared/api-types"
@@ -439,6 +445,14 @@ export class AppStore {
    * `msg_…`，与消息混存会污染排序/回滚/空消息守卫/对账窗口删除。
    */
   private noticesBySession = new Map<string, SessionNotice[]>()
+  /**
+   * 后台 shell 运行中任务（design-shell-background）：sessionID → running
+   * ShellInfo[]。数据源 = `reconcileShellTasks` 的 list 对账（`GET /api/shell`
+   * 仅 running——C7）；终态收敛主径是 synthetic（C11 恒发），list 只兜底归属。
+   */
+  private runningShellTasks = new Map<string, ShellInfo[]>()
+  /** 本端停止过的 shell id（404 空态文案二分：Discarded/Gone——决策 6） */
+  private deletedShellIds = new Set<string>()
   /** 子会话索引惰性缓存（parentID → 直系子会话 id 集）；由 sessionRegistryVersion 驱动重建 */
   private childIndex = new Map<string, Set<string>>()
   private childIndexVersion = -1
@@ -500,7 +514,7 @@ export class AppStore {
   activeTabKey: string | null = null
   /** 后台任务详情浮层请求版本（design-subagent-background D2/D4）：ChatView 按版本消费 */
   taskDetailVersion = 0
-  private pendingTaskDetail: string | null = null
+  private pendingTaskDetail: { id: string; label: string | null } | null = null
   /**
    * 关闭栈（design-keyboard-shortcuts §2，Ctrl+Shift+T 恢复）：仅用户主动关闭入栈
    * （pushClosed 选项），上限 20 弃最旧；纯内存不持久化（重启场景由 Tab 记忆覆盖）。
@@ -1117,6 +1131,8 @@ export class AppStore {
     this.childIndex.clear()
     this.childIndexVersion = -1
     this.noticesBySession.clear()
+    this.runningShellTasks.clear()
+    this.deletedShellIds.clear()
     this.pendingTaskDetail = null
     this.messagesBySession.clear()
     this.syntheticDroppedBySession.clear()
@@ -1959,10 +1975,16 @@ export class AppStore {
         }
         if (!sessionID || !inboxID) break
         // 完成回执（D4，design-subagent-background）：synthetic + source=subagent
-        // → 物化系统提示；不与 user 路径混用（不消费回显标记、不重取尾部）
+        // → 物化系统提示；不与 user 路径混用（不消费回显标记、不重取尾部）。
+        // shell 完成回执（design-shell-background C5/C6）同构并列——source 判别
+        // 互斥；到达即触发 list 对账（任务卡终态收敛）
         if (item?.type === "synthetic") {
-          const notice = subagentSyntheticNotice(inboxID, item.time?.created ?? Date.now(), item.payload)
+          const created = item.time?.created ?? Date.now()
+          const notice =
+            subagentSyntheticNotice(inboxID, created, item.payload) ??
+            shellSyntheticNotice(inboxID, created, item.payload)
           if (notice) this.upsertNotices(sessionID, [notice])
+          if (notice?.shellID) this.reconcileShellTasks(sessionID)
           break
         }
         // inbox 含 user/synthetic/compaction/move 四类（移动端同过滤）——非 user
@@ -2102,6 +2124,12 @@ export class AppStore {
         if (part.type === "tool" && (part.tool === "task" || part.tool === "subagent")) {
           this.reconcileStartNotices(sessionID)
           this.reconcileConvertedNotices(sessionID, meta?.created ?? Date.now())
+        }
+        // 后台 shell 通知合成（design-shell-background）：判据即持久终值，
+        // 无误插面；②派发（background:true）与③转后台（他端 background 端点）
+        // 的 part success 都带 metadata:{shellID, status:"running"}
+        if (part.type === "tool" && part.tool === "shell") {
+          this.onShellToolPartSettled(sessionID, part, meta?.created ?? Date.now())
         }
         break
       }
@@ -3281,6 +3309,10 @@ export class AppStore {
     // 后台任务通知随会话运行时卸载（design-subagent-background D3：重开不补启动提示；
     // 完成提示经 REST synthetic 重建）。注意：不在此清 childIndex——关 Tab=归档不删会话
     this.noticesBySession.delete(sessionID)
+    // 后台 shell 任务缓存同随会话卸载（design-shell-background：重开经
+    // loadSessionMessages → reconcileShellTasks 重建；deletedShellIds 是全局
+    // 资源记忆，不随单会话清）
+    this.runningShellTasks.delete(sessionID)
     this.revertDrafts.delete(sessionID)
     this.revertDraftConsumed.delete(sessionID)
     this.manualDraftSeeds.delete(sessionID)
@@ -4076,10 +4108,12 @@ export class AppStore {
     // mergeRestSnapshot 已落 map；pending parts 就地变更（同步段无 async gap）
     // 快照合并后补撤回（review 四轮 #1，同 onMessagesSnapshot）：REST 页
     // 落地的 tool part 同样构成前台认领依据；③转后台提示缺口恢复同此；
-    // 启动提示 REST 重建（覆盖窗口内未认领子会话）
+    // 启动提示 REST 重建（覆盖窗口内未认领子会话）；shell 派发/转后台通知
+    // 重建（design-shell-background，纯本地——part 判据持久）
     this.reconcileStartNotices(sessionID)
     this.rebuildStartNotices(sessionID)
     this.reconcileConvertedNotices(sessionID)
+    this.rebuildShellNotices(sessionID)
     return msgs.filter((m) => !hadIds.has(m.info.id)).length
   }
 
@@ -4104,6 +4138,9 @@ export class AppStore {
       return
     }
     this.mergeMessagePage(sessionID, page.entries)
+    // 后台 shell list 对账（design-shell-background 决策 2 挂点：打开会话）——
+    // 消息页合并后挂（通知重建在 mergeMessagePage 内），会话 directory 已在注册表
+    this.reconcileShellTasks(sessionID)
     // 种子分页状态（design-message-history-pagination §4.2）：
     // - 无状态（首次成功）→ 写入；
     // - 既有状态是**纯 error 种子**（挂载失败后内容经其他通道落地，本形状唯一
@@ -4352,14 +4389,23 @@ export class AppStore {
     return activeClaimedChildIds(this.parentParts(sessionID), this.childSessionsOf(sessionID))
   }
 
-  /** 运行中的后台任务（升格后三路径统一）：直系子会话 ∩ 家族运行中 ∩ 非前台认领 */
-  runningBackgroundTasks(parentSessionID: string): Session[] {
+  /** 运行中的后台任务（升格后三路径统一 + 后台 shell 混排，design-shell-background）：
+   *  直系子会话 ∩ 家族运行中 ∩ 非前台认领，加 list 对账的 running shell */
+  runningBackgroundTasks(parentSessionID: string): BackgroundTask[] {
     const children = this.childSessionsOf(parentSessionID)
-    if (children.length === 0) return []
-    const foregroundIds = this.activeClaimedChildIdsFor(parentSessionID)
-    return children.filter(
-      (c) => this.sessionActivity(c.id) !== "idle" && !foregroundIds.has(c.id),
-    )
+    const tasks: BackgroundTask[] = []
+    if (children.length > 0) {
+      const foregroundIds = this.activeClaimedChildIdsFor(parentSessionID)
+      for (const c of children) {
+        if (this.sessionActivity(c.id) !== "idle" && !foregroundIds.has(c.id)) {
+          tasks.push({ kind: "session", session: c })
+        }
+      }
+    }
+    for (const shell of this.runningShellTasks.get(parentSessionID) ?? []) {
+      tasks.push({ kind: "shell", shell, parentSessionID })
+    }
+    return tasks
   }
 
   /** 会话通知（按 created 排序；chatEntries 混排消费） */
@@ -4478,26 +4524,187 @@ export class AppStore {
     for (const m of msgs) {
       if (m.info.role !== "user") continue
       const metadata = (m.info as { metadata?: Record<string, unknown> }).metadata
-      if (!metadata || metadata.source !== "subagent") continue
+      if (!metadata) continue
       const text = (m.parts.find((p) => p.type === "text") as TextPart | undefined)?.text ?? ""
-      const notice = subagentSyntheticNotice(m.info.id, m.info.time.created, { text, metadata })
-      if (notice) incoming.push(notice)
+      // 双源并列（design-shell-background C5/C6）：subagent 与 shell 的完成回执
+      // 同构（source 判别互斥），REST 抽取共用此漏斗
+      if (metadata.source === "subagent") {
+        const notice = subagentSyntheticNotice(m.info.id, m.info.time.created, { text, metadata })
+        if (notice) incoming.push(notice)
+      } else if (metadata.source === "shell") {
+        const notice = shellSyntheticNotice(m.info.id, m.info.time.created, { text, metadata })
+        if (notice) incoming.push(notice)
+      }
     }
     if (incoming.length > 0) this.upsertNotices(sessionID, incoming)
   }
 
-  /** 打开后台任务详情浮层（任务条「查看」/ 完成提示「查看结果」）：版本号驱动 ChatView 消费 */
-  requestTaskDetail(childSessionID: string) {
-    this.pendingTaskDetail = childSessionID
+  /* ---------- 后台 shell（design-shell-background，2026-10-20） ---------- */
+
+  /** 该会话已完成的 shell id 集（finished 通知推导——任务卡终态过滤，防
+   *  synthetic 先到而 list 仍含的竞态） */
+  private finishedShellIdsFor(sessionID: string): Set<string> {
+    const ids = new Set<string>()
+    for (const n of this.noticesBySession.get(sessionID) ?? []) {
+      if (n.kind === "background-finished" && n.shellID) ids.add(n.shellID)
+    }
+    return ids
+  }
+
+  /**
+   * shell 派发/转后台通知合成（live 路径）：shell tool part 落地（success 事件
+   * 后）即判——判据即持久终值（metadata.status === "running"），无误插面。
+   * input 非对象（SSE 缺口下 input.ended 的原始 JSON 字符串）时**不插**——
+   * ②③分流依赖 input.background，误判无撤回路径（review #2），缺口序交
+   * REST 对账重建（快照 input 恒为 parsed 对象）。
+   * 同时触发 list 对账把 shell 纳入任务卡（派发窗口 ~30ms 内 metadata 可能
+   * 未及写入，reconcile 双保险）。
+   */
+  private onShellToolPartSettled(sessionID: string, part: Part, eventTime: number) {
+    const state = (part as ToolPart).state as { input?: unknown } | undefined
+    if (!state || typeof state.input !== "object" || state.input === null) return
+    const dispatch = shellBackgroundDispatchFromPart(part)
+    if (!dispatch) return
+    this.upsertNotices(sessionID, [
+      dispatch.converted
+        ? shellConvertedNotice(dispatch.shellID, dispatch.command, eventTime)
+        : shellStartedNotice(dispatch.shellID, dispatch.command, eventTime),
+    ])
+    this.reconcileShellTasks(sessionID)
+  }
+
+  /**
+   * shell 派发/转后台通知 REST 重建（对账路径）：扫已加载消息的 tool parts。
+   * 直推不查重（subagent 第八轮 #1 同口径）：created 取承载消息 created
+   * （≈派发时刻，毫秒级偏差），live 骨架值（事件信封时间）经一次对账覆盖
+   * 收敛，之后 mergeNotices 同 id 幂等。②③终态后均可重建（part 判据持久，
+   * 优于 subagent——其③无持久载体）。
+   */
+  private rebuildShellNotices(parentSessionID: string) {
+    const conv = this.messagesBySession.get(parentSessionID)
+    if (!conv || conv.size === 0) return
+    const incoming: SessionNotice[] = []
+    for (const m of conv.values()) {
+      for (const part of m.parts) {
+        const dispatch = shellBackgroundDispatchFromPart(part)
+        if (!dispatch) continue
+        incoming.push(
+          dispatch.converted
+            ? shellConvertedNotice(dispatch.shellID, dispatch.command, m.info.time.created)
+            : shellStartedNotice(dispatch.shellID, dispatch.command, m.info.time.created),
+        )
+      }
+    }
+    if (incoming.length > 0) this.upsertNotices(parentSessionID, incoming)
+  }
+
+  /**
+   * 运行中 shell 任务对账（list 路径，决策 2 四挂点：打开会话/60s 对账/
+   * synthetic 后/停止后）：`GET /api/shell` 仅 running（C7），按
+   * `metadata.sessionID` 归属过滤；终态集（finished 通知）与本端停止集
+   * 双过滤。fire-and-forget，失败静默（下一拍重试）。
+   */
+  private reconcileShellTasks(sessionID: string): void {
+    const client = this.client
+    if (!client) return
+    const directory = this.findSession(sessionID)?.directory
+    if (!directory) return
+    void client
+      .listShells(directory)
+      .then((shells) => {
+        // 世代守卫：await 期间断开/切 profile → 迟到响应不写新连接
+        if (this.client !== client) return
+        const finished = this.finishedShellIdsFor(sessionID)
+        const next = shells.filter(
+          (s) =>
+            s.metadata?.sessionID === sessionID &&
+            s.status === "running" &&
+            !finished.has(s.id) &&
+            !this.deletedShellIds.has(s.id),
+        )
+        const prev = this.runningShellTasks.get(sessionID)
+        const sameLength = (prev?.length ?? 0) === next.length
+        const unchanged = sameLength && prev!.every((p, i) => p.id === next[i].id)
+        if (unchanged) return
+        if (next.length === 0) this.runningShellTasks.delete(sessionID)
+        else this.runningShellTasks.set(sessionID, next)
+        this.emit()
+      })
+      .catch(() => {})
+  }
+
+  /** 停止后台 shell（任务卡「停止」）：DELETE 杀进程并删记录/输出（C7——停止
+   *  即删档）。成功即记 deletedShellIds（404 空态文案二分）并本地移除；
+   *  synthetic（C11 恒发）与 list 对账双保险收敛。失败静默（按钮即重试入口）。 */
+  async stopBackgroundShell(sessionID: string, shellID: string): Promise<void> {
+    const client = this.client
+    if (!client) return
+    const directory = this.findSession(sessionID)?.directory
+    try {
+      if (directory) await client.deleteShell(shellID, directory)
+      if (this.client !== client) return
+      this.deletedShellIds.add(shellID)
+      const shells = this.runningShellTasks.get(sessionID)
+      if (shells) {
+        const next = shells.filter((s) => s.id !== shellID)
+        if (next.length === 0) this.runningShellTasks.delete(sessionID)
+        else this.runningShellTasks.set(sessionID, next)
+      }
+    } catch {
+      // 失败静默：终态由 synthetic/list 兜底
+    }
+    this.emit()
+    // 设计决策 2 第四挂点（停止后）：DELETE 成功后的 list 复核（失败时 60s 兜底）
+    this.reconcileShellTasks(sessionID)
+  }
+
+  /** 本端停止过的 shell（详情窗 404 空态文案二分：Discarded/Gone——决策 6） */
+  shellDeletedLocally(shellID: string): boolean {
+    return this.deletedShellIds.has(shellID)
+  }
+
+  /** 详情窗取 shell 输出（薄封装：client 私有，组件经 store）。null = 记录已失
+   *  （404——停止删除/server 重启/清理，空态 404 语义，决策 6）；瞬时错误
+   *  （断网/5xx）rethrow——组件维持加载态，不落误导文案（review #3）。
+   *  location-scoped：directory 必传（2026-10-21 活体）。 */
+  async loadShellOutput(
+    shellID: string,
+    directory: string,
+    cursor?: number,
+    limit?: number,
+  ): Promise<ShellOutput | null> {
+    try {
+      return await this.client!.getShellOutput(shellID, directory, cursor, limit)
+    } catch (e) {
+      if (e instanceof ApiError && e.kind === "not-found") return null
+      throw e
+    }
+  }
+
+  /** 详情窗取 shell 状态（终态行；null/错误语义同 loadShellOutput） */
+  async loadShellInfo(shellID: string, directory: string): Promise<ShellInfo | null> {
+    try {
+      return await this.client!.getShell(shellID, directory)
+    } catch (e) {
+      if (e instanceof ApiError && e.kind === "not-found") return null
+      throw e
+    }
+  }
+
+  /** 打开后台任务详情浮层（任务条「查看」/ 完成提示「查看结果」）：版本号驱动 ChatView 消费。
+   *  id 前缀分流（`sh_` shell / `ses` 子会话）在消费端（ChatView）——store 只透传；
+   *  label 缺省时消费端兜底（子会话取 title，shell 用 id）。 */
+  requestTaskDetail(id: string, label?: string) {
+    this.pendingTaskDetail = { id, label: label ?? null }
     this.taskDetailVersion++
     this.emit()
   }
 
   /** 取走并清除待处理的详情请求（消费后不重复消费；remount 不重放旧请求） */
-  consumeTaskDetailRequest(): string | null {
-    const childID = this.pendingTaskDetail
+  consumeTaskDetailRequest(): { id: string; label: string | null } | null {
+    const detail = this.pendingTaskDetail
     this.pendingTaskDetail = null
-    return childID
+    return detail
   }
 
   /** 发送普通消息（design-optimistic-id-anchor：client-minted id 幂等准入，回执+重取消解乐观）。
@@ -5115,7 +5322,11 @@ export class AppStore {
    * （进行中状态优先，也无终局语义）。
    */
   dotStateFor(sessionID: string): SessionDotState {
-    const status = this.sessionActivity(sessionID)
+    // 后台 shell 运行中点亮（design-shell-background：不动 sessionActivity——
+    // 会话树语义 + 输入锁口径零波及；shell 非树成员，仅投影层并入 busy）
+    const activity = this.sessionActivity(sessionID)
+    const shellRunning = (this.runningShellTasks.get(sessionID)?.length ?? 0) > 0
+    const status = activity !== "idle" ? activity : shellRunning ? "busy" : "idle"
     // 未读只对顶层会话判定（design-unread-marker §4.5）：子代理完成由父会话 idle 承载
     const session = this.findSession(sessionID)
     let terminalError = false
@@ -7327,10 +7538,13 @@ export class AppStore {
         const merged = this.mergeRestSnapshot(sessionID, msgs)
         // 快照合并后补撤回（review 四轮 #1）：断线窗口丢 tool part 事件、
         // 重连仅经 REST 落地时，事件侧钩子不会触发——此处兜底；③转后台
-        // 提示的缺口恢复、启动提示的 REST 重建同此
+        // 提示的缺口恢复、启动提示的 REST 重建同此；shell 通知重建 +
+        // list 对账（design-shell-background 决策 2 挂点：60s/重连）
         this.reconcileStartNotices(sessionID)
         this.rebuildStartNotices(sessionID)
         this.reconcileConvertedNotices(sessionID)
+        this.rebuildShellNotices(sessionID)
+        this.reconcileShellTasks(sessionID)
         // 对账回填成功：清同形状 error 种子（挂载失败种子 vs 已回填内容的矛盾态，
         // review R3-P2）——回到无状态，重激活/上滚走正常种子
         const prev = this.sessionPages.get(sessionID)

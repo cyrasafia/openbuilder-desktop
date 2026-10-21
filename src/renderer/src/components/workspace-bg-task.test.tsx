@@ -36,6 +36,10 @@ vi.mock("../app", () => ({
       bgTaskTitle: "后台任务",
       bgTaskRunning: "{count} 个运行中",
       bgTaskStop: "停止",
+      bgCmdStopDiscardWarning: "停止并丢弃输出",
+      bgCmdOutputDiscarded: "命令已停止，输出已丢弃",
+      bgCmdOutputGone: "输出不再可用（服务器已重启或过期清理）",
+      bgCmdTimedOut: "后台命令超时",
       subagentLoading: "加载中…",
       subagentNoSession: "无会话",
       focusModeEnter: "专注模式",
@@ -127,14 +131,22 @@ function makeStore(taskIds: string[]) {
     statusOf: vi.fn(() => "idle"),
     runningBackgroundTasks: vi.fn(() =>
       taskIds.map((id) => ({
-        id,
-        title: "评审任务",
-        agent: "review",
-        time: { created: Date.now() },
+        kind: "session" as const,
+        session: {
+          id,
+          title: "评审任务",
+          agent: "review",
+          time: { created: Date.now() },
+        },
       })),
     ),
     taskDetailVersion: 0,
     consumeTaskDetailRequest: vi.fn(() => null),
+    // 后台 shell（design-shell-background）
+    stopBackgroundShell: vi.fn(async () => {}),
+    shellDeletedLocally: vi.fn(() => false),
+    loadShellOutput: vi.fn(async () => ({ output: "hello\n", cursor: 6, size: 6, truncated: false })),
+    loadShellInfo: vi.fn(async () => null),
     findSession: vi.fn((id: string) =>
       taskIds.includes(id) ? { id, title: "评审任务", directory: DIR_A } : null,
     ),
@@ -272,7 +284,10 @@ describe("后台任务卡（展开态跨详情保留 + 键盘路径）", () => {
 
     // 同会话再启新任务：新卡必须收起（残留展开态已复位）
     store.runningBackgroundTasks.mockReturnValue([
-      { id: "child-2", title: "新任务", agent: "review", time: { created: Date.now() } },
+      {
+        kind: "session" as const,
+        session: { id: "child-2", title: "新任务", agent: "review", time: { created: Date.now() } },
+      },
     ])
     rerender(<Workspace />)
     expect(screen.getByText("后台任务")).toBeTruthy()
@@ -339,5 +354,109 @@ describe("后台任务卡（展开态跨详情保留 + 键盘路径）", () => {
       expect(document.querySelector(".focus-composer")).toBeNull()
     })
     expect(focusMemo.has("s1")).toBe(false)
+  })
+})
+
+describe("后台 shell 任务卡（design-shell-background）", () => {
+  function shellStore() {
+    const s = makeStore([])
+    ;(s.runningBackgroundTasks as unknown as ReturnType<typeof vi.fn>).mockReturnValue([
+      {
+        kind: "shell" as const,
+        shell: {
+          id: "sh_1",
+          status: "running",
+          command: "npm run dev",
+          metadata: { sessionID: "s1" },
+          time: { started: Date.now() },
+        },
+        parentSessionID: "s1",
+      },
+    ])
+    return s
+  }
+
+  it("shell 任务行：命令 label、停止钮「停止并丢弃输出」title、点击走 stopBackgroundShell", async () => {
+    storeStub = shellStore()
+    render(<Workspace />)
+    fireEvent.click(screen.getByText("后台任务"))
+    expect(screen.getByText("npm run dev")).toBeTruthy()
+    const stop = screen.getByTitle("停止并丢弃输出")
+    fireEvent.click(stop)
+    await act(async () => {})
+    expect(storeStub.stopBackgroundShell).toHaveBeenCalledWith("s1", "sh_1")
+    // 子会话停止通道不被触碰
+    expect(storeStub.abortSession).not.toHaveBeenCalled()
+  })
+
+  it("点 shell 行开输出窗：等宽输出渲染 + 空态按因二分（本端停止 → 丢弃文案）", async () => {
+    storeStub = shellStore()
+    render(<Workspace />)
+    fireEvent.click(screen.getByText("后台任务"))
+    fireEvent.click(screen.getByText("npm run dev"))
+    // 输出窗以命令为 aria-label（两段式首拉后渲染输出文本）
+    expect(await screen.findByText("hello")).toBeTruthy()
+    expect(screen.getByRole("region", { name: "npm run dev" })).toBeTruthy()
+
+    // 关闭后换 404 空态（本端停止过）：Discarded 文案
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }))
+    ;(storeStub.loadShellOutput as ReturnType<typeof vi.fn>).mockResolvedValue(null)
+    ;(storeStub.shellDeletedLocally as ReturnType<typeof vi.fn>).mockReturnValue(true)
+    fireEvent.click(screen.getByText("npm run dev"))
+    expect(await screen.findByText("命令已停止，输出已丢弃")).toBeTruthy()
+  })
+})
+
+describe("后台 shell 输出窗（review 修订：phase 竞态 + Gone 空态）", () => {
+  function shellStore() {
+    const s = makeStore([])
+    ;(s.runningBackgroundTasks as unknown as ReturnType<typeof vi.fn>).mockReturnValue([
+      {
+        kind: "shell" as const,
+        shell: {
+          id: "sh_1",
+          status: "running",
+          command: "npm run dev",
+          metadata: { sessionID: "s1" },
+          time: { started: Date.now() },
+        },
+        parentSessionID: "s1",
+      },
+    ])
+    return s
+  }
+
+  it("info 先回 running、output 后回：phase 不被 done 覆盖（增量轮询可启动）", async () => {
+    storeStub = shellStore()
+    let release!: (v: { output: string; cursor: number; size: number; truncated: boolean }) => void
+    ;(storeStub.loadShellOutput as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise((resolve) => (release = resolve)),
+    )
+    ;(storeStub.loadShellInfo as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "sh_1", status: "running" })
+    render(<Workspace />)
+    fireEvent.click(screen.getByText("后台任务"))
+    fireEvent.click(screen.getByText("npm run dev"))
+    // 状态闭包先回 running（spinner 行出现——findBy 自带 act flush，裸
+    // vi.waitFor 不触发 React re-render）
+    expect(await screen.findByText("加载中…", { selector: ".shell-output-status-text" })).toBeTruthy()
+    // 输出闭包后回（release）：输出落地后 running 态保持（修复前：被输出
+    // 闭包的 done 覆盖 → spinner 消失）
+    await act(async () => {
+      release({ output: "hello", cursor: 5, size: 5, truncated: false })
+      // macrotask 边界 flush 闭包的全部后续 microtask（applyOutput → setText）
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    expect(await screen.findByText("hello")).toBeTruthy()
+    expect(screen.getByText("加载中…", { selector: ".shell-output-status-text" })).toBeTruthy()
+  })
+
+  it("404 空态按因二分：非本端停止 → Gone（服务器重启/过期清理）文案", async () => {
+    storeStub = shellStore()
+    ;(storeStub.loadShellOutput as ReturnType<typeof vi.fn>).mockResolvedValue(null)
+    ;(storeStub.shellDeletedLocally as ReturnType<typeof vi.fn>).mockReturnValue(false)
+    render(<Workspace />)
+    fireEvent.click(screen.getByText("后台任务"))
+    fireEvent.click(screen.getByText("npm run dev"))
+    expect(await screen.findByText("输出不再可用（服务器已重启或过期清理）")).toBeTruthy()
   })
 })

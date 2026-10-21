@@ -352,6 +352,20 @@ const zh = {
   bgTaskCancelled: "后台任务取消：{label}",
   bgTaskView: "查看",
   bgTaskStop: "停止",
+  // 后台 shell（design-shell-background）——「后台命令」与「后台任务」一词一义
+  bgCmdStarted: "已启动后台命令：{label}",
+  bgCmdConverted: "已转后台命令：{label}",
+  bgCmdCompleted: "后台命令完成：{label}",
+  bgCmdFailed: "后台命令失败：{label}",
+  bgCmdCancelled: "后台命令取消：{label}",
+  bgCmdTimedOut: "后台命令超时：{label}",
+  bgCmdStopDiscardWarning: "停止并丢弃输出",
+  bgCmdExitCode: "退出码 {code}",
+  bgCmdKilledBy: "被 {signal} 终止",
+  bgCmdKilled: "已终止",
+  bgCmdOutputTailOnly: "仅展示尾部 1MB，已省略前 {bytes} 字节",
+  bgCmdOutputDiscarded: "命令已停止，输出已丢弃",
+  bgCmdOutputGone: "输出不再可用（服务器已重启或过期清理）",
 }
 
 const en: typeof zh = {
@@ -660,6 +674,19 @@ const en: typeof zh = {
   bgTaskCancelled: "Background task cancelled: {label}",
   bgTaskView: "View",
   bgTaskStop: "Stop",
+  bgCmdStarted: "Background command started: {label}",
+  bgCmdConverted: "Command moved to background: {label}",
+  bgCmdCompleted: "Background command completed: {label}",
+  bgCmdFailed: "Background command failed: {label}",
+  bgCmdCancelled: "Background command cancelled: {label}",
+  bgCmdTimedOut: "Background command timed out: {label}",
+  bgCmdStopDiscardWarning: "Stop and discard output",
+  bgCmdExitCode: "Exit code {code}",
+  bgCmdKilledBy: "Killed by {signal}",
+  bgCmdKilled: "Killed",
+  bgCmdOutputTailOnly: "Showing last 1MB; earlier {bytes} bytes omitted",
+  bgCmdOutputDiscarded: "Command was stopped; output discarded",
+  bgCmdOutputGone: "Output no longer available (server restarted or expired)",
 }
 
 export type MessageKey = keyof typeof zh

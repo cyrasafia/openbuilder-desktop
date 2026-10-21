@@ -1,21 +1,26 @@
 /**
- * 用户后台任务通知（design-subagent-background，2026-10-03；2026-10-08 升格）。
+ * 用户后台任务通知（design-subagent-background，2026-10-03；2026-10-08 升格；
+ * 2026-10-20 增后台 shell——design-shell-background）。
  *
  * 服务异步子会话三路径：命令型 `subagent: true`、工具型 `subagent` tool
  * `background: true`、工具型前台转后台。启动提示由客户端本地合成（前台认领
  * 不插），完成提示由服务端 synthetic（inbox / REST）解析。工具型**前台**
  * （同步阻塞）不算后台任务（判据见 foregroundClaimedChildIds）。
  *
+ * 后台 shell（agent `shell` tool `background:true` / 前台转后台）：判据/构造/
+ * synthetic 解析同文件下半段——shellID 直挂 part metadata，无认领/撤回路径。
+ *
  * 纯逻辑层：解析、状态归一、通知合并都放这里，便于单测；store 只做编排。
  */
 import type { Part, Session, ToolPart } from "./api-types"
+import type { ShellInfo } from "./api-v2-types"
 
 export type BackgroundTaskState = "completed" | "error" | "cancelled"
 
 export type SessionNoticeKind = "background-started" | "background-converted" | "background-finished"
 
 export interface SessionNotice {
-  /** 启动 = `bg-start:<childID>`；完成 = synthetic 消息 id（`msg_…`） */
+  /** 启动 = `bg-start:<childID>` / `bg-shell-start:<shellID>`；完成 = synthetic 消息 id（`msg_…`） */
   id: string
   kind: SessionNoticeKind
   created: number
@@ -24,7 +29,16 @@ export interface SessionNotice {
   state?: BackgroundTaskState
   /** 后台任务子会话（查看入口）；解析不到时缺省 */
   childID?: string
+  /** 后台 shell（查看/停止入口；design-shell-background）；与 childID 互斥 */
+  shellID?: string
+  /** 仅 shell finished：超时终态细分呈现（state 仍是 completed + timeout:true） */
+  timedOut?: boolean
 }
+
+/** 常驻任务卡条目（design-shell-background：子会话与后台 shell 混排） */
+export type BackgroundTask =
+  | { kind: "session"; session: Session }
+  | { kind: "shell"; shell: ShellInfo; parentSessionID: string }
 
 /** 承载工具型子会话的 tool 名（task = 主 agent 调用；subagent = v2 独立工具） */
 const TOOL_FORM_TOOLS = new Set(["task", "subagent"])
@@ -264,4 +278,99 @@ export function withdrawForegroundStartNotices(
     (n) => !(n.kind === "background-started" && n.childID && foregroundIds.has(n.childID)),
   )
   return kept.length === notices.length ? null : kept
+}
+
+/* ---------- 后台 shell（design-shell-background，2026-10-20） ----------
+ *
+ * 判据单点化（决策 1）：shell tool part completed ∧ metadata.shellID ∧
+ * metadata.status === "running"——后台派发（② background:true）与前台转后台
+ * （③ 他端 background 端点）的派发即返回都带同款 metadata（server 工具层
+ * toolResult 并入；SSE success 与 REST 持久化一致）。前台正常完成是
+ * status:"completed"，天然排除；failed part 无此 metadata，同样排除。
+ * shellID 直挂 part，无跨对象匹配——无 subagent 的误插/撤回路径。
+ * 内部模型 state.output 是文本归一（contentText），判据读 state.metadata。 */
+
+/** shell tool 后台派发/转换识别：② input.background === true；③ 缺省（出生同步）
+ *
+ * input 容错（review #2）：SSE 缺口吞掉 tool.called 时，success 事件构造的
+ * state.input 可能是 input.ended 落下的**原始 JSON 字符串**——不解析会把②
+ * 误判为③且无撤回路径（bg-shell-convert 与 REST 重建的 bg-shell-start id
+ * 不同、并存到关 Tab）。字符串 input 尝试 JSON.parse，失败按缺省处理；
+ * live 挂点（onShellToolPartSettled）另有「input 非对象不插」守卫——误插
+ * 源头直接消除，缺口序交 REST 对账重建（快照 input 恒为 parsed 对象）。 */
+export function shellBackgroundDispatchFromPart(part: Part): { shellID: string; command: string; converted: boolean } | undefined {
+  if (part.type !== "tool") return undefined
+  const tool = part as ToolPart
+  if (tool.tool !== "shell") return undefined
+  const state = tool.state as { status?: string; metadata?: Record<string, unknown>; input?: unknown } | undefined
+  if (state?.status !== "completed") return undefined
+  const md = state.metadata
+  const shellID = typeof md?.shellID === "string" && md.shellID ? md.shellID : undefined
+  if (!shellID || md?.status !== "running") return undefined
+  let input = state.input
+  if (typeof input === "string") {
+    try {
+      input = JSON.parse(input)
+    } catch {
+      input = undefined
+    }
+  }
+  const obj = (input ?? {}) as { command?: unknown; background?: unknown }
+  const command = typeof obj.command === "string" ? obj.command : ""
+  return { shellID, command, converted: obj.background !== true }
+}
+
+/** 启动提示（②）：id 稳定幂等；label = command（渲染侧 CSS 截断） */
+export function shellStartedNotice(shellID: string, command: string, created: number): SessionNotice {
+  return {
+    id: `bg-shell-start:${shellID}`,
+    kind: "background-started",
+    created,
+    label: command || shellID,
+    shellID,
+  }
+}
+
+/** 转后台提示（③）：created 取合成/重建时刻（服务端不暴露转换时间） */
+export function shellConvertedNotice(shellID: string, command: string, created: number): SessionNotice {
+  return {
+    id: `bg-shell-convert:${shellID}`,
+    kind: "background-converted",
+    created,
+    label: command || shellID,
+    shellID,
+  }
+}
+
+/** 解析 synthetic 文本里的 `<shell id="…" state="…" command="…">`（label 主源——metadata 无 command 字段） */
+function parseShellTag(text: string): { command?: string } {
+  const tag = /<shell\b([^>]*)>/i.exec(text)
+  if (!tag) return {}
+  const m = /command\s*=\s*"([^"]*)"/i.exec(tag[1])
+  return m?.[1] ? { command: m[1] } : {}
+}
+
+/**
+ * shell 完成提示：`metadata.source != "shell"` 返回 null。
+ * timedOut 独立字段（决策 8：不动共用三态——subagent 无此语义）。
+ */
+export function shellSyntheticNotice(
+  id: string,
+  created: number,
+  payload: { text?: string; description?: string; metadata?: Record<string, unknown> } | undefined,
+): SessionNotice | null {
+  const metadata = payload?.metadata
+  if (!metadata || metadata.source !== "shell") return null
+  const text = typeof payload?.text === "string" ? payload.text : ""
+  const shellID = typeof metadata.shellID === "string" && metadata.shellID ? metadata.shellID : undefined
+  const label = parseShellTag(text).command || payload?.description || shellID || ""
+  return {
+    id,
+    kind: "background-finished",
+    created,
+    label,
+    state: normalizeBackgroundState(metadata.state),
+    ...(shellID ? { shellID } : {}),
+    ...(metadata.timeout === true ? { timedOut: true } : {}),
+  }
 }

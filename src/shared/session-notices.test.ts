@@ -6,6 +6,10 @@ import {
   mergeNotices,
   normalizeBackgroundState,
   subagentSyntheticNotice,
+  shellBackgroundDispatchFromPart,
+  shellStartedNotice,
+  shellConvertedNotice,
+  shellSyntheticNotice,
   foregroundClaimedChildIds,
   activeClaimedChildIds,
   convertedBackgroundChildIds,
@@ -314,5 +318,132 @@ describe("withdrawForegroundStartNotices", () => {
   it("无认领集返回 null（无变化）", () => {
     expect(withdrawForegroundStartNotices([start], new Set())).toBeNull()
     expect(withdrawForegroundStartNotices([start], new Set(["ses_z"]))).toBeNull()
+  })
+})
+
+/* ---------- 后台 shell（design-shell-background，2026-10-20） ---------- */
+
+function shellPart(input: unknown, metadata: Record<string, unknown> | undefined, status = "completed"): Part {
+  return toolPart("shell", input, metadata, status)
+}
+
+describe("shellBackgroundDispatchFromPart（判据单点化——②③/前台/failed 分流）", () => {
+  it("② background:true + metadata status running：命中且非转换", () => {
+    expect(
+      shellBackgroundDispatchFromPart(shellPart({ command: "npm run dev", background: true }, { shellID: "sh_1", status: "running" })),
+    ).toEqual({ shellID: "sh_1", command: "npm run dev", converted: false })
+  })
+
+  it("③ background 缺省（前台转后台）：命中且标记转换", () => {
+    expect(
+      shellBackgroundDispatchFromPart(shellPart({ command: "make build" }, { shellID: "sh_2", status: "running" })),
+    ).toEqual({ shellID: "sh_2", command: "make build", converted: true })
+  })
+
+  it("前台正常完成（metadata status completed）：排除", () => {
+    expect(
+      shellBackgroundDispatchFromPart(shellPart({ command: "ls" }, { shellID: "sh_3", status: "completed" })),
+    ).toBeUndefined()
+  })
+
+  it("无 shellID / 非 shell 工具 / 非 completed（running、error）：排除", () => {
+    expect(shellBackgroundDispatchFromPart(shellPart({ command: "ls" }, { status: "running" }))).toBeUndefined()
+    expect(shellBackgroundDispatchFromPart(shellPart({ command: "ls" }, undefined))).toBeUndefined()
+    expect(
+      shellBackgroundDispatchFromPart(toolPart("task", {}, { shellID: "sh_4", status: "running" })),
+    ).toBeUndefined()
+    expect(
+      shellBackgroundDispatchFromPart(shellPart({ command: "ls" }, { shellID: "sh_5", status: "running" }, "running")),
+    ).toBeUndefined()
+    expect(
+      shellBackgroundDispatchFromPart(shellPart({ command: "ls" }, { shellID: "sh_6", status: "running" }, "error")),
+    ).toBeUndefined()
+  })
+})
+
+describe("shellStartedNotice / shellConvertedNotice（id 幂等 + label 兜底）", () => {
+  it("id 前缀区分②③；label 空 command 回退 shellID", () => {
+    expect(shellStartedNotice("sh_1", "npm run dev", 5)).toMatchObject({
+      id: "bg-shell-start:sh_1",
+      kind: "background-started",
+      label: "npm run dev",
+      shellID: "sh_1",
+    })
+    expect(shellConvertedNotice("sh_2", "", 6)).toMatchObject({
+      id: "bg-shell-convert:sh_2",
+      kind: "background-converted",
+      label: "sh_2",
+      shellID: "sh_2",
+    })
+  })
+})
+
+describe("shellSyntheticNotice（source:shell 完成回执解析）", () => {
+  const payload = {
+    text: '<shell id="job_1" state="completed" command="npm run build">\nok\n</shell>',
+    metadata: {
+      source: "shell",
+      shellID: "sh_1",
+      jobID: "job_1",
+      state: "completed",
+      truncated: false,
+    },
+  }
+
+  it("source 判别：非 shell 返回 null", () => {
+    expect(shellSyntheticNotice("msg_1", 1, { ...payload, metadata: { ...payload.metadata, source: "subagent" } })).toBeNull()
+    expect(shellSyntheticNotice("msg_1", 1, { text: "", metadata: undefined })).toBeNull()
+  })
+
+  it("label 取 text 内 <shell command>（metadata 无 command 字段）；shellID/state 透传", () => {
+    expect(shellSyntheticNotice("msg_1", 1, payload)).toMatchObject({
+      id: "msg_1",
+      kind: "background-finished",
+      label: "npm run build",
+      state: "completed",
+      shellID: "sh_1",
+    })
+  })
+
+  it("超时细分（缺口 #1）：state completed + timeout:true → timedOut 独立字段", () => {
+    const notice = shellSyntheticNotice("msg_2", 2, {
+      ...payload,
+      metadata: { ...payload.metadata, state: "completed", timeout: true },
+    })
+    expect(notice).toMatchObject({ state: "completed", timedOut: true })
+  })
+
+  it("state 归一：error/cancelled 别名收敛；label 兜底链 description → shellID", () => {
+    expect(
+      shellSyntheticNotice("msg_3", 3, { ...payload, metadata: { ...payload.metadata, state: "error" } })?.state,
+    ).toBe("error")
+    expect(
+      shellSyntheticNotice("msg_4", 4, {
+        text: "no tag here",
+        description: "fallback desc",
+        metadata: { source: "shell", shellID: "sh_9", state: "cancelled" },
+      }),
+    ).toMatchObject({ label: "fallback desc", state: "cancelled", shellID: "sh_9" })
+    expect(
+      shellSyntheticNotice("msg_5", 5, {
+        metadata: { source: "shell", shellID: "sh_8", state: "completed" },
+      })?.label,
+    ).toBe("sh_8")
+  })
+})
+
+describe("shellBackgroundDispatchFromPart input 容错（review #2：SSE 缺口下 input 为原始 JSON 字符串）", () => {
+  it("字符串 input 可解析：按解析对象分流（②不误判为③）", () => {
+    expect(
+      shellBackgroundDispatchFromPart(
+        shellPart('{"command":"npm run dev","background":true}', { shellID: "sh_s", status: "running" }),
+      ),
+    ).toEqual({ shellID: "sh_s", command: "npm run dev", converted: false })
+  })
+
+  it("字符串 input 不可解析：按缺省处理（converted，label 兜底由 live 守卫不插）", () => {
+    expect(
+      shellBackgroundDispatchFromPart(shellPart("not json", { shellID: "sh_s", status: "running" })),
+    ).toEqual({ shellID: "sh_s", command: "", converted: true })
   })
 })
