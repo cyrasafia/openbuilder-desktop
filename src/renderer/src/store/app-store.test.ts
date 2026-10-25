@@ -6,7 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { waitFor } from "@testing-library/react"
-import { AppStore, diffTabKey, FILE_WATCH_DEBOUNCE_MS } from "./app-store"
+import { AppStore, diffTabKey, diffDataKey, FILE_WATCH_DEBOUNCE_MS } from "./app-store"
 import type { Attachment } from "@shared/attachment-pipeline"
 import { ApiError, RestClient } from "@shared/rest-client"
 import { toInternalMessages } from "@shared/v2-adapter"
@@ -878,7 +878,7 @@ describe("worktree 库存（v2 权威源，2026-09-29：sandboxes 冻结）", ()
     expect(store.workspacesOfProject("proj1").some((w) => w.directory === NEW)).toBe(true)
   })
 
-  it("他端删除走库存 diff（sandboxes 冻结不变）——卸载消失目录的会话/Tab", async () => {
+  it("他端删除走库存 diff（sandboxes 冻结不变）——卸载消失目录的会话/Tab；pty 清理不发死目录 deletePty（todo-error-body-tag #3）", async () => {
     // v2 GA 后创建的 worktree 只进库存（sandboxes 从无它）——他端 DELETE 移除库存行
     const s2 = session("s2", WT1, { created: 2, updated: 2 })
     store.sessionsByProject.set("proj1", sessionsOf(s2))
@@ -889,6 +889,10 @@ describe("worktree 库存（v2 权威源，2026-09-29：sandboxes 冻结）", ()
     projectList = [{ ...project(), sandboxes: [WT2] }]
     const cv2 = fakeClient()
     cv2.refreshWorktrees = async () => {}
+    const ptyDeletes: string[] = []
+    cv2.deletePty = async (id: string, d: string) => {
+      ptyDeletes.push(`${id}:${d}`)
+    }
     let dropped = false
     cv2.listWorktrees = async () =>
       dropped
@@ -898,6 +902,11 @@ describe("worktree 库存（v2 权威源，2026-09-29：sandboxes 冻结）", ()
     await store.syncWorktrees()
     await store.setCurrentWorkspace(WT1)
     expect(store.tabs.some((t) => t.key === "chat:s2")).toBe(true)
+    // 活目录终端（卸载前在 WT1 开着 live pty）
+    store.tabs.push({ kind: "terminal", key: "terminal:pty_b", projectId: "proj1", directory: WT1, title: "t" })
+    ;(store as unknown as { ptyRuntimes: Map<string, { exited: boolean }> }).ptyRuntimes.set("pty_b", {
+      exited: false,
+    })
     // 他端删除：库存行消失（sandboxes/projectList 不变）
     dropped = true
     await store.syncWorktrees()
@@ -905,6 +914,8 @@ describe("worktree 库存（v2 权威源，2026-09-29：sandboxes 冻结）", ()
     expect(store.tabs.some((t) => t.directory === WT1)).toBe(false)
     // 卸载后内部 sandboxes 剥离（防 60s diff 重复卸载）
     expect(store.projects.find((p) => p.id === "proj1")?.sandboxes).not.toContain(WT1)
+    // 库存行消失 = 目录已死：unload 内 pty 清理跳过 server deletePty（燃料防御）
+    expect(ptyDeletes).toEqual([])
   })
 
   it("removeWorkspace：库存行随 DELETE 消失（v2 权威源刷新，非 sandboxes）", async () => {
@@ -1179,6 +1190,185 @@ describe("worktree 库存（v2 权威源，2026-09-29：sandboxes 冻结）", ()
     expect(res.ok).toBe(true)
     expect(res.keptBranch).toBe("opencode/wt1")
     expect(store.branchNotice).toBe("opencode/wt1")
+  })
+})
+
+describe("死目录错误语义化（todo-error-body-tag：_tag 判别 / 静默吸收 / 被动确证）", () => {
+  function fakeClient() {
+    return (store as unknown as { client: Record<string, unknown> }).client
+  }
+
+  /** LocationNotFoundError 真实形状（2.1.3 扁平 _tag 体，活体 2026-10-25） */
+  function locationNotFound(directory: string): ApiError {
+    return new ApiError(404, "not-found", `HTTP 404: Location not found: ${directory}`, {
+      _tag: "LocationNotFoundError",
+      location: { directory },
+      message: `Location not found: ${directory}`,
+    })
+  }
+
+  function pushDiffTab(directory: string) {
+    store.tabs.push({ kind: "diff", key: diffTabKey(directory), projectId: "proj1", directory, title: "diff" })
+  }
+
+  it("loadDiffTab：LocationNotFoundError 静默吸收（无错误态、旧数据保留）；文件级 404 照旧上错误态", async () => {
+    const cv2 = fakeClient()
+    pushDiffTab(WT1)
+    const files = [
+      { file: "a.ts", patch: "", additions: 0, deletions: 0, status: "modified" },
+    ] as FileDiff[]
+    cv2.listVcsDiff = async () => files
+    await store.loadDiffTab("uncommitted", WT1)
+    expect(store.diffData.get(diffDataKey("uncommitted", WT1))).toMatchObject({ files, error: undefined })
+    // 死目录 404（_tag 判别）：吸收——旧 files 保留、不落 error（Tab 随 unload 关闭）
+    cv2.listVcsDiff = async () => {
+      throw locationNotFound(WT1)
+    }
+    await store.loadDiffTab("uncommitted", WT1)
+    const absorbed = store.diffData.get(diffDataKey("uncommitted", WT1))
+    expect(absorbed?.error).toBeUndefined()
+    expect(absorbed?.files).toEqual(files)
+    // 文件级 404（FileNotFound，无 LocationNotFound tag）：不在吸收面，照旧错误态
+    cv2.listVcsDiff = async () => {
+      throw new ApiError(404, "not-found", "HTTP 404: File not found", { _tag: "FileNotFoundError" })
+    }
+    await store.loadDiffTab("uncommitted", WT1)
+    expect(store.diffData.get(diffDataKey("uncommitted", WT1))?.error).toBeTruthy()
+  })
+
+  it("吸收判别三源：删除窗口/最近删除集内的任意失败也吸收（旧 server 无 _tag 的兜底）", async () => {
+    const cv2 = fakeClient()
+    pushDiffTab(WT2)
+    cv2.listVcsDiff = async () => {
+      throw new ApiError(500, "server", "HTTP 500")
+    }
+    const priv = store as unknown as {
+      deletingWorkspaces: Set<string>
+      noteLocationDeleted: (d: string) => void
+      recentlyDeletedLocations: Map<string, number>
+    }
+    // ① 删除窗口（removeWorkspace 在途）：gate 拒绝/窗口内落地的失败同归预期
+    priv.deletingWorkspaces.add(`proj1\u0000${WT2}`)
+    await store.loadDiffTab("uncommitted", WT2)
+    expect(store.diffData.get(diffDataKey("uncommitted", WT2))?.error).toBeUndefined()
+    // ② 最近删除集（本端删除后迟到请求）
+    priv.deletingWorkspaces.clear()
+    priv.noteLocationDeleted(WT2)
+    await store.loadDiffTab("uncommitted", WT2)
+    expect(store.diffData.get(diffDataKey("uncommitted", WT2))?.error).toBeUndefined()
+    // ③ 无死目录上下文的普通失败：不吸收
+    priv.recentlyDeletedLocations.clear()
+    await store.loadDiffTab("uncommitted", WT2)
+    expect(store.diffData.get(diffDataKey("uncommitted", WT2))?.error).toBe("HTTP 500")
+  })
+
+  it("loadFileContent：LocationNotFoundError 吸收回滚（首开不落错误态）；普通网络错误照旧", async () => {
+    const cv2 = fakeClient()
+    cv2.readFileContent = async () => {
+      throw locationNotFound(WT1)
+    }
+    await store.loadFileContent(`${WT1}/a.ts`, WT1)
+    // 首开无旧条目：回滚 = 删除在途条目（不落 error）
+    expect(store.fileContents.has(`${WT1}/a.ts`)).toBe(false)
+    cv2.readFileContent = async () => {
+      throw new ApiError(0, "network", "无法连接服务器")
+    }
+    await store.loadFileContent(`${WT1}/a.ts`, WT1)
+    expect(store.fileContents.get(`${WT1}/a.ts`)?.error).toBeTruthy()
+  })
+
+  it("handleDeadLocation（被动确证 #3）：删除窗口不抢跑；确证即 evict + 库存剥离 + 卸载（pty 不发死目录 deletePty）；重复回执幂等", async () => {
+    const s2 = session("s2", WT1, { created: 2, updated: 2 })
+    store.sessionsByProject.set("proj1", sessionsOf(s2))
+    store.tabs.push({ kind: "file", key: `file:${WT1}/a.ts`, projectId: "proj1", directory: WT1, title: "a.ts" })
+    store.tabs.push({ kind: "terminal", key: "terminal:pty_a", projectId: "proj1", directory: WT1, title: "t" })
+    ;(store as unknown as { ptyRuntimes: Map<string, { exited: boolean }> }).ptyRuntimes.set("pty_a", {
+      exited: false,
+    })
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [s2])
+    snapshots.set(WT2, [])
+    const cv2 = fakeClient()
+    const evicts: string[] = []
+    cv2.evictLocation = async (d: string) => {
+      evicts.push(d)
+    }
+    const ptyDeletes: string[] = []
+    cv2.deletePty = async (id: string, d: string) => {
+      ptyDeletes.push(`${id}:${d}`)
+    }
+    cv2.refreshWorktrees = async () => {}
+    cv2.listWorktrees = async () => [
+      { directory: ROOT },
+      { directory: WT1, strategy: "git" },
+      { directory: WT2, strategy: "git" },
+    ]
+    projectList = [{ ...project(), sandboxes: [WT1, WT2] }]
+    await store.syncWorktrees()
+    expect(store.workspacesOfProject("proj1").some((w) => w.directory === WT1)).toBe(true)
+    const priv = store as unknown as { deletingWorkspaces: Set<string> }
+    // 本端删除窗口：removeWorkspace 拥有生命周期，被动回执不抢跑
+    priv.deletingWorkspaces.add(`proj1\u0000${WT1}`)
+    await (store as unknown as { handleDeadLocation: (d: string) => Promise<void> }).handleDeadLocation(WT1)
+    expect(evicts).toEqual([])
+    expect(store.tabs.some((t) => t.directory === WT1)).toBe(true)
+    // 确证收敛：evict + 库存剥离 + unload（关 Tab/剥会话/sandboxes）；unload 内的
+    // pty 清理不发死目录 deletePty（location 请求 = 确定性兜底建档，燃料防御）
+    priv.deletingWorkspaces.clear()
+    await (store as unknown as { handleDeadLocation: (d: string) => Promise<void> }).handleDeadLocation(WT1)
+    expect(evicts).toEqual([WT1])
+    expect(ptyDeletes).toEqual([])
+    expect(store.workspacesOfProject("proj1").some((w) => w.directory === WT1)).toBe(false)
+    expect(store.tabs.some((t) => t.directory === WT1)).toBe(false)
+    expect(store.sessionsByProject.get("proj1")?.has("s2")).toBe(false)
+    expect(store.projects.find((p) => p.id === "proj1")?.sandboxes).not.toContain(WT1)
+    // 重复回执：无 owner 即 no-op（不重复 evict）
+    await (store as unknown as { handleDeadLocation: (d: string) => Promise<void> }).handleDeadLocation(WT1)
+    expect(evicts).toEqual([WT1])
+  })
+
+  it("handleDeadLocation：canonical 死亡不处置（非 worktree 删除语义，不越权 evict）", async () => {
+    const cv2 = fakeClient()
+    const evicts: string[] = []
+    cv2.evictLocation = async (d: string) => {
+      evicts.push(d)
+    }
+    await (store as unknown as { handleDeadLocation: (d: string) => Promise<void> }).handleDeadLocation(ROOT)
+    expect(evicts).toEqual([])
+    expect(store.projects).toHaveLength(1)
+    // 吸收判别源 ① 同口径：canonical 的 LocationNotFoundError 不吸收（无 unload
+    // 跟进，静默会让 Tab 滞留旧数据无信号——review 2026-10-25 #1）
+    store.tabs.push({ kind: "diff", key: diffTabKey(ROOT), projectId: "proj1", directory: ROOT, title: "diff" })
+    cv2.listVcsDiff = async () => {
+      throw new ApiError(404, "not-found", `HTTP 404: Location not found: ${ROOT}`, {
+        _tag: "LocationNotFoundError",
+        location: { directory: ROOT },
+        message: `Location not found: ${ROOT}`,
+      })
+    }
+    await store.loadDiffTab("uncommitted", ROOT)
+    expect(store.diffData.get(diffDataKey("uncommitted", ROOT))?.error).toBeTruthy()
+  })
+
+  it("handleDeadLocation 并发回执去重：evict 在途期第二笔回执不双跑（deadLocationHandling 承重）", async () => {
+    const cv2 = fakeClient()
+    let release!: () => void
+    const held = new Promise<void>((r) => {
+      release = r
+    })
+    let evicts = 0
+    cv2.evictLocation = async () => {
+      evicts++
+      await held
+    }
+    const handle = () =>
+      (store as unknown as { handleDeadLocation: (d: string) => Promise<void> }).handleDeadLocation(WT1)
+    const p1 = handle()
+    // 第一笔在 evict 在途（deadLocationHandling 持 WT1）：第二笔同步早退
+    const p2 = handle()
+    release()
+    await Promise.all([p1, p2])
+    expect(evicts).toBe(1)
   })
 })
 
@@ -3443,15 +3633,27 @@ describe("回滚到指定消息（design-message-revert）", () => {
 
   it("revertToMessage 409 SessionBusyError（M5 评审修复）：命中友好文案；普通 409 透传", async () => {
     seedSession()
-    // v2 typed error：409 + {name:"SessionBusyError"} → 「会话仍在进行中」
+    // v2 typed error 扁平 _tag 体（2026-10-25 活体口径）：409 + {_tag, sessionID, message}
     clientV2Of().revertStage = async () => {
       throw new ApiError(409, "unknown", "HTTP 409: session is busy", {
-        name: "SessionBusyError",
-        data: { sessionID: "s1", message: "session is busy" },
+        _tag: "SessionBusyError",
+        sessionID: "s1",
+        message: "session is busy",
       })
     }
     const res = await store.revertToMessage("s1", "msg_u1")
     expect(res.ok).toBe(false)
+    expect(store.connectionError).toContain("会话仍在进行中")
+    // 2.1.3 WorktreeError 家族 {_tag, name, data} 并存形状：tag 双读（_tag 优先）
+    clientV2Of().revertStage = async () => {
+      throw new ApiError(409, "unknown", "HTTP 409: session is busy", {
+        _tag: "SessionBusyError",
+        name: "SessionBusyError",
+        data: { sessionID: "s1", message: "session is busy" },
+      })
+    }
+    const resTagged = await store.revertToMessage("s1", "msg_u1")
+    expect(resTagged.ok).toBe(false)
     expect(store.connectionError).toContain("会话仍在进行中")
     // 非 SessionBusyError 的同状态错误：透传原始消息
     clientV2Of().revertStage = async () => {

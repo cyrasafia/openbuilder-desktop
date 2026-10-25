@@ -46,10 +46,30 @@ export interface RestClientOptions {
   fetchImpl?: typeof fetch
 }
 
+/** 4xx/5xx 结构化错误体（三形状并存，2026-10-25 活体口径，ref-pin-bump-2.1.3 §3）：
+ *  - 扁平 `_tag`（多数错误族）：`{_tag, message, ...payload}`——SessionBusyError
+ *    `{_tag, sessionID, message}`、LocationNotFoundError `{_tag, location, message}`；
+ *  - 包装 `{_tag, name, data}`（WorktreeError，2.1.3 起带 _tag）；
+ *  - 旧 `{name, data}`（2.0.18 pin 的 WorktreeError——`data.message` 提取口径保留兼容）。 */
+export interface ApiErrorBody {
+  _tag?: string
+  name?: string
+  message?: string
+  location?: { directory?: string }
+  data?: Record<string, unknown>
+  /** 扁平体携带的族特有字段（sessionID 等）——错误族开放形状，判别只依赖上面五键 */
+  [key: string]: unknown
+}
+
 export class ApiError extends Error {
-  /** 4xx/5xx 的结构化错误体（`{name, data}`，v2 typed error）——SessionBusyError
-   *  等判别用；无体/解析失败为 undefined */
-  readonly body?: { name?: string; data?: Record<string, unknown> }
+  /** 原始错误体（尽力解析）；无体/解析失败为 undefined */
+  readonly body?: ApiErrorBody
+  /** 错误族判别键（双读：扁平体 `_tag` ?? 包装体 `name`）——SessionBusyError /
+   *  LocationNotFoundError 等消费方判别用（todo-error-body-tag #1） */
+  readonly tag?: string
+  /** LocationNotFoundError 体的 `location.directory`（死目录 server 确证；
+   *  非该族错误 undefined） */
+  readonly locationDirectory?: string
 
   constructor(
     public status: number,
@@ -62,11 +82,21 @@ export class ApiError extends Error {
       | "unsupported"
       | "unknown",
     message: string,
-    body?: { name?: string; data?: Record<string, unknown> },
+    body?: ApiErrorBody,
   ) {
     super(message)
     this.body = body
+    this.tag = body?._tag ?? body?.name
+    const dir = body?.location?.directory
+    if (typeof dir === "string") this.locationDirectory = dir
   }
+}
+
+/** LocationNotFoundError 判别（2.1.3 结构化错误体）：location 域请求打到的目录
+ *  已不存在（区别于 fs 域 FileNotFound 的文件级 404）——死目录消费方静默吸收
+ *  （todo-error-body-tag #2）与被动确证（#3）的判别源 */
+export function isLocationNotFoundError(e: unknown): e is ApiError {
+  return e instanceof ApiError && e.tag === "LocationNotFoundError"
 }
 
 /** 错误分类转换（参考 openbuilder design-network-error-handling：不暴露响应体） */
@@ -146,15 +176,16 @@ export class RestClient {
             : res.status >= 500
               ? "server"
               : "unknown"
-      // 结构化错误体尽力解析（v2 typed error `{name, data}`）；失败仅留状态码
-      let body: { name?: string; data?: Record<string, unknown> } | undefined
+      // 结构化错误体尽力解析（三形状口径见 ApiErrorBody）；失败仅留状态码
+      let body: ApiErrorBody | undefined
       try {
         const text = await res.text()
-        if (text) body = JSON.parse(text) as { name?: string; data?: Record<string, unknown> }
+        if (text) body = JSON.parse(text) as ApiErrorBody
       } catch {
         // 非 JSON 错误体（代理页等）——无 body 判别
       }
-      const detail = body?.data?.message
+      // message 双读：扁平体顶层 message ?? 包装体 data.message（旧 WorktreeError）
+      const detail = body?.message ?? body?.data?.message
       throw new ApiError(res.status, kind, detail ? `HTTP ${res.status}: ${String(detail)}` : `HTTP ${res.status}`, body)
     }
     return res
@@ -378,6 +409,18 @@ export class RestClient {
     this.locationInflight.set(directory, n)
     try {
       return await run()
+    } catch (e) {
+      // 死目录被动确证（todo-error-body-tag #3）：LocationNotFoundError = 目录已被
+      // 删除（本端在途迟到/他端删除）的 server 确证——通知调用方即时收敛；异常
+      // 照抛（消费方经判别静默吸收，#2）。回调异常不改变原错误路径
+      if (isLocationNotFoundError(e)) {
+        try {
+          this.onDeadLocation?.(directory)
+        } catch {
+          // 回调内部故障不吞原始错误
+        }
+      }
+      throw e
     } finally {
       const left = (this.locationInflight.get(directory) ?? 1) - 1
       if (left <= 0) this.locationInflight.delete(directory)
@@ -394,6 +437,15 @@ export class RestClient {
   resumeLocationRequests(directory: string): void {
     this.suspendedLocationDirs.delete(directory)
   }
+
+  /**
+   * 死目录被动确证回调（todo-error-body-tag #3）：withLocation 内收到
+   * LocationNotFoundError（2.1.3 结构化错误体，目录已被删除的 server 确证）时
+   * 同步触发，directory = 请求目录。调用方（app-store）即时 unload + evict，
+   * 不等 60s 对账。**红线：只消费已有请求的错误回执，不做主动探测**——
+   * 死目录 liveness probe 本身即建档燃料（ref-pseudo-project-cleanup §3.4）。
+   */
+  onDeadLocation?: (directory: string) => void
 
   /**
    * 等某目录在途 location 请求清零（barrier）——removeWorkspace 在

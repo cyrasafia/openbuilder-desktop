@@ -170,11 +170,76 @@ DELETE 对**非 warm 目录同样返回 204**（幂等空 evict）——204 不�
 | 覆盖面 | rest-client **全部 17 个**带 location 的 fetch 方法：`resolveLocation` / `createSession`（body location）/ `vcsStatus` / `listVcsDiff` / `listFiles` / `findFiles` / `readFileContent` / `listAgents` / `listModels` / `listIntegrations` / `connectIntegrationKey` / `createPty` / `updatePtySize` / `ptyConnectToken` / `listCommands`（command+skill 双源）/ `listPendingPermissionRequests` / `listPendingForms`。**豁免**：`evictLocation`（删除链路自身要用，且只 invalidate 不 boot）、`deletePty`（清理动作，挂起会拒绝清理——改由顺序保证，见下）、pty WS connect（不走 fetch 层，终端清理另有链路） |
 | 接线 | `removeWorkspace`：`deletingWorkspaces.add` 后开 `try`（同步段抛错也走 finally）→ `suspend` → **pty 预杀**（`killPtyInDirectory`，目录存活期发 `deletePty` 无害；留到 DELETE 后 unload 再杀 = 确定性建一行——评审 blocker 修复，函数改幂等防 unload 二次重发）→ 级联删会话 → **`awaitLocationIdle` → `DELETE /api/worktree`** → evict/refresh/分支清理 → `finally` 里 `resume`（失败路径也解除） |
 | 顺序 | suspend 早于作用域切换后的任何 await；`awaitLocationIdle` 紧贴 `deleteWorktree` 之前——等清零后到删除落地之间不再有新请求（gate 已挡） |
-| 误伤面 | 挂起窗口 = 整个 removeWorkspace（常为亚秒级；慢路径上界 = awaitLocationIdle 1.5s + deleteWorktree 自身耗时——大目录 git remove 可观）；非当前项目删除时该目录的 file/diff Tab 在 unload 前仍在，窗口内事件驱动的重载会吃到拒绝、Tab 短暂呈错误态——与「目录正在被删除」的语义一致。**行为变化**：删除失败重试时该目录终端已被预杀（旧：删除成功后 unload 才杀）——删除经用户确认，可辩护 |
-| 兜底 | 漏网残留照旧按 ref §5.2 处置（本设计把概率压到接近零，不做删除后清行——无删除 API）。**已知残留**：他端删除（`syncWorktrees` 的 unload 路径）时目录在对账开始前已死，该路径的 pty 清理等 location 请求仍可能落死目录——由执行删除的一方防御（openbuilder 同构对齐中），本端接受偶发 |
+| 误伤面 | 挂起窗口 = 整个 removeWorkspace（常为亚秒级；慢路径上界 = awaitLocationIdle 1.5s + deleteWorktree 自身耗时——大目录 git remove 可观）；非当前项目删除时该目录的 file/diff Tab 在 unload 前仍在，窗口内事件驱动的重载会吃到拒绝——**2026-10-25 起静默吸收**（§3.6 #2：不上错误态、保留旧数据，Tab 随 unload 即将关闭）。**行为变化**：删除失败重试时该目录终端已被预杀（旧：删除成功后 unload 才杀）——删除经用户确认，可辩护 |
+| 兜底 | 漏网残留照旧按 ref §5.2 处置（本设计把概率压到接近零，不做删除后清行——无删除 API）。**已知残留→自愈（2026-10-25，§3.6 #3）**：他端删除（`syncWorktrees` 的 unload 路径）时目录在对账开始前已死，该路径的 pty 清理等 location 请求落死目录的 404 回执（`LocationNotFoundError`）如今被动确证即时收敛（unload + evict）——不再「接受偶发」 |
 
 与 §3.4 的关系：evict 治 warm 死驻留（保留），本节治请求触发（预防）——两者正交，
 共同构成删除链路的伪行防御。
+
+### 3.6 死目录错误语义化（2026-10-25 增补，todo-error-body-tag 落地）
+
+**背景**：2.1.3 起 server 错误体结构化（ref-pin-bump-2.1.3 §3「错误面规整」）——
+`_tag` 判别键使「目录已删」从裸 404 变成可精确判别的信号。三形状并存（2026-10-25
+活体）：扁平 `_tag`（多数错误族：`SessionBusyError` 409 = `{_tag, sessionID,
+message}`、`LocationNotFoundError` 404 = `{_tag, location:{directory}, message}`）、
+`{_tag, name, data}`（WorktreeError）、旧 `{name, data}`（2.0.18 pin 的
+WorktreeError）。存量失配：`rest-client` 此前按 `{name, data}` 单形状解析
+（`detail = body?.data?.message`、判别 `body?.name`）——扁平体错误的 message 与
+判别双丢（busy 竞争时用户看到裸 `HTTP 409`，「会话仍在进行中」友好文案恒不命中），
+是存量 bug，本次一并修复。
+
+**#1 ApiError 解析升级（判别修复）**：`ApiErrorBody` 三形状口径 + 错误族开放
+形状；`ApiError` 增 `tag`（双读 `_tag ?? name`）与 `locationDirectory`（体带
+`location.directory`，死目录确证）；message 提取双读 `body.message ??
+body.data.message`（包装家族兼容保留）。判别消费方（`revertToMessage`/
+`unrevertSession` 的 SessionBusyError）改读 `e.tag`。
+
+**#2 死目录预期失败静默吸收（删除窗口体验）**：§3.5 误伤面原接受项「窗口内事件
+驱动的重载 Tab 短暂呈错误态」——此前无法做：fs 域两类 404（目录死/文件不存在）
+不可区分；`LocationNotFoundError` 可精确判别后落地。判别 `isExpectedLocationMiss
+(directory, e)` 三源：① `_tag === "LocationNotFoundError"`（server 确证**目录**
+不存在，区别于文件级 FileNotFound），**限定工作区行目录**（`deadWorktreeOwner`
+命中，排除 canonical——canonical/未知目录死亡无 unload 跟进，静默会让 Tab 滞留
+旧数据无信号，保留诚实错误态，review 2026-10-25 #1）；② 删除窗口
+（`deletingWorkspaces` 含该目录——gate 本地拒绝与窗口内落地的失败同归预期，
+不筛错误族，旧 server 亦覆盖；窗口亚秒级，删除失败重试/下次重拉会再暴露）；
+③ 最近删除集（`recentlyDeletedLocations`，本端 DELETE 成功与被动确证双源登记，
+TTL 5 分钟对齐 server location 刷新周期，读取时修剪——吸收只作用于错误路径，
+同名重建的活目录不受影响）。接线消费方 = 有错误态的事件驱动重载三处（其余
+§3.5 列的 17 方法消费方本就 `.catch(() => null)` 吞错或用户主动动作保留诚实
+报错）：diff 重载 `loadDiffTab`（保留旧 files 不落 error）、文件加载
+`doLoadFileContent` 与监听重拉 `doFileReload`（回滚在途条目保留旧内容）。
+
+**#3 他端删除的被动确证收敛（§3.5 兜底残留的自愈）**：rest-client `withLocation`
+错误路径收到 `LocationNotFoundError`（请求本身已在 server 侧 boot 过死目录
+location——建档燃料已付）即调 `onDeadLocation(directory)` 回调（错误照抛，消费方
+经 #2 吸收）；app-store `handleDeadLocation` 即时收敛不等 60s 对账：guard（本端
+删除窗口不抢跑——removeWorkspace 拥有 suspend→DELETE→evict→unload 顺序契约；
+在途去重）→ evict（§3.4 同源 best-effort，断 warm 刷新循环）→ 库存本地剥离
+（渲染源 = 库存优先，不剥离则左栏行残留至下轮 syncWorktrees）→
+`unloadWorktreeDirectory`（关 Tab/清引用/剥 sandboxes）。归属定位
+`deadWorktreeOwner` = 打开项目的工作区行（库存 ∪ sandboxes），**排除项目
+canonical**——canonical 死亡不是 worktree 删除语义，不越权处置、不登记最近
+删除集（吸收判别源 ① 同口径）。**红线：识别 ≠ 探测**——只消费已有请求的错误
+回执，不主动发 location 请求做 liveness probe（probe 本身即建档燃料，
+ref-pseudo-project-cleanup §3.4）。
+
+**pty 清理燃料防御（#3 配套）**：`killPtyInDirectory` 对最近删除集内的目录
+**跳过 server `deletePty`**（仅本地标 exited）——带 location 的清理请求落在死
+目录上 = 确定性兜底建档（§3.5 兜底注「他端删除时本端 pty 清理仍可能落死目录」
+的偶发燃料由此断根；server 侧孤儿 pty 由其重启回收，代价远小于伪项目行）。
+removeWorkspace 预杀不受影响：最近删除集在 DELETE 成功后才登记，预杀时目录
+仍存活（§3.5 顺序契约保持）。登记双入口：本端 `removeWorkspace` DELETE 成功 +
+被动确证回执，另 `syncWorktrees` 库存 diff 卸载（库存行消失 = 目录已死的同构
+确证）先登记再 unload。
+
+与 SSE `worktree.updated` 的关系：事件路径仍是主收敛通道（v2 GA 起删除有事件）；
+本节是丢消息/断连窗口与「请求先于事件落地」场景的补充快路径，且对回执的吸收让
+收敛完成前的窗口无错误态闪烁。
+
+**不做**（沿 todo 裁定）：客户端死目录主动探测/项目列表指纹过滤（ref §8 已否决）；
+409 busy 的 prompt 排队语义（steer 200 是 server 行为）；错误文案 i18n（message
+透出原文）。
 
 ## 4. 边界与防御
 
@@ -195,14 +260,14 @@ DELETE 对**非 warm 目录同样返回 204**（幂等空 evict）——204 不�
 | 文件 | 改动 |
 |------|------|
 | `src/shared/api-v2-types.ts` | `WorktreeDirectory` wire 类型 |
-| `src/shared/rest-client.ts` | `createWorktree` 裸响应修正；新增 `listWorktrees`/`refreshWorktrees`/`evictLocation`（§3.4）；location 请求屏障（§3.5）：`withLocation` 包装 + `suspendLocationRequests`/`resumeLocationRequests`/`awaitLocationIdle`，17 个带 location 的方法纳入 |
-| `src/renderer/src/store/app-store.ts` | `worktreeDirs` 状态 + `loadWorktreeInventory`/`mergeWorktreeDirsIntoProjects`；`workspacesOfProject` 库存优先；`syncWorktrees` refresh+list+diff；`refreshAllOpenedProjects` 库存先行；`unloadWorktreeDirectory` sandboxes 剥离；`removeWorkspace` 删除成功后 evict location（§3.4）+ 删除窗口 location 屏障接线与 pty 预杀（§3.5，`killPtyInDirectory` 改幂等）；teardown 清理 |
+| `src/shared/rest-client.ts` | `createWorktree` 裸响应修正；新增 `listWorktrees`/`refreshWorktrees`/`evictLocation`（§3.4）；location 请求屏障（§3.5）：`withLocation` 包装 + `suspendLocationRequests`/`resumeLocationRequests`/`awaitLocationIdle`，17 个带 location 的方法纳入；错误体 `_tag` 判别（§3.6）：`ApiErrorBody` 三形状 + `ApiError.tag`/`locationDirectory` + `isLocationNotFoundError` + `onDeadLocation` 回调 |
+| `src/renderer/src/store/app-store.ts` | `worktreeDirs` 状态 + `loadWorktreeInventory`/`mergeWorktreeDirsIntoProjects`；`workspacesOfProject` 库存优先；`syncWorktrees` refresh+list+diff；`refreshAllOpenedProjects` 库存先行；`unloadWorktreeDirectory` sandboxes 剥离；`removeWorkspace` 删除成功后 evict location（§3.4）+ 删除窗口 location 屏障接线与 pty 预杀（§3.5，`killPtyInDirectory` 改幂等）+ DELETE 成功登记最近删除集（§3.6）；teardown 清理；死目录语义化（§3.6）：`isExpectedLocationMiss` 三源判别 + `loadDiffTab`/`doLoadFileContent`/`doFileReload` 静默吸收 + `handleDeadLocation` 被动确证收敛（connect 期挂 `onDeadLocation`） |
 | `src/shared/sse-subscriber.ts` | （不变；meta.project 透传沿用） |
 
 ## 6. 测试
 
-- `rest-client.test.ts`：listWorktrees 裸数组/query、createWorktree 裸响应/name 透传、refreshWorktrees payload/204、evictLocation DELETE deepObject query/204（§3.4）——4 用例；location 屏障（§3.5）——gate 拒绝/豁免 evict/他目录不受影响/barrier 超时放行与清零即回/失败归零，5 用例
-- `app-store.test.ts`：库存为准渲染（幽灵不渲染/新建可见/union）、createWorkspace 裸响应+切换、他端删除库存 diff 卸载、removeWorkspace 库存刷新——4 用例；removeWorkspace location evict（删除成功必调/失败不调/evict 失败不阻塞删除）——3 用例（§3.4）；location 屏障（§3.5）——顺序契约（suspend→idle→delete→resume）/失败路径也 resume/pty 预杀先于 DELETE 且幂等，3 用例；既有 worktree 用例（fake 缺省无库存端点 = 旧 server 回退路径）全数保留（非阻塞删除态一例因 DELETE 前多一跳 awaitLocationIdle 补 `setTimeout(0)` 宏任务拍）
+- `rest-client.test.ts`：listWorktrees 裸数组/query、createWorktree 裸响应/name 透传、refreshWorktrees payload/204、evictLocation DELETE deepObject query/204（§3.4）——4 用例；location 屏障（§3.5）——gate 拒绝/豁免 evict/他目录不受影响/barrier 超时放行与清零即回/失败归零，5 用例；结构化错误体（§3.6）——扁平 `_tag`/包装 `{name,data}`/`_tag+name+data` 三形状解析、LocationNotFoundError 判别（tag+locationDirectory）、`onDeadLocation` 回调（确证触发且错误照抛/其他错误与 gate 拒绝不触发），5 用例
+- `app-store.test.ts`：库存为准渲染（幽灵不渲染/新建可见/union）、createWorkspace 裸响应+切换、他端删除库存 diff 卸载（含 pty 不发死目录 deletePty）、removeWorkspace 库存刷新——4 用例；removeWorkspace location evict（删除成功必调/失败不调/evict 失败不阻塞删除）——3 用例（§3.4）；location 屏障（§3.5）——顺序契约（suspend→idle→delete→resume）/失败路径也 resume/pty 预杀先于 DELETE 且幂等，3 用例；死目录语义化（§3.6）——loadDiffTab 吸收（LocationNotFound 吸收/文件级 404 不吸收）、吸收三源（删除窗口/最近删除集/无上下文不吸收）、loadFileContent 吸收回滚、handleDeadLocation（删除窗口不抢跑→确证 evict+库存剥离+unload 且 pty 跳过 deletePty→重复回执幂等）、canonical 死亡不处置（含其 404 不吸收）、并发回执去重，6 用例；SessionBusyError 判别改 `e.tag`（扁平体/`_tag+name+data` 双形状命中友好文案，普通 409 透传）；既有 worktree 用例（fake 缺省无库存端点 = 旧 server 回退路径）全数保留（非阻塞删除态一例因 DELETE 前多一跳 awaitLocationIdle 补 `setTimeout(0)` 宏任务拍）
 
 ## 7. 不做的事
 
@@ -212,7 +277,7 @@ DELETE 对**非 warm 目录同样返回 204**（幂等空 evict）——204 不�
   客户端渲染已免疫，server 侧残留无消费者（官方 app 同样无视）。
 - **不渲染无 strategy 的 checkout 根**：库存含主 checkout 行（项目 canonical），渲染层排除（与旧 sandboxes 语义对齐）。
 - **不做对账批量 evict 兜底**（原 todo 可选项——`GET /api/debug/location` 盘点死目录
-  逐个清）：本端删除路径已覆盖（§3.4）；他端删除的漏口由执行删除的一方负责
-  （openbuilder 同构对齐中），外部 `rm -rf` 场景的 warm location 靠 server 重启/
-  上游 idleTimeToLive 收敛——「死目录判定」客户端无权威源（磁盘存在性不可判），
-  误 evict 活目录（他端在用）代价不对称，需要时再增。
+  逐个清）：本端删除路径已覆盖（§3.4）；他端删除的漏口有被动确证快路径（§3.6 #3，
+  2026-10-25 起），外部 `rm -rf` 场景的 warm location 靠 server 重启/上游
+  idleTimeToLive 收敛——「死目录判定」客户端无权威主动源（磁盘存在性不可判，
+  §3.6 红线禁止探测），误 evict 活目录（他端在用）代价不对称，需要时再增。

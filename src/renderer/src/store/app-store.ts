@@ -2,7 +2,7 @@
  * 应用状态层：连接 → 项目/工作区 → 会话 → 消息 → Tab。
  * 事件闸门、乐观消息、SSE 生命周期都在这里收敛。
  */
-import { RestClient, ApiError } from "@shared/rest-client"
+import { RestClient, ApiError, isLocationNotFoundError } from "@shared/rest-client"
 import type { ShellInfo, ShellOutput, V2ModelInfo } from "@shared/api-v2-types"
 import {
   archivedAtOf,
@@ -891,6 +891,14 @@ export class AppStore {
     }
 
     const client = new RestClient({ baseUrl, username, password })
+    // 死目录被动确证回调（todo-error-body-tag #3）：withLocation 收到
+    // LocationNotFoundError 即时收敛（unload+evict），不等 60s 对账；
+    // IPC 落盘等链路失败不裸抛（void 无接住方——warn 留痕同 evict 降级风格）
+    client.onDeadLocation = (directory) => {
+      this.handleDeadLocation(directory).catch((e) => {
+        console.warn(`[worktree] 死目录被动收敛失败: ${directory}`, e)
+      })
+    }
     let projects: Project[]
     try {
       // v2 探活（GET /api/info，取代 v1 /global/health）：v1 server 对未知 /api 路径
@@ -1134,6 +1142,10 @@ export class AppStore {
     // worktree 库存随连接拆除清空（v2 权威源；重连时 refreshAllOpenedProjects
     // 重新 refresh+list 载入）
     this.worktreeDirs.clear()
+    // 死目录语义化状态同拆（todo-error-body-tag）：最近删除集随连接失效（对账
+    // 重载后不再依赖旧判据），在途收敛去重防御悬挂
+    this.recentlyDeletedLocations.clear()
+    this.deadLocationHandling.clear()
     this.sessionsByProject.clear()
     this.sessionRegistryVersion++
     this.childIndex.clear()
@@ -3586,6 +3598,9 @@ export class AppStore {
       // 的一发即一行伪行；超时放行（best-effort，慢请求不阻塞删除）
       await client.awaitLocationIdle(directory)
       await client.deleteWorktree(project.id, directory, { force: true })
+      // 最近删除集登记（todo-error-body-tag #2）：目录已死确证——此后落向该目录的
+      // 迟到请求失败按预期吸收（窗口 gate 已挡新请求，这里兜住 resume 后的漏网）
+      this.noteLocationDeleted(directory)
       // warm location evict（design-worktree-sync §3.4，2026-10-12）：server 内存
       // 保留已打开目录的 location（idleTimeToLive=∞），每 5 分钟刷新重解析——目录
       // 已删即兜底 upsert 伪项目行（燃料 6），删行/归档会话/断客户端都断不了。
@@ -3913,6 +3928,10 @@ export class AppStore {
       }
     }
     for (const { directory, projectId, isCurrent } of toUnload) {
+      // 库存行消失 = 目录已死（他端 DELETE / refresh 清理）——先登记最近删除集
+      // （todo-error-body-tag #3）：unload 内的 pty 清理不发死目录 deletePty（燃料），
+      // 迟到请求失败按预期吸收
+      this.noteLocationDeleted(directory)
       const restored = await this.unloadWorktreeDirectory(directory, projectId, isCurrent)
       if (restored) {
         const p = this.projects.find((x) => x.id === projectId)
@@ -3920,6 +3939,123 @@ export class AppStore {
       }
     }
     this.emit()
+  }
+
+  // ============ 死目录错误语义化（todo-error-body-tag #2/#3，2026-10-25） ============
+
+  /** 最近删除集（目录 → 确证时刻）：本端删除（removeWorkspace）与被动确证
+   *  （LocationNotFoundError 回执）双源登记。迟到请求落死目录的失败按预期
+   *  吸收（isExpectedLocationMiss），兼作 handleDeadLocation 的幂等判据。
+   *  TTL 与 server location 刷新周期（5 分钟）对齐：过期后同名重建目录不受
+   *  影响——吸收只作用于错误路径，活目录请求成功不经过它。 */
+  private recentlyDeletedLocations = new Map<string, number>()
+  private static readonly RECENTLY_DELETED_TTL_MS = 5 * 60_000
+  /** handleDeadLocation 在途去重（并发回执只收敛一次） */
+  private deadLocationHandling = new Set<string>()
+
+  /** 登记已删除目录（最近删除集；幂等，刷新时刻） */
+  private noteLocationDeleted(directory: string) {
+    this.pruneRecentlyDeleted()
+    this.recentlyDeletedLocations.set(directory, Date.now())
+  }
+
+  private pruneRecentlyDeleted() {
+    const now = Date.now()
+    for (const [d, at] of this.recentlyDeletedLocations) {
+      if (now - at > AppStore.RECENTLY_DELETED_TTL_MS) this.recentlyDeletedLocations.delete(d)
+    }
+  }
+
+  /**
+   * 死目录预期失败判别（todo-error-body-tag #2）：location 域请求的消费方错误
+   * 路径静默吸收（不上错误态、不重试、不 toast）——目录已删是删除链路的预期
+   * 结果而非故障。三源：
+   * ① LocationNotFoundError（2.1.3 `_tag` 结构化判别，server 确证**目录**不存在
+   *    ——区别于 fs 域 FileNotFound 的文件级 404，此前两类 404 无法区分），
+   *    **限定工作区行目录**（deadWorktreeOwner 命中）——canonical/非 worktree
+   *    目录死亡不属删除链路语义（无 unload 跟进），静默会让 Tab 永久滞留旧数据
+   *    无信号，保留诚实错误态（review 2026-10-25 #1）；
+   * ② 删除窗口（deletingWorkspaces 含该目录 = removeWorkspace 在途：§3.5 gate
+   *    拒绝与窗口内落地的失败同归预期；窗口内失败不筛错误族——窗口亚秒级，
+   *    删除失败重试/下次重拉会再暴露）；
+   * ③ 最近删除集（本端删除后/被动确证后的迟到请求；旧 server 无 `_tag` 时的
+   *    目录级兜底）。
+   */
+  private isExpectedLocationMiss(directory: string, e: unknown): boolean {
+    if (isLocationNotFoundError(e)) return this.deadWorktreeOwner(directory) !== undefined
+    if (this.isDirectoryDeleting(directory)) return true
+    return this.isRecentlyDeleted(directory)
+  }
+
+  /** 目录是否处于本端删除窗口（removeWorkspace 在途；与 isWorkspaceDeleting 的
+   *  区别：无 projectId 上下文，按 deletingWorkspaces 键尾匹配） */
+  private isDirectoryDeleting(directory: string): boolean {
+    const suffix = `\u0000${directory}`
+    for (const key of this.deletingWorkspaces) {
+      if (key.endsWith(suffix)) return true
+    }
+    return false
+  }
+
+  /** 最近删除集查询（先按 TTL 修剪——条目滞留不得长于真实死亡窗口，同路径
+   *  重建的活目录不被旧判据误伤） */
+  private isRecentlyDeleted(directory: string): boolean {
+    this.pruneRecentlyDeleted()
+    return this.recentlyDeletedLocations.has(directory)
+  }
+
+  /** 目录的归属项目 = 打开项目的工作区行（库存 ∪ sandboxes），排除项目
+   *  canonical——canonical 死亡不是 worktree 删除语义（对账不覆盖，不越权处置） */
+  private deadWorktreeOwner(directory: string): Project | undefined {
+    return this.openedProjects.find(
+      (p) =>
+        p.worktree !== directory &&
+        (this.worktreeDirs.get(p.id)?.includes(directory) || (p.sandboxes?.includes(directory) ?? false)),
+    )
+  }
+
+  /**
+   * 死目录被动确证收敛（todo-error-body-tag #3，rest-client onDeadLocation 回调）：
+   * LocationNotFoundError（体带 location.directory）= 目录已被删除的确证——
+   * 即时 unload（关 Tab/清引用）+ evict（断 warm location 刷新循环），不等
+   * 60s 对账；§3.5 兜底注「他端删除接受偶发」的残留由此变成自愈收敛。
+   * **红线：识别 ≠ 探测**——只消费已有请求的错误回执，不主动发 location
+   * 请求探活（probe 本身即建档燃料，ref-pseudo-project-cleanup §3.4）。
+   */
+  private async handleDeadLocation(directory: string): Promise<void> {
+    const client = this.client
+    if (!client || this.deadLocationHandling.has(directory)) return
+    // 本端删除窗口：removeWorkspace 拥有生命周期（suspend→…→DELETE→evict→unload
+    // 顺序契约，§3.5 接线），勿抢跑；其成功路径自身 noteLocationDeleted + unload
+    if (this.isDirectoryDeleting(directory)) return
+    const owner = this.deadWorktreeOwner(directory)
+    // 非工作区行（canonical/未知目录）：不处置、不登记（吸收判别源 ① 同口径，
+    // 错误态保留诚实信号——review 2026-10-25 #1）
+    if (!owner) return
+    this.noteLocationDeleted(directory)
+    this.deadLocationHandling.add(directory)
+    try {
+      // warm location evict（§3.4 同源 best-effort）：触发回执的请求已在 server
+      // 侧 boot 过死目录 location（建档燃料已付），evict 断其 5 分钟刷新循环
+      try {
+        await client.evictLocation(directory)
+      } catch (e) {
+        console.warn(`[worktree] 死目录 location evict 失败: ${directory}`, e)
+      }
+      // 库存本地剥离（渲染源 = 库存优先）：server 行已随删除消失或由 refresh 清理，
+      // 不剥离则左栏工作区行残留至下轮 syncWorktrees
+      const dirs = this.worktreeDirs.get(owner.id)
+      if (dirs) this.worktreeDirs.set(owner.id, dirs.filter((d) => d !== directory))
+      const isCurrent = owner.id === this.currentProject?.id
+      const restored = await this.unloadWorktreeDirectory(directory, owner.id, isCurrent)
+      if (restored) {
+        const p = this.projects.find((x) => x.id === owner.id)
+        if (p) this.restoreScopeTabs(p.worktree, true)
+      }
+      this.emit()
+    } finally {
+      this.deadLocationHandling.delete(directory)
+    }
   }
 
   // ============ worktree 库存（v2 权威源，design-worktree-sync §0 修订） ============
@@ -5187,7 +5323,7 @@ export class AppStore {
       return { ok: true }
     } catch (e) {
       const msg =
-        e instanceof ApiError && e.body?.name === "SessionBusyError"
+        e instanceof ApiError && e.tag === "SessionBusyError"
           ? "会话仍在进行中，请稍后再回滚"
           : e instanceof Error
             ? e.message
@@ -5216,7 +5352,7 @@ export class AppStore {
       return { ok: true }
     } catch (e) {
       const msg =
-        e instanceof ApiError && e.body?.name === "SessionBusyError"
+        e instanceof ApiError && e.tag === "SessionBusyError"
           ? "会话仍在进行中，请稍后再操作"
           : e instanceof Error
             ? e.message
@@ -6233,12 +6369,17 @@ export class AppStore {
    *  即清，无泄漏） */
   private killPtyInDirectory(directory: string) {
     if (!this.client) return
+    // 死目录不发 deletePty（todo-error-body-tag #3）：带 location 的清理请求落在
+    // 死目录上 = 确定性兜底建档（§3.5 兜底注的偶发燃料——server 侧孤儿 pty 由
+    // 其重启回收，代价远小于伪项目行）。本端删除窗口不受影响：recentlyDeleted
+    // 在 DELETE 成功后才登记，removeWorkspace 预杀时目录仍存活（§3.5 顺序契约）
+    const dead = this.isRecentlyDeleted(directory)
     for (const tab of this.tabs) {
       if (tab.kind !== "terminal" || tab.directory !== directory) continue
       const id = tab.key.slice("terminal:".length)
       const rt = this.ptyRuntimes.get(id)
       if (rt && !rt.exited) {
-        void this.client.deletePty(id, directory).catch(() => {})
+        if (!dead) void this.client.deletePty(id, directory).catch(() => {})
         rt.exited = true
       }
     }
@@ -6590,7 +6731,13 @@ export class AppStore {
         files = await client.listVcsDiff(directory, type === "uncommitted" ? "git" : "branch")
       }
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e)
+      // 死目录预期失败静默吸收（todo-error-body-tag #2）：不上错误态、保留旧数据
+      // ——目录已删是删除链路的预期结果（Tab 随 unload 即将关闭/作用域即将复位）
+      if (this.isExpectedLocationMiss(directory, e)) {
+        files = prev?.files ?? []
+      } else {
+        error = e instanceof Error ? e.message : String(e)
+      }
     }
     // 守卫：在途期间 Tab 可能已关闭/连接已拆（与项目其余 async 路径一致）
     if (this.client !== client || !this.tabs.some((t) => t.key === tabKey)) return
@@ -6659,6 +6806,9 @@ export class AppStore {
       this.fileContents.set(absolutePath, fileContentEntry(fc))
     } catch (e) {
       if (this.client !== client) return rollback()
+      // 死目录预期失败静默吸收（todo-error-body-tag #2）：回滚在途条目保留旧内容，
+      // 不落错误态（FileView 随 unload 即将关闭）
+      if (this.isExpectedLocationMiss(dir, e)) return rollback()
       this.fileContents.set(absolutePath, {
         content: "",
         error: e instanceof Error ? e.message : String(e),
@@ -7416,6 +7566,8 @@ export class AppStore {
       this.emit()
     } catch (e) {
       if (this.client !== client || !this.tabs.some((t) => t.key === `file:${file}`)) return
+      // 死目录预期失败静默吸收（todo-error-body-tag #2）：保留旧内容不落错误态
+      if (tab.directory && this.isExpectedLocationMiss(tab.directory, e)) return
       this.fileContents.set(file, {
         content: "",
         error: e instanceof Error ? e.message : String(e),
