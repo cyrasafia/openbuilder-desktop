@@ -31,6 +31,7 @@ opencode 桌面端瘦客户端（Electron + React），姊妹项目为同目录�
 - 中文文档、中文 commit message，前缀惯例 `feat:` / `fix:` / `ui:` / `build:` / `chore:` / `docs:`（见 git log）；**commit 标题只用一句话讲最核心的信息**（范本 9d85f0e / c15cdff，实测 ≤76 字；至多带一处 `——`/`（）` 紧凑定位短语），根因、方案细节、review 修订、测试计数、文档同步一律放正文——按主题分段、约 60 字换行，不得把细节整段挤进标题单行（2026-09-23 增补）
 - 合并其他分支到 main 默认用普通合并（`git merge --no-ff`，保留分支提交历史，生成 merge commit；2026-08-31 修订，原 squash merge 单提交方案弃用）
 - **改完代码先评审再提交**（2026-10-12 增）：代码改动完成后走 `/review` 评审（harness 内等价物 = reviewer 只读子代理），按评审意见修订后再提交；**未经评审默认不提交**，除非用户明确要求提交
+- **移动端仓库 `../openbuilder` 默认只读**（2026-10-25 增）：本项目会话内它是参照物（设计查证对象、契约 pin 同源），除非用户明确要求，**不改、不提交**——含 pin 文件 `opencode_openapi_v2.json`（升 pin 等需落移动端的动作，先单独征得同意再动；用户随口提及移动端不构成"明确要求"，须就该次改动本身确认）
 - **特权操作授权走 `pkexec`，不用 `sudo`**（2026-10-12 增）：agent 的 shell 非交互，`sudo` 报 `interactive authentication is required` 直接失败；`pkexec` 经 polkit 弹图形认证框完成授权，如安装本地包 `pkexec pacman -U --noconfirm <包的绝对路径>`。前提 = 图形会话有 polkit agent 在跑；pkexec 会清理环境（PATH 最小），命令与路径一律写绝对路径
 - 架构文档是"决策记录"性质：修订需在文档内改写决策及依据，而不是只改代码留文档过期
 
