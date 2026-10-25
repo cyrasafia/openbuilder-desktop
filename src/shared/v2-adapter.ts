@@ -94,10 +94,11 @@ export function toInternalSession(s: SessionInfo): Session {
 }
 
 /**
- * 归档判定（D1，双源）：v2 的 REST 归档字段不可写（官方 app 占位 + TODO），
- * 关 Tab = 归档走 metadata.archivedAt 私约；存量会话（v1 迁移/import 透传）
- * 带 time.archived。v1 server 端过滤归档，v2 返回全部——客户端统一过滤（对齐
- * 官方 v2 app 的 client-side filter 行为）。parentID 过滤（子/后台会话）是
+ * 归档判定（D1，双源）：官方归档写 `time.archived`（2.1.3 起）与他端旧版
+ * 私约 `metadata.archivedAt` 过渡期并存，任一非空即归档；存量会话（v1 迁移/
+ * import 透传）带 time.archived。v1 server 端过滤归档，v2 返回全部——客户端
+ * 统一过滤（对齐官方 v2 app 的 client-side filter 行为；桌面端归档展示段
+ * 依赖全量快照，不消费 ?archived= 过滤）。parentID 过滤（子/后台会话）是
  * M2 会话域的决策点，本层不做。
  */
 export function isArchivedSession(s: Session): boolean {
