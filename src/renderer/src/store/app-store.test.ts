@@ -4986,7 +4986,7 @@ describe("D1 归档私约（M2：metadata.archivedAt，双源识别）", () => {
     expect(store.visibleSessions).toHaveLength(0)
   })
 
-  it("已知边界（记录在案）：存量 time.archived 的取消归档不可持久——v2 无写入路径，重连快照复活归档", async () => {
+  it("已知边界（记录在案，<2.1.3 回退路径）：存量 time.archived 取消归档不可持久——旧 server 无官方写入路径，重连快照复活归档（官方路径消解见下 describe）", async () => {
     const s1 = { ...session("s1", ROOT, { created: 1, updated: 1 }), time: { created: 1, updated: 1, archived: 10 } }
     seed(s1)
     store.openChatTab(s1)
@@ -4994,6 +4994,291 @@ describe("D1 归档私约（M2：metadata.archivedAt，双源识别）", () => {
     // 本地乐观清了 metadata（本无），但 time.archived 保持——双源判定仍归档
     expect(store.findSession("s1")?.time.archived).toBe(10)
     expect(store.archivedSessions.map((s) => s.id)).toEqual(["s1"])
+  })
+})
+
+describe("归档官方 API 迁回（design-archive-official-api：版本分派 + backfill + SSE 双事件）", () => {
+  function seed(s: Session) {
+    store.sessionsByProject = new Map([["proj1", sessionsOf(s)]])
+    store.projectStates = {
+      default: { opened: ["proj1"], currentProjectId: "proj1", currentWorkspaceId: null },
+    }
+    // openedProjects 是派生 getter（projects ∩ projectStates.opened）——供
+    // isOpenedDirectory 闸门
+    store.projects = [project()]
+  }
+
+  function setArchiveApiReady(v: boolean) {
+    ;(store as unknown as { archiveApiReady: boolean }).archiveApiReady = v
+  }
+
+  function emitEvents(calls: unknown[]) {
+    clientV2Of().updateSession = async (_id: string, payload: unknown) => {
+      calls.push(payload)
+    }
+  }
+
+  function handleEvent(dir: string, ev: { type: string; properties: Record<string, unknown> }, meta?: unknown) {
+    ;(store as unknown as { handleEvent: (d: string, e: unknown, m?: unknown) => void }).handleEvent(dir, ev, meta)
+  }
+
+  it("关 Tab = 归档（官方路径）：PATCH {archived:true}（无 metadata 键）；乐观置 time.archived，双源可见性生效", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    seed(s1)
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
+    store.activeTabKey = "chat:s1"
+    const calls: unknown[] = []
+    emitEvents(calls)
+    setArchiveApiReady(true)
+    const ok = await store.closeChatTab("s1", { streaming: false })
+    expect(ok).toBe(true)
+    expect(calls).toEqual([{ archived: true }])
+    expect(store.findSession("s1")?.time.archived).toEqual(expect.any(Number))
+    expect(store.visibleSessions.some((s) => s.id === "s1")).toBe(false)
+    expect(store.archivedSessions.map((s) => s.id)).toEqual(["s1"])
+  })
+
+  it("开 Tab = 取消归档（官方 + marker 组合清）：PATCH {archived:false, metadata:…去 archivedAt 保他键}；本地双清回可见", async () => {
+    const s1 = { ...session("s1", ROOT, { created: 1, updated: 1 }), metadata: { archivedAt: 99, keep: 1 } }
+    seed(s1)
+    const calls: unknown[] = []
+    emitEvents(calls)
+    setArchiveApiReady(true)
+    store.openChatTab(s1)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(calls).toEqual([{ archived: false, metadata: { keep: 1 } }])
+    const local = store.findSession("s1")!
+    expect(local.metadata?.archivedAt).toBeUndefined()
+    expect(local.time.archived).toBeUndefined()
+    expect(store.visibleSessions.some((s) => s.id === "s1")).toBe(true)
+  })
+
+  it("v1 存量 time.archived 取消归档（官方）：纯 {archived:false}——D1 已知边界消解", async () => {
+    const s1 = { ...session("s1", ROOT, { created: 1, updated: 1 }), time: { created: 1, updated: 1, archived: 10 } }
+    seed(s1)
+    const calls: unknown[] = []
+    emitEvents(calls)
+    setArchiveApiReady(true)
+    store.openChatTab(s1)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(calls).toEqual([{ archived: false }])
+    expect(store.findSession("s1")?.time.archived).toBeUndefined()
+    expect(store.visibleSessions.some((s) => s.id === "s1")).toBe(true)
+  })
+
+  it("版本分派回退（<2.1.3）：仍走私约 metadata.archivedAt（行为与迁移前一致）", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    seed(s1)
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
+    store.activeTabKey = "chat:s1"
+    const calls: unknown[] = []
+    emitEvents(calls)
+    const ok = await store.closeChatTab("s1", { streaming: false })
+    expect(ok).toBe(true)
+    expect(calls).toEqual([{ metadata: { archivedAt: expect.any(Number) } }])
+  })
+
+  it("backfill：快照 marker-only → 组合 PATCH {archived:true, metadata:…去 marker 保他键} + 本地收敛；双标/纯官方不扫", async () => {
+    const markerOnly = {
+      ...session("m1", ROOT, { created: 1, updated: 1 }),
+      metadata: { archivedAt: 20, sessionId: "x" },
+    }
+    const dual = {
+      ...session("d1", ROOT, { created: 1, updated: 1 }),
+      time: { created: 1, updated: 1, archived: 10 },
+      metadata: { archivedAt: 5 },
+    }
+    const plain = session("p1", ROOT, { created: 1, updated: 1 })
+    seed(markerOnly)
+    store.sessionsByProject.get("proj1")!.set("d1", dual)
+    store.sessionsByProject.get("proj1")!.set("p1", plain)
+    const calls: unknown[] = []
+    emitEvents(calls)
+    setArchiveApiReady(true)
+    ;(store as unknown as {
+      applySessionsSnapshot: (pid: string, dir: string, list: Session[]) => void
+    }).applySessionsSnapshot("proj1", ROOT, [markerOnly, dual, plain])
+    await new Promise((r) => setTimeout(r, 0))
+    expect(calls).toEqual([{ archived: true, metadata: { sessionId: "x" } }])
+    const m1 = store.findSession("m1")!
+    expect(m1.time.archived).toEqual(expect.any(Number))
+    expect(m1.metadata?.archivedAt).toBeUndefined()
+    // 双标（time.archived 已置）不扫：marker 原样保留，交官方取消归档路径组合清
+    expect(store.findSession("d1")?.metadata?.archivedAt).toBe(5)
+  })
+
+  it("backfill 版本闸门（<2.1.3）：跳过——零 PATCH，marker 维持", async () => {
+    const markerOnly = {
+      ...session("m1", ROOT, { created: 1, updated: 1 }),
+      metadata: { archivedAt: 20 },
+    }
+    seed(markerOnly)
+    const calls: unknown[] = []
+    emitEvents(calls)
+    ;(store as unknown as {
+      applySessionsSnapshot: (pid: string, dir: string, list: Session[]) => void
+    }).applySessionsSnapshot("proj1", ROOT, [markerOnly])
+    await new Promise((r) => setTimeout(r, 0))
+    expect(calls).toEqual([])
+    expect(store.findSession("m1")?.metadata?.archivedAt).toBe(20)
+  })
+
+  it("backfill in-flight 防重入：在途时新快照触发跳过；成功落地后本地收敛", async () => {
+    const markerOnly = {
+      ...session("m1", ROOT, { created: 1, updated: 1 }),
+      metadata: { archivedAt: 20 },
+    }
+    seed(markerOnly)
+    const gate = deferred<void>()
+    let calls = 0
+    clientV2Of().updateSession = () => {
+      calls++
+      return gate.promise
+    }
+    setArchiveApiReady(true)
+    const apply = () =>
+      (
+        store as unknown as {
+          applySessionsSnapshot: (pid: string, dir: string, list: Session[]) => void
+        }
+      ).applySessionsSnapshot("proj1", ROOT, [markerOnly])
+    apply()
+    await new Promise((r) => setTimeout(r, 0))
+    apply() // 在途重入：跳过
+    await new Promise((r) => setTimeout(r, 0))
+    expect(calls).toBe(1)
+    gate.resolve()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(store.findSession("m1")?.time.archived).toEqual(expect.any(Number))
+  })
+
+  it("backfill 失败吞掉：marker 保留，下次快照重扫重试", async () => {
+    const markerOnly = {
+      ...session("m1", ROOT, { created: 1, updated: 1 }),
+      metadata: { archivedAt: 20 },
+    }
+    seed(markerOnly)
+    let calls = 0
+    clientV2Of().updateSession = async () => {
+      calls++
+      if (calls === 1) throw new Error("boom")
+    }
+    setArchiveApiReady(true)
+    const apply = () =>
+      (
+        store as unknown as {
+          applySessionsSnapshot: (pid: string, dir: string, list: Session[]) => void
+        }
+      ).applySessionsSnapshot("proj1", ROOT, [markerOnly])
+    apply()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(calls).toBe(1)
+    // 失败：marker 保留（仍 marker-only，本地不收敛）
+    expect(store.findSession("m1")?.metadata?.archivedAt).toBe(20)
+    expect(store.findSession("m1")?.time.archived).toBeUndefined()
+    apply() // 下次快照：重扫重试
+    await new Promise((r) => setTimeout(r, 0))
+    expect(calls).toBe(2)
+    expect(store.findSession("m1")?.time.archived).toEqual(expect.any(Number))
+    expect(store.findSession("m1")?.metadata?.archivedAt).toBeUndefined()
+  })
+
+  it("backfill 自竞态防御（review 2026-10-25 🟡）：快照捕获后用户开 Tab 取消归档 → 复查跳过，不重新归档", async () => {
+    const markerOnly = {
+      ...session("m1", ROOT, { created: 1, updated: 1 }),
+      metadata: { archivedAt: 20 },
+    }
+    seed(markerOnly)
+    const gate = deferred<void>()
+    let calls = 0
+    clientV2Of().updateSession = () => {
+      calls++
+      return gate.promise
+    }
+    setArchiveApiReady(true)
+    ;(
+      store as unknown as {
+        applySessionsSnapshot: (pid: string, dir: string, list: Session[]) => void
+      }
+    ).applySessionsSnapshot("proj1", ROOT, [markerOnly])
+    await new Promise((r) => setTimeout(r, 0))
+    expect(calls).toBe(1) // 首条 PATCH 在途
+    // 快照捕获后、PATCH 落地前：用户开 Tab（openChatTab 同步推 Tab，unarchive 在途）
+    store.openChatTab(markerOnly)
+    await new Promise((r) => setTimeout(r, 0))
+    gate.resolve() // backfill 循环放行 → 复查：Tab 存在 → 跳过本地落地
+    await new Promise((r) => setTimeout(r, 0))
+    // unarchive 组合清 marker 已落地（第一条 in-flight 的转正 PATCH 在服务端序
+    // 先到先服务——本地视角以 unarchive 结果为准：不重置归档态）
+    const local = store.findSession("m1")!
+    expect(local.metadata?.archivedAt).toBeUndefined()
+    expect(store.tabs.some((t) => t.key === "chat:m1")).toBe(true)
+  })
+
+  it("SSE session.archived（已知）：置权威时间戳 + 镜像清 marker；Tab 收敛关闭", () => {
+    const s1 = { ...session("s1", ROOT, { created: 1, updated: 1 }), metadata: { archivedAt: 99, keep: 1 } }
+    seed(s1)
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
+    handleEvent(ROOT, { type: "session.archived", properties: { sessionID: "s1" } }, { created: 12345 })
+    const local = store.findSession("s1")!
+    expect(local.time.archived).toBe(12345)
+    expect(local.metadata?.archivedAt).toBeUndefined()
+    expect(local.metadata?.keep).toBe(1)
+    expect(store.tabs.length).toBe(0)
+    expect(store.visibleSessions.some((s) => s.id === "s1")).toBe(false)
+  })
+
+  it("SSE session.unarchived（已知）：清 time.archived + 镜像清 marker；恢复可见并被动补开 Tab", () => {
+    const s1 = {
+      ...session("s1", ROOT, { created: 1, updated: 1 }),
+      time: { created: 1, updated: 1, archived: 10 },
+      metadata: { archivedAt: 99 },
+    }
+    seed(s1)
+    handleEvent(ROOT, { type: "session.unarchived", properties: { sessionID: "s1" } })
+    const local = store.findSession("s1")!
+    expect(local.time.archived).toBeUndefined()
+    expect(local.metadata?.archivedAt).toBeUndefined()
+    expect(store.visibleSessions.some((s) => s.id === "s1")).toBe(true)
+    // §17 被动补开：当前作用域顶层会话无 Tab 即末尾追加
+    expect(store.tabs.some((t) => t.key === "chat:s1")).toBe(true)
+  })
+
+  it("SSE session.unarchived（未知 + 目录已开）：回源 GET 权威模型加回；archived 方向（未知）忽略零请求", async () => {
+    const other = session("other", ROOT, { created: 1, updated: 1 })
+    seed(other)
+    const getCalls: string[] = []
+    clientV2Of().getSession = async (sid: string) => {
+      getCalls.push(sid)
+      return {
+        id: sid,
+        projectID: "proj1",
+        title: sid,
+        time: { created: 1, updated: 1 },
+        location: { directory: ROOT },
+      }
+    }
+    // 未知 + 归档方向：忽略
+    handleEvent(ROOT, { type: "session.archived", properties: { sessionID: "ghost" } })
+    expect(getCalls).toEqual([])
+    // 未知 + 取消归档：回源加回
+    handleEvent(ROOT, { type: "session.unarchived", properties: { sessionID: "s2" } })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(getCalls).toEqual(["s2"])
+    expect(store.visibleSessions.some((s) => s.id === "s2")).toBe(true)
+  })
+
+  it("SSE session.unarchived（未知 + 目录未开）：跳过回源（闸门）", async () => {
+    const other = session("other", ROOT, { created: 1, updated: 1 })
+    seed(other)
+    const getCalls: string[] = []
+    clientV2Of().getSession = async (sid: string) => {
+      getCalls.push(sid)
+      return { id: sid, projectID: "proj1", time: { created: 1, updated: 1 }, location: { directory: ROOT } }
+    }
+    handleEvent("/closed/dir", { type: "session.unarchived", properties: { sessionID: "s2" } })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(getCalls).toEqual([])
   })
 })
 

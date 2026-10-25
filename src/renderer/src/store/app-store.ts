@@ -404,6 +404,9 @@ export class AppStore {
   /** server 版本低于最低要求（design-managed-config §2）：仅提示不阻断；
    *  结构化存版本号，文案在 UI 层 i18n；达标/无法解析 = null */
   serverVersionWarning: { version: string } | null = null
+  /** 官方归档 API 可用（≥2.1.3，design-archive-official-api §1）：连接期
+   *  serverInfo 判定缓存——写路径分派与 backfill 闸门共用；2.0.x 走私约回退 */
+  private archiveApiReady = false
   /** managed server 崩溃重启进行中的提示（design-managed-config §3.2）：
    *  exit/restart/restart-error 事件驱动；restarted/断开清空 */
   managedNotice: ManagedNotice | null = null
@@ -865,6 +868,7 @@ export class AppStore {
     this.connectionError = null
     // 版本提示随新连接重算（review 第二轮：断开后不再残留上一台的告警）
     this.serverVersionWarning = null
+    this.archiveApiReady = false
     this.emit()
 
     let baseUrl = profile.baseUrl
@@ -898,6 +902,9 @@ export class AppStore {
       this.serverVersionWarning = belowMinServerVersion(info.version, MIN_SERVER_VERSION_V2)
         ? { version: info.version }
         : null
+      // 官方归档写路径闸门（design-archive-official-api §1）：探活已拉 serverInfo，
+      // 连接期缓存判定，写路径分派与 backfill 共用
+      this.archiveApiReady = !belowMinServerVersion(info.version, "2.1.3")
       projects = (await client.listProjects()).map(toInternalProject)
     } catch (e) {
       if (stale()) return
@@ -1009,6 +1016,7 @@ export class AppStore {
     this.managedNotice = null
     this.managedLogLines = []
     this.serverVersionWarning = null
+    this.archiveApiReady = false
     this.emit()
   }
 
@@ -1265,6 +1273,74 @@ export class AppStore {
     this.sessionsByProject.set(projectId, mergeSessionsSnapshot(local, directory, filtered))
     this.sessionRegistryVersion++
     this.snapshottedDirs.add(directory)
+    // 存量 marker-only 转正（design-archive-official-api §3）：fire-and-forget，
+    // 幂等（转正后不再命中），失败下次对账重扫
+    void this.backfillLegacyArchives(filtered)
+  }
+
+  /** backfill 在途标记（design-archive-official-api §3）：多目录快照并发到达
+   *  防重入——在途批次已含各自快照的权威数据，重入跳过；遗漏者下次对账重扫 */
+  private backfillArchivesInFlight = false
+
+  /**
+   * 存量 marker-only 会话转正（design-archive-official-api §3，与 openbuilder
+   * 决策 5/8 同构）：组合 PATCH 一次往返完成官方置位 + marker 清除——不清标记
+   * 则官方取消归档后 marker 残留，双源误判永久不可见，且移动端 backfill 会误
+   * 重新归档。metadata 基底取快照权威值（REPLACE 整包，不抹他端键）。版本闸门
+   * （<2.1.3 旧服务器可能剥离 archived 字段：204 但 marker 被清、官方归档未
+   * 置位，会话复活无声）；单条失败吞掉，下次对账重扫。
+   */
+  private async backfillLegacyArchives(sessions: Session[]) {
+    if (!this.archiveApiReady || !this.client || this.backfillArchivesInFlight) return
+    const pending = sessions.filter((s) => {
+      const at = s.metadata?.archivedAt
+      return !s.time.archived && typeof at === "number" && at > 0
+    })
+    if (pending.length === 0) return
+    this.backfillArchivesInFlight = true
+    const client = this.client
+    let changed = false
+    try {
+      for (const s of pending) {
+        // 在途闸门：断连/切 profile 后丢弃（client 引用比对，同 backfillPending）
+        if (this.client !== client) return
+        // PATCH 前复查本地（review 2026-10-25 🟡）：快照捕获后用户可能已开 Tab
+        // 取消归档（unarchive 组合清 marker）——迟到的转正 PATCH 会重新归档并经
+        // SSE 回声关掉刚开的 Tab。双条件防御：Tab 打开着（含 unarchive 在途窗口）
+        // 或本地 marker 已清（已收敛）都跳过；残余窗口缩至单 RTT，接受
+        if (this.tabs.some((t) => t.kind === "chat" && t.key === `chat:${s.id}`)) continue
+        const cur = this.findSession(s.id)
+        if (!cur) continue
+        const curAt = cur.metadata?.archivedAt
+        if (!(typeof curAt === "number" && curAt > 0 && !cur.time.archived)) continue
+        const metadata = { ...(s.metadata ?? {}) }
+        delete metadata.archivedAt
+        try {
+          await client.updateSession(s.id, { archived: true, metadata })
+          // 本地立即收敛（免等下次快照）：官方置位（乐观时间戳，SSE 事件权威
+          // 值/对账校正）+ marker 清除
+          const map = this.sessionsByProject.get(s.projectID)
+          const local = map?.get(s.id)
+          if (local) {
+            map?.set(s.id, {
+              ...local,
+              metadata,
+              time: { ...local.time, archived: local.time.archived ?? Date.now() },
+            })
+            changed = true
+          }
+        } catch (e) {
+          // 单条失败吞掉：marker 未清，下次对账重扫重试
+          console.warn("[archive-backfill] promote failed", s.id, e)
+        }
+      }
+      if (changed) {
+        this.sessionRegistryVersion++
+        this.emit()
+      }
+    } finally {
+      this.backfillArchivesInFlight = false
+    }
   }
 
   private startSse() {
@@ -1871,6 +1947,34 @@ export class AppStore {
         if (ackIdle === undefined || vp.idle >= ackIdle) this.clearAck(sid)
         this.applySessionEvent(merged, local.directory)
         this.emit()
+      }
+      return
+    }
+    // ---- 官方归档双事件（design-archive-official-api §4，durable 旁路——同
+    // session.viewed 模式：按 sessionID 反查 + isOpenedDirectory 等效闸门，对
+    // 信封缺 location 的帧也正确）。已知会话置/清 time.archived（meta.created
+    // 是权威归档时刻，2.1.3 活体 = time.archived 值）并镜像清 marker（双源立即
+    // 收敛单源视角——服务端组合 PATCH / backfill 已清）；未知会话：归档方向忽略
+    // （未加载态对账兜底），取消归档方向回源 GET 取权威模型加回
+    if (ev.type === "session.archived" || ev.type === "session.unarchived") {
+      const sid = String((ev.properties as { sessionID?: unknown }).sessionID ?? "")
+      const local = sid ? this.findSession(sid) : null
+      const archived = ev.type === "session.archived"
+      if (local) {
+        if (!this.isOpenedDirectory(local.directory)) return
+        const metadata = { ...(local.metadata ?? {}) }
+        delete metadata.archivedAt
+        this.applySessionEvent(
+          {
+            ...local,
+            metadata,
+            time: { ...local.time, archived: archived ? (meta?.created ?? Date.now()) : undefined },
+          },
+          local.directory,
+        )
+        this.emit()
+      } else if (!archived && sid && directory !== "global" && this.isOpenedDirectory(directory)) {
+        void this.refetchUnarchivedSession(sid, directory)
       }
       return
     }
@@ -4250,25 +4354,46 @@ export class AppStore {
   }
 
   /**
-   * 归档写路径（D1 私约，2026-09-28 裁定）：v2 无 REST 归档字段，写
-   * `metadata.archivedAt`（服务端 metadata REPLACE 语义——与既有字段整包合并）；
-   * PATCH 返回 204 无 body，**本地乐观落地**（重连快照/SSE 对账兜底）。
-   * 已知边界：v1 迁移存量会话的 `time.archived` 在 v2 无写入路径——取消归档
-   * 只清 metadata 时该类会话重连后仍归档（官方 unarchive 修复 PR #47848 未合），
-   * 识别层双源不受影响
+   * 归档写路径（design-archive-official-api §2，版本分派）：≥2.1.3 走官方
+   * `PATCH {archived}`（true 置 time.archived / false 清除；本地存 marker 时
+   * 组合清——跨端约束，openbuilder design-archive-metadata 决策 9，否则移动端
+   * backfill 会误重新归档）；<2.1.3 回退 D1 私约 metadata.archivedAt（REPLACE
+   * 整包合并，行为与迁移前一致）。两路 PATCH 均 204 无 body，**本地乐观落地**
+   * （SSE 双事件权威时间戳 / 快照对账兜底）。官方路径消解 D1 已知边界：v1 存量
+   * time.archived 现可经 archived:false 清除，取消归档对此类会话持久
    */
   private async patchSessionArchive(sessionID: string, archivedAt: number | null): Promise<boolean> {
     const client = this.client
     if (!client) return false
     const session = this.findSession(sessionID)
     if (!session) return false
-    const metadata = { ...(session.metadata ?? {}) }
-    if (archivedAt == null) delete metadata.archivedAt
-    else metadata.archivedAt = archivedAt
     try {
-      await client.updateSession(sessionID, { metadata })
+      let next: Session
+      if (this.archiveApiReady) {
+        const at = session.metadata?.archivedAt
+        const hasMarker = typeof at === "number" && at > 0
+        // marker 存在时组合 PATCH 清除（归档方向防双标残留；取消归档方向是决策 9
+        // 硬约束）；REPLACE 语义下无 marker 时不动 metadata（不产生无谓覆盖窗口）
+        const metadata = { ...(session.metadata ?? {}) }
+        delete metadata.archivedAt
+        await client.updateSession(
+          sessionID,
+          hasMarker ? { archived: archivedAt != null, metadata } : { archived: archivedAt != null },
+        )
+        next = {
+          ...session,
+          metadata: hasMarker ? metadata : session.metadata,
+          time: { ...session.time, archived: archivedAt ?? undefined },
+        }
+      } else {
+        const metadata = { ...(session.metadata ?? {}) }
+        if (archivedAt == null) delete metadata.archivedAt
+        else metadata.archivedAt = archivedAt
+        await client.updateSession(sessionID, { metadata })
+        next = { ...session, metadata }
+      }
       const map = this.sessionsByProject.get(session.projectID)
-      map?.set(sessionID, { ...session, metadata })
+      map?.set(sessionID, next)
       this.emit()
       return true
     } catch (e) {
@@ -5451,7 +5576,8 @@ export class AppStore {
       const map = this.sessionsByProject.get(local.projectID)
       if (!map) return
       // 只取权威 idle/viewed（单调 max）——**不整对象覆盖**：终态动不了 title /
-      // metadata / revert / updated，整覆盖会回退本端乐观的归档（metadata.archivedAt）
+      // metadata / revert / updated，整覆盖会回退本端乐观的归档
+      // （time.archived 官方 / metadata.archivedAt 私约回退，design-archive-official-api）
       // 或回滚暂存（在途补拉 RTT 内的竞态，review 2026-10-11）。
       const time = { ...local.time }
       const idle = incoming.time.idle
@@ -5466,6 +5592,24 @@ export class AppStore {
     } finally {
       this.unreadRefetchInFlight.delete(sessionID)
     }
+  }
+
+  /**
+   * 未知会话官方取消归档的回源落地（design-archive-official-api §4）：
+   * `session.unarchived` 到达但本地无该会话（快照未到的冷启动竞态窗口）——
+   * GET 权威 info 经 applySessionEvent 加回（当前作用域时按 §17 被动补开）。
+   * 权威目录与信封目录不一致（session.moved 边缘）丢弃——不绕闸门建未打开
+   * 目录的会话。失败静默（60s 对账兜底）；断连/切 profile 丢弃（client 比对）。
+   */
+  private async refetchUnarchivedSession(sessionID: string, directory: string) {
+    const client = this.client
+    if (!client) return
+    const info = await client.getSession(sessionID).catch(() => null)
+    if (!info || this.client !== client || !this.isOpenedDirectory(directory)) return
+    const internal = toInternalSession(info)
+    if (internal.directory !== directory) return
+    this.applySessionEvent(internal, directory)
+    this.emit()
   }
 
   /**

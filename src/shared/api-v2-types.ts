@@ -108,8 +108,8 @@ export interface ModelRef {
 
 /**
  * v2 Session.Info 列表最小面（M1；M2/M4 按需补 cost/tokens/model 等）。
- * time.archived 在 wire 上**可读**（v1 数据迁移/import 透传），但 v2 无 REST 写入
- * 路径——归档写走 D1 私约 metadata.archivedAt，识别读两者（见 plan-v2-protocol M2）。
+ * time.archived 可读（v1 迁移透传 + 2.1.3 起官方写入），2.1.3 前归档写走 D1 私约
+ * metadata.archivedAt（<2.1.3 回退路径），识别读两者（design-archive-official-api）。
  */
 export interface SessionInfo {
   id: string

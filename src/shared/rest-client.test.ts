@@ -190,6 +190,16 @@ describe("会话域（M2）", () => {
     expect(JSON.parse(seenBody)).toEqual({ title: "x", metadata: { archivedAt: 9 } })
   })
 
+  it("updateSession：archived 官方归档字段透传（2.1.3 组合 PATCH，design-archive-official-api §2）", async () => {
+    let seenBody = ""
+    const client = mkClient((_url, init) => {
+      seenBody = String(init.body)
+      return new Response(null, { status: 204 })
+    })
+    await client.updateSession("ses_1", { archived: false, metadata: { keep: 1 } })
+    expect(JSON.parse(seenBody)).toEqual({ archived: false, metadata: { keep: 1 } })
+  })
+
   it("deleteSession：DELETE /api/session/:id（无 directory query），204 容忍空体", async () => {
     let seenUrl = ""
     let seenMethod = ""

@@ -274,13 +274,14 @@ export class RestClient {
   }
 
   /**
-   * PATCH /api/session/:sessionID：改 title/**metadata**（**204 无返回体**——
-   * 调用方本地乐观落地）。v2 无 REST 归档字段（D1 私约：metadata.archivedAt，
-   * 服务端 REPLACE 语义须整包合并写入）。
+   * PATCH /api/session/:sessionID：改 title / metadata / archived（204 无
+   * 返回体——调用方本地乐观落地）。archived 是 2.1.3 回归的官方归档写路径
+   * （true 置 time.archived / false 清除，与 metadata 可同 body 组合 PATCH）；
+   * metadata 仍是 REPLACE 语义（私约/组合写入须整包合并，design-archive-official-api §2）。
    */
   async updateSession(
     sessionID: string,
-    payload: { title?: string; metadata?: Record<string, unknown> },
+    payload: { title?: string; metadata?: Record<string, unknown>; archived?: boolean | null },
   ): Promise<void> {
     await this.fetchResponse(`/api/session/${encodeURIComponent(sessionID)}`, {
       method: "PATCH",

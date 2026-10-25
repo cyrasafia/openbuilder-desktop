@@ -109,6 +109,8 @@ v2 server 默认强制密码（移动端基线 §认证）。桌面端影响：
 
 决策：关 Tab = 写 `metadata.archivedAt = Date.now()`（`PATCH /api/session/:id`）；打开 Tab = 清除该字段；列表过滤客户端做。**归档的识别/对称交互逻辑不变，仅换存储字段**（`time.archived` → `metadata.archivedAt`）。官方背景（佐证这是过渡桥接而非永久私约）：
 
+> **2026-10-25 已迁回官方 API**（触发点成立：2.1.3 三件套回归，见 ref-pin-bump-2.1.3 §2）：写路径 ≥2.1.3 走官方 `archived` 字段（版本分派 + 存量 marker backfill + SSE 双事件，`metadata.archivedAt` 识别双源过渡保留）——实施记录见 design-archive-official-api，移动端同构参照 openbuilder design-archive-metadata §迁回官方归档 API。
+
 - v1 过渡面 `PATCH /api/session/:id` 的 UpdatePayload 含 `time.archived`（1.18.x `groups/session.ts:55`）；v2 砍到 title/metadata/permissions，`time.archived` 仅存于 schema/DB/import 透传；
 - 官方 v2 app 的归档按钮是**有意降级的占位**：v1/v2 双协议期按 `protocolKind()==="v1"` 门控调 v1 API；2026-08-06 code owner 删 v1 兼容层（#40382）时替换为 `Promise.reject("Session archiving is unavailable")`，留三处 TODO 原话 *"Restore archiving when the V2 client exposes a session archive API"*；
 - 社区两次完整服务端实现（#38440、#39358：durable `session.archived` 事件 + `Session.archive` core op，明确「archive 与 delete 分离」）均未被 merge（满月被 automated PR cleanup 关门）；unarchive 修复 PR #47848 仍 open。
