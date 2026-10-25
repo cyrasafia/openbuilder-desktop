@@ -15,7 +15,7 @@
 | `WorktreeError` envelope + `_tag` | 400 错误体 `{name, data}` → `{_tag, name, data}`（`_tag` required） | 无——rest-client 按 `name`+`data` 解析，加法字段 |
 | SSE 帧 `id` 不再 required | `GET /api/event` 200 流 schema required `[id,event,data]` → `[event,data]`；活体帧本就 data-only（type 在 JSON 内），schema 追认现实 | 无 |
 
-## 2. 归档链路官方化（**D1 迁回条件成立**，见 todo-archive-official-api-migration）
+## 2. 归档链路官方化（**D1 迁回条件成立**——移动端已迁回（openbuilder design-archive-metadata §迁回官方归档 API，2026-10-25），桌面端待迁）
 
 | 端点/事件 | 形状 | 活体验证（2026-10-25，本机 2.1.3） |
 |---|---|---|
