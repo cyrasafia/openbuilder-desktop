@@ -29,7 +29,7 @@
 ## 3. 加法（新端点/新字段，客户端暂不消费）
 
 - **新端点**（6 个路径 7 操作，全 experimental/边缘面）：`GET/POST /api/credential`（凭据列/建，`Credential.Entry`）、`POST /api/vcs/init`（`VcsInitNotSupportedErrorEncoded`）、`POST /api/integration/:id/connect/external`（external 连接方式，`Connection.CredentialInfo.method` enum + `external`）、`GET /api/experimental/voice/models` + `POST /api/experimental/voice/session` + `POST .../instructions`（voice 三件套）。
-- **`POST /api/session` body + `parentID`**：创建时直接挂父会话（子会话命令流可用，现走 `session.created` 出生探测仍成立）。
+- **`POST /api/session` body + `parentID`**：客户端自建子会话可用（child ID 同步可得、location 继承父会话，源码 `handlers/session.ts` 已核）——未来桌面端自有子会话入口/后台任务流的使能项。注意**对既有命令乐观消解无直接简化**：命令子会话仍由 server 内部派生（SubagentJob）、204 不带 child ID，`session.created` 出生探测（design-optimistic-id-anchor §4b 层 1b）仍必要。
 - **`ServerInfo.capabilities.persistentPty`**（`GET /api/info`）：persistent-pty 能力旗标（端点 2.0.18 已有，本次补能力声明；桌面终端用 `/api/pty` 非 persistent，不受影响）。
 - **错误面规整**：404 `LocationNotFoundError` 大面积补进 location 域端点（伪项目防御的 `evictLocation` 死目录场景会得到更明确错误）；多个 404/400 schema 从精确对象改 anyOf 错误 union（变宽，解析容错要求不变）。
 - **模型目录**：`Model.Capabilities` + `temperature`（bool）、`reasoning` 形状化；`Model.Compatibility` + `cacheFormat`/`streamUsage`/`supportsEffortUpdates`/`supportsThinkingBlockBinding`；`releaseDate`。agent/model 切换 UI 暂不消费。
