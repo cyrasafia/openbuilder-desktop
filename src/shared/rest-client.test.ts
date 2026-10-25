@@ -4,7 +4,7 @@
  * 空体容忍、错误分类（401 auth / 400 透传）。fetch 走构造注入，不依赖网络。
  */
 import { describe, expect, it } from "vitest"
-import { ApiError, RestClient } from "./rest-client"
+import { ApiError, RestClient, isLocationNotFoundError } from "./rest-client"
 
 function mkClient(handler: (url: string, init: RequestInit) => Response | Promise<Response>, opts?: { password?: string }) {
   return new RestClient({
@@ -943,5 +943,98 @@ describe("location 请求屏障（design-worktree-sync §3.5，ref §3.4 三订�
     const t0 = Date.now()
     await client.awaitLocationIdle("/wt", 5000)
     expect(Date.now() - t0).toBeLessThan(200)
+  })
+})
+
+describe("结构化错误体（_tag 判别，todo-error-body-tag #1；三形状 2026-10-25 活体）", () => {
+  it("扁平 _tag 体（SessionBusyError 409）：tag 提取 + 顶层 message 进错误消息", async () => {
+    const client = mkClient(
+      () =>
+        new Response(JSON.stringify({ _tag: "SessionBusyError", sessionID: "ses_1", message: "session is busy" }), {
+          status: 409,
+        }),
+    )
+    const err = (await client.revertStage("ses_1", "msg_1").catch((e: unknown) => e)) as ApiError
+    expect(err).toBeInstanceOf(ApiError)
+    expect(err.tag).toBe("SessionBusyError")
+    expect(err.message).toContain("session is busy")
+    expect(err.locationDirectory).toBeUndefined()
+  })
+
+  it("包装体（旧 {name, data} WorktreeError 400）：tag 从 name、message 从 data.message（兼容保留）", async () => {
+    const client = mkClient(
+      () =>
+        new Response(
+          JSON.stringify({ name: "WorktreeError", data: { message: "worktree has modifications", forceRequired: true } }),
+          { status: 400 },
+        ),
+    )
+    const err = (await client.deleteWorktree("p1", "/wt").catch((e: unknown) => e)) as ApiError
+    expect(err).toBeInstanceOf(ApiError)
+    expect(err.tag).toBe("WorktreeError")
+    expect(err.message).toContain("worktree has modifications")
+  })
+
+  it("_tag+name+data 并存（2.1.3 WorktreeError）：tag 双读取 _tag；顶层 message 优先 data.message", async () => {
+    const client = mkClient(
+      () =>
+        new Response(
+          JSON.stringify({ _tag: "WorktreeError", name: "WorktreeError", data: { message: "in-data" }, message: "top" }),
+          { status: 400 },
+        ),
+    )
+    const err = (await client.deleteWorktree("p1", "/wt").catch((e: unknown) => e)) as ApiError
+    expect(err.tag).toBe("WorktreeError")
+    expect(err.message).toContain("top")
+    expect(err.message).not.toContain("in-data")
+  })
+
+  it("LocationNotFoundError 404：tag + locationDirectory + isLocationNotFoundError 判别", async () => {
+    const client = mkClient(
+      () =>
+        new Response(
+          JSON.stringify({
+            _tag: "LocationNotFoundError",
+            location: { directory: "/wt" },
+            message: "Location not found: /wt",
+          }),
+          { status: 404 },
+        ),
+    )
+    const err = (await client.vcsStatus("/wt").catch((e: unknown) => e)) as ApiError
+    expect(err).toBeInstanceOf(ApiError)
+    expect(err.tag).toBe("LocationNotFoundError")
+    expect(err.locationDirectory).toBe("/wt")
+    expect(isLocationNotFoundError(err)).toBe(true)
+    expect(err.message).toContain("Location not found: /wt")
+  })
+
+  it("onDeadLocation（todo-error-body-tag #3）：LocationNotFoundError 回执触发（directory = 请求目录）且错误照抛；其他错误与 gate 拒绝不触发", async () => {
+    const dead: string[] = []
+    const client = mkClient((url) => {
+      if (url.includes("/api/vcs/status")) {
+        return new Response(
+          JSON.stringify({
+            _tag: "LocationNotFoundError",
+            location: { directory: "/wt" },
+            message: "Location not found: /wt",
+          }),
+          { status: 404 },
+        )
+      }
+      return new Response("boom", { status: 500 })
+    })
+    client.onDeadLocation = (d) => dead.push(d)
+    // 确证回执：错误照抛（消费方判别吸收），回调以请求目录触发
+    await expect(client.vcsStatus("/wt")).rejects.toBeInstanceOf(ApiError)
+    expect(dead).toEqual(["/wt"])
+    // 非 LocationNotFound（500）：不触发
+    await expect(client.listFiles("/wt", ".")).rejects.toBeInstanceOf(ApiError)
+    expect(dead).toEqual(["/wt"])
+    // gate 本地拒绝（删除窗口）：无 server 回执，不构成确证
+    client.suspendLocationRequests("/wt")
+    await expect(client.findFiles("q", "/wt")).rejects.toThrow(/挂起/)
+    client.resumeLocationRequests("/wt")
+    expect(dead).toEqual(["/wt"])
   })
 })
