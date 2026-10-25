@@ -20,7 +20,7 @@
 | `POST /api/integration/:integrationID/connect/key?location[directory]=` | 2.0.18（pin 内） | body `{key, label?, answer?}`，204。内部 = create credential 且默认 activate：旧凭据全量置 inactive 但**保留**（core `credential.ts` 事务，源码核对）。无 key 方法的 integration 500 |
 | `DELETE /api/credential/:credentialID` | **2.0.23 起**（2.0.18–22 路由不存在 404） | 204；不存在的 id 也 204（幂等空操作，活体实测） |
 | `GET/POST /api/credential`、`PATCH :id`（label）、`POST :id/activate` | 2.0.23 起 | **面板不消费**——connections 已含凭据 id/label；单槽语义由 connect/key + DELETE 组合达成；GET 返回值含明文 secret（协议自述 "including its secret value"），不拉取即不引入明文面 |
-| 生成的 `openapi.json` 滞后 | — | v2.0.23/24 tag 的 openapi.json 只含 GET/POST `/api/credential`；`PATCH/activate/DELETE` 与 4 个 `connect/*` 端点在源码与二进制均在但未再生成。**credential 面以本文档实测表为准**（source `packages/protocol/src/groups/{credential,integration}.ts` v2.0.23 = v2.0.24 无 diff） |
+| 生成的 `openapi.json` 滞后 | — | v2.0.23/24 tag 的 openapi.json 只含 GET/POST `/api/credential`；`PATCH/activate/DELETE` 与 4 个 `connect/*` 端点在源码与二进制均在但未再生成。**credential 面以本文档实测表为准**（source `packages/protocol/src/groups/{credential,integration}.ts` v2.0.23 = v2.0.24 无 diff）。**（2026-10-25 撤销：2.1.3 pin 已收全量 credential/integration 端点，契约回归以 pin 为准，本表转为活体实测记录——见 ref-pin-bump-2.1.3 §3）** |
 
 其他事实：
 

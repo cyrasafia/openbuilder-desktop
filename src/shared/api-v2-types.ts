@@ -1,8 +1,8 @@
 /**
  * opencode **v2** server API 契约的手写子集（与内部模型 api-types.ts 分层：
  * 这里是 wire 形状，api-types 是渲染层内部形状——两者长期并存）。
- * 依据：../openbuilder/opencode_openapi_v2.json（官方 packages/protocol/openapi.json
- * 2.0.18 拷贝）+ v2 分支源码核对（2026-09-28）。
+ * 依据：../openbuilder/opencode_openapi_v2.json（2.1.3 pin，2026-10-25 升，
+ * 变化审计见 docs/ref/ref-pin-bump-2.1.3.md）+ v2 分支源码核对（2026-09-28）。
  * 字段按里程碑增量添加，不追求全覆盖；契约变更以 openapi diff 为准。
  */
 

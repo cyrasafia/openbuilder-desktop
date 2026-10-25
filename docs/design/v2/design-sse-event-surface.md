@@ -3,6 +3,8 @@
 > 目标：以 2026-10-07 活体 bug（回滚暂存后发送新消息，新消息不显示）为触发案例，落档三件事：① v1→v2 事件模型差异的系统表述（为什么 v1 的收敛前提在 v2 失效）；② v2.0.18 SSE 事件面全量审计矩阵（事件 × 发布者 × 客户端消费状态）；③ 状态收敛的通用模式（三层防御）与升 pin 审计流程。本文档是事件面契约基线，后续接事件/升 pin 以此核对。
 >
 > 参考来源：上游 v2.0.18 tag 源码核对（`packages/schema/src/*-event.ts`、`packages/core/src/`、`packages/server/src/`）；本仓库 M6c 迁移记录（commit `4bcc67f`）；design-message-revert（v1 时代收敛前提的原始记载）；design-v2-migration §SSE 与对账重设计。
+>
+> **升 pin 复核（2026-10-25，pin 2.0.18 → 2.1.3）**：按 §5 流程完成复核，全量 diff 见 ref-pin-bump-2.1.3 §4。结论：§3 表 A–D 全部维持（`session.status`/`session.idle` 仍无发布者、`worktree.ready/failed` 仍无发布者、`file.watcher.updated` 仍无定义）；事件面净变化 = 新增 `session.archived`/`session.unarchived`（durable，官方归档链路，消费属 D1 迁回工作项见 todo-archive-official-api-migration）、移除 `session.compacted`/`question.*` 三事件/`ide.installed`（客户端均未消费，无死 case 新增）；客户端消费的 50 个事件无改名、无被删。
 
 ## 1. 触发案例与根因链
 

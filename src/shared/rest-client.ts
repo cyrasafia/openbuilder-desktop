@@ -1,9 +1,9 @@
 /**
  * opencode **v2** REST client（renderer 直连，fetch 封装；v0.5 起唯一 client——
  * v1 面已删除，见 docs/plan/plan-v2-protocol.md M6d）。契约以
- * ../openbuilder/opencode_openapi_v2.json 为准（2.0.18 pin）；例外：credential/
- * integration 面以 docs/design/v2/design-provider-config.md §1 实测表为准
- * （2.0.23 生成的 openapi.json 滞后漏收 DELETE 等端点，源码+活体已核）。
+ * ../openbuilder/opencode_openapi_v2.json 为准（2.1.3 pin，2026-10-25 升，
+ * 变化审计见 docs/ref/ref-pin-bump-2.1.3.md；credential/integration 面已随
+ * 升 pin 入契约，原「以 design-provider-config §1 实测表为准」例外撤销）。
  */
 import type {
   CursorPage,
