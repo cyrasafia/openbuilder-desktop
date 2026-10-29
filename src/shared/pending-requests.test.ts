@@ -3,6 +3,8 @@ import {
   buildFormAnswer,
   CUSTOM_OPTION_VALUE,
   externalDirectoryPath,
+  formVisibleSteps,
+  isDegradedField,
   mergePendingSnapshot,
   normalizeForm,
   normalizePermission,
@@ -81,7 +83,7 @@ describe("normalizeForm（v2 form 体系，M6a）", () => {
     },
   }
 
-  it("form.created 事件：嵌套 form 字段解析，字段类型归一化，hidden/external 剔除", () => {
+  it("form.created 事件：嵌套 form 字段解析，字段类型归一化，hidden/external 保留（T5）", () => {
     const q = normalizeForm(formCreated, "/repo")
     expect(q).toMatchObject({ id: "frm_1", sessionID: "ses_1", title: "选择分支", directory: "/repo" })
     expect(q?.fields.map((f) => [f.key, f.kind])).toEqual([
@@ -91,15 +93,68 @@ describe("normalizeForm（v2 form 体系，M6a）", () => {
       ["reason", "text"],
       ["why", "text"],
       ["count", "number"],
+      ["secret", "text"],
+      ["ext", "external"],
     ])
-    expect(q?.fields.map((f) => f.required)).toEqual([false, false, false, false, true, false])
+    expect(q?.fields.map((f) => f.required)).toEqual([false, false, false, false, true, false, false, false])
     // custom 透出（Form.StringField/MultiselectField.custom；question 工具恒 true）
-    expect(q?.fields.map((f) => f.custom)).toEqual([true, false, false, false, false, false])
+    expect(q?.fields.map((f) => f.custom)).toEqual([true, false, false, false, false, false, false, false])
     expect(q?.fields[0].options).toEqual([
       { value: "main", label: "main", description: "默认分支" },
       { value: "dev", label: "dev", description: "" },
     ])
     expect(q?.fields[3].placeholder).toBe("可空")
+    // hidden 标志透出（T5：模型层保留，不再剔除）
+    expect(q?.fields.map((f) => f.hidden)).toEqual([false, false, false, false, false, false, true, false])
+  })
+
+  it("hidden/external 字段 default 原始值透出（string/number/boolean/string[]）", () => {
+    const q = normalizeForm(
+      {
+        form: {
+          id: "frm_d",
+          sessionID: "ses_1",
+          title: "t",
+          fields: [
+            { key: "h1", type: "string", hidden: true, required: true, default: "preset" },
+            { key: "h2", type: "integer", hidden: true, required: true, default: 7 },
+            { key: "h3", type: "boolean", hidden: true, required: true, default: true },
+            { key: "h4", type: "multiselect", hidden: true, required: true, default: ["a", "b"] },
+            { key: "h5", type: "number", hidden: true, required: true, default: { bad: 1 } },
+          ],
+        },
+      },
+      "/repo",
+    )
+    const byKey = Object.fromEntries((q?.fields ?? []).map((f) => [f.key, f]))
+    expect(byKey.h1.defaultValue).toBe("preset")
+    expect(byKey.h2.defaultValue).toBe(7)
+    expect(byKey.h3.defaultValue).toBe(true)
+    expect(byKey.h4.defaultValue).toEqual(["a", "b"])
+    // 不认识的形态丢弃（undefined = 无 default）
+    expect(byKey.h5.defaultValue).toBeUndefined()
+  })
+
+  it("全 hidden/external 卡不再被整卡丢弃（T5：原剔除致会话永久 pending）", () => {
+    const q = normalizeForm(
+      {
+        form: {
+          id: "frm_h",
+          sessionID: "ses_1",
+          title: "隐藏卡",
+          fields: [
+            { key: "s", type: "string", hidden: true, default: "x" },
+            { key: "e", type: "external", title: "授权" },
+          ],
+        },
+      },
+      "/repo",
+    )
+    expect(q?.id).toBe("frm_h")
+    expect(q?.fields.map((f) => [f.key, f.kind])).toEqual([
+      ["s", "text"],
+      ["e", "external"],
+    ])
   })
 
   it("回填条目（Form.Info 本体，无 form 嵌套）同样解析", () => {
@@ -125,11 +180,11 @@ describe("buildFormAnswer（M6a）", () => {
     title: "t",
     directory: "/r",
     fields: [
-      { key: "branch", question: "q", description: "", kind: "select", options: [], placeholder: "", required: false, custom: true },
-      { key: "tags", question: "q", description: "", kind: "multiselect", options: [], placeholder: "", required: false, custom: true },
-      { key: "force", question: "q", description: "", kind: "boolean", options: [], placeholder: "", required: false, custom: false },
-      { key: "note", question: "q", description: "", kind: "text", options: [], placeholder: "", required: false, custom: false },
-      { key: "n", question: "q", description: "", kind: "number", options: [], placeholder: "", required: false, custom: false },
+      { key: "branch", question: "q", description: "", kind: "select", options: [], placeholder: "", required: false, custom: true, hidden: false },
+      { key: "tags", question: "q", description: "", kind: "multiselect", options: [], placeholder: "", required: false, custom: true, hidden: false },
+      { key: "force", question: "q", description: "", kind: "boolean", options: [], placeholder: "", required: false, custom: false, hidden: false },
+      { key: "note", question: "q", description: "", kind: "text", options: [], placeholder: "", required: false, custom: false, hidden: false },
+      { key: "n", question: "q", description: "", kind: "number", options: [], placeholder: "", required: false, custom: false, hidden: false },
     ],
   }
 
@@ -179,6 +234,158 @@ describe("buildFormAnswer（M6a）", () => {
     })
     expect(answer.branch).toBe("main")
     expect(answer.tags).toEqual(["Diff"])
+  })
+})
+
+describe("buildFormAnswer hidden/external 补键（T5，v2.0.26 活体实测矩阵）", () => {
+  function mixed(fields: Partial<PendingQuestion["fields"][number]>[]): PendingQuestion {
+    const base: PendingQuestion["fields"][number] = {
+      key: "",
+      question: "q",
+      description: "",
+      kind: "text",
+      options: [],
+      placeholder: "",
+      required: false,
+      custom: false,
+      hidden: false,
+    }
+    return {
+      id: "frm_1",
+      sessionID: "ses_1",
+      title: "t",
+      directory: "/r",
+      fields: fields.map((f) => ({ ...base, ...f })),
+    }
+  }
+
+  it("external 恒补 ack true（缺键 400 External form field must be acknowledged，实测 204）", () => {
+    const answer = buildFormAnswer(mixed([{ key: "e1", kind: "external" }, { key: "e2", kind: "external" }]), {})
+    expect(answer).toEqual({ e1: true, e2: true })
+  })
+
+  it("hidden 非 required 不发键（缺键实测 204，可省略）", () => {
+    const answer = buildFormAnswer(
+      mixed([
+        { key: "h", kind: "text", hidden: true },
+        { key: "v", kind: "text" },
+      ]),
+      { 1: { text: "ans" } },
+    )
+    expect(answer).toEqual({ v: "ans" })
+  })
+
+  it("hidden + required 补类型化 default：number 直传/字符串解析、boolean、multiselect 数组、string 原文", () => {
+    const answer = buildFormAnswer(
+      mixed([
+        { key: "a", kind: "number", hidden: true, required: true, defaultValue: 7 },
+        { key: "b", kind: "number", hidden: true, required: true, defaultValue: "3.5" },
+        { key: "c", kind: "boolean", hidden: true, required: true, defaultValue: "true" },
+        { key: "d", kind: "multiselect", hidden: true, required: true, defaultValue: ["x", "y"] },
+        { key: "e", kind: "text", hidden: true, required: true, defaultValue: "preset" },
+      ]),
+      {},
+    )
+    expect(answer).toEqual({ a: 7, b: 3.5, c: true, d: ["x", "y"], e: "preset" })
+  })
+
+  it("hidden + required default 字符串解析失败兜底 0（NaN → 0，同移动端 tryParse ?? 0）", () => {
+    const answer = buildFormAnswer(
+      mixed([{ key: "a", kind: "number", hidden: true, required: true, defaultValue: "abc" }]),
+      {},
+    )
+    expect(answer).toEqual({ a: 0 })
+  })
+
+  it("multiselect default 字符串形态按逗号拆（移动端 join(',') 归一形态兼容）", () => {
+    const answer = buildFormAnswer(
+      mixed([
+        { key: "d", kind: "multiselect", hidden: true, required: true, defaultValue: "x,y" },
+        { key: "e", kind: "multiselect", hidden: true, required: true, defaultValue: "" },
+      ]),
+      {},
+    )
+    expect(answer).toEqual({ d: ["x", "y"], e: [] })
+  })
+
+  it("hidden + required + default 空的降级步按 UI 输入构造（不补空值——空值等同缺失 400）", () => {
+    const answer = buildFormAnswer(
+      mixed([
+        { key: "dg", kind: "text", hidden: true, required: true, defaultValue: "" },
+        { key: "dg2", kind: "multiselect", hidden: true, required: true, defaultValue: [] },
+      ]),
+      { 0: { text: "用户填" }, 1: { selected: ["a"] } },
+    )
+    expect(answer).toEqual({ dg: "用户填", dg2: ["a"] })
+  })
+
+  it("混合卡：可见步输入与补键共存（全字段按实测矩阵构造）", () => {
+    const answer = buildFormAnswer(
+      mixed([
+        { key: "vis", kind: "select", options: [{ value: "m", label: "m", description: "" }] },
+        { key: "hid", kind: "text", hidden: true, required: true, defaultValue: "auto" },
+        { key: "opt", kind: "boolean", hidden: true },
+        { key: "ext", kind: "external" },
+      ]),
+      { 0: { selected: ["m"] } },
+    )
+    expect(answer).toEqual({ vis: "m", hid: "auto", ext: true })
+  })
+})
+
+describe("formVisibleSteps / isDegradedField（T5 UI 层）", () => {
+  function fld(overrides: Partial<PendingQuestion["fields"][number]>): PendingQuestion["fields"][number] {
+    return {
+      key: "k",
+      question: "q",
+      description: "",
+      kind: "text",
+      options: [],
+      placeholder: "",
+      required: false,
+      custom: false,
+      hidden: false,
+      ...overrides,
+    }
+  }
+
+  it("可见步 = 非 external 且（非 hidden 或降级）；返回字段原下标", () => {
+    const q: PendingQuestion = {
+      id: "frm_1",
+      sessionID: "ses_1",
+      title: "t",
+      directory: "/r",
+      fields: [
+        fld({ key: "a", kind: "select", options: [{ value: "1", label: "1", description: "" }] }),
+        fld({ key: "h", hidden: true, required: true, defaultValue: "x" }),
+        fld({ key: "e", kind: "external" }),
+        fld({ key: "dg", hidden: true, required: true }), // 无 default → 降级
+        fld({ key: "ho", hidden: true }), // 非 required → 跳过
+      ],
+    }
+    expect(formVisibleSteps(q)).toEqual([0, 3])
+  })
+
+  it("全 hidden/external → 空序列（ack-only 卡）", () => {
+    const q: PendingQuestion = {
+      id: "frm_1",
+      sessionID: "ses_1",
+      title: "t",
+      directory: "/r",
+      fields: [fld({ key: "h", hidden: true }), fld({ key: "e", kind: "external" })],
+    }
+    expect(formVisibleSteps(q)).toEqual([])
+  })
+
+  it("isDegradedField：仅 hidden+required+default 空；空串/空数组/undefined 均算空", () => {
+    expect(isDegradedField(fld({ hidden: true, required: true }))).toBe(true)
+    expect(isDegradedField(fld({ hidden: true, required: true, defaultValue: "" }))).toBe(true)
+    expect(isDegradedField(fld({ hidden: true, required: true, defaultValue: [] }))).toBe(true)
+    expect(isDegradedField(fld({ hidden: true, required: true, defaultValue: "x" }))).toBe(false)
+    expect(isDegradedField(fld({ hidden: true, required: true, defaultValue: 0 }))).toBe(false)
+    expect(isDegradedField(fld({ hidden: true }))).toBe(false)
+    expect(isDegradedField(fld({ required: true }))).toBe(false)
+    expect(isDegradedField(fld({ kind: "external", hidden: true, required: true }))).toBe(false)
   })
 })
 
@@ -243,7 +450,7 @@ describe("mergePendingSnapshot", () => {
       sessionID,
       title: "t",
       directory,
-      fields: [{ key: "k", question: "q", description: "", kind: "select", options: [], placeholder: "", required: false, custom: false }],
+      fields: [{ key: "k", question: "q", description: "", kind: "select", options: [], placeholder: "", required: false, custom: false, hidden: false }],
     }
   }
 

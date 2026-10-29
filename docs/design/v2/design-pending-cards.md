@@ -7,6 +7,14 @@
 > 契约事实表与应答动作节已按 v2 改写，v1 原始记录见 git 历史。渲染/状态/
 > 合并语义（键控、waiting 投影、权威覆盖）不变。
 >
+> **hidden/external 补键修订（2026-10-29，T5）**：对齐移动端
+> `../openbuilder/docs/todo/todo-form-card-v2-parity.md` T2/T3——hidden/external
+> 不再剔除（原剔除致混合表单提交必现 400、全 hidden/external 卡整卡丢弃会话
+> 永久 pending），改三层方案：模型层保留 + UI 层跳过（`formVisibleSteps`）+
+> answer 层补键（`buildFormAnswer`），依据 v2.0.26 活体实测矩阵（hidden+
+> required 缺键/空值 400、external 缺键 400 须 ack `true`、hidden 非 required
+> 缺键 204）。
+>
 > 参考移动端同类实现（AGENTS.md 设计前置约定）：
 > - `../openbuilder/docs/docs/design/design-agent-status-indicator.md` — 状态归一与显示投影（waiting 优先于 busy、琥珀静态、底层事实独立保留）
 > - `../openbuilder/docs/docs/design/v1/design-question-card-reply.md` — question reply 的 404 语义（directory 路由是 v1 史，v2 已无）
@@ -30,7 +38,8 @@ v0.1 此前只有事件占位（spec 范围外），用户在桌面端无法应�
 | 表单应答 | `POST /api/session/{sid}/form/{formID}/reply`；body `{answer}`（键 = field.key，值按字段类型：select→option **value**、multiselect→value[]、boolean→bool、number→数值、text→string）；取消 `DELETE .../form/{formID}`——取代 v1 question 的 `answers: string[][]`（label 数组） |
 | SSE 事件 | `permission.asked`（平铺，v2 字段 `action`/`resources`/`save`）/ `permission.replied`（**id 在 `requestID` 字段**）；`form.created`（**表单嵌套在 `form` 字段**）/ `form.replied` / `form.cancelled`（id 在 `id` 字段）——v1 `question.*` 与 `permission.v2.*` 事件名不存在，case 已删 |
 | 事件只推一次 | SSE 只在 asked/created 时推送；断线期间的请求靠 REST 回填（v2 端点 `GET /api/permission/request` + `GET /api/form`，**M6c 接回**——v1 回填端点已退役，中间态 questions 回填缺位由 SSE 事件与 404 语义兜底） |
-| 表单字段模型 | `Form.Field` 六型：string（有 options = 单选）/multiselect/boolean/number/integer/external + `hidden` 条件隐藏；UI 投影见 pending-requests.ts `toField`（hidden/external 剔除，type 归一化 kind） |
+| 表单字段模型 | `Form.Field` 六型：string（有 options = 单选）/multiselect/boolean/number/integer/external + `hidden` 条件隐藏；UI 投影见 pending-requests.ts `toField`（type 归一化 kind；**hidden/external 保留**——T5 三层方案：模型层不剔、UI 层 `formVisibleSteps` 跳过、answer 层 `buildFormAnswer` 补键；`hidden`/`defaultValue`（原始 JSON 形态）透出到 `PendingQuestionField`） |
+| hidden/external 校验（2026-10-29 增，T5，v2.0.26 活体实测） | `hidden+required` reply 缺键/空串/空数组均 400（`Missing required form field`，空串/空数组等同缺失——须补类型化 default）；`hidden` 非 required 缺键 204（可省略）；`external` 缺键 400（`External form field must be acknowledged`），answer 发布尔 `true` 即 ack（204）；`external` 字段无 required/hidden 属性（恒 ack 语义一致） |
 | custom 选项（2026-10-29 增） | `Form.StringField`/`Form.MultiselectField` 的 `custom: true` 时 server 放行**选项外值**（form.ts `validateField`：仅 `!custom` 才校验命中 options）；question 工具所有字段恒 `custom: true`。UI 投影 = 选项列表末尾「其他（自定义答案）」哨兵行（`CUSTOM_OPTION_VALUE`，与移动端 `_kCustomOptionValue` 同值跨端同源），对齐移动端 `../openbuilder/docs/todo/todo-form-card-v2-parity.md` T1 |
 | 权限负载 | `action`（类型，如 `bash`/`external_directory`/`edit`）+ `resources`（命令模式/路径）+ `metadata`（bash 带 `command` 全文、external_directory 带 `parentDir`/`command`）；`save` = v2 的 always patterns 候选 |
 
@@ -67,6 +76,7 @@ v0.1 此前只有事件占位（spec 范围外），用户在桌面端无法应�
 - **授权卡**（primary 系配色）：盾牌图标 + "授权请求" + 类型标题（bash→执行命令 / external_directory→访问外部目录 / 兜底 type 原文，同移动端 permissionTitle 映射）+ mono 详情行（metadata.command > patterns > 派生路径）；按钮 拒绝 / 总是允许 / 允许一次；可折叠
 - **问题卡**（tertiary 系配色，v2 form 投影 M6a）：图标 + 表单 title + 步进 `i/N` + 队列计数；正文当前字段文本 + 描述小字；选项式字段（select/multiselect/boolean——boolean 合成是/否两项，value "true"/"false" 提交时还原布尔）渲染选项列表（radio/checkbox 视觉，label + description，**选中即 option.value**）；输入式字段（text/number）渲染输入框（占位提示，number 输入模式）；逐字段步进（下一步/提交）；**当前步未答不得前进**（review-question-cards Q-7——选项步未选恒禁，输入步 required 非空门控）；拒绝常驻；可折叠
 - **custom 自由答案（2026-10-29 增，T1 对齐；同日多轮 UI 反馈定稿）**：选项式字段 `custom:true` 时选项列表末尾追加「其他（自定义答案）」选项行（`CUSTOM_OPTION_VALUE` 哨兵，i18n `formCustomAnswer` 与移动端同文案），与既有选项同权（radio 排他/checkbox 增删、Ctrl+1..9 序号顺延覆盖）；「其他」行是 **div tile**（input 不可嵌 button；`.pending-option.custom` 行向）：未选中 = toggle 按钮（mark + 标题）撑满整行；选中 = 输入框**替代标题**原位出现（toggle 收缩为 mark 段、输入框 flex:1 占标题位，placeholder 用标题文案 `formCustomAnswer`，autoFocus——出现即聚焦）——**tile 高度/选中视觉与普通行完全同构**（基类 min-height 36 + `.active`，无预留空白、零布局影响；下展顶起、行内右展、恒定槽占位三案先后废弃）；输入框焦点不描边——tile `.active` 边框即焦点指示；**自定义文本空不得前进**（步进门控同 Q-7 语义）；提交时 `buildFormAnswer` 剥离哨兵——select 以输入文本为答案、multiselect 将非空文本追加到选中数组（空文本丢弃为防御）；未选「其他」时 customText 不参与答案。已知跨端分歧（接受）：空 options 的 multiselect+custom 桌面端仍渲染仅含「其他」的列表可作答（移动端 `_hasOptions` 空则整块不渲染只能拒绝）；展开形态亦异（移动端 tile 内下展按需增高、桌面行内替换标题——桌面布局稳定优先）
+- **hidden/external 步进与补键（2026-10-29 增，T5 对齐移动端 T2/T3）**：可见步 = `formVisibleSteps`（external 恒跳过、hidden 非降级跳过——步进/门控/计数 `i/N` 全部基于可见步，输入状态与 `buildFormAnswer` 的 input 键按**字段原下标**键控，步进序列与字段序列解耦）；`hidden+required+default 空`（服务端违约组合）**降级为可见步**让用户填（任何空值兜底都会 400，唯一不死锁路径）；**全 hidden/external 卡（ack-only）渲染单步确认文案**（含 external 优先授权提示——i18n `formExternalNotice`/`formAutoNotice` 与移动端同文案，混合卡按"是否含 external"选择），提交键恒可用、提交即补全部键；`buildFormAnswer` 补键规则：external 恒发 `true`（ack）、hidden+required 发类型化 `defaultValue`（数值/数组原始形态直传、字符串按 kind 解析——规避移动端 join/split(',') 逗号失真）、hidden 非 required 不发键、降级步按 UI 输入
 - 回复中全按钮禁用；失败在卡内右侧内联红字（桌面无 SnackBar）
 - **卡片快捷键（2026-09-28 增）**：授权卡 Ctrl+N/A/Y = 拒绝/总是允许/允许一次；问题卡 Ctrl+1..9 切换选项、Ctrl+0 拒绝、Ctrl+Enter 下一步/提交；Ctrl 按住期间按钮/选项显键位角标——键位守卫与冲突核查见 [design-keyboard-shortcuts §1.1b](../design-keyboard-shortcuts.md)
 - **专注模式抑制（2026-10-18 增，[design-focus-mode §6.1](../design-focus-mode.md)）**：专注稳态（`focusPhase === "on"`）ChatFooter **不渲染**（卸载灭快捷键监听——编辑键 Ctrl+A/Ctrl+Enter 与"恒为卡动作"冲突是硬动机）；opening 渐隐保留、closing 挂载即渐显（两段式）；store 的 pendingPermissions/pendingQuestions 零改动，退出即恢复。后台任务卡（design-subagent-background `.bg-task-slot`）同闸门
@@ -135,8 +145,9 @@ main 演进后按其新架构重新适配（语义不变）：
 
 ## 已知限制
 
-- v2 `Form.Field` 的 `external` 型字段（浏览器授权流）与 `hidden` 字段不呈现（归一化剔除，M6a——external 属浏览器 tab 能力扩展，按需另行 design）
-- 表单字段 `default` 值不做预填（与移动端一致；required 已门控，空提交风险收敛）
+- v2 `Form.Field` 的 `external` 型字段不做浏览器授权入口（M6a 曾整卡剔除→2026-10-29 T5 改 ack 确认步：external 是 MCP OAuth 授权流，桌面端授权流入口按需另行 design；ack `true` 让工具用已有凭据继续，优于会话卡死——移动端同裁定）
+- 表单字段 `default` 值对**可见步**不做预填（与移动端一致；required 已门控，空提交风险收敛）；hidden+required 的 default 仅用于 answer 补键（T5），可见降级步不预填
+- **`when` 条件字段不支持**（T5 评审确认，2.1.3 即有该语义——服务端 `validateAnswer`：字段因 `when` 不命中 inactive 时**发值 → 400** `Form field is not active`、缺键放行）：hidden+required 补键恒发 default，`when` 不命中的此类字段 reply 会 400（改动前剔除=缺键反而能过；移动端 `_buildAnswer` 同样无条件补键，跨端一致）；可见字段 M6a 起同样忽略 `when`（UI 不隐藏 inactive 字段，作答发值同 400）。触发面窄——question 工具表单不带 `when`，仅自定义 MCP form 工具可能携带；支持 `when` 需 UI 级条件显隐，按需另行 design
 - 权限卡 `always` 选项恒显示（v2 `save` patterns 为空时本应只给 once/reject——待真实权限卡联调后按需隐藏）
 - 归档会话的 pending 卡不主动弹出入口（仅左/中栏 waiting 点提示，打开会话才见卡）
 - **[M6c 待接] pending 回填**：v1 回填端点已退役（v2 server 404 → null 保留本地），重连窗口内错过的事件要等 M6c 接 `GET /api/permission/request` + `GET /api/form` 后恢复；期间他端已处理的旧卡由 reply 404 静默移除语义兜底

@@ -79,6 +79,7 @@ function makeQuestion(overrides: Partial<PendingQuestion> = {}): PendingQuestion
         placeholder: "",
         required: false,
         custom: false,
+        hidden: false,
       },
     ],
     ...overrides,
@@ -288,6 +289,7 @@ describe("问题卡快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增
           placeholder: "",
           required: false,
           custom: false,
+          hidden: false,
         },
       ],
     })
@@ -314,6 +316,7 @@ describe("问题卡快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增
           placeholder: "自定义",
           required: false,
           custom: true,
+          hidden: false,
         },
       ],
     })
@@ -367,6 +370,7 @@ describe("问题卡快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增
           placeholder: "",
           required: false,
           custom: false,
+          hidden: false,
         },
         {
           key: "f2",
@@ -380,6 +384,7 @@ describe("问题卡快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增
           placeholder: "",
           required: false,
           custom: false,
+          hidden: false,
         },
       ],
     })
@@ -424,6 +429,7 @@ describe("问题卡快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增
           placeholder: "",
           required: false,
           custom: false,
+          hidden: false,
         },
       ],
     })
@@ -450,6 +456,7 @@ describe("问题卡快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增
           placeholder: "",
           required: false,
           custom: false,
+          hidden: false,
         },
       ],
     })

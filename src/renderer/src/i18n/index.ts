@@ -84,6 +84,10 @@ const zh = {
   formNo: "否",
   // custom 选项字段的「其他」哨兵行（移动端 formCustomAnswer 同文案）
   formCustomAnswer: "其他（自定义答案）",
+  // 全 hidden/external 卡的单步确认文案（T5，移动端 formExternalNotice/
+  // formAutoNotice 同文案）：含 external 优先授权提示
+  formExternalNotice: "此表单包含需在外部完成的授权步骤，提交即确认继续。",
+  formAutoNotice: "此表单包含由服务端自动处理的字段，提交即确认继续。",
   replyFailed: "操作失败",
   // 文件
   filesTitle: "文件",
@@ -438,6 +442,12 @@ const en: typeof zh = {
   formNo: "No",
   // "Other" sentinel row for custom option fields (same copy as mobile formCustomAnswer)
   formCustomAnswer: "Other (custom answer)",
+  // Ack-only card (all hidden/external fields) single-step notice (T5, same
+  // copy as mobile formExternalNotice/formAutoNotice); external takes priority
+  formExternalNotice:
+    "This form includes an authorization step that must be completed externally. Submit to acknowledge and continue.",
+  formAutoNotice:
+    "This form includes fields handled automatically by the server. Submit to acknowledge and continue.",
   replyFailed: "Action failed",
   filesTitle: "Files",
   loading: "Loading…",

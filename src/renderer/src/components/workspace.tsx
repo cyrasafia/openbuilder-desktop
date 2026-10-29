@@ -54,7 +54,12 @@ import type {
   ToolPart,
 } from "@shared/api-types"
 import type { PendingPermission, PendingQuestion, SessionDotState } from "@shared/pending-requests"
-import { CUSTOM_OPTION_VALUE, externalDirectoryPath, permissionCommand } from "@shared/pending-requests"
+import {
+  CUSTOM_OPTION_VALUE,
+  externalDirectoryPath,
+  formVisibleSteps,
+  permissionCommand,
+} from "@shared/pending-requests"
 import { SessionDot } from "./session-dot"
 import { Markdown } from "./markdown"
 import { decodeFileHref, messageFileLinks, resolveProjectPath } from "./message-autolink"
@@ -2526,7 +2531,12 @@ function TypingSlot({ status }: { status: SessionStatusValue }) {
  *   「其他（自定义答案）」哨兵行（CUSTOM_OPTION_VALUE），选中展开输入框——
  *   select 以输入文本为答案、multiselect 追加到选中数组（2026-10-29 增，
  *   对齐移动端 todo-form-card-v2-parity T1 / _FormCard）；
- * - text/number 输入式（占位提示，number 输入模式；可空提交，空数值兜底 0）。
+ * - text/number 输入式（占位提示，number 输入模式；可空提交，空数值兜底 0）；
+ * - hidden/external 不进步进（T5，2026-10-29 增，对齐移动端 T2/T3 三层
+ *   方案）：可见步 = formVisibleSteps（hidden+required+default 空降级可见
+ *   步）；全 hidden/external 卡（ack-only）渲染单步确认文案——含 external
+ *   优先授权提示——提交即由 buildFormAnswer 补键/ack（external → true、
+ *   hidden+required → 类型化 default、其余省键）。
  */
 export function QuestionCard({
   question,
@@ -2546,18 +2556,29 @@ export function QuestionCard({
   const [collapsed, setCollapsed] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const totalSub = question.fields.length
-  // 步进钳制：同 id 载荷重新归一化后字段变短的防御（纯 hardening），防止越界
+  // T5：可见步按 formVisibleSteps 过滤（步进/门控/计数全部基于它），
+  // ackOnly = 全 hidden/external 的确认步卡；步进钳制：同 id 载荷重新
+  // 归一化后步数变短的防御（纯 hardening），防止越界
+  const steps = formVisibleSteps(question)
+  const ackOnly = steps.length === 0
+  const totalSub = steps.length
   const stepIdx = Math.min(step, Math.max(0, totalSub - 1))
-  const f = question.fields[stepIdx]
-  const sel = selected[stepIdx] ?? []
+  // 输入状态与 buildFormAnswer 的 input 键均按字段原下标键控（fi），
+  // 步进序列（steps）与字段序列解耦——降级步进出/载荷变化不串位
+  const fi = ackOnly ? 0 : steps[stepIdx]
+  const f = question.fields[fi]
+  const sel = selected[fi] ?? []
   const isInput = f.kind === "text" || f.kind === "number"
   // 前进门控（review-question-cards Q-7：当前步未答不得前进）：选项步未选恒禁；
   // 输入步 required 非空、可选可空（比 v1 一刀切非空更准，M6a 评审修复）；
-  // 选中「其他」须自定义文本非空（移动端 todo-form-card-v2-parity T1 同语义）
-  const stepAnswered = isInput
-    ? !f.required || (texts[stepIdx] ?? "").trim() !== ""
-    : sel.length > 0 && (!sel.includes(CUSTOM_OPTION_VALUE) || (customTexts[stepIdx] ?? "").trim() !== "")
+  // 选中「其他」须自定义文本非空（移动端 todo-form-card-v2-parity T1 同语义）；
+  // ack-only 卡无输入步，恒可提交（补键语义不受 UI 输入影响）
+  const stepAnswered = ackOnly
+    ? true
+    : isInput
+      ? !f.required || (texts[fi] ?? "").trim() !== ""
+      : sel.length > 0 &&
+        (!sel.includes(CUSTOM_OPTION_VALUE) || (customTexts[fi] ?? "").trim() !== "")
   const isLast = stepIdx >= totalSub - 1
   // 选项式字段的可点选项（boolean 合成；select/multiselect 归一化层已映射 value）；
   // custom 字段末尾追加「其他」哨兵行（boolean/text/number 无 custom 契约面）
@@ -2575,10 +2596,15 @@ export function QuestionCard({
           ]
         : f.options
   const customPicked = !isInput && sel.includes(CUSTOM_OPTION_VALUE)
+  // ack-only 确认文案：含 external 优先授权提示（混合卡 external 不在首位时
+  // 口径一致——移动端 any(external) 同判定）
+  const ackNotice = question.fields.some((x) => x.kind === "external")
+    ? t.formExternalNotice
+    : t.formAutoNotice
 
   const toggle = (value: string) => {
     if (replying) return
-    const i = stepIdx
+    const i = fi
     setSelected((prev) => {
       const cur = prev[i] ?? []
       const next = cur.includes(value)
@@ -2673,101 +2699,111 @@ export function QuestionCard({
       </button>
       {!collapsed && (
         <div className="pending-card-body">
-          <div className="pending-question-text">{f.question}</div>
-          {f.description && <div className="pending-question-desc">{f.description}</div>}
-          {isInput ? (
-            <input
-              className="pending-input"
-              type="text"
-              inputMode={f.kind === "number" ? "decimal" : undefined}
-              placeholder={f.placeholder || (f.kind === "number" ? "0" : undefined)}
-              value={texts[stepIdx] ?? ""}
-              disabled={replying}
-              onChange={(e) => setTexts((prev) => ({ ...prev, [stepIdx]: e.target.value }))}
-            />
+          {ackOnly ? (
+            /* 全 hidden/external 卡（T5）：单步确认文案，无输入/选项——
+               提交即补全部键（external ack / required hidden typed default /
+               其余省键），不做浏览器授权入口（external 是 MCP OAuth 授权流，
+               ack 让工具用已有凭据继续，优于会话卡死——移动端同裁定） */
+            <div className="pending-question-text">{ackNotice}</div>
           ) : (
-            <div className="pending-options">
-              {options.map((opt, i) => {
-                const active = sel.includes(opt.value)
-                const isCustomRow = opt.value === CUSTOM_OPTION_VALUE
-                // 「其他」行 = div tile（input 不可嵌 button）：toggle 按钮（mark ±
-                // 标题）+ 选中态输入框**替代标题**（反馈终案：无预留空白，行内
-                // 替换；placeholder 用标题文案）——tile 高度/选中视觉与普通行
-                // 完全同构，零布局影响
-                if (isCustomRow) {
-                  return (
-                    <div className="pending-option-wrap" key={opt.value}>
-                      <div className={"pending-option custom" + (active ? " active" : "") + (customPicked ? " open" : "")}>
-                        {ctrlHeld && !replying && i < 9 && (
-                          <span className="pending-key-badge" aria-hidden>
-                            {i + 1}
-                          </span>
-                        )}
+            <>
+              <div className="pending-question-text">{f.question}</div>
+              {f.description && <div className="pending-question-desc">{f.description}</div>}
+              {isInput ? (
+                <input
+                  className="pending-input"
+                  type="text"
+                  inputMode={f.kind === "number" ? "decimal" : undefined}
+                  placeholder={f.placeholder || (f.kind === "number" ? "0" : undefined)}
+                  value={texts[fi] ?? ""}
+                  disabled={replying}
+                  onChange={(e) => setTexts((prev) => ({ ...prev, [fi]: e.target.value }))}
+                />
+              ) : (
+                <div className="pending-options">
+                  {options.map((opt, i) => {
+                    const active = sel.includes(opt.value)
+                    const isCustomRow = opt.value === CUSTOM_OPTION_VALUE
+                    // 「其他」行 = div tile（input 不可嵌 button）：toggle 按钮（mark ±
+                    // 标题）+ 选中态输入框**替代标题**（反馈终案：无预留空白，行内
+                    // 替换；placeholder 用标题文案）——tile 高度/选中视觉与普通行
+                    // 完全同构，零布局影响
+                    if (isCustomRow) {
+                      return (
+                        <div className="pending-option-wrap" key={opt.value}>
+                          <div className={"pending-option custom" + (active ? " active" : "") + (customPicked ? " open" : "")}>
+                            {ctrlHeld && !replying && i < 9 && (
+                              <span className="pending-key-badge" aria-hidden>
+                                {i + 1}
+                              </span>
+                            )}
+                            <button
+                              className="pending-option-toggle"
+                              disabled={replying}
+                              onClick={() => toggle(opt.value)}
+                            >
+                              <span
+                                className={
+                                  "pending-option-mark " +
+                                  (f.kind === "multiselect" ? "checkbox" : "radio") +
+                                  (active ? " on" : "")
+                                }
+                                aria-hidden
+                              />
+                              {!customPicked && <span className="pending-option-label">{opt.label}</span>}
+                            </button>
+                            {customPicked && (
+                              <input
+                                className="pending-input pending-custom-input"
+                                type="text"
+                                autoFocus
+                                aria-label={t.formCustomAnswer}
+                                placeholder={t.formCustomAnswer}
+                                value={customTexts[fi] ?? ""}
+                                disabled={replying}
+                                onChange={(e) =>
+                                  setCustomTexts((prev) => ({ ...prev, [fi]: e.target.value }))
+                                }
+                              />
+                            )}
+                          </div>
+                        </div>
+                      )
+                    }
+                    return (
+                      <div className="pending-option-wrap" key={opt.value}>
                         <button
-                          className="pending-option-toggle"
+                          className={"pending-option" + (active ? " active" : "")}
                           disabled={replying}
                           onClick={() => toggle(opt.value)}
                         >
-                          <span
-                            className={
-                              "pending-option-mark " +
-                              (f.kind === "multiselect" ? "checkbox" : "radio") +
-                              (active ? " on" : "")
-                            }
-                            aria-hidden
-                          />
-                          {!customPicked && <span className="pending-option-label">{opt.label}</span>}
+                          {ctrlHeld && !replying && i < 9 && (
+                            <span className="pending-key-badge" aria-hidden>
+                              {i + 1}
+                            </span>
+                          )}
+                          {/* 主行 = mark + 标题（行内 flex 居中，两轮反馈裁定：恒块
+                              居中不佳、顶对首行有偏差，最终 mark 与标题行居中）；
+                              副标题独立成行缩进对齐标题文字（见 app.css） */}
+                          <span className="pending-option-main">
+                            <span
+                              className={
+                                "pending-option-mark " +
+                                (f.kind === "multiselect" ? "checkbox" : "radio") +
+                                (active ? " on" : "")
+                              }
+                              aria-hidden
+                            />
+                            <span className="pending-option-label">{opt.label}</span>
+                          </span>
+                          {opt.description && <span className="pending-option-desc">{opt.description}</span>}
                         </button>
-                        {customPicked && (
-                          <input
-                            className="pending-input pending-custom-input"
-                            type="text"
-                            autoFocus
-                            aria-label={t.formCustomAnswer}
-                            placeholder={t.formCustomAnswer}
-                            value={customTexts[stepIdx] ?? ""}
-                            disabled={replying}
-                            onChange={(e) =>
-                              setCustomTexts((prev) => ({ ...prev, [stepIdx]: e.target.value }))
-                            }
-                          />
-                        )}
                       </div>
-                    </div>
-                  )
-                }
-                return (
-                  <div className="pending-option-wrap" key={opt.value}>
-                    <button
-                      className={"pending-option" + (active ? " active" : "")}
-                      disabled={replying}
-                      onClick={() => toggle(opt.value)}
-                    >
-                      {ctrlHeld && !replying && i < 9 && (
-                        <span className="pending-key-badge" aria-hidden>
-                          {i + 1}
-                        </span>
-                      )}
-                      {/* 主行 = mark + 标题（行内 flex 居中，两轮反馈裁定：恒块
-                          居中不佳、顶对首行有偏差，最终 mark 与标题行居中）；
-                          副标题独立成行缩进对齐标题文字（见 app.css） */}
-                      <span className="pending-option-main">
-                        <span
-                          className={
-                            "pending-option-mark " +
-                            (f.kind === "multiselect" ? "checkbox" : "radio") +
-                            (active ? " on" : "")
-                          }
-                          aria-hidden
-                        />
-                        <span className="pending-option-label">{opt.label}</span>
-                      </span>
-                      {opt.description && <span className="pending-option-desc">{opt.description}</span>}
-                    </button>
-                  </div>
-                )
-              })}
-            </div>
+                    )
+                  })}
+                </div>
+              )}
+            </>
           )}
           <div className="pending-card-actions">
             <button className="btn-danger" disabled={replying} onClick={() => void finish("reject")}>

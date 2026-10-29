@@ -26,10 +26,23 @@ export interface PendingPermission {
 /**
  * 问题卡（v2 form 体系，M6a）：frm_* 表单投影。fields 是六型 Form.Field 的
  * UI 归一化——选项式（select/multiselect）、boolean（UI 合成是/否选项）、
- * 输入式（text/number）。hidden/external 字段在归一化时剔除（不可呈现：
- * external 需浏览器授权流，v0.5 范围外）。
+ * 输入式（text/number）、external（授权确认，无输入 UI）。
+ *
+ * hidden/external 字段**保留**（2026-10-29 T5，对齐移动端
+ * todo-form-card-v2-parity T2/T3 三层方案）：v2.0.26 活体实测——hidden+
+ * required 缺键/空值 400（Missing required form field）、external 缺键 400
+ * （External form field must be acknowledged），无差别剔除会让混合表单
+ * 提交必现 400、全 hidden/external 卡整卡丢弃（会话永久 pending）。三层：
+ * 模型层保留（本层）→ UI 层跳过（formVisibleSteps）→ answer 层补键
+ * （buildFormAnswer）。
  */
-export type PendingQuestionFieldKind = "select" | "multiselect" | "boolean" | "text" | "number"
+export type PendingQuestionFieldKind =
+  | "select"
+  | "multiselect"
+  | "boolean"
+  | "text"
+  | "number"
+  | "external"
 
 export interface PendingQuestionOption {
   /** answer 回传值（v2 Form.Option.value；v1 question 回传 label，勿混淆） */
@@ -56,6 +69,19 @@ export interface PendingQuestionField {
    * question 工具所有字段恒 true；UI 在选项列表末尾追加「其他」哨兵行。
    */
   custom: boolean
+  /**
+   * Form.Field.hidden——服务端条件隐藏标志（T5）。非降级 hidden 字段不
+   * 进可见步（answer 由 buildFormAnswer 补键）；hidden+required+default
+   * 空的组合降级为可见步让用户填（isDegradedField——任何空值兜底都会
+   * 400，唯一不死锁路径）。
+   */
+  hidden: boolean
+  /**
+   * Form.Field.default 原始值（T5，hidden+required 补键依据）。保留原始
+   * JSON 形态（string/number/boolean/string[]）——数组/数值直传，避免
+   * 移动端 join/split(',') 的逗号失真已知限制；其余形态丢弃（undefined）。
+   */
+  defaultValue?: string | number | boolean | string[]
 }
 
 /**
@@ -110,29 +136,20 @@ export function normalizePermission(
 }
 
 /**
- * Form.Field → UI 字段投影；hidden/external 剔除，类型归一化：
- * string+options → select；string 无 options → text；multiselect/boolean 直通；
- * number/integer → number（UI 数值输入）。无 key 丢弃；title 空回落 key。
+ * Form.Field → UI 字段投影（T5：hidden/external 不再剔除）；类型归一化：
+ * external → external（授权确认，无输入 UI）；string+options → select；
+ * string 无 options → text；multiselect/boolean 直通；number/integer →
+ * number（UI 数值输入）。无 key 丢弃；title 空回落 key。
  */
 function toField(f: Record<string, unknown>): PendingQuestionField | null {
   const key = str(f.key)
   // 无 key 丢弃；title 空回落 key（同移动端 f.title ?? f.key）
   if (!key) return null
   const type = str(f.type)
-  // hidden：服务端条件隐藏字段不呈现；external：需浏览器授权流（v0.5 范围外，
-  // M6a 记录于 pending-requests 头注释）——均剔除
-  if (f.hidden === true || type === "external") return null
+  const options = optionsOf(f)
   let kind: PendingQuestionFieldKind
-  const options = Array.isArray(f.options)
-    ? f.options
-        .filter((o): o is Record<string, unknown> => !!o && typeof o === "object")
-        .map((o) => ({
-          value: str(o.value) || str(o.label),
-          label: str(o.label) || str(o.value),
-          description: str(o.description),
-        }))
-    : []
-  if (type === "multiselect") kind = "multiselect"
+  if (type === "external") kind = "external"
+  else if (type === "multiselect") kind = "multiselect"
   else if (type === "boolean") kind = "boolean"
   else if (type === "number" || type === "integer") kind = "number"
   else {
@@ -149,7 +166,58 @@ function toField(f: Record<string, unknown>): PendingQuestionField | null {
     required: f.required === true,
     // custom 仅存在于 string/multiselect 契约面；boolean/number 等类型恒缺省 false
     custom: f.custom === true,
+    hidden: f.hidden === true,
+    defaultValue: narrowDefault(f.default),
   }
+}
+
+/** Form.Field.options 宽松归一（invalid 条目丢弃，value/label 互补回落） */
+function optionsOf(f: Record<string, unknown>): PendingQuestionOption[] {
+  return Array.isArray(f.options)
+    ? f.options
+        .filter((o): o is Record<string, unknown> => !!o && typeof o === "object")
+        .map((o) => ({
+          value: str(o.value) || str(o.label),
+          label: str(o.label) || str(o.value),
+          description: str(o.description),
+        }))
+    : []
+}
+
+/** Form.Field.default 宽松收窄：string/number/boolean/string[] 外的形态丢弃 */
+function narrowDefault(v: unknown): string | number | boolean | string[] | undefined {
+  if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") return v
+  if (Array.isArray(v)) return v.filter((x): x is string => typeof x === "string")
+  return undefined
+}
+
+/**
+ * hidden+required+default 空（服务端违约组合）→ 降级为可见步让用户填
+ * （T5，移动端 _FormCardState._degraded 同语义）：required 缺键/空值均
+ * 400，default 空时任何补值兜底都会 400 或失真，唯一不死锁且诚实的路径。
+ */
+export function isDegradedField(f: PendingQuestionField): boolean {
+  if (!f.hidden || f.kind === "external" || !f.required) return false
+  const d = f.defaultValue
+  if (d === undefined) return true
+  if (typeof d === "string") return d === ""
+  if (Array.isArray(d)) return d.length === 0
+  return false
+}
+
+/**
+ * UI 可见步的字段原下标序列（T5 三层方案的 UI 层，移动端 _steps 同构）：
+ * external 恒跳过（answer 层 ack）、hidden 非降级跳过（answer 层补键）。
+ * 空序列 = 全 hidden/external 的 ack-only 卡（UI 渲染单步确认文案）。
+ * 返回原下标（非步序号）——组件输入状态与 buildFormAnswer 的 input 键
+ * 均按字段原下标键控，步进序列与字段序列解耦。
+ */
+export function formVisibleSteps(question: PendingQuestion): number[] {
+  const out: number[] = []
+  question.fields.forEach((f, i) => {
+    if (f.kind !== "external" && (!f.hidden || isDegradedField(f))) out.push(i)
+  })
+  return out
 }
 
 /** form.created 事件负载（`{form: Form.Info}`）/ 回填条目 → PendingQuestion */
@@ -172,6 +240,9 @@ export function normalizeForm(
         .map(toField)
         .filter((f): f is PendingQuestionField => f !== null)
     : []
+  // 空字段卡守卫（spec Form.Fields minItems:1——纯防御，正常不可达；移动端
+  // SSE/backfill 双入口同守卫）。T5 后全 hidden/external 字段不再剔成空，
+  // 该守卫不再吞掉 ack-only 卡
   if (fields.length === 0) return null
   return { id, sessionID, title: str(raw.title), fields, directory }
 }
@@ -192,6 +263,13 @@ export interface PendingFieldInput {
  * 选项式字段选中「其他」哨兵（CUSTOM_OPTION_VALUE）：select 以自定义文本为
  * 答案；multiselect 将非空自定义文本追加到选中数组（空则丢弃，同移动端
  * _buildAnswer——UI 步进门控已保证非空，空丢弃是防御）。
+ *
+ * T5（2026-10-29）补键——v2.0.26 活体实测矩阵（移动端 todo-form-card-v2-parity）：
+ * - external：缺键 400（must be acknowledged）→ 恒补 ack `true`（实测 204）；
+ * - hidden 非 required：缺键 204 → 不发键；
+ * - hidden + required：缺键/空值均 400 → 补类型化 defaultValue；
+ * - hidden + required + default 空（降级步）：isDegradedField 判定进可见步，
+ *   走下方普通输入构造（用户填写）。
  */
 export function buildFormAnswer(
   question: PendingQuestion,
@@ -199,6 +277,14 @@ export function buildFormAnswer(
 ): Record<string, V2FormValue> {
   const answer: Record<string, V2FormValue> = {}
   question.fields.forEach((f, i) => {
+    if (f.kind === "external") {
+      answer[f.key] = true
+      return
+    }
+    if (f.hidden && !isDegradedField(f)) {
+      if (f.required) answer[f.key] = hiddenDefaultValue(f)
+      return
+    }
     const raw = input[i] ?? {}
     const selected = (raw.selected ?? []).filter((v) => v !== CUSTOM_OPTION_VALUE)
     const customText = (raw.customText ?? "").trim()
@@ -229,6 +315,39 @@ export function buildFormAnswer(
     }
   })
   return answer
+}
+
+/**
+ * hidden+required 的类型化补键值（移动端 _buildAnswer 同语义）：default 保留
+ * 原始 JSON 形态优先——数值直传、数组直传（规避移动端 join/split(',') 的
+ * 逗号失真）、字符串按 kind 解析（integer/number 合并 kind "number"，整数
+ * 形态字符串解析结果自然为整数；NaN 兜底 0 同移动端 tryParse ?? 0；畸形
+ * 小数 default（integer 字段配 3.5）直传诚实失败 400——移动端 int.tryParse
+ * → 0 兜底能过，跨端分歧可接受，仅服务端自犯约束错误时触发）。
+ */
+function hiddenDefaultValue(f: PendingQuestionField): V2FormValue {
+  const d = f.defaultValue
+  switch (f.kind) {
+    case "number":
+      if (typeof d === "number") return d
+      {
+        const n = Number(typeof d === "string" ? d : "")
+        return Number.isFinite(n) ? n : 0
+      }
+    case "boolean":
+      return d === true || d === "true"
+    case "multiselect":
+      if (Array.isArray(d)) return d
+      {
+        const s = typeof d === "string" ? d : ""
+        return s === "" ? [] : s.split(",")
+      }
+    default:
+      // select/text（string）
+      if (typeof d === "string") return d
+      if (typeof d === "number") return String(d)
+      return Array.isArray(d) ? d.join(",") : ""
+  }
 }
 
 /**
