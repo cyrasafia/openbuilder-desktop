@@ -175,9 +175,28 @@ Shell 数 happy path 1 → 3（symbolic-ref + rev-parse + switch），各步失�
   上抛列（吞为 null）
 - `listVcsDiff`：`base` 可选透传（缺省不传）
 
-实现后活体回归（本机）：创建一个 worktree，`git reflog show
-refs/heads/opencode/<name>` 验 `Created from <canonical 当前分支>`；
-diff Tab 切分支段验 base 生效（死 `origin/HEAD` 项目不再 503）。
+实现后活体回归（本机，2026-10-29 已做，环境：临时 git repo——canonical
+在 `iterate`、`origin/HEAD` 死 symref 指向不存在的 `develop`）：
+
+- **挂载侧 ✅（server 2.1.4 与 2.2.1 均过）**：三步 shell 全链路通过，
+  `git reflog show refs/heads/opencode/<name>` 确记
+  `branch: Created from iterate`——fork 记录可靠，不依赖 server 版本
+  （纯客户端 + git 行为）。
+- **消费侧分层**：canonical 作用域两版本正常（base 推断命中）；worktree
+  作用域——**2.1.4 存在 worktree location vcs provider 缺失的上游回归**
+  （`/api/vcs` 无 provider、`/api/vcs/base` 恒 `200 null`、branch diff 恒
+  `200 []`——`Vcs.diff` 的 `!provider → []` 静默路径；evict 重 boot 不自愈，
+  判别源码/binary 排查未收敛到单点）；**2.2.1 已修复**（临时实例验证：
+  worktree 作用域 base reflog 命中 + 死 `origin/HEAD` 不再 503——
+  defaultBranch 对死 symref 落本地分支 fallback），但 base 仍存在层构建
+  时机敏感的 `200 null` 场景（`/api/shell` 先于挂载 boot worktree
+  location、evict 重 boot 窗口）。
+- **本端行为**：上述全部 server 侧形态（503/`200 null`/provider 缺失）
+  均落 `vcsBase → null → 不传 base` 降级路径——无错误态、无行为退化；
+  完整收益待本机 server 升级 ≥2.2.1。
+- 回归脚本留存 `/tmp/opencode/forkbase-live-{check,probe2,probe3}.py`
+  （`OPENCODE_PASSWORD=… OC_BASE_URL=… python3 …`），server 升级后重跑
+  判别点 2-4。
 
 ## 5. 关键设计决策
 
@@ -268,3 +287,10 @@ diff Tab 切分支段验 base 生效（死 `origin/HEAD` 项目不再 503）。
 （sha256 仓库不再恒降级——移动端裸两行比对天然支持，本端过滤不应引入
 行为差异），实现与 §6 差异表同步；③ rest-client 测试补空体 404 → null
 负路径断言（§4 列出而无断言）。
+
+**活体回归（2026-10-29，详录 §4 末段）**：挂载侧双版本通过；消费侧被
+**上游 worktree location vcs provider 回归**分层遮蔽（2.1.4 缺失、
+2.2.1 修复）——本端降级路径全形态覆盖、无需改码；行动项：本机 server
+升级 ≥2.2.1（注意：本机常驻实测为 **2.1.4**，已高于 pin 的 2.1.3，
+`ref-pin-bump` 审计边界变化）+ 向上游报 2.1.4 provider 缺失（含 evict
+重 boot 不自愈、2.2.1 base 层时机敏感残余，弹药：本轮判别实验记录）。
