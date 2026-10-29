@@ -708,7 +708,7 @@ describe("文件系统（M6b）", () => {
     expect(fc).toEqual({ type: "text", content: "a".repeat(8192) + "a你b" })
   })
 
-  it("listVcsDiff：mode 映射 git→working、branch 直传；context 恒显式", async () => {
+  it("listVcsDiff：mode 映射 git→working、branch 直传；context 恒显式；base 可选透传", async () => {
     const seen: string[] = []
     const client = mkClient((url) => {
       seen.push(url)
@@ -716,8 +716,51 @@ describe("文件系统（M6b）", () => {
     })
     await client.listVcsDiff("/r", "git")
     await client.listVcsDiff("/r", "branch", { context: 5 })
+    await client.listVcsDiff("/r", "branch", { base: "refs/heads/iterate" })
     expect(seen[0]).toBe("http://server/api/vcs/diff?location%5Bdirectory%5D=%2Fr&mode=working&context=3")
     expect(seen[1]).toBe("http://server/api/vcs/diff?location%5Bdirectory%5D=%2Fr&mode=branch&context=5")
+    // base 缺省不传（落服务端 defaultBranch 兜底——现状行为）
+    expect(seen[2]).toBe(
+      "http://server/api/vcs/diff?location%5Bdirectory%5D=%2Fr&mode=branch&context=3&base=refs%2Fheads%2Fiterate",
+    )
+  })
+
+  it("vcsBase（design-worktree-branch-fork-base §3.2）：envelope 解包；data:null/503 → null 静默；LocationNotFoundError 上抛", async () => {
+    const seen: string[] = []
+    let status = 200
+    let body = JSON.stringify({ data: { name: "iterate", ref: "refs/heads/iterate", source: "reflog" } })
+    const client = mkClient((url) => {
+      seen.push(url)
+      if (status !== 200) return new Response(JSON.stringify({ name: "ServiceUnavailableError", message: "Choose a review base" }), { status })
+      return new Response(body)
+    })
+    // 200 data 非 null → 解析
+    expect(await client.vcsBase("/r")).toEqual({
+      name: "iterate",
+      ref: "refs/heads/iterate",
+      source: "reflog",
+    })
+    // 200 data:null（pin 200 schema Vcs.Base | null）→ null
+    body = JSON.stringify({ data: null })
+    expect(await client.vcsBase("/r")).toBeNull()
+    // 503（Choose a review base：不可推断的正常表达）→ null 静默
+    status = 503
+    expect(await client.vcsBase("/r")).toBeNull()
+    expect(seen).toHaveLength(3)
+    expect(seen[0]).toBe("http://server/api/vcs/base?location%5Bdirectory%5D=%2Fr")
+    // 死目录 404（_tag 判别——空体/无 tag 的 404 不在此列，吞为 null）上抛：
+    // 确证链（onDeadLocation）与消费方吸收判别依赖它
+    await expect(
+      mkClient(
+        () =>
+          new Response(
+            JSON.stringify({ _tag: "LocationNotFoundError", location: { directory: "/r" }, message: "Location not found: /r" }),
+            { status: 404 },
+          ),
+      ).vcsBase("/r"),
+    ).rejects.toThrow()
+    // 负路径：空体 404（无 _tag 可判）不走上抛列 → null 静默
+    expect(await mkClient(() => new Response("", { status: 404 })).vcsBase("/r")).toBeNull()
   })
 
   it("listSessionDiff：from 透传（缺省省略）+ context；无 directory 参数", async () => {

@@ -3523,11 +3523,13 @@ export class AppStore {
         // 非当前项目：不切当前作用域，仅刷新展示（SSE 单全局流常驻，新 worktree 事件天然到达）
         this.emit()
       }
-      // 分支挂载（design-worktree-branch-sync §2.2）：v2 create 一律 detached，
-      // 提交不可见且删除即失——挂 opencode/<name> 兜底。置于刷新/切换之后：
-      // 挂载延迟不阻塞左栏出现与作用域切换（review Finding 3）；失败降级
-      // detached（server 默认态），不阻塞创建流程
-      await this.mountWorktreeBranch(client, result.directory)
+      // 分支挂载（design-worktree-branch-sync §2.2 + fork 基准增补
+      // design-worktree-branch-fork-base §3.1）：v2 create 一律 detached，
+      // 提交不可见且删除即失——挂 opencode/<name> 兜底，起点取 canonical
+      // 当前分支（reflog 记 fork 来源）。置于刷新/切换之后：挂载延迟不阻塞
+      // 左栏出现与作用域切换（review Finding 3）；失败降级 detached
+      // （server 默认态），不阻塞创建流程
+      await this.mountWorktreeBranch(client, result.directory, project.worktree)
       return { ok: true }
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
@@ -3647,21 +3649,62 @@ export class AppStore {
   }
 
   /**
-   * 挂载 opencode/{worktree-name} 分支（design-worktree-branch-sync §2.2）：
-   * `git switch -c` 单命令（跨 shell 可移植），exit 0 即成。失败先以
-   * show-ref 判撞名（历史残留同名分支）→ 换 `<name>-<rand>` 后缀重试 ≤2；
-   * 非撞名或 shell 通道异常（旧 v2 无 /api/shell/网络）→ 放弃，保持 detached
+   * 挂载 opencode/{worktree-name} 分支（design-worktree-branch-sync §2.2；
+   * fork 基准增补 design-worktree-branch-fork-base §3.1）：`git switch -c`
+   * 单命令（跨 shell 可移植），exit 0 即成。挂载起点优先 canonical 当前
+   * 分支——reflog 记 `Created from <fork>`，`/api/vcs/base` 的 reflog 推断
+   * （分支 diff 的 review base）由此可用；探测任一步失败 → 现状无起点命令
+   * （reflog 只记 `Created from HEAD`）。失败先以 show-ref 判撞名（历史残留
+   * 同名分支）→ 换 `<name>-<rand>` 后缀重试 ≤2（重试沿用同一 fork）；非撞名
+   * 或 shell 通道异常（旧 v2 无 /api/shell/网络）→ 放弃，保持 detached
    * （server 默认态，console.warn 留痕）——创建本身已成功，不回滚不报错。
    */
-  private async mountWorktreeBranch(client: RestClient, directory: string): Promise<void> {
+  private async mountWorktreeBranch(
+    client: RestClient,
+    directory: string,
+    canonical: string,
+  ): Promise<void> {
     const base = this.worktreeBranchBase(directory)
     if (!base) return // 非 slug 目录（外部 worktree）：不管理
+    // fork 基准（§3.1 步骤 2-4）：canonical 当前分支名（symbolic-ref 只返回
+    // 本地分支名）→ 名守卫（git 输出不受信，字符集外即放弃，注入面归零——
+    // 同 slug 守卫防线）→ 起点一致性校验（worktree 快照 == fork 当前 tip，
+    // 防 canonical 在创建与挂载间前移/切分支时 `switch -c <new> <start>`
+    // 检出 start 内容、背离服务端创建快照）。任一步不过/异常 → fork = null
+    // 走现状命令——fork 探测失败只降级记录，不放弃挂载
+    let fork: string | null = null
+    if (canonical) {
+      try {
+        const head = await client.runShell("git symbolic-ref --short HEAD", {
+          cwd: canonical,
+          timeoutMs: 5000,
+        })
+        const name = head.exit === 0 ? head.output.trim() : ""
+        if (/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(name)) {
+          const tips = await client.runShell(`git rev-parse HEAD ${name}`, {
+            cwd: directory,
+            timeoutMs: 5000,
+          })
+          // hex 行（SHA-1 40 位 / sha256 仓库 64 位）恰两行且严格相等
+          // （按 hex 行过滤——rev-parse 输出混入 stderr 噪声行不受扰）；
+          // exit ≠ 0（分支已删）或两行不等 → 起点过期
+          const shas =
+            tips.exit === 0
+              ? tips.output.split("\n").filter((l) => /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(l.trim()))
+              : []
+          if (shas.length === 2 && shas[0] === shas[1]) fork = name
+        }
+      } catch {
+        // shell 通道异常：fork 探测放弃（挂载本身仍按现状尝试）
+      }
+    }
     const candidates = [`opencode/${base}`]
     for (let i = 0; i < 2; i++) candidates.push(`opencode/${base}-${Math.random().toString(36).slice(2, 6)}`)
     for (const branch of candidates) {
       try {
-        // 本地 server 的 git switch 是毫秒级——5s 超时已远超正常耗时
-        const created = await client.runShell(`git switch -c ${branch}`, {
+        // 本地 server 的 git switch 是毫秒级——5s 超时已远超正常耗时。
+        // fork 非空时从 canonical 当前分支拉出（reflog 记 fork 来源）
+        const created = await client.runShell(`git switch -c ${branch}${fork ? ` ${fork}` : ""}`, {
           cwd: directory,
           timeoutMs: 5000,
         })
@@ -6728,7 +6771,19 @@ export class AppStore {
           files = []
         }
       } else {
-        files = await client.listVcsDiff(directory, type === "uncommitted" ? "git" : "branch")
+        // branch 模式先解析 review base（design-worktree-branch-fork-base §3.2）：
+        // 服务端 diff 的 `??` 兜底是 defaultBranch（origin/HEAD 死 ref → 503
+        // `No merge base available`），reflog 推断只被 /api/vcs/base 暴露、
+        // 不在 diff 链路上——先查再显式传。vcsBase null（不可推断/异常静默）
+        // → 不传，落服务端 defaultBranch（现状行为）；死目录 404 上抛走下方
+        // isExpectedLocationMiss 吸收（vcsBase 只吞非 LocationNotFoundError）。
+        // uncommitted（mode=working）无 base 语义，不查
+        const base = type === "branch" ? (await client.vcsBase(directory))?.ref : undefined
+        files = await client.listVcsDiff(
+          directory,
+          type === "uncommitted" ? "git" : "branch",
+          base !== undefined ? { base } : {},
+        )
       }
     } catch (e) {
       // 死目录预期失败静默吸收（todo-error-body-tag #2）：不上错误态、保留旧数据

@@ -203,6 +203,9 @@ beforeEach(() => {
     readFileContent: async () => ({ type: "text", content: "" }) as FileContentData,
     findFiles: async () => [] as string[],
     listVcsDiff: async () => [] as FileDiff[],
+    // review base 解析（design-worktree-branch-fork-base §3.2）：默认 null
+    // （不可推断 → 不传 base，落服务端 defaultBranch——现状行为）
+    vcsBase: async () => null,
     listSessionDiff: async () => [] as FileDiff[],
     createPty: async () => ({ id: "pty_1", command: "", cwd: ROOT, status: "running", pid: 1 }) as Pty,
     updatePtySize: async () => ({ id: "pty_1", command: "", cwd: ROOT, status: "running", pid: 1 }) as Pty,
@@ -1026,7 +1029,7 @@ describe("worktree 库存（v2 权威源，2026-09-29：sandboxes 冻结）", ()
     expect(store.workspacesOfProject("proj1").some((w) => w.directory === WT1)).toBe(false)
   })
 
-  it("createWorkspace 分支挂载（design-worktree-branch-sync §2.2）：成功挂 opencode/<name>", async () => {
+  it("createWorkspace 分支挂载（design-worktree-branch-fork-base §3.1）：从 canonical 当前分支拉出，reflog 记 fork 来源", async () => {
     snapshots.set(ROOT, [])
     snapshots.set(WT1, [])
     snapshots.set(WT2, [])
@@ -1042,15 +1045,135 @@ describe("worktree 库存（v2 权威源，2026-09-29：sandboxes 冻结）", ()
     const shells: Array<{ command: string; cwd?: string }> = []
     cv2.runShell = async (command: string, opts: { cwd?: string } = {}) => {
       shells.push({ command, ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}) })
+      if (command === "git symbolic-ref --short HEAD") return { exit: 0, output: "main\n" }
+      if (command === "git rev-parse HEAD main")
+        return { exit: 0, output: `${"a".repeat(40)}\n${"a".repeat(40)}\n` }
       return { exit: 0, output: "切换到一个新分支" }
     }
     const res = await store.createWorkspace()
     expect(res.ok).toBe(true)
-    // 快路径单命令：git switch -c opencode/<basename>，cwd = 新 worktree 目录
+    // 三步：fork 基准（cwd=canonical）→ 起点一致性校验（cwd=worktree，两行
+    // SHA 严格相等）→ switch -c <branch> <fork>（reflog 记 Created from main）
+    expect(shells).toEqual([
+      { command: "git symbolic-ref --short HEAD", cwd: ROOT },
+      { command: "git rev-parse HEAD main", cwd: NEW },
+      { command: "git switch -c opencode/wt-new main", cwd: NEW },
+    ])
+  })
+
+  it("createWorkspace fork 探测降级：canonical detached（symbolic-ref exit ≠ 0）→ 现状无起点命令", async () => {
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+    const NEW = "/data/worktree/abc123/wt-new"
+    const cv2 = fakeClient()
+    cv2.createWorktree = async () => ({ directory: NEW })
+    cv2.listWorktrees = async () => [{ directory: ROOT }, { directory: NEW, strategy: "git" }]
+    const shells: Array<{ command: string; cwd?: string }> = []
+    cv2.runShell = async (command: string, opts: { cwd?: string } = {}) => {
+      shells.push({ command, ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}) })
+      if (command === "git symbolic-ref --short HEAD")
+        return { exit: 1, output: "fatal: ref HEAD is not a symbolic ref" }
+      return { exit: 0, output: "切换到一个新分支" }
+    }
+    const res = await store.createWorkspace()
+    expect(res.ok).toBe(true)
+    // fork 探测失败只降级记录，不放弃挂载：不发 rev-parse，switch 无起点
+    expect(shells).toEqual([
+      { command: "git symbolic-ref --short HEAD", cwd: ROOT },
+      { command: "git switch -c opencode/wt-new", cwd: NEW },
+    ])
+  })
+
+  it("createWorkspace fork 探测降级：base 名守卫不过（git 输出含空格）→ 不发 rev-parse，无起点挂载", async () => {
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+    const NEW = "/data/worktree/abc123/wt-new"
+    const cv2 = fakeClient()
+    cv2.createWorktree = async () => ({ directory: NEW })
+    cv2.listWorktrees = async () => [{ directory: ROOT }, { directory: NEW, strategy: "git" }]
+    const shells: Array<{ command: string; cwd?: string }> = []
+    cv2.runShell = async (command: string, opts: { cwd?: string } = {}) => {
+      shells.push({ command, ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}) })
+      if (command === "git symbolic-ref --short HEAD") return { exit: 0, output: "bad name\n" }
+      return { exit: 0, output: "切换到一个新分支" }
+    }
+    await store.createWorkspace()
+    expect(shells).toEqual([
+      { command: "git symbolic-ref --short HEAD", cwd: ROOT },
+      { command: "git switch -c opencode/wt-new", cwd: NEW },
+    ])
+  })
+
+  it("createWorkspace fork 探测降级：起点不一致（canonical 前移，rev-parse 两行不等）→ 无起点挂载", async () => {
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+    const NEW = "/data/worktree/abc123/wt-new"
+    const cv2 = fakeClient()
+    cv2.createWorktree = async () => ({ directory: NEW })
+    cv2.listWorktrees = async () => [{ directory: ROOT }, { directory: NEW, strategy: "git" }]
+    const shells: Array<{ command: string; cwd?: string }> = []
+    cv2.runShell = async (command: string, opts: { cwd?: string } = {}) => {
+      shells.push({ command, ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}) })
+      if (command === "git symbolic-ref --short HEAD") return { exit: 0, output: "main\n" }
+      if (command === "git rev-parse HEAD main")
+        // worktree 快照（HEAD）≠ base 当前 tip：canonical 在创建与挂载间前移
+        return { exit: 0, output: `${"a".repeat(40)}\n${"b".repeat(40)}\n` }
+      return { exit: 0, output: "切换到一个新分支" }
+    }
+    await store.createWorkspace()
+    expect(shells).toEqual([
+      { command: "git symbolic-ref --short HEAD", cwd: ROOT },
+      { command: "git rev-parse HEAD main", cwd: NEW },
+      { command: "git switch -c opencode/wt-new", cwd: NEW },
+    ])
+  })
+
+  it("createWorkspace fork 探测降级：rev-parse exit ≠ 0（base 分支已删）→ 无起点挂载", async () => {
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+    const NEW = "/data/worktree/abc123/wt-new"
+    const cv2 = fakeClient()
+    cv2.createWorktree = async () => ({ directory: NEW })
+    cv2.listWorktrees = async () => [{ directory: ROOT }, { directory: NEW, strategy: "git" }]
+    const shells: Array<{ command: string; cwd?: string }> = []
+    cv2.runShell = async (command: string, opts: { cwd?: string } = {}) => {
+      shells.push({ command, ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}) })
+      if (command === "git symbolic-ref --short HEAD") return { exit: 0, output: "main\n" }
+      if (command === "git rev-parse HEAD main")
+        return { exit: 1, output: `fatal: ambiguous argument 'main'` }
+      return { exit: 0, output: "切换到一个新分支" }
+    }
+    await store.createWorkspace()
+    expect(shells).toEqual([
+      { command: "git symbolic-ref --short HEAD", cwd: ROOT },
+      { command: "git rev-parse HEAD main", cwd: NEW },
+      { command: "git switch -c opencode/wt-new", cwd: NEW },
+    ])
+  })
+
+  it("createWorkspace fork 探测降级：canonical 缺失 → 不发 symbolic-ref，无起点挂载", async () => {
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+    const NEW = "/data/worktree/abc123/wt-new"
+    const cv2 = fakeClient()
+    cv2.createWorktree = async () => ({ directory: NEW })
+    cv2.listWorktrees = async () => [{ directory: ROOT }, { directory: NEW, strategy: "git" }]
+    store.projects = [{ ...project(), worktree: "" }]
+    const shells: Array<{ command: string; cwd?: string }> = []
+    cv2.runShell = async (command: string, opts: { cwd?: string } = {}) => {
+      shells.push({ command, ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}) })
+      return { exit: 0, output: "切换到一个新分支" }
+    }
+    await store.createWorkspace()
     expect(shells).toEqual([{ command: "git switch -c opencode/wt-new", cwd: NEW }])
   })
 
-  it("createWorkspace 撞名重试：同名残留分支 → <name>-<rand> 后缀（show-ref 判撞名）", async () => {
+  it("createWorkspace 撞名重试：同名残留分支 → <name>-<rand> 后缀（重试沿用同一 fork 基准）", async () => {
     snapshots.set(ROOT, [])
     snapshots.set(WT1, [])
     snapshots.set(WT2, [])
@@ -1063,6 +1186,9 @@ describe("worktree 库存（v2 权威源，2026-09-29：sandboxes 冻结）", ()
     ]
     const switches: string[] = []
     cv2.runShell = async (command: string) => {
+      if (command === "git symbolic-ref --short HEAD") return { exit: 0, output: "main\n" }
+      if (command === "git rev-parse HEAD main")
+        return { exit: 0, output: `${"a".repeat(40)}\n${"a".repeat(40)}\n` }
       if (command.startsWith("git switch -c ")) {
         switches.push(command)
         return switches.length === 1
@@ -1074,9 +1200,10 @@ describe("worktree 库存（v2 权威源，2026-09-29：sandboxes 冻结）", ()
     }
     const res = await store.createWorkspace()
     expect(res.ok).toBe(true)
-    expect(switches[0]).toBe("git switch -c opencode/wt-new")
+    expect(switches[0]).toBe("git switch -c opencode/wt-new main")
     expect(switches).toHaveLength(2)
-    expect(switches[1]).toMatch(/^git switch -c opencode\/wt-new-[a-z0-9]{1,4}$/)
+    // rand 换的是分支名不是起点（fork 基准沿用）
+    expect(switches[1]).toMatch(/^git switch -c opencode\/wt-new-[a-z0-9]{1,4} main$/)
   })
 
   it("createWorkspace 挂载降级：/api/shell 异常不阻塞创建（保持 detached）", async () => {
@@ -1092,7 +1219,7 @@ describe("worktree 库存（v2 权威源，2026-09-29：sandboxes 冻结）", ()
       { directory: WT2, strategy: "git" },
       { directory: NEW, strategy: "git" },
     ]
-    // 旧 v2 无 /api/shell / 网络异常：挂载失败降级，创建流程照常完成
+    // 旧 v2 无 /api/shell / 网络异常：fork 探测与挂载全失败降级，创建流程照常完成
     cv2.runShell = async () => {
       throw new Error("shell endpoint unavailable")
     }
@@ -3015,7 +3142,7 @@ describe("diff Tab：每作用域单 Tab + segment 切换（design-diff-view §2
     store.openDiffTab()
     expect(store.tabs.map((t) => t.key)).toEqual([diffTabKey(ROOT)])
     expect(store.diffTypeFor(diffTabKey(ROOT))).toBe("uncommitted")
-    await vi.waitFor(() => expect(listVcsDiff).toHaveBeenCalledWith(ROOT, "git"))
+    await vi.waitFor(() => expect(listVcsDiff).toHaveBeenCalledWith(ROOT, "git", {}))
   })
 
   it("重复点击缺省选中不重拉（守卫比对有效选中，含兜底值）", async () => {
@@ -3033,7 +3160,7 @@ describe("diff Tab：每作用域单 Tab + segment 切换（design-diff-view §2
     store.switchDiffType(diffTabKey(ROOT), "branch")
     expect(store.diffTypeFor(diffTabKey(ROOT))).toBe("branch")
     await vi.waitFor(() => expect(listVcsDiff).toHaveBeenCalledTimes(2))
-    expect(listVcsDiff).toHaveBeenLastCalledWith(ROOT, "branch")
+    expect(listVcsDiff).toHaveBeenLastCalledWith(ROOT, "branch", {})
     store.switchDiffType(diffTabKey(ROOT), "branch")
     expect(listVcsDiff).toHaveBeenCalledTimes(2)
   })
@@ -3053,6 +3180,59 @@ describe("diff Tab：每作用域单 Tab + segment 切换（design-diff-view §2
     store.openDiffTab()
     expect(store.diffTypeFor(key)).toBe("uncommitted")
     await vi.waitFor(() => expect(listVcsDiff).toHaveBeenCalledTimes(3))
+  })
+
+  it("branch 模式先 vcsBase 解析再显式传 base（fork 来源，design-worktree-branch-fork-base §3.2）", async () => {
+    const listVcsDiff = vcsClient()
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    const bases: string[] = []
+    cv2.vcsBase = async (dir: string) => {
+      bases.push(dir)
+      return { name: "iterate", ref: "refs/heads/iterate", source: "reflog" }
+    }
+    const key = diffTabKey(ROOT)
+    store.openDiffTab()
+    store.switchDiffType(key, "branch")
+    await vi.waitFor(() => expect(listVcsDiff).toHaveBeenCalledTimes(2))
+    // vcsBase 以作用域目录解析；base 全名透传（不落服务端 defaultBranch 兜底）
+    expect(bases).toEqual([ROOT])
+    expect(listVcsDiff).toHaveBeenLastCalledWith(ROOT, "branch", { base: "refs/heads/iterate" })
+  })
+
+  it("branch 模式 vcsBase null（不可推断：503/data:null）→ 不传 base（现状行为）；uncommitted 不查 base", async () => {
+    const listVcsDiff = vcsClient()
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    const bases: string[] = []
+    cv2.vcsBase = async (dir: string) => {
+      bases.push(dir)
+      return null
+    }
+    const key = diffTabKey(ROOT)
+    store.openDiffTab()
+    await vi.waitFor(() => expect(listVcsDiff).toHaveBeenCalledTimes(1))
+    // uncommitted（mode=working）无 base 语义：不查 vcsBase
+    expect(bases).toEqual([])
+    store.switchDiffType(key, "branch")
+    await vi.waitFor(() => expect(listVcsDiff).toHaveBeenCalledTimes(2))
+    expect(bases).toEqual([ROOT])
+    expect(listVcsDiff).toHaveBeenLastCalledWith(ROOT, "branch", {})
+  })
+
+  it("branch 模式 vcsBase 死目录 404 上抛：isExpectedLocationMiss 吸收（无错误态、不发 diff）", async () => {
+    const listVcsDiff = vcsClient()
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    cv2.vcsBase = async () => {
+      throw new ApiError(404, "not-found", `HTTP 404: Location not found: ${WT1}`, {
+        _tag: "LocationNotFoundError",
+        location: { directory: WT1 },
+        message: `Location not found: ${WT1}`,
+      })
+    }
+    store.tabs.push({ kind: "diff", key: diffTabKey(WT1), projectId: "proj1", directory: WT1, title: "diff" })
+    await store.loadDiffTab("branch", WT1)
+    // 死目录确证（vcsBase 只吞非 LocationNotFoundError）→ 静默吸收：无错误态、listVcsDiff 未发
+    expect(store.diffData.get(diffDataKey("branch", WT1))?.error).toBeUndefined()
+    expect(listVcsDiff).not.toHaveBeenCalled()
   })
 })
 

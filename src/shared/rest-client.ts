@@ -1062,20 +1062,51 @@ export class RestClient {
   // ============ diff（M6b：vcs 组 deepObject + session turn 语义） ============
 
   /**
+   * GET /api/vcs/base：分支 diff 的 review base 解析（design-worktree-branch-fork-base
+   * §3.2）。reflog 推断**不在** /api/vcs/diff 链路上（服务端 `?? defaultBranch()`
+   * 兜底，死 origin/HEAD → 503 `No merge base available`）——消费必须先本端点、
+   * 再显式传 base 给 `listVcsDiff`。
+   * **静默降级为 null**：503（`Choose a review base`：无 reflog 记录且不在默认
+   * 分支上）是「不可推断」的正常表达（存量 `Created from HEAD` 分支常态出现，
+   * 非错误）；200 也可带 `data: null`（pin 200 schema `Vcs.Base | null`）；网络
+   * 等其余异常同 null——后续 diff 请求该谁报错谁报错，本方法不抢。
+   * 例外：LocationNotFoundError **上抛**——死目录被动确证（withLocation 回调）
+   * 与消费方的静默吸收判别都依赖它（loadDiffTab 的 isExpectedLocationMiss）。
+   */
+  async vcsBase(directory: string): Promise<{ name: string; ref: string; source: string } | null> {
+    return this.withLocation(directory, async () => {
+      const q = new URLSearchParams()
+      q.set("location[directory]", directory)
+      try {
+        const res = await this.fetchJson<{
+          data: { name: string; ref: string; source: string } | null
+        }>(`/api/vcs/base?${q.toString()}`)
+        return res.data ?? null
+      } catch (e) {
+        if (isLocationNotFoundError(e)) throw e
+        return null
+      }
+    })
+  }
+
+  /**
    * GET /api/vcs/diff：mode 映射 v1 → v2（git 工作区未提交 → working、分支对比
    * → branch）。context 恒显式传（v2 端点明确「Omit for full-file patches」——
    * 与 v1 相同的全文件 patch 陷阱，3 对齐 git diff --unified=3）。
+   * base（可选）：branch 模式的 review base（`vcsBase().ref`，全名透传）——
+   * 缺省走服务端 defaultBranch 兜底（死 ref → 503，design-worktree-branch-fork-base §1）。
    */
   async listVcsDiff(
     directory: string,
     mode: "git" | "branch",
-    opts: { context?: number } = {},
+    opts: { context?: number; base?: string } = {},
   ): Promise<FileDiff[]> {
     return this.withLocation(directory, async () => {
       const q = new URLSearchParams()
       q.set("location[directory]", directory)
       q.set("mode", mode === "git" ? "working" : "branch")
       q.set("context", String(opts.context ?? 3))
+      if (opts.base !== undefined) q.set("base", opts.base)
       const res = await this.fetchJson<{ data: V2FileDiff[] }>(
         `/api/vcs/diff?${q.toString()}`,
         { timeoutMs: 30000 },
