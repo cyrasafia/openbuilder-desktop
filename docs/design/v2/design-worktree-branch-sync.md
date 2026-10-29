@@ -77,6 +77,13 @@ creates a branch」。无关联 issue（N/A），提交保留/数据安全零讨
 
 ### 2.2 创建流程（createWorkspace 增补）
 
+> **修订（2026-10-29）**：第 4 步挂载命令已增补 fork 基准——挂载前经
+> `symbolic-ref`（cwd=canonical）+ 名守卫 + `rev-parse` 起点一致性校验后
+> `git switch -c <branch> <base>`（reflog 记 `Created from <base>`，分支
+> diff 的 review base 推断由此可用；任一步失败降级回本文的无起点命令）。
+> 见 [`design-worktree-branch-fork-base.md`](design-worktree-branch-fork-base.md)
+> §3.1。本文其余描述保留为初版决策记录。
+
 1. `POST /api/worktree {projectID, name?}` → `{directory}`（现状不变）
 2. 库存刷新 + 默认切换到新 worktree（**先行**——挂载延迟不阻塞左栏出现
    与作用域切换，review Finding 3 修订）
