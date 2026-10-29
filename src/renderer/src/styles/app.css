@@ -3523,16 +3523,92 @@
   gap: 4px;
 }
 
-.pending-option {
+/* 选项行包裹层（结构层，无视觉）：preset 行 = button tile 直挂；「其他」行
+   tile 是 div（input 不可嵌 button），同样经 wrap 保持列表 gap 节奏 */
+.pending-option-wrap {
   display: flex;
-  align-items: flex-start;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* 「其他」行（custom，反馈终案：选中时输入框**替代标题**）：div tile 行向
+   ——toggle 按钮（mark ± 标题，未选中撑满可点）+ 选中态输入框 flex:1 占
+   标题位；tile 高度/选中视觉与普通行完全同构（`.pending-option` 基类 +
+   `.active`），无预留空白、零布局影响（恒定槽/行内右展/下展方案均废弃） */
+.pending-option.custom {
+  flex-direction: row;
+  align-items: center;
   gap: 8px;
+}
+
+.pending-option.custom .pending-option-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 未选中：toggle 撑满整行（mark + 标题，整行可点）；选中：收缩为 mark 段 */
+.pending-option.custom:not(.open) .pending-option-toggle {
+  flex: 1;
+}
+
+.pending-option.custom.open .pending-option-toggle {
+  flex: 0 0 auto;
+}
+
+/* 替代标题的输入框：视觉高 28（--control-h 档），负 margin 上下出血 3px
+   进 tile padding——布局净高 22 = tile 内容高（min-height 36 − padding 12
+   − border 2），选中前后 tile 高度恒定不跳变（反馈修订）；placeholder =
+   标题文案（「其他（自定义答案）」，反馈指定） */
+.pending-option.custom .pending-custom-input {
+  flex: 1;
+  min-width: 60px;
+  height: 28px;
+  margin: -3px 0;
+  padding: 0 8px;
+}
+
+/* 回复中整块衰减（div tile 无 :disabled 伪类，经子按钮 :has 判定） */
+.pending-option.custom:has(.pending-option-toggle:disabled) {
+  opacity: 0.6;
+}
+
+.pending-custom-input::placeholder {
+  color: var(--outline);
+}
+
+/* 焦点不描边：tile 已有 `.active` tertiary 边框，输入框再描边会双高亮——
+   覆盖 .pending-input:focus-visible 的 tertiary 描边，焦点指示由 tile 承担 */
+.pending-custom-input:focus-visible {
+  border-color: var(--outline-variant);
+}
+
+.pending-option {
+  /* 列向两行：主行（mark + 标题）与副标题行——mark 与标题首行恒居中对齐
+     （2026-10-29 用户终裁：含/不含副标题一致；恒块居中、顶对首行两案先后
+     废弃，行内 flex 居中由布局保证、不依赖 normal 行高猜测） */
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
   width: 100%;
+  /* 无副标题行的最小高度：单主行仅 ~30px 过扁（反馈修订），36 = 控件 28 与
+     含副标题行（~46px）之间的档位；含副标题行内容超限自然撑开不受影响 */
+  min-height: 36px;
   text-align: left;
   padding: 6px 10px;
   border-radius: var(--radius-chip);
   background: var(--surface-container-high);
   border: 1px solid transparent;
+}
+
+/* 主行：mark 与标题文字纵向居中（有无副标题均如此） */
+.pending-option-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .pending-option:hover:not(:disabled),
@@ -3554,7 +3630,6 @@
   flex-shrink: 0;
   width: 14px;
   height: 14px;
-  margin-top: 2px;
   border: 1.5px solid var(--outline);
 }
 
@@ -3577,18 +3652,18 @@
 }
 
 .pending-option-label {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
   font-size: var(--text-md);
   min-width: 0;
 }
 
+/* 副标题独立行：缩进对齐标题文字起点（mark 14 + gap 8 = 22px），单行截断 */
 .pending-option-desc {
+  margin-left: 22px;
   font-size: var(--text-xs);
   color: var(--outline);
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pending-card-actions {
@@ -3620,7 +3695,13 @@
   right: 2px;
   min-width: 14px;
   height: 14px;
-  padding: 0 3px;
+  /* 数字光学纵向居中（session-count-num 同源问题：数字无降部，字形重心恒
+    高于行盒中心，line-height 只缩放盒子不移动字形）。badge 内容是裸文本
+    节点不可挂 transform，用 padding-top 位移等价实现：行盒顶从 1.5 → 2.5，
+    字形中心下移 1px（整数位移，不涉亚像素基线量化）。↵（.enter，sans）
+    随统一位移：旧标定残差 ≤0.5px，用户实测亦偏上——下移后残差仍在可感知
+    阈内（≤0.5px），不再单独分叉（2026-10-29 评审权衡，视觉验收复核） */
+  padding: 2px 3px 0;
   border-radius: 3px;
   display: inline-flex;
   align-items: center;

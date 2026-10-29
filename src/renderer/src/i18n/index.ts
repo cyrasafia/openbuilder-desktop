@@ -82,6 +82,8 @@ const zh = {
   // 表单卡（v2 form 体系，M6a）：boolean 字段合成选项
   formYes: "是",
   formNo: "否",
+  // custom 选项字段的「其他」哨兵行（移动端 formCustomAnswer 同文案）
+  formCustomAnswer: "其他（自定义答案）",
   replyFailed: "操作失败",
   // 文件
   filesTitle: "文件",
@@ -434,6 +436,8 @@ const en: typeof zh = {
   // Form card (v2 form system, M6a): boolean field synthetic options
   formYes: "Yes",
   formNo: "No",
+  // "Other" sentinel row for custom option fields (same copy as mobile formCustomAnswer)
+  formCustomAnswer: "Other (custom answer)",
   replyFailed: "Action failed",
   filesTitle: "Files",
   loading: "Loading…",

@@ -13,6 +13,7 @@
 import { act, cleanup, fireEvent, render } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { PermissionCard, QuestionCard } from "./workspace"
+import { CUSTOM_OPTION_VALUE } from "@shared/pending-requests"
 import type { PendingPermission, PendingQuestion } from "@shared/pending-requests"
 
 vi.mock("../app", () => ({
@@ -77,6 +78,7 @@ function makeQuestion(overrides: Partial<PendingQuestion> = {}): PendingQuestion
         ],
         placeholder: "",
         required: false,
+        custom: false,
       },
     ],
     ...overrides,
@@ -285,6 +287,7 @@ describe("问题卡快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增
           ],
           placeholder: "",
           required: false,
+          custom: false,
         },
       ],
     })
@@ -296,13 +299,49 @@ describe("问题卡快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增
     expect(optionActive()).toEqual([false, true])
   })
 
+  it("custom 字段：Ctrl+N 命中末尾「其他」哨兵行，空文本 Ctrl+Enter 不动作（T1）", () => {
+    const q = makeQuestion({
+      fields: [
+        {
+          key: "f1",
+          question: "选分支？",
+          description: "",
+          kind: "select",
+          options: [
+            { value: "yes", label: "是", description: "" },
+            { value: "no", label: "否", description: "" },
+          ],
+          placeholder: "自定义",
+          required: false,
+          custom: true,
+        },
+      ],
+    })
+    render(<QuestionCard question={q} queueTotal={1} />)
+    // Ctrl+3 = 第三行「其他」（哨兵行与既有选项同权参与序号映射）
+    const ev = press({ key: "3", code: "Digit3", ctrlKey: true })
+    expect(ev.defaultPrevented).toBe(true)
+    expect(optionActive()).toEqual([false, false, true])
+    // 自定义文本空：提交门控拦截（同按钮禁用态）
+    const enter = press({ key: "Enter", ctrlKey: true })
+    expect(enter.defaultPrevented).toBe(false)
+    expect(storeStub.replyQuestion).not.toHaveBeenCalled()
+    const customInput = document.querySelector(".pending-custom-input") as HTMLInputElement
+    fireEvent.change(customInput, { target: { value: "feat/x" } })
+    const submit = press({ key: "Enter", ctrlKey: true })
+    expect(submit.defaultPrevented).toBe(true)
+    expect(storeStub.replyQuestion).toHaveBeenCalledWith("que_1", {
+      0: { selected: [CUSTOM_OPTION_VALUE], text: "", customText: "feat/x" },
+    })
+  })
+
   it("Ctrl+Enter 提交（answers 含选中项）", () => {
     render(<QuestionCard question={makeQuestion()} queueTotal={1} />)
     press({ key: "1", code: "Digit1", ctrlKey: true })
     const ev = press({ key: "Enter", ctrlKey: true })
     expect(ev.defaultPrevented).toBe(true)
     expect(storeStub.replyQuestion).toHaveBeenCalledWith("que_1", {
-      0: { selected: ["yes"], text: "" },
+      0: { selected: ["yes"], text: "", customText: "" },
     })
   })
 
@@ -327,6 +366,7 @@ describe("问题卡快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增
           ],
           placeholder: "",
           required: false,
+          custom: false,
         },
         {
           key: "f2",
@@ -339,6 +379,7 @@ describe("问题卡快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增
           ],
           placeholder: "",
           required: false,
+          custom: false,
         },
       ],
     })
@@ -350,8 +391,8 @@ describe("问题卡快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增
     press({ key: "2", code: "Digit2", ctrlKey: true })
     press({ key: "Enter", ctrlKey: true })
     expect(storeStub.replyQuestion).toHaveBeenCalledWith("que_1", {
-      0: { selected: ["yes"], text: "" },
-      1: { selected: ["bad"], text: "" },
+      0: { selected: ["yes"], text: "", customText: "" },
+      1: { selected: ["bad"], text: "", customText: "" },
     })
   })
 
@@ -382,6 +423,7 @@ describe("问题卡快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增
           options: [],
           placeholder: "",
           required: false,
+          custom: false,
         },
       ],
     })
@@ -407,6 +449,7 @@ describe("问题卡快捷键（design-keyboard-shortcuts §1.1b，2026-09-28 增
           })),
           placeholder: "",
           required: false,
+          custom: false,
         },
       ],
     })
