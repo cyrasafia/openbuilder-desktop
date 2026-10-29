@@ -258,7 +258,9 @@ app.css「待处理卡片」区块），新卡先复用骨架与 tint 公式，�
 
 **卡内列表行**（问题卡选项 `.pending-option` / 任务卡行 `.bg-task-row` 同规格）：
 chip 圆角 + `surface-container-high` 实底（与卡 tint 拉开一档）+ 内边距 6×10 +
-行距 4（列表密度）；主文字 `ui-md`（列表正文基准）、次级行 `ui-xs` `outline`；
+行距 4（列表密度）；无副标题行 `min-height` 36（单主行 ~30px 过扁的反馈修订，
+2026-10-29 增）；主文字 `ui-md`（列表正文基准）、次级行 `ui-xs` `outline`；
+选项 mark 与标题首行纵向居中（有无副标题一致，2026-10-29 裁定）；
 hover/`:focus-visible` 升 `surface-container-highest`（焦点即 hover）。
 选中态（仅选项）`tertiary` 18% 混底 + `tertiary` 边。
 

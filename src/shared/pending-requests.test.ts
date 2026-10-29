@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   buildFormAnswer,
+  CUSTOM_OPTION_VALUE,
   externalDirectoryPath,
   mergePendingSnapshot,
   normalizeForm,
@@ -63,6 +64,7 @@ describe("normalizeForm（v2 form 体系，M6a）", () => {
           type: "string",
           title: "用哪个分支？",
           description: "合并目标",
+          custom: true,
           options: [
             { value: "main", label: "main", description: "默认分支" },
             { value: "dev", label: "dev" },
@@ -91,6 +93,8 @@ describe("normalizeForm（v2 form 体系，M6a）", () => {
       ["count", "number"],
     ])
     expect(q?.fields.map((f) => f.required)).toEqual([false, false, false, false, true, false])
+    // custom 透出（Form.StringField/MultiselectField.custom；question 工具恒 true）
+    expect(q?.fields.map((f) => f.custom)).toEqual([true, false, false, false, false, false])
     expect(q?.fields[0].options).toEqual([
       { value: "main", label: "main", description: "默认分支" },
       { value: "dev", label: "dev", description: "" },
@@ -121,11 +125,11 @@ describe("buildFormAnswer（M6a）", () => {
     title: "t",
     directory: "/r",
     fields: [
-      { key: "branch", question: "q", description: "", kind: "select", options: [], placeholder: "", required: false },
-      { key: "tags", question: "q", description: "", kind: "multiselect", options: [], placeholder: "", required: false },
-      { key: "force", question: "q", description: "", kind: "boolean", options: [], placeholder: "", required: false },
-      { key: "note", question: "q", description: "", kind: "text", options: [], placeholder: "", required: false },
-      { key: "n", question: "q", description: "", kind: "number", options: [], placeholder: "", required: false },
+      { key: "branch", question: "q", description: "", kind: "select", options: [], placeholder: "", required: false, custom: true },
+      { key: "tags", question: "q", description: "", kind: "multiselect", options: [], placeholder: "", required: false, custom: true },
+      { key: "force", question: "q", description: "", kind: "boolean", options: [], placeholder: "", required: false, custom: false },
+      { key: "note", question: "q", description: "", kind: "text", options: [], placeholder: "", required: false, custom: false },
+      { key: "n", question: "q", description: "", kind: "number", options: [], placeholder: "", required: false, custom: false },
     ],
   }
 
@@ -148,6 +152,33 @@ describe("buildFormAnswer（M6a）", () => {
   it("非数值输入兜底 0（tryParse ?? 0，同移动端）", () => {
     const answer = buildFormAnswer(q, { 4: { text: "abc" } })
     expect(answer.n).toBe(0)
+  })
+
+  it("「其他」哨兵：select 以自定义文本为答案、multiselect 追加到数组（T1）", () => {
+    const answer = buildFormAnswer(q, {
+      0: { selected: [CUSTOM_OPTION_VALUE], customText: "  自由答案  " },
+      1: { selected: ["Diff", CUSTOM_OPTION_VALUE], customText: "note" },
+    })
+    // customText trim 后提交（哨兵剥离、不泄漏进 answer）
+    expect(answer).toEqual({ branch: "自由答案", tags: ["Diff", "note"], force: false, note: "", n: 0 })
+  })
+
+  it("「其他」哨兵空文本：select 回落空串、multiselect 丢弃哨兵（防御，UI 门控先挡）", () => {
+    const answer = buildFormAnswer(q, {
+      0: { selected: [CUSTOM_OPTION_VALUE], customText: "   " },
+      1: { selected: ["Diff", CUSTOM_OPTION_VALUE], customText: "" },
+    })
+    expect(answer.branch).toBe("")
+    expect(answer.tags).toEqual(["Diff"])
+  })
+
+  it("未选「其他」时 customText 忽略（输入框不参与答案）", () => {
+    const answer = buildFormAnswer(q, {
+      0: { selected: ["main"], customText: "不应出现" },
+      1: { selected: ["Diff"], customText: "不应出现" },
+    })
+    expect(answer.branch).toBe("main")
+    expect(answer.tags).toEqual(["Diff"])
   })
 })
 
@@ -212,7 +243,7 @@ describe("mergePendingSnapshot", () => {
       sessionID,
       title: "t",
       directory,
-      fields: [{ key: "k", question: "q", description: "", kind: "select", options: [], placeholder: "", required: false }],
+      fields: [{ key: "k", question: "q", description: "", kind: "select", options: [], placeholder: "", required: false, custom: false }],
     }
   }
 

@@ -50,7 +50,20 @@ export interface PendingQuestionField {
   placeholder: string
   /** Form.Field.required——输入步的空值门控（选项步未选恒禁前进，Q-7） */
   required: boolean
+  /**
+   * Form.StringField/MultiselectField.custom——选项式字段允许选项外的
+   * 自定义答案（server 校验放行：custom:true 不再要求值命中 options）。
+   * question 工具所有字段恒 true；UI 在选项列表末尾追加「其他」哨兵行。
+   */
+  custom: boolean
 }
+
+/**
+ * 「其他（自定义答案）」合成选项的哨兵 value（\u0000 不可见字符，preset
+ * options 的 value 域不可能碰撞）。与移动端 _kCustomOptionValue 同值跨端
+ * 同源；仅存在于 UI 选中集合，buildFormAnswer 剥离并替换为自定义文本。
+ */
+export const CUSTOM_OPTION_VALUE = "\u0000custom"
 
 /** 问题请求（frm_*，Map 以表单 id 为 key；一个会话可能多张排队） */
 export interface PendingQuestion {
@@ -134,6 +147,8 @@ function toField(f: Record<string, unknown>): PendingQuestionField | null {
     options,
     placeholder: str(f.placeholder),
     required: f.required === true,
+    // custom 仅存在于 string/multiselect 契约面；boolean/number 等类型恒缺省 false
+    custom: f.custom === true,
   }
 }
 
@@ -161,10 +176,12 @@ export function normalizeForm(
   return { id, sessionID, title: str(raw.title), fields, directory }
 }
 
-/** UI 每字段原始输入（选项选中值数组 / 自由文本） */
+/** UI 每字段原始输入（选项选中值数组 / 自由文本 / 「其他」自定义文本） */
 export interface PendingFieldInput {
   selected?: string[]
   text?: string
+  /** 「其他」选项展开的自定义文本（选中哨兵行时生效，其余忽略） */
+  customText?: string
 }
 
 /**
@@ -172,6 +189,9 @@ export interface PendingFieldInput {
  * select → 首个选中 value（未选 = ""）；multiselect → 选中数组；boolean →
  * value "true" 命中即 true（UI 合成选项，未选 = false）；text → 原文；
  * number → parseFloat（NaN 兜底 0，同移动端 tryParse ?? 0）。
+ * 选项式字段选中「其他」哨兵（CUSTOM_OPTION_VALUE）：select 以自定义文本为
+ * 答案；multiselect 将非空自定义文本追加到选中数组（空则丢弃，同移动端
+ * _buildAnswer——UI 步进门控已保证非空，空丢弃是防御）。
  */
 export function buildFormAnswer(
   question: PendingQuestion,
@@ -180,13 +200,20 @@ export function buildFormAnswer(
   const answer: Record<string, V2FormValue> = {}
   question.fields.forEach((f, i) => {
     const raw = input[i] ?? {}
-    const selected = raw.selected ?? []
+    const selected = (raw.selected ?? []).filter((v) => v !== CUSTOM_OPTION_VALUE)
+    const customText = (raw.customText ?? "").trim()
     switch (f.kind) {
       case "multiselect":
-        answer[f.key] = selected
+        answer[f.key] =
+          (raw.selected ?? []).includes(CUSTOM_OPTION_VALUE) && customText !== ""
+            ? [...selected, customText]
+            : selected
         break
       case "select":
-        answer[f.key] = selected[0] ?? ""
+        answer[f.key] =
+          (raw.selected ?? []).includes(CUSTOM_OPTION_VALUE) && customText !== ""
+            ? customText
+            : (selected[0] ?? "")
         break
       case "boolean":
         answer[f.key] = selected.includes("true")

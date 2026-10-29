@@ -54,7 +54,7 @@ import type {
   ToolPart,
 } from "@shared/api-types"
 import type { PendingPermission, PendingQuestion, SessionDotState } from "@shared/pending-requests"
-import { externalDirectoryPath, permissionCommand } from "@shared/pending-requests"
+import { CUSTOM_OPTION_VALUE, externalDirectoryPath, permissionCommand } from "@shared/pending-requests"
 import { SessionDot } from "./session-dot"
 import { Markdown } from "./markdown"
 import { decodeFileHref, messageFileLinks, resolveProjectPath } from "./message-autolink"
@@ -2522,7 +2522,10 @@ function TypingSlot({ status }: { status: SessionStatusValue }) {
 /**
  * 表单卡（v2 form 体系，M6a；原 v1 question 卡）。fields 步进式作答：
  * - select/multiselect/boolean 选项式（boolean 由 UI 合成是/否两项，value
- *   "true"/"false" 经 buildFormAnswer 还原布尔）；
+ *   "true"/"false" 经 buildFormAnswer 还原布尔）；custom:true 字段末尾追加
+ *   「其他（自定义答案）」哨兵行（CUSTOM_OPTION_VALUE），选中展开输入框——
+ *   select 以输入文本为答案、multiselect 追加到选中数组（2026-10-29 增，
+ *   对齐移动端 todo-form-card-v2-parity T1 / _FormCard）；
  * - text/number 输入式（占位提示，number 输入模式；可空提交，空数值兜底 0）。
  */
 export function QuestionCard({
@@ -2536,6 +2539,8 @@ export function QuestionCard({
   const { t } = useI18n()
   const [selected, setSelected] = useState<Record<number, string[]>>({})
   const [texts, setTexts] = useState<Record<number, string>>({})
+  // 「其他（自定义答案）」展开文本（选项式 custom 字段，选中哨兵行时输入）
+  const [customTexts, setCustomTexts] = useState<Record<number, string>>({})
   const [step, setStep] = useState(0)
   const [replying, setReplying] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
@@ -2548,19 +2553,28 @@ export function QuestionCard({
   const sel = selected[stepIdx] ?? []
   const isInput = f.kind === "text" || f.kind === "number"
   // 前进门控（review-question-cards Q-7：当前步未答不得前进）：选项步未选恒禁；
-  // 输入步 required 非空、可选可空（比 v1 一刀切非空更准，M6a 评审修复）
+  // 输入步 required 非空、可选可空（比 v1 一刀切非空更准，M6a 评审修复）；
+  // 选中「其他」须自定义文本非空（移动端 todo-form-card-v2-parity T1 同语义）
   const stepAnswered = isInput
     ? !f.required || (texts[stepIdx] ?? "").trim() !== ""
-    : sel.length > 0
+    : sel.length > 0 && (!sel.includes(CUSTOM_OPTION_VALUE) || (customTexts[stepIdx] ?? "").trim() !== "")
   const isLast = stepIdx >= totalSub - 1
-  // 选项式字段的可点选项（boolean 合成；select/multiselect 归一化层已映射 value）
+  // 选项式字段的可点选项（boolean 合成；select/multiselect 归一化层已映射 value）；
+  // custom 字段末尾追加「其他」哨兵行（boolean/text/number 无 custom 契约面）
+  const customAllowed = f.kind === "select" || f.kind === "multiselect"
   const options =
     f.kind === "boolean"
       ? [
           { value: "true", label: t.formYes, description: "" },
           { value: "false", label: t.formNo, description: "" },
         ]
-      : f.options
+      : f.custom && customAllowed
+        ? [
+            ...f.options,
+            { value: CUSTOM_OPTION_VALUE, label: t.formCustomAnswer, description: "" },
+          ]
+        : f.options
+  const customPicked = !isInput && sel.includes(CUSTOM_OPTION_VALUE)
 
   const toggle = (value: string) => {
     if (replying) return
@@ -2580,7 +2594,10 @@ export function QuestionCard({
     setReplying(true)
     setError(null)
     const input = Object.fromEntries(
-      question.fields.map((_, i) => [i, { selected: selected[i] ?? [], text: texts[i] ?? "" }]),
+      question.fields.map((_, i) => [
+        i,
+        { selected: selected[i] ?? [], text: texts[i] ?? "", customText: customTexts[i] ?? "" },
+      ]),
     )
     const res =
       action === "reject"
@@ -2672,31 +2689,82 @@ export function QuestionCard({
             <div className="pending-options">
               {options.map((opt, i) => {
                 const active = sel.includes(opt.value)
+                const isCustomRow = opt.value === CUSTOM_OPTION_VALUE
+                // 「其他」行 = div tile（input 不可嵌 button）：toggle 按钮（mark ±
+                // 标题）+ 选中态输入框**替代标题**（反馈终案：无预留空白，行内
+                // 替换；placeholder 用标题文案）——tile 高度/选中视觉与普通行
+                // 完全同构，零布局影响
+                if (isCustomRow) {
+                  return (
+                    <div className="pending-option-wrap" key={opt.value}>
+                      <div className={"pending-option custom" + (active ? " active" : "") + (customPicked ? " open" : "")}>
+                        {ctrlHeld && !replying && i < 9 && (
+                          <span className="pending-key-badge" aria-hidden>
+                            {i + 1}
+                          </span>
+                        )}
+                        <button
+                          className="pending-option-toggle"
+                          disabled={replying}
+                          onClick={() => toggle(opt.value)}
+                        >
+                          <span
+                            className={
+                              "pending-option-mark " +
+                              (f.kind === "multiselect" ? "checkbox" : "radio") +
+                              (active ? " on" : "")
+                            }
+                            aria-hidden
+                          />
+                          {!customPicked && <span className="pending-option-label">{opt.label}</span>}
+                        </button>
+                        {customPicked && (
+                          <input
+                            className="pending-input pending-custom-input"
+                            type="text"
+                            autoFocus
+                            aria-label={t.formCustomAnswer}
+                            placeholder={t.formCustomAnswer}
+                            value={customTexts[stepIdx] ?? ""}
+                            disabled={replying}
+                            onChange={(e) =>
+                              setCustomTexts((prev) => ({ ...prev, [stepIdx]: e.target.value }))
+                            }
+                          />
+                        )}
+                      </div>
+                    </div>
+                  )
+                }
                 return (
-                  <button
-                    key={opt.value}
-                    className={"pending-option" + (active ? " active" : "")}
-                    disabled={replying}
-                    onClick={() => toggle(opt.value)}
-                  >
-                    {ctrlHeld && !replying && i < 9 && (
-                      <span className="pending-key-badge" aria-hidden>
-                        {i + 1}
+                  <div className="pending-option-wrap" key={opt.value}>
+                    <button
+                      className={"pending-option" + (active ? " active" : "")}
+                      disabled={replying}
+                      onClick={() => toggle(opt.value)}
+                    >
+                      {ctrlHeld && !replying && i < 9 && (
+                        <span className="pending-key-badge" aria-hidden>
+                          {i + 1}
+                        </span>
+                      )}
+                      {/* 主行 = mark + 标题（行内 flex 居中，两轮反馈裁定：恒块
+                          居中不佳、顶对首行有偏差，最终 mark 与标题行居中）；
+                          副标题独立成行缩进对齐标题文字（见 app.css） */}
+                      <span className="pending-option-main">
+                        <span
+                          className={
+                            "pending-option-mark " +
+                            (f.kind === "multiselect" ? "checkbox" : "radio") +
+                            (active ? " on" : "")
+                          }
+                          aria-hidden
+                        />
+                        <span className="pending-option-label">{opt.label}</span>
                       </span>
-                    )}
-                    <span
-                      className={
-                        "pending-option-mark " +
-                        (f.kind === "multiselect" ? "checkbox" : "radio") +
-                        (active ? " on" : "")
-                      }
-                      aria-hidden
-                    />
-                    <span className="pending-option-label">
-                      {opt.label}
                       {opt.description && <span className="pending-option-desc">{opt.description}</span>}
-                    </span>
-                  </button>
+                    </button>
+                  </div>
                 )
               })}
             </div>
