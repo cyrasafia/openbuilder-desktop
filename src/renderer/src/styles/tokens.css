@@ -354,6 +354,7 @@ input[type="checkbox"]:focus-visible {
   background: var(--outline-variant);
   border-radius: 4px;
 }
-::-webkit-scrollbar-track {
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
   background: transparent;
 }
