@@ -9,6 +9,7 @@
 - **v0.5.2 主题 = 新增未读标记功能**（功能 #11：服务端 `time.viewed` 水位判定 + `POST /api/session/:id/view` 标记已读，左栏/chat Tab 蓝点、点开即清；配套聚合 chip 重设计同版落地——状态圆点领头 + 中性数字，未读纳入 chip）。
 - **v0.5.3 主题 = 修复删除 worktree 后残留伪项目问题**（2026-10-13 定位真触发器后的成套防御：删除窗口在途 location 请求挂起等清零 + 删除成功后 evict warm location，design-worktree-sync §3.4/§3.5、ref-pseudo-project-cleanup §3.4/§7e；期间另有 pty 预杀置退出态、`time.active` 选择器排序等稳定性修复随版）。
 - **v0.5.4 主题 = 新增专注模式**（design-focus-mode：会话页/引导页专注输入态——tab 内嵌面板、切走再回保持专注态、输入框变形撑满页面、guide 整屏延展，三连迭代收敛形态；随版含 v2 subagent 面板未就绪修复、tool 状态合并单调化等稳定性改进）。
+- **v0.5.6 主题 = 新增会话移动（功能 #13）**（chat Tab 右键移动会话到同项目工作区——目标限主工作区与现有 worktree，运行中会话与移动在途时禁用目标项；REST `POST /api/session/:id/move` 204 仅作 inbox 准入，完成语义由 SSE `session.moved`（目录闸门前旁路、源/目标双路由）与目标目录快照兜底，统一经 relocateSession 收敛，竞态防护四层——location 版本拒旧源快照回卷、relocation 单调水位、迟到重命名只合并标题、旧连接回执不清新连接守卫，design-session-tab-context-menu §2.5、design-sse-event-surface；随版含问题卡 v2 对齐两项——custom 自定义回答选项（T1）与 hidden/external 保留补键消混合表单 400（T5），对齐移动端 todo-form-card-v2-parity；worktree 挂分支 fork 基准改从 canonical 拉出 + diff 消费侧显式传 base（design-worktree-branch-fork-base）；滚动条交汇角白色背景修复与 v2.2.0 契约审计记录（ref-pin-bump-2.2.0））。
 - **v0.5.5 主题 = 归档迁回官方 API（私约退役）**（design-archive-official-api：≥2.1.3 走官方 `PATCH /api/session/:id` body `archived`（版本分派，`archiveApiReady` 连接期缓存）、存量 marker-only 快照 backfill 转正+清标记、SSE `session.archived/unarchived` 接线；<2.1.3 回退 D1 私约，识别层双源过渡保留至 marker drained——todo-archive-marker-cleanup；随版含契约 pin 升 2.1.3（ref-pin-bump-2.1.3，官方归档链路回归的契约依据）与错误体 `_tag` 判别/死目录静默吸收/被动确证收敛（design-worktree-sync §3.6））。
 
 ## 范围内
