@@ -76,6 +76,8 @@ export function toInternalSession(s: SessionInfo): Session {
     agent: s.agent,
     model: s.model,
     directory: s.location.directory,
+    workspaceID: s.location.workspaceID,
+    subpath: s.subpath,
     title: s.title,
     time: {
       created: s.time.created,

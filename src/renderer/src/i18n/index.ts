@@ -31,6 +31,8 @@ const zh = {
   overflowTabs: "更多 Tab",
   // Tab 右键菜单（design-session-tab-context-menu）
   forkSession: "Fork 会话",
+  moveSession: "移动到",
+  moveSessionBusy: "会话进行中，完成后可移动",
   untitled: "（未命名）",
   // 聊天
   inputPlaceholder: "输入消息…（Enter 发送，Shift+Enter 换行）",
@@ -397,6 +399,8 @@ const en: typeof zh = {
   renameTab: "Rename session",
   overflowTabs: "More tabs",
   forkSession: "Fork session",
+  moveSession: "Move to",
+  moveSessionBusy: "Wait for the session to finish before moving it",
   untitled: "(untitled)",
   inputPlaceholder: "Message… (Enter to send, Shift+Enter for newline)",
   send: "Send",

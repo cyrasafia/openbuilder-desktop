@@ -213,6 +213,22 @@ describe("会话域（M2）", () => {
     expect(seenMethod).toBe("DELETE")
   })
 
+  it("moveSession：POST /api/session/:id/move，body 仅含 directory；204 不解析响应体", async () => {
+    let seenUrl = ""
+    let seenMethod = ""
+    let seenBody = ""
+    const client = mkClient((_url, init) => {
+      seenUrl = _url
+      seenMethod = init.method ?? ""
+      seenBody = String(init.body)
+      return new Response(null, { status: 204 })
+    })
+    await client.moveSession("ses_1", "/repo/wt1")
+    expect(seenUrl).toBe("http://server/api/session/ses_1/move")
+    expect(seenMethod).toBe("POST")
+    expect(JSON.parse(seenBody)).toEqual({ directory: "/repo/wt1" })
+  })
+
   it("getSession：GET /api/session/:id，解 {data} envelope（time.idle/viewed 透传）", async () => {
     let seenUrl = ""
     const client = mkClient((url) => {

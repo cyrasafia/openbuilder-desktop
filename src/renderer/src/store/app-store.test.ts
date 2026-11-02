@@ -147,6 +147,7 @@ beforeEach(() => {
     }),
     updateSession: async () => {},
     deleteSession: async () => {},
+    moveSession: async () => {},
     // 未读（design-unread-marker）：单会话补拉 + 标记已读；用例按需覆盖
     getSession: async (sid: string) => ({
       id: sid,
@@ -6088,6 +6089,266 @@ describe("实时补开与实时收敛（design-tab-memory §17 修订 2026-09-02
     await expect(p).resolves.toBe(true)
     expect(store.tabs).toHaveLength(0)
     expect(store.closedTabs.map((c) => c.key)).toEqual(["chat:s1"])
+  })
+})
+
+describe("会话移动（design-session-tab-context-menu）", () => {
+  function dispatchMoved(sid = "s1", directory = WT1, created = 10, projectID = "proj1") {
+    ;(store as unknown as {
+      handleEvent: (dir: string, ev: unknown, meta?: unknown) => void
+    }).handleEvent(
+      "global",
+      {
+        type: "session.moved",
+        properties: { sessionID: sid, projectID, location: { directory }, subpath: "wt1" },
+      },
+      { created },
+    )
+  }
+
+  function applySnapshot(directory: string, list: Session[]) {
+    ;(store as unknown as {
+      applySessionsSnapshot: (projectID: string, directory: string, sessions: Session[]) => void
+    }).applySessionsSnapshot("proj1", directory, list)
+  }
+
+  it("moveSession：POST 在途防重，204 不提前改 location；运行中拒绝", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    const pending = deferred<void>()
+    const move = vi.fn(() => pending.promise)
+    clientV2Of().moveSession = move
+
+    const first = store.moveSession("s1", WT1)
+    expect(await store.moveSession("s1", WT1)).toBe(false)
+    expect(move).toHaveBeenCalledTimes(1)
+    expect(move).toHaveBeenCalledWith("s1", WT1)
+    expect(store.isSessionMoving("s1")).toBe(true)
+    expect(store.findSession("s1")?.directory).toBe(ROOT)
+
+    pending.resolve()
+    await expect(first).resolves.toBe(true)
+    expect(store.isSessionMoving("s1")).toBe(false)
+    expect(store.findSession("s1")?.directory).toBe(ROOT)
+
+    store.sessionStatus.set("s1", { type: "busy" })
+    expect(await store.moveSession("s1", WT1)).toBe(false)
+    expect(move).toHaveBeenCalledTimes(1)
+  })
+
+  it("旧连接 move 回执不清除新连接的同会话在途守卫", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    const oldPending = deferred<void>()
+    const oldClient = clientV2Of()
+    oldClient.moveSession = vi.fn(() => oldPending.promise)
+    const first = store.moveSession("s1", WT1)
+
+    ;(store as unknown as { teardownConnection: () => void }).teardownConnection()
+    const newPending = deferred<void>()
+    const newClient = { ...oldClient, moveSession: vi.fn(() => newPending.promise) }
+    ;(store as unknown as { client: unknown }).client = newClient
+    store.projects = [project()]
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    const second = store.moveSession("s1", WT1)
+    expect(store.isSessionMoving("s1")).toBe(true)
+
+    oldPending.resolve()
+    await expect(first).resolves.toBe(true)
+    expect(store.isSessionMoving("s1")).toBe(true)
+    newPending.resolve()
+    await expect(second).resolves.toBe(true)
+    expect(store.isSessionMoving("s1")).toBe(false)
+  })
+
+  it("session.moved 旁路目录闸门：激活跟随，Tab/草稿/消息保留，记忆与 pending 同步", () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    const s0 = session("s0", ROOT, { created: 1, updated: 1 })
+    const s2 = session("s2", WT1, { created: 2, updated: 2 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1, s0, s2))
+    store.tabs = [
+      { kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT },
+      { kind: "chat", key: "chat:s0", projectId: "proj1", title: "s0", directory: ROOT },
+      { kind: "chat", key: "chat:s2", projectId: "proj1", title: "s2", directory: WT1 },
+    ]
+    store.activeTabKey = "chat:s1"
+    store.tabMemory = {
+      default: {
+        [ROOT]: { projectId: "proj1", tabs: ["s1", "s0"], active: "s1" },
+        [WT1]: { projectId: "proj1", tabs: ["s2"], active: "s2" },
+      },
+    }
+    const priv = store as unknown as {
+      scopeActiveKeys: Map<string, string | null>
+      statusSources: Map<string, string>
+    }
+    priv.scopeActiveKeys.set(ROOT, "chat:s1")
+    priv.scopeActiveKeys.set(WT1, "chat:s2")
+    store.sessionStatus.set("s1", { type: "busy" })
+    priv.statusSources.set("s1", ROOT)
+    store.pendingPermissions.set("s1", {
+      id: "per1",
+      sessionID: "s1",
+      type: "read",
+      patterns: [],
+      metadata: null,
+      always: [],
+      directory: ROOT,
+    })
+    store.pendingQuestions.set("frm1", {
+      id: "frm1",
+      sessionID: "s1",
+      title: "q",
+      fields: [],
+      directory: ROOT,
+    })
+    store.setChatDraft("s1", "未发送草稿")
+    seedMessages("s1", {
+      info: { id: "msg1", sessionID: "s1", role: "user", time: { created: 1 } },
+      parts: [],
+    })
+
+    dispatchMoved()
+
+    expect(store.findSession("s1")).toMatchObject({ directory: WT1, projectID: "proj1", subpath: "wt1" })
+    expect(store.findSession("s1")?.time.updated).toBe(10)
+    expect(store.tabs.find((t) => t.key === "chat:s1")).toMatchObject({ directory: WT1, projectId: "proj1" })
+    expect(store.activeTabKey).toBe("chat:s1")
+    expect(store.scopeQuery.directory).toBe(WT1)
+    expect(priv.scopeActiveKeys.get(ROOT)).toBe("chat:s0")
+    expect(priv.scopeActiveKeys.get(WT1)).toBe("chat:s1")
+    expect(store.tabMemory.default?.[ROOT]).toEqual({ projectId: "proj1", tabs: ["s0"], active: null })
+    expect(store.tabMemory.default?.[WT1]).toEqual({ projectId: "proj1", tabs: ["s1", "s2"], active: "s1" })
+    expect(priv.statusSources.get("s1")).toBe(WT1)
+    expect(store.pendingPermissions.get("s1")?.directory).toBe(WT1)
+    expect(store.pendingQuestions.get("frm1")?.directory).toBe(WT1)
+    expect(store.chatDraftFor("s1")).toBe("未发送草稿")
+    expect(store.messagesBySession.get("s1")?.has("msg1")).toBe(true)
+  })
+
+  it("目标 worktree 尚未入库存时保留状态，旧库存或失败库存对账也不得误卸载", async () => {
+    const discovered = "/repo/.git/opencode-worktrees/discovered"
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
+    store.activeTabKey = "chat:s1"
+    store.setChatDraft("s1", "保留草稿")
+    seedMessages("s1", {
+      info: { id: "msg1", sessionID: "s1", role: "user", time: { created: 1 } },
+      parts: [],
+    })
+    const client = clientV2Of()
+    client.refreshWorktrees = async () => {}
+    client.listWorktrees = async () => [
+      { directory: ROOT },
+      { directory: WT1, strategy: "git" },
+      { directory: WT2, strategy: "git" },
+    ]
+
+    dispatchMoved("s1", discovered)
+    await store.syncWorktrees()
+
+    expect(store.findSession("s1")?.directory).toBe(discovered)
+    expect(store.tabs).toHaveLength(1)
+    expect(store.tabs[0]?.directory).toBe(discovered)
+    expect(store.scopeQuery.directory).toBe(discovered)
+    expect(store.chatDraftFor("s1")).toBe("保留草稿")
+    expect(store.messagesBySession.get("s1")?.has("msg1")).toBe(true)
+    expect(store.projects[0]?.sandboxes).toContain(discovered)
+
+    client.listWorktrees = async () => {
+      throw new Error("inventory unavailable")
+    }
+    await store.syncWorktrees()
+    expect(store.tabs).toHaveLength(1)
+    expect(store.scopeQuery.directory).toBe(discovered)
+    expect(store.chatDraftFor("s1")).toBe("保留草稿")
+  })
+
+  it("后台 Tab 移动不切换当前作用域，也不抢占激活", () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    const s0 = session("s0", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1, s0))
+    store.tabs = [
+      { kind: "chat", key: "chat:s0", projectId: "proj1", title: "s0", directory: ROOT },
+      { kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT },
+    ]
+    store.activeTabKey = "chat:s0"
+
+    dispatchMoved()
+
+    expect(store.scopeQuery.directory).toBe(ROOT)
+    expect(store.activeTabKey).toBe("chat:s0")
+    expect(store.tabs.find((t) => t.key === "chat:s1")?.directory).toBe(WT1)
+  })
+
+  it("移动与重命名在途交错时，迟到 PATCH 回执只合并标题", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
+    const pending = deferred<void>()
+    clientV2Of().updateSession = vi.fn(() => pending.promise)
+    const renaming = store.renameSession("s1", "新标题")
+
+    dispatchMoved()
+    pending.resolve()
+    await expect(renaming).resolves.toBe(true)
+
+    expect(store.findSession("s1")).toMatchObject({ directory: WT1, title: "新标题" })
+    expect(store.tabs[0]).toMatchObject({ directory: WT1, title: "新标题" })
+  })
+
+  it("目标目录新快照兜底移动（SSE 丢失），旧源快照不得回卷", () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
+
+    applySnapshot(WT1, [{ ...s1, directory: WT1, time: { created: 1, updated: 10 } }])
+    expect(store.findSession("s1")?.directory).toBe(WT1)
+    expect(store.tabs[0]?.directory).toBe(WT1)
+
+    applySnapshot(ROOT, [{ ...s1, title: "旧源标题", time: { created: 1, updated: 9 } }])
+    expect(store.findSession("s1")).toMatchObject({ directory: WT1, title: "s1" })
+    expect(store.tabs[0]?.directory).toBe(WT1)
+  })
+
+  it("快照兜底移动保留本地较新的 idle/viewed 水位", () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1, idle: 8, viewed: 9 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
+
+    applySnapshot(WT1, [
+      { ...s1, directory: WT1, time: { created: 1, updated: 10, idle: 7, viewed: 8 } },
+    ])
+
+    expect(store.findSession("s1")?.time).toMatchObject({ updated: 10, idle: 8, viewed: 9 })
+  })
+
+  it("移出打开项目且无 local/Tab 锚点后，旧源快照仍不得复活会话", () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
+    dispatchMoved("s1", "/other-project", 10, "proj2")
+    expect(store.findSession("s1")).toBeNull()
+    expect(store.tabs).toHaveLength(0)
+
+    applySnapshot(ROOT, [{ ...s1, time: { created: 1, updated: 9 } }])
+
+    expect(store.findSession("s1")).toBeNull()
+  })
+
+  it("源空快照先到时保留 Tab 锚点，目标快照随后完成移动", () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    store.tabs = [{ kind: "chat", key: "chat:s1", projectId: "proj1", title: "s1", directory: ROOT }]
+
+    applySnapshot(ROOT, [])
+    expect(store.findSession("s1")).toBeNull()
+    expect(store.tabs).toHaveLength(1)
+    applySnapshot(WT1, [{ ...s1, directory: WT1, time: { created: 1, updated: 10 } }])
+
+    expect(store.findSession("s1")?.directory).toBe(WT1)
+    expect(store.tabs[0]?.directory).toBe(WT1)
   })
 })
 

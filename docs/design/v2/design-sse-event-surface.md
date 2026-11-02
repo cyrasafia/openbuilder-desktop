@@ -68,7 +68,6 @@ v2 消息 id = `msg_ + ascending()`（`packages/schema/src/identifier.ts`：时�
 |---|---|
 | `session.compaction.started/delta/ended/failed` | auto-compaction 全程无呈现 |
 | `session.usage.recorded` / `session.usage.updated` | 成本/token 实时记账 |
-| `session.moved` | 会话移动；M4 暂缓裁定维持（重连对账兜底） |
 | `session.synthetic` | 官方合成消息事件，可替代 D3 本地 start-notice 启发式 |
 | `session.shell.started` / `session.shell.ended` | server 侧 shell 执行可见性 |
 | `session.forked` | REST + `session.created` 已覆盖（低） |
@@ -83,6 +82,8 @@ v2 消息 id = `msg_ + ascending()`（`packages/schema/src/identifier.ts`：时�
 | `pty.created/updated/exited/deleted`、`shell.created/deleted/exited` | 跨端终端生命周期；本端终端自管 WS+REST，设计上不展示他端终端（低） |
 | `mcp.status.changed`、`mcp.resources.changed` | MCP 状态/资源变化 |
 | `reference.updated`、`plugin.updated`、`websearch.updated` | 低 |
+
+> 已接出表（2026-11-02）：`session.moved` 随会话移动功能接入（design-session-tab-context-menu §2.5）——durable 旁路按 data 目标 location 收敛，源/目标双路由幂等；目标目录快照兜底，旧源快照按 `time_updated` 拒绝回卷。
 
 ### 表 C：定义了但 v2.0.18 无发布者（勿接）
 
