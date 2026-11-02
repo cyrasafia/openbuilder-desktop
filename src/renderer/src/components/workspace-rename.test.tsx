@@ -28,6 +28,9 @@ vi.mock("../app", () => ({
       send: "发送",
       inputPlaceholder: "输入…",
       forkSession: "Fork",
+      moveSession: "移动到",
+      moveSessionBusy: "会话进行中，完成后可移动",
+      mainWorkspace: "主工作区",
       commandListLoading: "加载中…",
       attachCmdBlocked: "斜杠命令不支持附件",
       guideTileDiff: "Diff",
@@ -99,7 +102,7 @@ const DIR_A = "/repo/a"
 const DIR_B = "/repo/b"
 
 function chatTab(key: string, title: string, directory: string) {
-  return { key, kind: "chat", title, directory }
+  return { key, kind: "chat", projectId: "p1", title, directory }
 }
 
 function makeStore(tabs: ReturnType<typeof chatTab>[], scopeDir = DIR_A) {
@@ -107,8 +110,8 @@ function makeStore(tabs: ReturnType<typeof chatTab>[], scopeDir = DIR_A) {
   return {
     store: null as unknown,
     openedProjects: [
-      { id: "p1", directory: DIR_A },
-      { id: "p2", directory: DIR_B },
+      { id: "p1", directory: DIR_A, worktree: DIR_A, sandboxes: [DIR_B] },
+      { id: "p2", directory: DIR_B, worktree: DIR_B, sandboxes: [] },
     ],
     tabs,
     activeTab: tabs[0] ?? null,
@@ -124,6 +127,12 @@ function makeStore(tabs: ReturnType<typeof chatTab>[], scopeDir = DIR_A) {
     dotStateFor: vi.fn(() => null),
     isBrowserWelcome: vi.fn(() => false),
     renameSession,
+    workspacesOfProject: vi.fn((projectId: string) =>
+      projectId === "p1" ? [{ name: "b", directory: DIR_B }] : [],
+    ),
+    isSessionActive: vi.fn(() => false),
+    isSessionMoving: vi.fn(() => false),
+    moveSession: vi.fn(async () => true),
     // ChatView 挂载所需（chat Tab 激活时右侧内容区渲染；重命名流不涉及，
     // 给空值桩让挂载成功）
     chatDraftFor: vi.fn(() => ""),
@@ -280,5 +289,36 @@ describe("Tab 行内重命名（失焦不提交的语义收敛）", () => {
     expect(input2.value).toBe("草稿新名")
     expect(input2.selectionStart).toBe(2)
     expect(input2.selectionEnd).toBe(2)
+  })
+})
+
+describe("chat Tab 移动菜单", () => {
+  it("列出同项目的其他工作区，点击后移动被右键的会话", async () => {
+    storeStub = makeStore([chatTab("chat:s1", "标题A", DIR_A)])
+    render(<Workspace />)
+    fireEvent.contextMenu(screen.getByText("标题A").closest(".tab") as HTMLElement)
+
+    expect(screen.queryByRole("button", { name: "主工作区" })).toBeNull()
+    fireEvent.click(await screen.findByRole("button", { name: "b" }))
+
+    const store = storeStub as unknown as { moveSession: ReturnType<typeof vi.fn> }
+    expect(store.moveSession).toHaveBeenCalledWith("s1", DIR_B)
+    expect(screen.queryByText("移动到")).toBeNull()
+  })
+
+  it("运行中会话禁用移动目标", async () => {
+    storeStub = makeStore([chatTab("chat:s1", "标题A", DIR_A)])
+    const store = storeStub as unknown as {
+      isSessionActive: ReturnType<typeof vi.fn>
+      moveSession: ReturnType<typeof vi.fn>
+    }
+    store.isSessionActive.mockReturnValue(true)
+    render(<Workspace />)
+    fireEvent.contextMenu(screen.getByText("标题A").closest(".tab") as HTMLElement)
+
+    const target = await screen.findByRole("button", { name: "b" })
+    expect((target as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(target)
+    expect(store.moveSession).not.toHaveBeenCalled()
   })
 })

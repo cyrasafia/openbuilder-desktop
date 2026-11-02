@@ -319,6 +319,21 @@ export function Workspace() {
     )
   }
 
+  const menuProject = menu
+    ? store.openedProjects.find(
+        (p) =>
+          p.id === menu.tab.projectId ||
+          p.worktree === menu.tab.directory ||
+          (p.sandboxes ?? []).includes(menu.tab.directory ?? ""),
+      ) ?? null
+    : null
+  const menuMoveTargets = menuProject
+    ? [
+        { name: t.mainWorkspace, directory: menuProject.worktree },
+        ...store.workspacesOfProject(menuProject.id),
+      ].filter((target) => target.directory !== menu?.tab.directory)
+    : []
+
   return (
     <main className="workspace">
       <div
@@ -545,6 +560,11 @@ export function Workspace() {
         <TabContextMenu
           x={menu.x}
           y={menu.y}
+          tab={menu.tab}
+          moveTargets={menuMoveTargets}
+          onMove={(directory) => {
+            void store.moveSession(menu.tab.key.slice(5), directory)
+          }}
           onRename={() => {
             // 镜像双击路径（onDoubleClick）：换目标编辑先提交旧的——失焦不
             // 提交（blur 只 save selection-restore 快照）后，右键菜单是
@@ -609,20 +629,25 @@ export function Workspace() {
   )
 }
 
-/** Tab 右键菜单（design-session-tab-context-menu §2.1）：重命名 / fork，仅 chat Tab
- *  触发（其余 kind 在 onContextMenu 处早退）。重命名复用行内编辑路径（同双击语义，
- *  提交经 renameSession）；fork 走 store.forkSession（fire-and-forget，新 Tab 由
- *  SSE session.created 实时补开自然打开，不激活）。
+/** Tab 右键菜单（design-session-tab-context-menu §2.1）：重命名 / fork / 移动，
+ *  仅 chat Tab 触发（其余 kind 在 onContextMenu 处早退）。移动目标只列同项目
+ *  主工作区与现有 worktree；运行中或移动 POST 在途时禁用目标项。
  *  复用 FileContextMenu 模式（首帧隐藏测量钳制 + capture 四触发关闭 + 浮层计数）。 */
 function TabContextMenu({
   x,
   y,
+  tab,
+  moveTargets,
+  onMove,
   onRename,
   onFork,
   onClose,
 }: {
   x: number
   y: number
+  tab: TabEntity
+  moveTargets: Array<{ name: string; directory: string }>
+  onMove: (directory: string) => void
   onRename: () => void
   onFork: () => void
   onClose: () => void
@@ -691,7 +716,7 @@ function TabContextMenu({
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return
     e.preventDefault()
-    const items = Array.from(ref.current?.querySelectorAll<HTMLButtonElement>("button") ?? [])
+    const items = Array.from(ref.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? [])
     if (items.length === 0) return
     const idx = items.indexOf(document.activeElement as HTMLButtonElement)
     const next =
@@ -713,6 +738,28 @@ function TabContextMenu({
       <button className="context-menu-item" onClick={() => run(onFork)}>
         {t.forkSession}
       </button>
+      {moveTargets.length > 0 && (
+        <>
+          <div className="context-menu-separator" />
+          <div className="context-menu-label">{t.moveSession}</div>
+          {moveTargets.map((target) => {
+            const sessionID = tab.key.slice(5)
+            const busy = store.isSessionActive(sessionID)
+            const moving = store.isSessionMoving(sessionID)
+            return (
+              <button
+                key={target.directory}
+                className="context-menu-item context-menu-target"
+                disabled={busy || moving}
+                title={busy ? t.moveSessionBusy : target.directory}
+                onClick={() => run(() => onMove(target.directory))}
+              >
+                {target.name}
+              </button>
+            )
+          })}
+        </>
+      )}
     </div>,
     document.body,
   )

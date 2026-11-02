@@ -3056,6 +3056,25 @@
 .context-menu-item:focus-visible {
   background: var(--surface-container-highest);
 }
+.context-menu-item:disabled {
+  color: var(--on-surface-variant);
+  cursor: default;
+  opacity: 0.55;
+}
+.context-menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--outline-variant);
+}
+.context-menu-label {
+  padding: 4px 10px 2px;
+  color: var(--on-surface-variant);
+  font-size: var(--text-xs);
+}
+.context-menu-target {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* ---------- 服务器连接状态（左栏底部） ---------- */
 .status-cluster {

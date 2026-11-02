@@ -1,8 +1,8 @@
-# 会话 Tab 右键菜单（重命名 / Fork）— 设计文档
+# 会话 Tab 右键菜单（重命名 / Fork / 移动）— 设计文档
 
-> 对应 spec-v0.3 #10。chat Tab 右键弹菜单：重命名（复用双击行内编辑）、Fork
-> （`POST /session/{id}/fork` 复制会话，新 Tab 打开激活）。store/通信层为主，
-> UI 为 FileContextMenu 模式第 4 处实例。
+> 对应 spec-v0.3 #10；会话移动为 2026-11-02 增补（spec-v0.5 #13，见 §2.5）。
+> chat Tab 右键弹菜单：重命名（复用双击行内编辑）、Fork、移动到同项目工作区。
+> store/通信层为主，UI 为 FileContextMenu 模式第 4 处实例。
 >
 > 参考先例（按 AGENTS.md 约定检索 `../openbuilder/docs/design-*.md`）：移动端
 > 无 Tab 条（单会话路由），无右键菜单/fork 先例；fork API 仅在
@@ -20,16 +20,16 @@
 
 ### 2.1 菜单形态与触发
 
-- **仅 chat Tab** 右键弹菜单（重命名/fork 都是会话语义）；file/diff/terminal/browser
+- **仅 chat Tab** 右键弹菜单（重命名/fork/移动都是会话语义）；file/diff/terminal/browser
   Tab 右键只 preventDefault（不弹空菜单）。重命名态（行内输入框）中的 Tab 不弹
   （输入优先，避免菜单动作与编辑态打架）。
 - 菜单目标 = **被右键的 Tab**（快照入 state，不随菜单存活期内的列表变化重定目标）；
   右键不激活 Tab（与浏览器 Tab 惯例一致）。
 - 菜单基建复用 FileContextMenu 模式（首帧隐藏测量钳制 + capture 四触发关闭 +
   浮层计数 z-order + 方向键导航），第 4 处实例；`.popover context-menu` 样式零新增。
-- 两项：**重命名** → 复用双击路径，以 Tab 当前标题进 `renaming` 编辑态（提交/
+- 主动作：**重命名** → 复用双击路径，以 Tab 当前标题进 `renaming` 编辑态（提交/
   取消/IME 守卫全走既有 commitRename）；**Fork 会话** → `store.forkSession`。
-  动作统一"先关菜单再执行"（run 模式）。
+  「移动到」分组列同项目目标（§2.5）。动作统一"先关菜单再执行"（run 模式）。
 
 ### 2.2 fork API 契约（实测 server 1.18.20）
 
@@ -100,6 +100,47 @@
 不拦截：fork 对源会话只读，server 在其当前消息边界原子复制；进行中的流继续写源。
 与 revert 的 busy 确认（design-message-revert）不同——fork 无破坏性，无需确认。
 
+### 2.5 会话移动（2026-11-02 增补）
+
+#### 入口与范围
+
+- 「移动到」只列**同项目主工作区 + 现有 worktree**。数据源复用
+  `workspacesOfProject`（WorktreeTable 库存优先），排除当前目录；无其他目标时不显示分组。
+- 运行中会话禁用目标项。server 支持在执行边界移动，但首版遵循官方 GUI 的保守口径；
+  移动 POST 在途时也禁用，防重复提交。
+- 不做任意路径输入、跨项目选择或移动时新建 worktree。首版目标集与官方
+  `SessionWorkspaceMenu` 一致。
+
+#### API 与完成语义
+
+- `POST /api/session/{sessionID}/move`，body 仅 `{directory}`；`delivery` 省略，
+  由 server 默认 `steer`。
+- 移动是 durable inbox 控制项，不级联子会话。HTTP `204` 只表示准入，**不表示已经移动**；
+  `moveSession` 只管理 POST 在途标记，不做乐观 location 改写。失败经 `connectionError` 呈现。
+- `session.moved` 在目录闸门前消费。该事件会路由到源与目标 location，信封 directory
+  不是移动后的归属依据；目标取 data 的 `projectID + location.directory + subpath`。
+  双路由重复事件按相同目标幂等收敛。
+
+#### 本地状态收敛
+
+- `relocateSession` 是事件与快照共用的唯一 location 写路径。保持 `chat:<sessionID>`
+  key 不变，不调用 `closeTab`，所以消息、草稿、引用、附件和滚动状态不因移动清空。
+- 同步更新 `sessionsByProject`、chat Tab 的 directory/projectId、源与目标 Tab 记忆、
+  Tab 持久层、`statusSources` 和 pending 权限/表单目录。
+- **激活 Tab 移动 = 当前作用域跟随目标**，源作用域记录相邻 Tab 作为回退；
+  **后台 Tab 移动 = 不切作用域、不抢激活**。移出本端已打开项目时按目录卸载处理，
+  重新打开目标项目后由快照恢复。
+- 同项目目标尚未进入 worktree 库存时，`session.moved` 先登记 provisional 目录并保留
+  Tab/消息/草稿。项目快照重建后重放该目录；库存实际确认前，旧库存或库存失败的对账
+  不得把它当消失目录卸载。库存首次包含该目录后摘除 provisional 标记，恢复正常删除对账。
+- SSE 丢失时，目标目录快照中的同 id、新 location 走同一 `relocateSession`。
+  server 在移动投影中把 `time_updated` 写为事件 created；客户端据此记录 location 版本，
+  拒绝旧源快照回卷（无 local/Tab 锚点也适用）。若源空快照先删掉本地会话，chat Tab
+  保留为锚点，目标快照随后完成归属迁移，不走关 Tab 清理。relocation 合入快照时，
+  `idle/viewed` 仍取单调最大值，避免已读水位回卷。
+- 移动与重命名并发时，迟到 PATCH 回执重读当前会话且只合并标题，不回写旧 location。
+  旧连接 move POST 的迟到 `finally` 仅在 client 身份仍匹配时解除在途标记。
+
 ## 3. 不做的事
 
 | 项 | 原因 |
@@ -116,15 +157,15 @@
 
 | 文件 | 变更 |
 |---|---|
-| `src/shared/rest-client.ts` | `forkSession(sessionID, directory, {messageID?})`：POST fork 端点（timeoutMs: 0） |
-| `src/renderer/src/store/app-store.ts` | `forkSession`：fire-and-forget——REST then 合并快照（迟到守卫：本地更新更晚跳过）+ 当前作用域被动补开；失败 connectionError |
-| `src/renderer/src/components/workspace.tsx` | Tab `onContextMenu`（chat 门禁 + 快照 state）；`TabContextMenu` 组件（FileContextMenu 模式） |
-| `src/renderer/src/i18n/index.ts` | `forkSession`（"Fork 会话"/"Fork session"；重命名复用 `renameTab`） |
-| 测试 | rest-client：URL/body 形态与无超时信号；store：fire-and-forget 合并+被动补开不激活 / SSE 先到幂等 / directory 直传 / 失败 / 双缺 no-op |
+| `src/shared/rest-client.ts` | `forkSession`；`moveSession(sessionID, directory)`：POST move 端点（204 只作准入） |
+| `src/renderer/src/store/app-store.ts` | `forkSession`；`moveSession` 在途防重；`relocateSession` + `session.moved` 旁路 + 快照 location 竞态防护 |
+| `src/renderer/src/components/workspace.tsx` | Tab `onContextMenu`（chat 门禁 + 快照 state）；`TabContextMenu` 组件（FileContextMenu 模式 + 移动目标组） |
+| `src/renderer/src/i18n/index.ts` | `forkSession`、`moveSession`、`moveSessionBusy`（重命名复用 `renameTab`） |
+| 测试 | rest-client：URL/body/204；store：POST 在途、事件移动、激活跟随、状态保留、SSE 丢失与旧快照回卷；UI：目标列表、点击移动、运行中禁用 |
 
 ## 5. 验收
 
-- chat Tab 右键弹菜单（重命名 / Fork 会话两项）；file/diff/terminal/browser Tab 右键无菜单
+- chat Tab 右键弹菜单（重命名 / Fork 会话 / 移动到）；file/diff/terminal/browser Tab 右键无菜单
 - 重命名项进入与双击相同的行内编辑（Enter 提交、Esc 取消、IME 安全）
 - fork 点击后新 Tab 经 SSE `session.created` 实时补开**立即**出现（实测 0.3s，
   末尾追加、**不激活不抢焦点**），标题带 "(fork #N)" 后缀，消息在 server 复制
@@ -133,4 +174,8 @@
 - SSE 丢失时：REST 响应到达被动补开（当前作用域）或切回作用域补开
 - fork 失败（断连/会话已删）经左栏状态行可见错误，无残留 Tab
 - 流式中的会话可 fork（快照至当前消息边界）
+- 空闲会话可移到同项目主工作区或现有 worktree；当前目录不重复列出，运行中与 POST 在途禁用
+- `204` 后本地目录不提前变化；`session.moved` 到达后 Tab key、消息与草稿保留，
+  激活会话跟随目标作用域，后台会话不抢激活
+- 丢失 `session.moved` 时由目标快照收敛；迟到旧源快照不移回旧目录
 - `npm run test` / `typecheck` / `build` 全绿

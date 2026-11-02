@@ -462,6 +462,15 @@ export class AppStore {
   /** 会话注册表版本：任何 upsert/删除/整表替换/清空后自增，触发 childIndex 重建 */
   private sessionRegistryVersion = 0
   /**
+   * 已观察的 location 版本（sessionID → 最后权威移动）。session.moved 的
+   * time_updated = 事件 created；快照按该时刻拒绝把新 location 回卷成旧值。
+   * 仅内存态，连接拆除或会话删除时清理。
+   */
+  private sessionLocationVersions = new Map<
+    string,
+    { updated: number; projectID: string; directory: string }
+  >()
+  /**
    * 会话状态（busy/idle/retry）——纯客户端内存映射，单一事实源：
    * Tab 状态点、左栏指示器、消息流 TypingSlot 都消费它（design-typing-indicator §4）。
    * idle 不落 map（缺省即 idle）；来源见 setSessionStatus（事件驱动）
@@ -568,6 +577,8 @@ export class AppStore {
    * 实时收敛分支抢先关会丢 Ctrl+Shift+T 关闭栈条目，在途期间抑制、交本地收尾
    */
   private closingChatSessions = new Set<string>()
+  /** 移动 POST 在途会话（防重复提交；204 后清除，不代表移动已完成） */
+  private movingSessions = new Set<string>()
   settingsOpen = false
   /** 打开项目选择器（左栏 "+" 与 Alt+O 同路径；overlay 计数协调浏览器视图显隐） */
   pickerOpen = false
@@ -1142,12 +1153,15 @@ export class AppStore {
     // worktree 库存随连接拆除清空（v2 权威源；重连时 refreshAllOpenedProjects
     // 重新 refresh+list 载入）
     this.worktreeDirs.clear()
+    this.provisionalWorktreeDirs.clear()
     // 死目录语义化状态同拆（todo-error-body-tag）：最近删除集随连接失效（对账
     // 重载后不再依赖旧判据），在途收敛去重防御悬挂
     this.recentlyDeletedLocations.clear()
     this.deadLocationHandling.clear()
     this.sessionsByProject.clear()
     this.sessionRegistryVersion++
+    this.sessionLocationVersions.clear()
+    this.movingSessions.clear()
     this.childIndex.clear()
     this.childIndexVersion = -1
     this.noticesBySession.clear()
@@ -1260,6 +1274,122 @@ export class AppStore {
   }
 
   /**
+   * 快照中的 location 是否可覆盖本地值。移动事件与源/目标快照可能乱序：
+   * 旧源快照不得在 session.moved 后把会话移回去。相同 updated 的冲突快照也
+   * 服从已观察的移动事件（server 以事件 created 写 time_updated）。
+   */
+  private shouldApplySnapshotLocation(next: Session, local: Session | null): boolean {
+    const version = this.sessionLocationVersions.get(next.id)
+    if (
+      version &&
+      (version.directory !== next.directory || version.projectID !== next.projectID) &&
+      next.time.updated <= version.updated
+    ) {
+      return false
+    }
+    return !local || next.time.updated >= local.time.updated
+  }
+
+  /**
+   * 会话 location 的单一写路径（session.moved / 快照兜底）。chat Tab 只改归属，
+   * 不改 key、不关 Tab，因此消息、草稿、引用与滚动状态原样保留。激活 Tab 移动时
+   * 当前作用域跟随目标；后台 Tab 移动不切换用户正在查看的作用域。
+   */
+  private relocateSession(next: Session): boolean {
+    const sessionID = next.id
+    const key = `chat:${sessionID}`
+    const local = this.findSession(sessionID)
+    const tab = this.tabs.find((t) => t.kind === "chat" && t.key === key)
+    if (!local && !tab) return false
+    // 快照兜底也遵守 idle/viewed 单调水位。先在 relocation 入口合并，
+    // 避免整对象替换后丢失本地已读 ack，再由普通快照合并二次保证。
+    if (local) next = { ...next, time: mergeMonotoneSessionTime(local.time, next.time) }
+    const previousDirectory = local?.directory ?? tab?.directory ?? ""
+    const previousProjectID = local?.projectID ?? tab?.projectId ?? ""
+    this.sessionLocationVersions.set(sessionID, {
+      updated: next.time.updated,
+      projectID: next.projectID,
+      directory: next.directory,
+    })
+
+    const targetProject = this.openedProjects.find((p) => p.id === next.projectID)
+    if (
+      targetProject &&
+      targetProject.worktree !== next.directory &&
+      !(targetProject.sandboxes ?? []).includes(next.directory)
+    ) {
+      // 他端新建 worktree 后，session.moved 可能先于库存刷新到达。事件本身
+      // 已证明目标存在：先纳入内部作用域集并保留 Tab/草稿锚点，等待库存对账；
+      // 不得把「尚未发现」误判为「移出已打开项目」而清除运行时状态。
+      targetProject.sandboxes = [...(targetProject.sandboxes ?? []), next.directory]
+      this.provisionalWorktreeDirs.set(next.directory, next.projectID)
+    }
+    // 移出本端已打开的作用域：按目录卸载处理。重新打开目标项目时由快照恢复。
+    if (!targetProject) {
+      if (local) {
+        this.sessionsByProject.get(local.projectID)?.delete(sessionID)
+        this.sessionRegistryVersion++
+      }
+      if (tab) this.closeTab(key, { archive: false })
+      this.cleanupSessionState(sessionID)
+      this.setSessionStatus(sessionID, { type: "idle" })
+      this.dropPendingForSession(sessionID)
+      this.emit()
+      return true
+    }
+
+    const sourceTabs = previousDirectory ? this.tabs.filter((t) => t.directory === previousDirectory) : []
+    const sourcePos = sourceTabs.findIndex((t) => t.key === key)
+    const sourceAfter = sourceTabs.filter((t) => t.key !== key)
+    const sourceFallback = (sourcePos > 0 ? sourceAfter[sourcePos - 1] : sourceAfter[0])?.key ?? null
+    const followsActive = tab != null && this.activeTabKey === key
+    const repairSourceActive =
+      previousDirectory !== "" && (followsActive || this.scopeActiveKeys.get(previousDirectory) === key)
+
+    if (local && previousProjectID !== next.projectID) {
+      this.sessionsByProject.get(previousProjectID)?.delete(sessionID)
+    }
+    let targetMap = this.sessionsByProject.get(next.projectID)
+    if (!targetMap) {
+      targetMap = new Map()
+      this.sessionsByProject.set(next.projectID, targetMap)
+    }
+    targetMap.set(sessionID, next)
+    this.sessionRegistryVersion++
+
+    if (tab) {
+      tab.directory = next.directory
+      tab.projectId = next.projectID
+      tab.title = next.title || next.slug || tab.title
+    }
+    if (this.statusSources.has(sessionID)) this.statusSources.set(sessionID, next.directory)
+    for (const pending of this.pendingPermissions.values()) {
+      if (pending.sessionID === sessionID) pending.directory = next.directory
+    }
+    for (const pending of this.pendingQuestions.values()) {
+      if (pending.sessionID === sessionID) pending.directory = next.directory
+    }
+
+    if (repairSourceActive) this.scopeActiveKeys.set(previousDirectory, sourceFallback)
+    if (followsActive) {
+      this.scopeActiveKeys.set(next.directory, key)
+      const ps = this.projectStateFor()
+      ps.currentProjectId = next.projectID
+      ps.currentWorkspaceId = targetProject.worktree === next.directory ? null : next.directory
+      this.projectStates[this.profileKey()] = ps
+      this.resetFileTree()
+      void this.persistProjectState().catch(() => {})
+    }
+    if (tab) {
+      if (previousDirectory && previousDirectory !== next.directory) this.syncScopeMemory(previousDirectory)
+      this.syncScopeMemory(next.directory)
+    }
+    this.persistTabSession()
+    this.emit()
+    return true
+  }
+
+  /**
    * 将单目录会话快照合入项目 map（按 projectID 过滤后交 session-merge 分域合并）。
    * 闸门：在途快照落地时项目可能已关闭、目录可能已被删除（removeWorkspace）——
    * 过期快照直接丢弃，防止复活已卸载的 worktree 会话。
@@ -1271,6 +1401,33 @@ export class AppStore {
       return
     }
     const filtered = sessions.filter((s) => s.projectID === projectId)
+    // 目标目录快照是 SSE 丢失后的移动兜底。先按 updated 做 location 竞态审判，
+    // 再交普通分域合并；被判定为旧源快照的条目整条跳过，防止其他字段也回卷。
+    const accepted: Session[] = []
+    for (const s of filtered) {
+      const local = this.findSession(s.id)
+      const tab = this.tabs.find((t) => t.kind === "chat" && t.key === `chat:${s.id}`)
+      // 无 local/Tab 锚点也要服从已观察的移动版本。否则移出已打开项目后，
+      // 迟到旧源快照会走「location 未变化」快速路径并复活旧目录会话。
+      const version = this.sessionLocationVersions.get(s.id)
+      if (
+        version &&
+        (version.directory !== s.directory || version.projectID !== s.projectID) &&
+        s.time.updated <= version.updated
+      ) {
+        continue
+      }
+      const locationChanged =
+        (local != null && (local.directory !== s.directory || local.projectID !== s.projectID)) ||
+        (local == null && tab != null && (tab.directory !== s.directory || tab.projectId !== s.projectID))
+      if (!locationChanged) {
+        accepted.push(s)
+        continue
+      }
+      if (this.shouldApplySnapshotLocation(s, local)) {
+        if (this.relocateSession(s)) accepted.push(s)
+      }
+    }
     const local = this.sessionsByProject.get(projectId) ?? new Map<string, Session>()
     // 空快照 = 该目录会话已全部删除，逐条清除本地同目录会话——merge 层 <2 条
     // 无开区间，"整目录被清空"场景永远删不掉。安全性依据（server 源码核实）：
@@ -1282,12 +1439,12 @@ export class AppStore {
         if (s.directory === directory) local.delete(id)
       }
     }
-    this.sessionsByProject.set(projectId, mergeSessionsSnapshot(local, directory, filtered))
+    this.sessionsByProject.set(projectId, mergeSessionsSnapshot(local, directory, accepted))
     this.sessionRegistryVersion++
     this.snapshottedDirs.add(directory)
     // 存量 marker-only 转正（design-archive-official-api §3）：fire-and-forget，
     // 幂等（转正后不再命中），失败下次对账重扫
-    void this.backfillLegacyArchives(filtered)
+    void this.backfillLegacyArchives(accepted)
   }
 
   /** backfill 在途标记（design-archive-official-api §3）：多目录快照并发到达
@@ -1715,7 +1872,7 @@ export class AppStore {
    * info——与本地会话合并后走 applySessionEvent；created 构造骨架（事件字段
    * 足够列表/Tab；time 以事件时间戳播种，对账纠正）；deleted payload 只有
    * sessionID（本地反查 projectID）。返回 true = 已消费（跳过 v1 表）。
-   * session.moved 暂不翻译（重连对账兜底，M4 会话域收尾）。
+   * session.moved 在目录闸门前经 relocateSession 单独处理（源/目标双路由）。
    */
   private applyV2SessionEvent(
     directory: string,
@@ -1776,6 +1933,8 @@ export class AppStore {
           this.sessionsByProject.get(local.projectID)?.delete(sid)
           this.sessionRegistryVersion++
         }
+        this.sessionLocationVersions.delete(sid)
+        this.movingSessions.delete(sid)
         this.closeTab(`chat:${sid}`, { archive: false })
         this.cleanupSessionState(sid)
         this.setSessionStatus(sid, { type: "idle" })
@@ -1837,6 +1996,60 @@ export class AppStore {
         : (meta?.project ?? "")
       if (projectId && !this.openedProjects.some((p) => p.id === projectId)) return
       void this.syncWorktrees()
+      return
+    }
+    // ---- session.moved（durable 旁路）：事件可路由到源与目标两个 location，
+    // 信封 directory 不能作移动后的归属依据。按 payload 中的目标直接收敛；
+    // 未加载且无 Tab 的会话等目标目录快照补入。
+    if (ev.type === "session.moved") {
+      const p = ev.properties as {
+        sessionID?: unknown
+        projectID?: unknown
+        location?: { directory?: unknown; workspaceID?: unknown }
+        subpath?: unknown
+      }
+      const sid = String(p.sessionID ?? "")
+      const projectID = String(p.projectID ?? "")
+      const directory = String(p.location?.directory ?? "")
+      if (!sid || !projectID || !directory) return
+      const local = this.findSession(sid)
+      const tab = this.tabs.find((t) => t.kind === "chat" && t.key === `chat:${sid}`)
+      if (!local && !tab) return
+      const eventTime = meta?.created ?? Date.now()
+      const version = this.sessionLocationVersions.get(sid)
+      if (version && eventTime < version.updated) return
+      if (
+        local &&
+        eventTime < local.time.updated &&
+        (local.directory !== directory || local.projectID !== projectID)
+      ) {
+        return
+      }
+      if (
+        local?.directory === directory &&
+        local.projectID === projectID &&
+        (!tab || (tab.directory === directory && tab.projectId === projectID))
+      ) {
+        this.sessionLocationVersions.set(sid, { updated: eventTime, projectID, directory })
+        return
+      }
+      const base: Session =
+        local ??
+        ({
+          id: sid,
+          projectID: tab!.projectId ?? "",
+          directory: tab!.directory ?? "",
+          title: tab!.title,
+          time: { created: eventTime, updated: eventTime },
+        } satisfies Session)
+      this.relocateSession({
+        ...base,
+        projectID,
+        directory,
+        workspaceID: typeof p.location?.workspaceID === "string" ? p.location.workspaceID : undefined,
+        subpath: typeof p.subpath === "string" ? p.subpath : undefined,
+        time: { ...base.time, updated: Math.max(base.time.updated, eventTime) },
+      })
       return
     }
     // ---- execution 生命周期（design-typing-indicator §4 来源 0，官方 GUI 客户端
@@ -2045,6 +2258,8 @@ export class AppStore {
         if (!info) return
         this.sessionsByProject.get(info.projectID)?.delete(info.id)
         this.sessionRegistryVersion++
+        this.sessionLocationVersions.delete(info.id)
+        this.movingSessions.delete(info.id)
         // 会话不存在了：对应 Tab 直接关 + 状态卸载
         this.closeTab(`chat:${info.id}`, { archive: false })
         this.cleanupSessionState(info.id)
@@ -3847,6 +4062,7 @@ export class AppStore {
     isCurrent: boolean,
   ): Promise<boolean> {
     const project = this.projects.find((p) => p.id === projectId)
+    this.provisionalWorktreeDirs.delete(directory)
     // 内部 sandboxes 剥离该目录（v2 库存合并的残留——union 只增不减，残留会让
     // 60s diff 对已卸载目录重复触发；server 冻结 legacy 列的回归无害：diff 基线
     // 双侧同含，不触发卸载，仅闸门放宽）
@@ -3962,6 +4178,10 @@ export class AppStore {
       const nextDirs = new Set([...(next?.sandboxes ?? []), ...(this.worktreeDirs.get(old.id) ?? [])])
       for (const d of oldDirs) {
         if (!nextDirs.has(d)) {
+          // session.moved 先发现的新 worktree 可能撞上在途旧库存，或本轮
+          // listWorktrees 失败而 listProjects 成功。库存实际确认前，不能把
+          // provisional 目录当消失目录卸载；确认后由 loadWorktreeInventory 摘标。
+          if (this.provisionalWorktreeDirs.get(d) === old.id) continue
           toUnload.push({
             directory: d,
             projectId: old.id,
@@ -4110,6 +4330,9 @@ export class AppStore {
    * 并 union 进内部 sandboxes（事件闸门/作用域/快照/记忆全下游同构受益）。
    */
   private worktreeDirs = new Map<string, string[]>()
+  /** session.moved 先于库存发现的目录（directory → projectId）。仅作事件
+   *  锚点，不参与消失目录卸载；库存首次实际包含该目录时摘除临时标记。 */
+  private provisionalWorktreeDirs = new Map<string, string>()
 
   /**
    * 拉取项目 worktree 库存并合并进内部 sandboxes。
@@ -4144,6 +4367,11 @@ export class AppStore {
     // 在途闸门：拉取期间可能已断连/切 profile——不落过期库存
     if (dirs === null || this.client !== client) return null
     this.worktreeDirs.set(projectId, dirs)
+    for (const directory of dirs) {
+      if (this.provisionalWorktreeDirs.get(directory) === projectId) {
+        this.provisionalWorktreeDirs.delete(directory)
+      }
+    }
     this.mergeWorktreeDirsIntoProjects()
     this.emit()
     return dirs
@@ -4156,12 +4384,19 @@ export class AppStore {
    */
   private mergeWorktreeDirsIntoProjects() {
     for (const p of this.projects) {
-      const dirs = this.worktreeDirs.get(p.id)
-      if (!dirs) continue
+      const dirs = this.worktreeDirs.get(p.id) ?? []
       const known = new Set(p.sandboxes ?? [])
       let changed = false
       for (const d of dirs) {
         if (!known.has(d)) {
+          known.add(d)
+          changed = true
+        }
+      }
+      // 项目列表刷新会重建 Project 对象。库存确认前重放事件发现的临时目录，
+      // 否则 currentWorkspace 会在 syncWorktrees 的新鲜项目替换后失效并回落根目录。
+      for (const [d, projectId] of this.provisionalWorktreeDirs) {
+        if (projectId === p.id && !known.has(d)) {
           known.add(d)
           changed = true
         }
@@ -4238,6 +4473,45 @@ export class AppStore {
     return [...(this.sessionsByProject.get(project.id)?.values() ?? [])]
       .filter((s) => !s.parentID && isArchivedSession(s) && s.directory === dir)
       .sort((a, b) => (archivedAtOf(b) ?? 0) - (archivedAtOf(a) ?? 0))
+  }
+
+  isSessionMoving(sessionID: string): boolean {
+    return this.movingSessions.has(sessionID)
+  }
+
+  /**
+   * 请求移动空闲会话到同项目主工作区或现有 worktree。204 只表示 inbox 准入，
+   * 不在此乐观改 location；session.moved / 快照经 relocateSession 收敛。
+   */
+  async moveSession(sessionID: string, directory: string): Promise<boolean> {
+    const client = this.client
+    const session = this.findSession(sessionID)
+    if (!client || !session || this.movingSessions.has(sessionID) || this.isSessionActive(sessionID)) {
+      return false
+    }
+    const project = this.openedProjects.find((p) => p.id === session.projectID)
+    const validTarget =
+      project != null &&
+      (project.worktree === directory || this.workspacesOfProject(project.id).some((w) => w.directory === directory))
+    if (!validTarget || session.directory === directory) return false
+    this.movingSessions.add(sessionID)
+    this.emit()
+    try {
+      await client.moveSession(sessionID, directory)
+      return true
+    } catch (e) {
+      if (this.client === client) {
+        this.connectionError = e instanceof Error ? e.message : String(e)
+      }
+      return false
+    } finally {
+      // 旧连接的迟到回执不得清除新连接同一会话的移动在途守卫。
+      // teardown 已清空本连接标记；client 已更换时无需再写或 emit。
+      if (this.client === client) {
+        this.movingSessions.delete(sessionID)
+        this.emit()
+      }
+    }
   }
 
   /**
@@ -5144,8 +5418,13 @@ export class AppStore {
       // v2 PATCH 204 无返回体：本地乐观落地（title 必填回填 slug 语义由 server
       // 收敛，重连快照对账兜底）
       await client.updateSession(sessionID, { title: trimmed })
-      const map = this.sessionsByProject.get(session.projectID)
-      map?.set(sessionID, { ...session, title: trimmed })
+      // 回执落地时重读当前会话，只合并标题。请求在途期间 session.moved
+      // 可能已改变 project/directory；不得用 await 前捕获的整对象回写旧 location。
+      const current = this.findSession(sessionID)
+      if (current) {
+        const map = this.sessionsByProject.get(current.projectID)
+        map?.set(sessionID, { ...current, title: trimmed })
+      }
       // Tab 标题即时同步（SSE 回环亦可到达，此处消除本地等待）
       const tab = this.tabs.find((t) => t.key === `chat:${sessionID}`)
       if (tab) tab.title = trimmed

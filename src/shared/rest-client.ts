@@ -327,6 +327,18 @@ export class RestClient {
     })
   }
 
+  /**
+   * POST /api/session/:sessionID/move：把移动控制项写入会话 inbox（204 无返回体）。
+   * 204 只表示准入，不表示 location 已变更；调用方须等 session.moved 或会话快照收敛。
+   * delivery 省略时使用服务端默认 steer。
+   */
+  async moveSession(sessionID: string, directory: string): Promise<void> {
+    await this.fetchResponse(`/api/session/${encodeURIComponent(sessionID)}/move`, {
+      method: "POST",
+      body: JSON.stringify({ directory }),
+    })
+  }
+
   /** GET /api/session/:sessionID：单会话（含 `time.idle`/`viewed`）——终态补拉用
    *  （design-unread-marker §4.3：`Execution.*` 事件不带 idle 时间戳，取权威值）。 */
   async getSession(sessionID: string): Promise<SessionInfo> {
