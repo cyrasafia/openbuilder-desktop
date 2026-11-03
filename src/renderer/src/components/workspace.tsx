@@ -158,6 +158,10 @@ export function Workspace() {
   const [dragKey, setDragKey] = useState<string | null>(null)
   const [dragSlot, setDragSlot] = useState<number | null>(null)
   const tabbarRef = useRef<HTMLDivElement | null>(null)
+  // 拖放移动的二次确认（design-session-tab-drag-move §2.4）：dragend 提交时
+  // 会话进行中 → 挂 ConfirmDialog（确认 = moveSessionConfirmed 先停后移；
+  // 取消 = 不停不移）。快照入 state，弹窗期间 Tab 被关由渲染守卫卸载
+  const [pendingMove, setPendingMove] = useState<{ sessionID: string; directory: string } | null>(null)
   // 行内重命名（design-tab-drag-rename §2）：仅 chat Tab，双击进入
   const [renaming, setRenaming] = useState<{ key: string; value: string } | null>(null)
   // Tab 右键菜单（design-session-tab-context-menu §2.1）：仅 chat Tab 提供
@@ -193,8 +197,23 @@ export function Workspace() {
     setDragSlot(null)
   }
   /** dragend 提交：按松手时预览 DOM 序整体重排（所见即所得）——读 tabbar 容器
-   *  内 .tab 的 data-tab-key 顺序调 applyTabOrder，不经 slot 换算。 */
+   *  内 .tab 的 data-tab-key 顺序调 applyTabOrder，不经 slot 换算。
+   *  移动分支（design-session-tab-drag-move §2.1）：拖放目标非空 = 预览是
+   *  "移动"，任意释放位置都提交移动（dragend 恒触发，同重排序提交语义）；
+   *  进行中会话先挂二次确认。登记与 dragend 源一致性校验（纵深加固，
+   *  review）：非本 Tab 的 dragend 不消费异常残留的登记/目标，照常重排序。 */
   const handleDragEnd = () => {
+    const drag = store.draggingChatTab
+    const moveDir = drag ? store.takeSessionDropTarget() : null
+    if (drag && moveDir && moveDir !== drag.directory && dragKey === `chat:${drag.sessionID}`) {
+      if (store.isSessionActive(drag.sessionID)) {
+        setPendingMove({ sessionID: drag.sessionID, directory: moveDir })
+      } else {
+        void store.moveSession(drag.sessionID, moveDir)
+      }
+      endDrag()
+      return
+    }
     if (tabbarRef.current) {
       const keys = [...tabbarRef.current.querySelectorAll<HTMLElement>(".tab")]
         .map((el) => el.dataset.tabKey)
@@ -206,13 +225,32 @@ export function Workspace() {
   // 拖拽中 Tab 被移除的兜底（review 发现）：他端删会话经 SSE closeTab 卸载源
   // .tab 节点后 dragend 不再派发，残留 dragKey 会让容器 dragover 对后续无关
   // 拖拽误 preventDefault（显示 move 落点光标）——dragKey 失效即清拖拽态；
-  // 预览侧另有 dragIdx 守卫（拖拽中回原序），两道防线互不依赖
+  // 预览侧另有 dragIdx 守卫（拖拽中回原序），两道防线互不依赖。
+  // chat Tab 拖放移动登记（store.draggingChatTab）随同一守卫清空（design-session-tab-drag-move §2.2）
   useEffect(() => {
     if (dragKey && !tabs.some((tb) => tb.key === dragKey)) {
+      if (store.draggingChatTab != null) store.cancelChatTabDrag()
       setDragKey(null)
       setDragSlot(null)
     }
   }, [dragKey, tabs])
+
+  // 拖拽中 Workspace 整体卸载（openedProjects 清空切壳层）同致 dragend 失派发：
+  // unmount 清 store 拖拽登记（残留 sessionDropTarget 会让左栏行滞留高亮）
+  useEffect(
+    () => () => {
+      if (store.draggingChatTab != null) store.cancelChatTabDrag()
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [store],
+  )
+
+  // 移动目标与插入位预览互斥（design-session-tab-drag-move §2.1，review 修订）：
+  // 目标行高亮期间清 dragSlot——Tab 条回原序（拖拽项占位回源位），预览单一
+  // 指向"移动"；悬停回 Tab 条时 dragover 重设插入位（互斥另一向，行内实现）
+  useEffect(() => {
+    if (store.sessionDropTarget != null && dragSlot != null) setDragSlot(null)
+  }, [store.sessionDropTarget, dragSlot])
 
   // 重命名编辑会话保存/恢复（selection-restore，2026-09-30）：失焦不提交
   // （IME 切换的瞬时 blur→focus 反弹不退出编辑态），回焦恢复光标续编辑；
@@ -341,6 +379,9 @@ export function Workspace() {
         className="tabbar"
         onDragOver={(ev) => {
           if (!dragKey) return
+          // 悬停回 Tab 条 = 显式"放回排序"手势（design-session-tab-drag-move
+          // §2.1）：清移动目标，预览切回插入位；无拖放登记（非 chat 拖拽/桩）时跳过
+          if (store.sessionDropTarget != null) store.setSessionDropTarget(null)
           // 容器整体为合法落区（含 Tab 间空隙、条尾空白/"+"按钮、占位 Tab）：
           // dragover preventDefault 让预览插入位在整条区域连续生效。插入位按
           // 光标 X 几何计算（边缘带判定，项目行判定水平化）：光标落入某 Tab
@@ -430,6 +471,15 @@ export function Workspace() {
               // 自定义 MIME：避免内部 key 以 text/plain 拖入可编辑区被默认插入
               e.dataTransfer.setData("application/x-openbuilder-tab", tab.key)
               e.dataTransfer.effectAllowed = "move"
+              // chat Tab 额外登记拖放移动（design-session-tab-drag-move §2.2）：
+              // dragover 阶段 getData 禁读，左栏行合法性判定取此带外副本
+              if (tab.kind === "chat") {
+                store.beginChatTabDrag({
+                  sessionID: tab.key.slice(5),
+                  projectId: tab.projectId ?? "",
+                  directory: tab.directory ?? "",
+                })
+              }
             }}
             onDragEnd={handleDragEnd}
             onContextMenu={(e) => {
@@ -625,6 +675,25 @@ export function Workspace() {
             />
           )
         })()}
+      {/* 拖放移动进行中会话的二次确认（design-session-tab-drag-move §2.4）：
+          dragend 提交时置位。Tab 已不存在（弹窗期间被 SSE/他端关闭）时不渲染
+          （同 pendingTabClose 渲染守卫模式）；确认走 moveSessionConfirmed
+          （先停后移，Promise loading 态承载 interrupt 耗时），取消即终了 */}
+      {pendingMove &&
+        store.tabs.some((x) => x.key === `chat:${pendingMove.sessionID}`) && (
+          <ConfirmDialog
+            title={t.confirmMoveActiveSessionTitle}
+            message={t.confirmMoveActiveSession}
+            confirmLabel={t.confirm}
+            cancelLabel={t.cancel}
+            loadingLabel={t.movingSession}
+            danger
+            onConfirm={async () => {
+              await store.moveSessionConfirmed(pendingMove.sessionID, pendingMove.directory)
+            }}
+            onClose={() => setPendingMove(null)}
+          />
+        )}
     </main>
   )
 }

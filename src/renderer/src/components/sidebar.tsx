@@ -193,6 +193,24 @@ function worktreeCheckHint(t: Catalog, check: WorktreeDirtyCheck | undefined): s
   }
 }
 
+/**
+ * 拖放移动的合法性判定坐标（design-session-tab-drag-move §2.3，review 二轮）：
+ * dragstart 快照在拖拽手势内他端 `session.moved` 竞态下会过期——「同项目/
+ * 当前目录」判定改按 findSession 实时值（Map 查询成本可忽略），无本地记录
+ * （僵尸 Tab）回退快照（空字段本就匹配不到任何行）。提交侧守卫不受影响：
+ * moveSession 全量复检，本判定只管高亮与目标设置。
+ */
+function dragScopeOf(
+  store: { findSession: (id: string) => { projectID?: string; directory?: string } | null },
+  drag: { sessionID: string; projectId: string; directory: string },
+): { projectId: string; directory: string } {
+  const live = store.findSession(drag.sessionID)
+  return {
+    projectId: live?.projectID ?? drag.projectId,
+    directory: live?.directory ?? drag.directory,
+  }
+}
+
 function ProjectTree() {
   const store = useStore()
   const { t } = useI18n()
@@ -335,7 +353,8 @@ function ProjectTree() {
                   "tree-row project-row" +
                   (isActive ? " active" : "") +
                   (cursor ? " scope-cursor" : "") +
-                  (e.key === dragKey ? " dragging" : "")
+                  (e.key === dragKey ? " dragging" : "") +
+                  (store.sessionDropTarget === e.project.worktree ? " drop-target" : "")
                 }
                 data-scope-cursor={cursor ? "" : undefined}
                 draggable
@@ -348,6 +367,28 @@ function ProjectTree() {
                   ev.dataTransfer.effectAllowed = "move"
                 }}
                 onDragEnd={handleDragEnd}
+                onDragOver={(ev) => {
+                  // 会话 Tab 拖放移动（design-session-tab-drag-move §2.3）：
+                  // 项目行 = 主工作区目标（同右键菜单目标集）。合法性判定取
+                  // store 带外登记（dragover 阶段 getData 禁读）+ 会话实时归属；
+                  // 移动 POST 在途不受理；他项目行不清目标（粘滞——任意位置
+                  // 放手都移动）；悬停会话当前目录行 = 显式"放回原处"手势，清目标
+                  const drag = store.draggingChatTab
+                  if (!drag || store.isSessionMoving(drag.sessionID)) return
+                  const scope = dragScopeOf(store, drag)
+                  if (e.project.id !== scope.projectId) return
+                  if (e.project.worktree === scope.directory) {
+                    store.setSessionDropTarget(null)
+                    return
+                  }
+                  ev.preventDefault()
+                  ev.dataTransfer.dropEffect = "move"
+                  store.setSessionDropTarget(e.project.worktree)
+                }}
+                onDrop={(ev) => {
+                  // 提交统一在源 Tab 的 dragend（恒触发）；仅屏蔽默认处理（同 Tab 条）
+                  ev.preventDefault()
+                }}
               >
                 <ProjectAvatar name={e.name} icon={e.project.icon} />
                 <span className="project-main" title={e.directory}>
@@ -406,12 +447,33 @@ function ProjectTree() {
                       "tree-row ws-row" +
                       (deleting ? " deleting" : "") +
                       (isCurrentProject && store.currentWorkspace?.directory === w.directory ? " active" : "") +
-                      (wsCursor ? " scope-cursor" : "")
+                      (wsCursor ? " scope-cursor" : "") +
+                      (store.sessionDropTarget === w.directory ? " drop-target" : "")
                     }
                     data-scope-cursor={wsCursor ? "" : undefined}
                     onClick={() => {
                       if (deleting) return
                       selectWorkspace(e.project.id, w.directory)
+                    }}
+                    onDragOver={(ev) => {
+                      // 会话 Tab 拖放移动（design-session-tab-drag-move §2.3）：
+                      // worktree 行目标；合法性同项目行（deleting 行被
+                      // pointer-events:none 挡在 dragover 之前，无需另判）
+                      const drag = store.draggingChatTab
+                      if (!drag || store.isSessionMoving(drag.sessionID)) return
+                      const scope = dragScopeOf(store, drag)
+                      if (e.project.id !== scope.projectId) return
+                      if (w.directory === scope.directory) {
+                        store.setSessionDropTarget(null)
+                        return
+                      }
+                      ev.preventDefault()
+                      ev.dataTransfer.dropEffect = "move"
+                      store.setSessionDropTarget(w.directory)
+                    }}
+                    onDrop={(ev) => {
+                      // 提交统一在源 Tab 的 dragend（恒触发）；仅屏蔽默认处理
+                      ev.preventDefault()
                     }}
                   >
                     <FolderGit2 className="ws-icon" size={16} aria-hidden />

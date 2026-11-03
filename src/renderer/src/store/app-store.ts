@@ -601,6 +601,20 @@ export class AppStore {
   private closingChatSessions = new Set<string>()
   /** 移动 POST 在途会话（防重复提交；204 后清除，不代表移动已完成） */
   private movingSessions = new Set<string>()
+  /**
+   * 拖拽中的会话 Tab 登记（design-session-tab-drag-move §2.2）：chat Tab
+   * dragstart 写入、dragend/异常终了清空。dragover 阶段浏览器禁读
+   * dataTransfer.getData，左栏行的合法性判定取此带外副本（同 file-ref
+   * draggingFileRef 先例）。projectId/directory 取 Tab 实体；僵尸 Tab 字段
+   * 空 → 任何行不匹配 = 不可拖放移动（右键菜单经 findSession 兜底不受影响）。
+   */
+  draggingChatTab: { sessionID: string; projectId: string; directory: string } | null = null
+  /**
+   * 拖放移动的目标目录（左栏行高亮，design-session-tab-drag-move §2.1）：
+   * 悬停合法行设置、悬停回 Tab 条/当前目录行清空；非空 = dragend 提交移动
+   * （任意释放位置，同重排序 dragend 提交语义）。仅拖拽期间非空。
+   */
+  sessionDropTarget: string | null = null
   settingsOpen = false
   /** 打开项目选择器（左栏 "+" 与 Alt+O 同路径；overlay 计数协调浏览器视图显隐） */
   pickerOpen = false
@@ -4637,6 +4651,37 @@ export class AppStore {
     return this.movingSessions.has(sessionID)
   }
 
+  /** chat Tab dragstart 登记拖拽（design-session-tab-drag-move §2.2）；恒重置
+   *  移动目标（上次拖拽的异常残留不自泄） */
+  beginChatTabDrag(info: { sessionID: string; projectId: string; directory: string }) {
+    this.draggingChatTab = info
+    this.sessionDropTarget = null
+    this.emit()
+  }
+
+  /** 悬停合法目标行设置移动目标（行高亮）；同值不 emit（dragover 高频）。
+   *  null = 清目标（悬停回 Tab 条/当前目录行的显式"放回"手势） */
+  setSessionDropTarget(directory: string | null) {
+    if (this.sessionDropTarget === directory) return
+    this.sessionDropTarget = directory
+    this.emit()
+  }
+
+  /** dragend 提交：取走移动目标并清拖拽登记（返回 null = 无移动语义，回退
+   *  重排序提交）；异常终了（源节点卸载致 dragend 失派发/组件卸载）同法清空 */
+  takeSessionDropTarget(): string | null {
+    const target = this.sessionDropTarget
+    const had = this.draggingChatTab != null || target != null
+    this.draggingChatTab = null
+    this.sessionDropTarget = null
+    if (had) this.emit()
+    return target
+  }
+
+  cancelChatTabDrag() {
+    this.takeSessionDropTarget()
+  }
+
   /**
    * 请求移动空闲会话到同项目主工作区或现有 worktree。204 只表示 inbox 准入，
    * 不在此乐观改 location；session.moved / 快照经 relocateSession 收敛。
@@ -4670,6 +4715,34 @@ export class AppStore {
         this.emit()
       }
     }
+  }
+
+  /**
+   * 拖放移动的确认路径（design-session-tab-drag-move §2.4）：进行中会话先停止
+   * 后移动——interrupt 等 run 结算后才响应（v2 awaitSettlement，同
+   * revertToMessage 前置）；回执后 SSE execution.interrupted 的 idle 投影可能
+   * 晚到，主动置 idle 放行 moveSession 的 active 守卫（事件随后同值幂等）。
+   * interrupt 失败（断连等）放弃移动并经 connectionError 呈现——保守口径同
+   * moveSession 的运行中拒绝，不盲 POST。确认时重估：弹窗期间已转空闲则
+   * 直接移动（不无谓 stop）。
+   */
+  async moveSessionConfirmed(sessionID: string, directory: string): Promise<boolean> {
+    if (this.isSessionActive(sessionID)) {
+      const client = this.client
+      if (!client) return false
+      try {
+        await client.interrupt(sessionID)
+      } catch (e) {
+        if (this.client === client) {
+          this.connectionError = e instanceof Error ? e.message : String(e)
+          this.emit()
+        }
+        return false
+      }
+      this.setSessionStatus(sessionID, { type: "idle" })
+      this.emit()
+    }
+    return this.moveSession(sessionID, directory)
   }
 
   /**
