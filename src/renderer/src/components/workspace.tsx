@@ -1147,6 +1147,12 @@ function GuidePage() {
 
   const send = async () => {
     const text = draft.trim()
+    // 空壳闸门（design-worktree-shell-rescue §2.1）：作用域目录已登记损坏——
+    // 拦截首条消息（引导页 send = 会话创建入口，store.createSession 另有
+    // 双保险静默闸门）。提示不走 4 秒 notify——阻断是持续态，用常驻红字
+    // （attach-error，composer 内）+ 发送置灰，与 tooLarge 同式；草稿保留，
+    // 删除工作区（卸载清登记）后可重发
+    if (store.isWorkspaceBroken(directory)) return
     // 空守卫：文本/引用/附件全空才拒绝（纯附件发送合法，design-session-attachments §2）
     const refs = store.fileRefsFor(directory)
     const attachments = store.attachmentsFor(directory)
@@ -1279,9 +1285,12 @@ function GuidePage() {
         disabled={
           (!draft.trim() && guideRefs.length === 0 && store.attachmentsFor(directory).length === 0) ||
           sending ||
-          // 超限占位置灰（design-session-attachments §2b）：删除占位后恢复
+          // 超限占位置灰（design-session-attachments §2b）：删除占位后恢复；
+          // 空壳阻断置灰（design-worktree-shell-rescue §2.1）同式——删除
+          // 工作区（卸载清登记）后恢复
           guideRefs.some((r) => r.tooLarge) ||
-          store.attachmentsFor(directory).some((a) => a.tooLarge)
+          store.attachmentsFor(directory).some((a) => a.tooLarge) ||
+          store.isWorkspaceBroken(directory)
         }
         // 专注模式复用本按钮发送（§3.2 变形语义：面板内无发送钮）：
         // 走 sendFromFocus（发送后无条件退回普通模式，D7）
@@ -1334,6 +1343,13 @@ function GuidePage() {
               )}
               {refInput.chips}
               {attachInput.chips}
+              {/* 空壳阻断常驻红字（design-worktree-shell-rescue §2.1）：与
+                  tooLarge 红字同式（attach-error，错误源同寿命——登记在即
+                  显示，删除工作区后随卸载消失）；专注抑制面经
+                  .guide-composer .form-note 过渡组一并隐 */}
+              {store.isWorkspaceBroken(directory) && (
+                <div className="form-note attach-error">{t.workspaceBrokenBlocked}</div>
+              )}
               <div className="composer-input" ref={guideComposerInputRef}>
                 {attachInput.pickerButton}
                 <textarea

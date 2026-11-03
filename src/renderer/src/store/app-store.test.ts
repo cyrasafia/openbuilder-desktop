@@ -696,6 +696,357 @@ describe("非聊天 Tab 作用域化（design-tab-memory §18）", () => {
     expect(seenForce).toBe(true)
   })
 
+  // ===== 空壳兜底与会话创建闸门（design-worktree-shell-rescue）=====
+
+  /** 活体实测形状（2026-11-03 happy-harbor/proud-moon）：空壳与目录消失 DELETE 同型 */
+  function worktreeUnavailableError(): ApiError {
+    return new ApiError(400, "unknown", `HTTP 400: Worktree directory unavailable: ${WT1}`, {
+      _tag: "WorktreeError",
+      name: "WorktreeError",
+      data: { message: `Worktree directory unavailable: ${WT1}`, forceRequired: null },
+    })
+  }
+
+  it("空壳兜底（§3.2）：同型 400 + probe broken → runShell rm（cwd 落点零拼接）+ refresh 代行清理，免二次确认", async () => {
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    const shellCalls: Array<{ command: string; cwd?: string }> = []
+    let refreshed = false
+    cv2.deleteWorktree = async () => {
+      throw worktreeUnavailableError()
+    }
+    cv2.probeWorktreeHealth = async () => "broken"
+    cv2.runShell = async (command: string, opts: { cwd?: string } = {}) => {
+      shellCalls.push({ command, cwd: opts.cwd })
+      return { exit: 0, output: "" }
+    }
+    cv2.refreshWorktrees = async () => {
+      refreshed = true
+    }
+    cv2.listWorktrees = async () => [{ directory: ROOT }, { directory: WT2, strategy: "git" }]
+    projectList = [{ ...project(), sandboxes: [WT2] }]
+
+    const res = await store.removeWorkspace(WT1)
+    expect(res.ok).toBe(true)
+    // rm 首发且经 cwd 落点（$PWD 由 shell 展开，路径零拼接——§1.2 注入面归零）
+    expect(shellCalls[0]).toEqual({ command: 'rm -rf "$PWD"', cwd: WT1 })
+    expect(refreshed).toBe(true)
+    // prunable 元数据前置清理（2026-11-03 eager-moon 实测）：prune 在分支
+    // 处理前发出，清掉 canonical 侧死元数据 → 分支不再被标记检出 → 无误报
+    // branchNotice（keptBranch 恒 null）
+    expect(shellCalls.map((c) => c.command)).toContain("git worktree prune")
+    expect(res.keptBranch).toBeUndefined()
+    expect(store.branchNotice).toBeNull()
+  })
+
+  it("分支清理 prune 后仍被活 worktree 检出 → branchNotice 保留（零静默丢失语义不变）", async () => {
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    cv2.runShell = async (command: string) => ({
+      // prune/show-ref 过，branch -D 被 git 拒（活 worktree 检出）
+      exit: command.startsWith("git branch -D") ? 1 : 0,
+      output: "",
+    })
+    cv2.deleteWorktree = async () => {}
+    cv2.listWorktrees = async () => [{ directory: ROOT }, { directory: WT2, strategy: "git" }]
+    projectList = [{ ...project(), sandboxes: [WT2] }]
+
+    const res = await store.removeWorkspace(WT1)
+    expect(res.ok).toBe(true)
+    expect(res.keptBranch).toBe("opencode/wt1")
+    expect(store.branchNotice).toBe("opencode/wt1")
+  })
+
+  it("空壳兜底不误伤（§3.1 双判别）：probe ok（活 worktree）→ 不清理，原样失败", async () => {
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    let rmCalled = false
+    let refreshed = false
+    cv2.deleteWorktree = async () => {
+      throw worktreeUnavailableError()
+    }
+    cv2.probeWorktreeHealth = async () => "ok"
+    cv2.runShell = async () => {
+      rmCalled = true
+      return { exit: 0, output: "" }
+    }
+    cv2.refreshWorktrees = async () => {
+      refreshed = true
+    }
+
+    const res = await store.removeWorkspace(WT1)
+    expect(res.ok).toBe(false)
+    expect(res.error).toContain("unavailable")
+    expect(rmCalled).toBe(false)
+    expect(refreshed).toBe(false)
+    expect(store.workspacesOfProject("proj1").some((w) => w.directory === WT1)).toBe(true)
+  })
+
+  it("unknown 收敛判据（§3.2）：refresh 后库存行仍在（端点故障误报/真异常）→ 放弃，无 rm", async () => {
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    let rmCalled = false
+    cv2.deleteWorktree = async () => {
+      throw worktreeUnavailableError()
+    }
+    cv2.probeWorktreeHealth = async () => "unknown"
+    cv2.runShell = async () => {
+      rmCalled = true
+      return { exit: 0, output: "" }
+    }
+    cv2.refreshWorktrees = async () => {}
+    // 重拉仍含 WT1 = 目录健在（目录消失与端点故障同状 unknown，行在即放弃）
+    cv2.listWorktrees = async () => [{ directory: ROOT }, { directory: WT1 }, { directory: WT2 }]
+
+    const res = await store.removeWorkspace(WT1)
+    expect(res.ok).toBe(false)
+    expect(rmCalled).toBe(false)
+  })
+
+  it("目录消失型兜底（§3.2）：unknown + refresh 后行已消 → 无 rm 清理成功", async () => {
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    const commands: string[] = []
+    let refreshed = false
+    cv2.deleteWorktree = async () => {
+      throw worktreeUnavailableError()
+    }
+    cv2.probeWorktreeHealth = async () => "unknown"
+    cv2.runShell = async (command: string) => {
+      commands.push(command)
+      return { exit: 0, output: "" }
+    }
+    cv2.refreshWorktrees = async () => {
+      refreshed = true
+    }
+    cv2.listWorktrees = async () => [{ directory: ROOT }, { directory: WT2, strategy: "git" }]
+    projectList = [{ ...project(), sandboxes: [WT2] }]
+
+    const res = await store.removeWorkspace(WT1)
+    expect(res.ok).toBe(true)
+    // 无 rm（目录消失无对象；commands 里只可能有分支清理的 show-ref/branch -D）
+    expect(commands).not.toContain('rm -rf "$PWD"')
+    expect(refreshed).toBe(true)
+  })
+
+  it("非 WorktreeError 失败（网络等）→ 不探测直接呈现错误（§3.1 tag 判别前置）", async () => {
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    let probed = false
+    cv2.deleteWorktree = async () => {
+      throw new Error("git worktree remove failed")
+    }
+    cv2.probeWorktreeHealth = async () => {
+      probed = true
+      return "broken"
+    }
+
+    const res = await store.removeWorkspace(WT1)
+    expect(res.ok).toBe(false)
+    expect(probed).toBe(false)
+  })
+
+  it("rm 失败（exit ≠ 0）→ 放弃兜底，原样失败可重试（§3.2）", async () => {
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    cv2.deleteWorktree = async () => {
+      throw worktreeUnavailableError()
+    }
+    cv2.probeWorktreeHealth = async () => "broken"
+    cv2.runShell = async () => ({ exit: 1, output: "Device or resource busy" })
+    cv2.refreshWorktrees = async () => {}
+
+    const res = await store.removeWorkspace(WT1)
+    expect(res.ok).toBe(false)
+    expect(res.error).toContain("unavailable")
+  })
+
+  it("切换探测（§2.1）：broken 登记 + createSession 闸门拦截（不发 POST），ok 清除", async () => {
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    let health: "ok" | "broken" | "unknown" = "broken"
+    cv2.probeWorktreeHealth = async () => health
+    let created = false
+    cv2.createSession = async () => {
+      created = true
+      throw new Error("不应到达")
+    }
+
+    await store.setCurrentWorkspace(WT1)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(store.isWorkspaceBroken(WT1)).toBe(true)
+
+    // 闸门：createSession 静默 null，不发带 location 的 POST（省建档燃料）
+    store.projectStates.default.currentWorkspaceId = WT1
+    expect(await store.createSession()).toBeNull()
+    expect(created).toBe(false)
+
+    // 探测转 ok（外部修复/重建后切换）→ 登记清除、会话创建恢复
+    health = "ok"
+    await store.setCurrentWorkspace(ROOT)
+    await store.setCurrentWorkspace(WT1)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(store.isWorkspaceBroken(WT1)).toBe(false)
+  })
+
+  it("切换探测范围（§1.4）：canonical 不探测；探测异常 fail-open 不登记", async () => {
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    const probed: string[] = []
+    cv2.probeWorktreeHealth = async (d: string) => {
+      probed.push(d)
+      return "broken"
+    }
+    // canonical 入 sandboxes（作用域可切到根）——canonical 死亡非 worktree 语义，不探测
+    store.projects = [{ ...project(), sandboxes: [ROOT, WT1, WT2] }]
+    await store.setCurrentWorkspace(ROOT)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(probed).toEqual([])
+
+    // 探测方法缺失（旧 fake/端点异常）→ fail-open：不登记、不拦会话
+    // （catalog 预置非空 models——跳过 createSession 的 1.5s catalog 等待）
+    delete cv2.probeWorktreeHealth
+    store.modelCatalogs.set(WT1, { agents: [], models: [{ id: "m1" } as never] })
+    await store.setCurrentWorkspace(WT1)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(store.isWorkspaceBroken(WT1)).toBe(false)
+    expect(await store.createSession({ openTab: false })).not.toBeNull()
+  })
+
+  it("登记生命周期（§2.1）：删除完成（unloadWorktreeDirectory）即移除，重建同名不误拦", async () => {
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    snapshots.set(ROOT, [])
+    cv2.probeWorktreeHealth = async () => "broken"
+    cv2.deleteWorktree = async () => {}
+    cv2.listWorktrees = async () => [{ directory: ROOT }, { directory: WT2, strategy: "git" }]
+    projectList = [{ ...project(), sandboxes: [WT2] }]
+    store.brokenWorkspaces.add(WT1)
+
+    const res = await store.removeWorkspace(WT1)
+    expect(res.ok).toBe(true)
+    expect(store.isWorkspaceBroken(WT1)).toBe(false)
+  })
+
+  it("作用域进入三路径（review 2026-11-03 #1）：跨项目直达工作区（openProject）同样探测登记", async () => {
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    cv2.probeWorktreeHealth = async () => "broken"
+
+    await store.openProject("proj1", WT1)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(store.isWorkspaceBroken(WT1)).toBe(true)
+  })
+
+  it("启动恢复探测（2026-11-03 复测补丁）：恢复作用域不走 setCurrentWorkspace——probeRestoredWorkspaceScope 登记，闸门不失效", async () => {
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    let probed = ""
+    cv2.probeWorktreeHealth = async (d: string) => {
+      probed = d
+      return "broken"
+    }
+    // 持久化恢复态：停在 WT1 作用域（Ctrl+R 后的场景）。connect 全链路在单测
+    // 环境不可行（doConnect 自建真实 RestClient）——恢复挂点已抽为单一私有
+    // 方法，此处直测（connect 在 refreshAllOpenedProjects 后调用它）
+    store.projectStates.default.currentWorkspaceId = WT1
+    ;(store as unknown as { probeRestoredWorkspaceScope: () => void }).probeRestoredWorkspaceScope()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(probed).toBe(WT1)
+    expect(store.isWorkspaceBroken(WT1)).toBe(true)
+    // 闸门生效：会话创建被拦（快路径）
+    expect(await store.createSession({ openTab: false })).toBeNull()
+  })
+
+  it("createSession 兜底校验（2026-11-03 复测补丁二）：登记集未命中时实时探测——broken 现场登记并拦，不发 POST", async () => {
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    store.modelCatalogs.set(WT1, { agents: [], models: [{ id: "m1" } as never] })
+    let created = false
+    cv2.createSession = async () => {
+      created = true
+      throw new Error("不应到达")
+    }
+    // 登记集为空（模拟探测挂点漏覆盖/陈旧）——兜底实时探测拦下
+    cv2.probeWorktreeHealth = async () => "broken"
+    store.projectStates.default.currentWorkspaceId = WT1
+    expect(await store.createSession({ openTab: false })).toBeNull()
+    expect(created).toBe(false)
+    // 现场登记后红字数据源就位；后续走快路径
+    expect(store.isWorkspaceBroken(WT1)).toBe(true)
+  })
+
+  it("createSession 兜底校验 fail-open：ok / unknown / 探测方法缺失均放行，canonical 与非 worktree 目录不探测", async () => {
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    store.modelCatalogs.set(WT1, { agents: [], models: [{ id: "m1" } as never] })
+    store.modelCatalogs.set(ROOT, { agents: [], models: [{ id: "m1" } as never] })
+
+    // ok：放行（会话正常创建）
+    store.projectStates.default.currentWorkspaceId = WT1
+    cv2.probeWorktreeHealth = async () => "ok"
+    expect(await store.createSession({ openTab: false })).not.toBeNull()
+
+    // unknown：放行（目录消失与端点故障同状，不误拦）
+    cv2.probeWorktreeHealth = async () => "unknown"
+    expect(await store.createSession({ openTab: false })).not.toBeNull()
+
+    // 探测方法缺失（旧 fake/端点异常）：不抛、放行
+    delete cv2.probeWorktreeHealth
+    expect(await store.createSession({ openTab: false })).not.toBeNull()
+
+    // canonical 作用域（项目根）：不探测（canonical 排除）——探测方法缺失也不影响
+    store.projectStates.default.currentWorkspaceId = null
+    expect(await store.createSession({ openTab: false })).not.toBeNull()
+  })
+
+  it("同目录重切早退探测（2026-11-03 复测补丁）：点击当前工作区行 = 交互时点，登记随最新探测刷新", async () => {
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    let health: "ok" | "broken" | "unknown" = "broken"
+    let probes = 0
+    cv2.probeWorktreeHealth = async () => {
+      probes += 1
+      return health
+    }
+
+    await store.setCurrentWorkspace(WT1)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(store.isWorkspaceBroken(WT1)).toBe(true)
+
+    // 外部修复 .git 后重切同一行（早退路径）：探测重跑、登记清除
+    health = "ok"
+    await store.setCurrentWorkspace(WT1)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(probes).toBe(2)
+    expect(store.isWorkspaceBroken(WT1)).toBe(false)
+  })
+
+  it("收敛判据重拉失败同判放弃（review 2026-11-03 #2）：unknown + listWorktrees 失败 → 原样失败，不走成功链", async () => {
+    const cv2 = (store as unknown as { client: Record<string, unknown> }).client
+    cv2.deleteWorktree = async () => {
+      throw worktreeUnavailableError()
+    }
+    cv2.probeWorktreeHealth = async () => "unknown"
+    cv2.runShell = async () => ({ exit: 0, output: "" })
+    cv2.refreshWorktrees = async () => {}
+    cv2.listWorktrees = async () => {
+      throw new Error("network down")
+    }
+    let evicted = false
+    cv2.evictLocation = async () => {
+      evicted = true
+    }
+
+    const res = await store.removeWorkspace(WT1)
+    // 诚实失败：不 evict / 不登记最近删除集 / 行保留（成功链整段不走）
+    expect(res.ok).toBe(false)
+    expect(evicted).toBe(false)
+    expect(
+      (store as unknown as { recentlyDeletedLocations: Map<string, number> }).recentlyDeletedLocations.has(WT1),
+    ).toBe(false)
+    expect(store.workspacesOfProject("proj1").some((w) => w.directory === WT1)).toBe(true)
+  })
+
   it("requestWorktreeDelete 预检流转（§4.1）：checking → dirty/clean/error，弹窗态联动", async () => {
     const cv2 = (store as unknown as { client: Record<string, unknown> }).client
     store.projects = [project()]
@@ -1272,8 +1623,12 @@ describe("worktree 库存（v2 权威源，2026-09-29：sandboxes 冻结）", ()
     expect(res.ok).toBe(true)
     expect(res.keptBranch).toBeUndefined()
     expect(store.branchNotice).toBeNull()
-    // 只有一次存在性探测，无 for-each-ref / branch -D
-    expect(commands).toEqual([`git show-ref --verify --quiet refs/heads/opencode/wt1`])
+    // prune（prunable 元数据前置清理，2026-11-03）+ 一次存在性探测，无
+    // for-each-ref / branch -D
+    expect(commands).toEqual([
+      "git worktree prune",
+      `git show-ref --verify --quiet refs/heads/opencode/wt1`,
+    ])
   })
 
   it("非 slug 目录名跳过分支管理（review Finding 1）：挂载与清理均不发 shell", async () => {

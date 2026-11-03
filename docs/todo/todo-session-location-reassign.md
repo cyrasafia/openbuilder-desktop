@@ -8,7 +8,7 @@ worktree/目录在**应用外被手动删除**后，该 location 死亡。当前
 
 - 死目录预期失败静默吸收（`_tag` 判别/删除窗口/最近删除集）
 - `LocationNotFoundError` 回执被动确证 → unload + evict + 库存剥离
-- 红线：不主动探测（probe 即建档燃料）
+- 红线（2026-11-03 收窄，design-worktree-shell-rescue §1.3）：不用 location 请求探测（probe 即建档燃料专指带 `location[directory]` 的请求；runShell 零建档通道不受限）
 
 会话本身仍在库存里，但失去可用 location。官方 v2.2.0 提供的路径：位置不可用时让用户**另选目录或 worktree** 继续该会话。
 

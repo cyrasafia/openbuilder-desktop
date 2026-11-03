@@ -99,6 +99,11 @@ export function isLocationNotFoundError(e: unknown): e is ApiError {
   return e instanceof ApiError && e.tag === "LocationNotFoundError"
 }
 
+/** worktree 健康探测三态（design-worktree-shell-rescue §1.2；`probeWorktreeHealth`
+ *  返回值）——`unknown` 含「目录消失」与「shell 端点故障」两种不可区分形态，
+ *  消费方不得据此执行破坏性处置 */
+export type WorktreeHealth = "ok" | "broken" | "unknown"
+
 /** 错误分类转换（参考 openbuilder design-network-error-handling：不暴露响应体） */
 export function classifyFetchError(e: unknown): ApiError {
   if (e instanceof ApiError) return e
@@ -454,8 +459,10 @@ export class RestClient {
    * 死目录被动确证回调（todo-error-body-tag #3）：withLocation 内收到
    * LocationNotFoundError（2.1.3 结构化错误体，目录已被删除的 server 确证）时
    * 同步触发，directory = 请求目录。调用方（app-store）即时 unload + evict，
-   * 不等 60s 对账。**红线：只消费已有请求的错误回执，不做主动探测**——
-   * 死目录 liveness probe 本身即建档燃料（ref-pseudo-project-cleanup §3.4）。
+   * 不等 60s 对账。**红线（2026-11-03 收窄，design-worktree-shell-rescue §1.3）：
+   * 不用 location 请求探测**——本回调只消费已有请求的错误回执；主动探测只允许
+   * runShell 零建档通道（`probeWorktreeHealth`，不带 location 参数——带
+   * `location[directory]` 的 probe 本身即建档燃料，ref-pseudo-project-cleanup §3.4）。
    */
   onDeadLocation?: (directory: string) => void
 
@@ -642,17 +649,59 @@ export class RestClient {
     let info = created.data
     while (info.status === "running" && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 300))
-      info = (await this.fetchJson<{ data: ShellInfo }>(`/api/shell/${encodeURIComponent(id)}`)).data
+      // 轮询/输出 GET 同样带超时兜底（review 2026-11-03 二轮 #1 补齐）：缺
+      // signal 时在途 await 挂起无界——deadline 检查只在返回后生效，救不了
+      // 挂起的请求本身。超时抛 ApiError(timeout) 由调用方降级（probe →
+      // unknown / 分支挂载 → detached），与 POST 超时同径
+      info = (
+        await this.fetchJson<{ data: ShellInfo }>(`/api/shell/${encodeURIComponent(id)}`, {
+          timeoutMs: timeoutMs + 5000,
+        })
+      ).data
     }
     if (info.status === "running") {
       throw new ApiError(0, "timeout", `shell 未在 ${timeoutMs}ms 内退出: ${command}`)
     }
     try {
-      const out = await this.fetchJson<{ data: { output?: string } }>(`/api/shell/${encodeURIComponent(id)}/output`)
+      const out = await this.fetchJson<{ data: { output?: string } }>(
+        `/api/shell/${encodeURIComponent(id)}/output`,
+        { timeoutMs: timeoutMs + 5000 },
+      )
       return { exit: info.exit ?? null, output: out.data.output ?? "" }
     } finally {
       // best-effort 清理（退出态 shell 记录；失败吞掉不影响结果）
       void this.fetchResponse(`/api/shell/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => {})
+    }
+  }
+
+  /**
+   * worktree 健康探测（design-worktree-shell-rescue §1.2）：`test -e .git` 经
+   * cwd 落点执行——body `cwd` 不经 location 中间件（`requestRef` 无 query/header
+   * 时落 server cwd），**不 boot 目标目录、不触发 resolve/建档**。红线修订
+   * （2026-11-03）后唯一合法的主动探测通道；**本封装不得携带 location 参数**
+   * （query/header/body 均无）——安全属性固化在封装内。
+   * - exit 0 → `"ok"`（.git 在）
+   * - exit ≠ 0 → `"broken"`（shell 已在目录内起且 test 失败 = 目录存在、
+   *   .git 丢失——空壳确证）
+   * - throw → `"unknown"`：目录消失时 server 无法 spawn（**活体实测 2026-11-03
+   *   = HTTP 500**）与 shell 端点故障同状，不可区分；exit null（无退出码）同判。
+   *   **调用方不得据 unknown 删目录**——目录消失型的处置经无破坏性的
+   *   refresh + 库存重拉收敛（design-worktree-shell-rescue §3.2）
+   */
+  async probeWorktreeHealth(directory: string, opts: { timeoutMs?: number } = {}): Promise<WorktreeHealth> {
+    try {
+      // 默认 5s（异步挂点：切换/恢复探测）；createSession 兜底走同步等待，
+      // 传短超时（review 2026-11-03 二轮 #1：shell 域挂起时 fetch 超时 =
+      // timeout+5s，5s 默认下阻塞上界 ~25s——2s 把上界压到 ~9s 且正常路径
+      // （实测 ~90ms）不受影响）
+      const r = await this.runShell("test -e .git", {
+        cwd: directory,
+        timeoutMs: opts.timeoutMs ?? 5000,
+      })
+      if (r.exit === 0) return "ok"
+      return r.exit !== null ? "broken" : "unknown"
+    } catch {
+      return "unknown"
     }
   }
 

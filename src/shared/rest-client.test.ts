@@ -432,6 +432,52 @@ describe("runShell（design-worktree-branch-sync：POST /api/shell 至终态）"
   })
 })
 
+describe("probeWorktreeHealth（design-worktree-shell-rescue §1.2：零建档探测通道）", () => {
+  function shellClient(exit: number | null, onPost?: (url: string, init: RequestInit) => void) {
+    return mkClient((url, init) => {
+      if (init.method === "POST" && url.split("?")[0].endsWith("/api/shell")) {
+        onPost?.(url, init)
+        return new Response(JSON.stringify({ data: { id: "sh_p", status: "exited", exit } }))
+      }
+      if (url.endsWith("/api/shell/sh_p/output")) {
+        return new Response(JSON.stringify({ data: { output: "" } }))
+      }
+      return new Response(null, { status: 204 })
+    })
+  }
+
+  it("exit 0 → ok；请求零 location 参数（无 query、无 header、body 只有 command/cwd/timeout）", async () => {
+    let seenUrl = ""
+    let seenInit: RequestInit = {}
+    const client = shellClient(0, (url, init) => {
+      seenUrl = url
+      seenInit = init
+    })
+    await expect(client.probeWorktreeHealth("/wt/hollow")).resolves.toBe("ok")
+    expect(seenUrl).toBe("http://server/api/shell") // 无 query（location[directory] 不在）
+    expect(JSON.parse(String(seenInit.body))).toEqual({
+      command: "test -e .git",
+      cwd: "/wt/hollow",
+      timeout: 5000,
+    })
+    const headers = seenInit.headers as Record<string, string>
+    expect(Object.keys(headers).some((k) => k.toLowerCase() === "x-opencode-directory")).toBe(false)
+  })
+
+  it("exit ≠ 0 → broken（shell 在目录内起 + test 失败 = 目录在、.git 失——空壳确证）", async () => {
+    await expect(shellClient(1).probeWorktreeHealth("/wt/hollow")).resolves.toBe("broken")
+  })
+
+  it("POST 失败（目录消失 server 500，活体 2026-11-03）→ unknown，不抛", async () => {
+    const client = mkClient(() => new Response("spawn failed", { status: 500 }))
+    await expect(client.probeWorktreeHealth("/wt/gone")).resolves.toBe("unknown")
+  })
+
+  it("exit null（无退出码）→ unknown", async () => {
+    await expect(shellClient(null).probeWorktreeHealth("/wt/x")).resolves.toBe("unknown")
+  })
+})
+
 describe("待办人机交互与会话切换（M6a）", () => {
   function recorder(): {
     seen: Array<{ url: string; method: string; body: unknown }>

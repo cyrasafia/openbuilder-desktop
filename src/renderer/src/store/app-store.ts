@@ -168,6 +168,16 @@ function clampPanelWidth(side: "left" | "right", px: number): number {
   return Math.round(Math.min(l.max, Math.max(l.min, px)))
 }
 
+/** WorktreeError 且目录不可用（design-worktree-shell-rescue §3.1 判别源）：
+ *  空壳（目录在、.git 丢失）与目录消失两种残留的 DELETE 400 错误体**同型**
+ *  （`{_tag:"WorktreeError", data.message 前缀 "Worktree directory unavailable:"}`，
+ *  活体实测 2026-11-03 happy-harbor + proud-moon 双例）——兜底清理的入口判别。
+ *  message 双读经 ApiError 构造（扁平 message ?? data.message），旧形状
+ *  `{name,data}` 兼容（tag 双读）。 */
+function isWorktreeUnavailableError(e: unknown): boolean {
+  return e instanceof ApiError && e.tag === "WorktreeError" && /unavailable/i.test(e.message)
+}
+
 /** 窗口变窄自动收放阈值（design-layout-collapse §2.6）：中栏下限 = 聊天区
  *  阅读下限 600 + 消息区 padding 48（与 app.css --chat-min 同源）——中栏将被
  *  压到阅读下限以下是收起判据，左右栏宽可调故阈值随之动态 */
@@ -561,6 +571,18 @@ export class AppStore {
    */
   branchNotice: string | null = null
   private branchNoticeTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * 空壳 worktree 目录集（design-worktree-shell-rescue §2.1）：作用域切换时
+   * runShell 探测（零建档通道）发现「目录在但 .git 丢失」的登记——会话创建
+   * 闸门数据源（createSession 入口拦截，不发带 location 的 POST）。目录卸载
+   * （删除完成/对账 diff/被动确证）时移除；探测为 ok/unknown 也清除（fail-open，
+   * shell 端点故障不拦会话）。探测点只在切换——定时探测已否决（§2 裁定）。
+   */
+  brokenWorkspaces = new Set<string>()
+  /** 空壳判定（会话创建闸门/UI 呈现数据源） */
+  isWorkspaceBroken(directory: string): boolean {
+    return this.brokenWorkspaces.has(directory)
+  }
   /**
    * 待确认关闭的 Tab（tab-actions closeTabInteractive 置位，Tab 栏 X 钮与
    * Ctrl+W 同入口）：非空 = ConfirmDialog 挂载中；chat 流式中 / 终端运行中
@@ -977,6 +999,11 @@ export class AppStore {
       // 打开项目的快照 + 订阅
       await this.refreshAllOpenedProjects()
       if (stale()) return
+      // 启动/重连恢复作用域的空壳探测（design-worktree-shell-rescue §2.1，
+      // 2026-11-03 复测补丁）：恢复不走 setCurrentWorkspace——不探测则
+      // brokenWorkspaces 空集，闸门对「刷新页面（Ctrl+R）后停在空壳作用域」
+      // 失效（实测 sunny-sailor）
+      this.probeRestoredWorkspaceScope()
       // 启动恢复（design-tab-memory §8 + design-tab-session-restore §3）：逐作用域按记忆
       // 重建 chat Tab（不动激活）→ 会话层恢复非 chat 实体 + 模板序合并 + scopeActive
       // 播种 → 当前作用域含激活规则（规则 1.5 消费播种记录——任意 kind/引导页跨重启）。
@@ -1379,6 +1406,11 @@ export class AppStore {
       this.projectStates[this.profileKey()] = ps
       this.resetFileTree()
       void this.persistProjectState().catch(() => {})
+      // 空壳探测（design-worktree-shell-rescue §2.1，review 2026-11-03 #1）：会话
+      // 移入工作区跟随激活 = 第三条 scope 进入路径，同覆盖不留盲区；canonical
+      // 排除在 probeWorkspaceAfterSwitch 内；epoch 取当前值（随后任何切换递增
+      // 即令本探测过期，latest-wins 语义成立）
+      void this.probeWorkspaceAfterSwitch(targetProject, next.directory, this.switchEpoch)
     }
     if (tab) {
       if (previousDirectory && previousDirectory !== next.directory) this.syncScopeMemory(previousDirectory)
@@ -2989,17 +3021,22 @@ export class AppStore {
     const ps = this.projectStateFor()
     if (!ps.opened.includes(projectId)) ps.opened.push(projectId)
     ps.currentProjectId = projectId
-    ps.currentWorkspaceId =
-      workspaceDirectory != null &&
-      this.projects.find((p) => p.id === projectId)?.sandboxes?.includes(workspaceDirectory)
+    const project = this.projects.find((p) => p.id === projectId)
+    const validWs =
+      workspaceDirectory != null && project?.sandboxes?.includes(workspaceDirectory)
         ? workspaceDirectory
         : null
+    ps.currentWorkspaceId = validWs
     // 立即登记：同步段（事件闸门目录/作用域派生）即读得到新状态
     this.projectStates[this.profileKey()] = ps
     const expectedDir = this.scopeDirectory()
     this.resetFileTree()
     this.restoreScopeTabs(expectedDir, true, true)
     this.emit()
+    // 空壳探测（design-worktree-shell-rescue §2.1，review 2026-11-03 #1）：跨项目
+    // 直达工作区与 setCurrentWorkspace 同覆盖——「切进去」的三条 scope 进入路径
+    // （本处/会话移动跟随/setCurrentWorkspace）不得留探测盲区
+    if (validWs && project) void this.probeWorkspaceAfterSwitch(project, validWs, epoch)
     // SSE 连接不动（单全局流）；快照刷新在后台（latest-wins）
     await this.persistProjectState()
     if (epoch !== this.switchEpoch) return
@@ -3191,7 +3228,14 @@ export class AppStore {
     const valid =
       directory != null && (project.sandboxes ?? []).includes(directory) ? directory : null
     const ps = this.projectStateFor()
-    if (ps.currentWorkspaceId === valid) return
+    if (ps.currentWorkspaceId === valid) {
+      // 同目录重切（点击当前工作区行）早退：作用域未变，但点击是显式交互
+      // 时点——重探测一次刷新状态（外部破坏后的登记更新，2026-11-03 复测
+      // 补丁）。递增 epoch（review 二轮 #2）：连点两次时旧探测按代际作废，
+      // 后发者胜——不递增则两个并发探测同持旧 epoch，完成序与发起序脱钩
+      if (valid) void this.probeWorkspaceAfterSwitch(project, valid, ++this.switchEpoch)
+      return
+    }
     const epoch = ++this.switchEpoch
     ps.currentWorkspaceId = valid
     const expectedDir = this.scopeDirectory()
@@ -3200,6 +3244,11 @@ export class AppStore {
     // 新 scope 目录（worktree）的 pending 需要回填（此前无订阅通道）
     void this.backfillPending()
     this.emit()
+    // 空壳探测（design-worktree-shell-rescue §2.1）：异步不阻塞切换；canonical
+    // 不探测（非 worktree 删除语义，§1.4）；结果 latest-wins 经 switchEpoch + 作用域
+    // 双校验（回调内）。文件树等带 location 请求与探测并行——本探测拦的是
+    // 会话创建，不承诺零建档（§2.1 非零建档声明）
+    if (valid) void this.probeWorkspaceAfterSwitch(project, valid, epoch)
     // 再加载：持久化 + 本项目快照刷新（WT-1：worktree 会话只有逐目录快照可达）。
     // SSE 连接不动（单全局流，闸门集合无变化——目录本就属于打开项目）；
     // latest-wins 见 switchEpoch
@@ -3814,7 +3863,15 @@ export class AppStore {
       // barrier：在途 location 请求（文件树/vcs/diff 等）落地后再删——迟到
       // 的一发即一行伪行；超时放行（best-effort，慢请求不阻塞删除）
       await client.awaitLocationIdle(directory)
-      await client.deleteWorktree(project.id, directory, { force: true })
+      try {
+        await client.deleteWorktree(project.id, directory, { force: true })
+      } catch (e) {
+        // 空壳/目录消失兜底（design-worktree-shell-rescue §3）：两种残留 DELETE
+        // 同型 400 拒绝，用户已确认删除（免二次确认，§3.3）——双判别（错误 tag +
+        // 磁盘确证/无破坏性收敛）通过则代行 rm + refresh 清理；否则原样抛出
+        const rescued = await this.rescueBrokenWorktree(client, project, directory, e)
+        if (!rescued) throw e
+      }
       // 最近删除集登记（todo-error-body-tag #2）：目录已死确证——此后落向该目录的
       // 迟到请求失败按预期吸收（窗口 gate 已挡新请求，这里兜住 resume 后的漏网）
       this.noteLocationDeleted(directory)
@@ -3851,6 +3908,91 @@ export class AppStore {
       this.worktreeDirtyChecks.delete(deleteKey)
       this.emit()
     }
+  }
+
+  /**
+   * 空壳/目录消失兜底清理（design-worktree-shell-rescue §3.2）：DELETE 对两种
+   * 残留同型拒绝（`isWorktreeUnavailableError`）。**免二次确认的安全前提 =
+   * 判别收敛**，三条路径：
+   * - probe `"ok"`（.git 在）→ 活 worktree，server 拒删另有原因——不清理（false，
+   *   调用方原样抛出）；
+   * - probe `"broken"`（shell 在目录内起且 test 失败 = 目录确证存在、.git 丢失）
+   *   → runShell `rm -rf "$PWD"`（cwd 落点，路径零拼接——$PWD 由 shell 自行
+   *   展开）→ refresh；rm 失败即放弃（残留目录更残缺但不误删，可重试）；
+   * - probe `"unknown"`（shell 起不来：目录消失与端点故障同状，活体 500）→
+   *   **不 rm**，仅 refresh（只清「目录已消失」行，无破坏性）→ 重拉库存收敛
+   *   判据：行已消 = 目录消失型清理成功；行仍在 = 端点故障/真异常 → 不清理。
+   * 会话已在调用方级联删（D2），处置顺序无新中间态；成功后调用方继续既有
+   * 成功路径（evict/unload/分支清理）。
+   */
+  private async rescueBrokenWorktree(
+    client: RestClient,
+    project: Project,
+    directory: string,
+    cause: unknown,
+  ): Promise<boolean> {
+    // 判别前置（§3.1 第一保险）：非 WorktreeError{unavailable}（网络错/其他 400）
+    // 不进入清理——探测也不发（旧 server/异常形态不浪费一次 shell）
+    if (!isWorktreeUnavailableError(cause)) return false
+    try {
+      const health = await client.probeWorktreeHealth(directory)
+      if (health === "ok") return false
+      if (health === "broken") {
+        // 大目录 rm 可慢，对齐 deleteWorktree 60s 量级
+        const rm = await client.runShell('rm -rf "$PWD"', { cwd: directory, timeoutMs: 60000 })
+        if (rm.exit !== 0) return false
+      }
+      await client.refreshWorktrees(project.id)
+      // 收敛判据：重拉库存确认行已消。行仍在 = 目录健在（unknown + 端点故障
+      // 误报）→ 放弃；**重拉失败同样放弃**（review 2026-11-03 #2——unknown 路径
+      // 无 rm 无「目录死」确证，null 不得放行为成功；broken 路径 rm 虽成，假失败
+      // 的代价只是可重试收敛——重试走 unknown → refresh → 行已消即成功）
+      const dirs = await client.listWorktrees(project.id).catch(() => null)
+      if (!dirs || dirs.some((w) => w.directory === directory)) return false
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * 作用域切换后的空壳探测（design-worktree-shell-rescue §2.1）：fire-and-forget
+   * （一次 runShell ~百 ms 级，不阻塞切换）；回调经 switchEpoch + 项目/作用域
+   * 双校验丢弃过期结果。broken → 登记（会话创建闸门 + UI 提示数据源）；ok /
+   * unknown → 清除（fail-open：shell 端点故障不拦会话，目录消失型另有 refresh
+   * diff 与被动确证通道）。探测范围限定工作区行目录（canonical 由调用方排除，
+   * §1.4）；非 git 目录不在 worktree 库存，天然不探测。
+   */
+  private async probeWorkspaceAfterSwitch(project: Project, directory: string, epoch: number) {
+    // canonical 排除（§1.4）：canonical 死亡不是 worktree 删除语义，不探测不登记
+    if (directory === project.worktree) return
+    const client = this.client
+    if (!client) return
+    try {
+      const health = await client.probeWorktreeHealth(directory)
+      if (epoch !== this.switchEpoch) return
+      if (this.currentProject?.id !== project.id || this.scopeDirectory() !== directory) return
+      if (health === "broken") this.brokenWorkspaces.add(directory)
+      else this.brokenWorkspaces.delete(directory)
+      this.emit()
+    } catch {
+      // 探测通道异常（shell 端点缺失等）——fail-open，不拦会话
+    }
+  }
+
+  /**
+   * 启动/重连恢复作用域的空壳探测（design-worktree-shell-rescue §2.1，
+   * 2026-11-03 复测补丁）：持久化恢复不走 setCurrentWorkspace——不补此挂点
+   * 则 brokenWorkspaces 空集，闸门对「刷新页面（Ctrl+R）后停在空壳作用域」
+   * 失效（实测 sunny-sailor）。connect 在 refreshAllOpenedProjects（库存
+   * union）之后调用——currentWorkspace getter 可解析；canonical 排除在
+   * probeWorkspaceAfterSwitch 内；epoch 取当前值（随后任何切换递增即过期）。
+   */
+  private probeRestoredWorkspaceScope() {
+    const ws = this.currentWorkspace
+    const project = this.currentProject
+    if (!ws || !project) return
+    void this.probeWorkspaceAfterSwitch(project, ws.directory, this.switchEpoch)
   }
 
   /** 目录末段 = worktree 名。仅接受 server slug 字符集（[a-z0-9-]）：外部
@@ -3953,6 +4095,18 @@ export class AppStore {
     if (!base || !project.worktree) return null // 非 slug 目录（外部 worktree）：不管理
     const branch = `opencode/${base}`
     try {
+      // prunable 元数据前置清理（design-worktree-shell-rescue §3.2 增补，
+      // 2026-11-03 实测 eager-moon）：空壳/外部 rm 场景 canonical 侧 worktree
+      // 元数据残留（gitdir 指向已删位置，worktree list 呈 prunable），分支仍
+      // 被死元数据标记检出 → branch -D 必被 git 拒（误报 branchNotice）。
+      // prune 只清 gitdir 失效的死条目：正常删除路径 server 已清元数据（no-op）、
+      // 活 worktree 元数据不受影响——幂等无害。best-effort：失败不阻断后续
+      // show-ref/branch -D 尝试（真被活 worktree 检出时 branchNotice 照旧兜底）
+      try {
+        await client.runShell("git worktree prune", { cwd: project.worktree, timeoutMs: 15000 })
+      } catch {
+        // shell 通道不可用（旧 server/网络）——维持既有降级链
+      }
       const exists = await client.runShell(`git show-ref --verify --quiet refs/heads/${branch}`, {
         cwd: project.worktree,
       })
@@ -4069,6 +4223,10 @@ export class AppStore {
     if (project?.sandboxes?.includes(directory)) {
       project.sandboxes = project.sandboxes.filter((d) => d !== directory)
     }
+    // 空壳登记随目录卸载移除（design-worktree-shell-rescue §2.1 生命周期）：
+    // 删除完成/对账 diff/被动确证三条卸载路径共用此处；同名重建的新目录
+    // 不命中旧登记（按 directory 字符串，重建后切换探测重新跑）
+    this.brokenWorkspaces.delete(directory)
     // 卸载已删目录的会话与状态（目录已出 sandboxes，此后无快照/订阅通道覆盖它）
     const map = this.sessionsByProject.get(projectId)
     if (map) {
@@ -4521,6 +4679,31 @@ export class AppStore {
   async createSession(opts: { openTab?: boolean } = {}): Promise<Session | null> {
     if (!this.client || !this.currentProject) return null
     const { directory } = this.scopeQuery
+    const project = this.currentProject
+    // 空壳闸门（design-worktree-shell-rescue §2.1）双层：
+    // ① 快路径——登记集命中（切换/恢复/重切探测的既有结果）直接拦，零 RTT；
+    // ② 兜底校验（2026-11-03 复测补丁二）——登记集可能缺失（探测挂点漏覆盖/
+    //    fail-open/陈旧），创建前对 worktree 行作用域实时探测一发（runShell
+    //    零建档通道）：broken → 登记 + 拦（红字随 emit 出现，后续走快路径）；
+    //    ok/unknown → 放行（fail-open 不误伤合法创建）。POST /session 带
+    //    location body——对空壳是一发建档燃料（ref §3.4 三订），创建是显式
+    //    用户动作，多一次 ~百 ms 级 RTT 换确定性拦截，代价可接受
+    if (this.brokenWorkspaces.has(directory)) return null
+    if (directory !== project.worktree && (project.sandboxes ?? []).includes(directory)) {
+      let health: "ok" | "broken" | "unknown" = "unknown"
+      try {
+        // 短超时 2s（review 2026-11-03 二轮 #1）：同步等待的阻塞上界压到 ~9s，
+        // 挂起时 fail-open 放行不误伤
+        health = await this.client.probeWorktreeHealth(directory, { timeoutMs: 2000 })
+      } catch {
+        // fake client 无方法/通道异常——fail-open
+      }
+      if (health === "broken") {
+        this.brokenWorkspaces.add(directory)
+        this.emit()
+        return null
+      }
+    }
     // catalog 未就绪（无缓存或 models 空）→ 先等一次拉取再解析默认。server 实测
     // 新 worktree 目录首次 /api/model、/api/agent 即时就绪（2026-10-07 本机三轮
     // 15–30ms，与老目录基线 22ms 无差），等待代价可忽略；1.5s 超时兜底网络长尾，
