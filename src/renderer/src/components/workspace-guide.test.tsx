@@ -32,6 +32,7 @@ vi.mock("../app", () => ({
       forkSession: "Fork",
       commandListLoading: "加载中…",
       attachCmdBlocked: "斜杠命令不支持附件",
+      workspaceBrokenBlocked: "工作区已损坏（git 元数据丢失）——请在左栏删除该工作区后重建",
       inputPlaceholder: "输入…",
       focusModeEnter: "专注模式",
       focusModeExit: "退回普通模式（Esc）",
@@ -97,6 +98,8 @@ function makeStore(overrides: Record<string, unknown> = {}): Record<string, unkn
     clearFileRefs: vi.fn(),
     clearAttachments: vi.fn(),
     createSession: vi.fn(),
+    // 空壳闸门（design-worktree-shell-rescue §2.1）：默认健康（不拦发送）
+    isWorkspaceBroken: vi.fn(() => false),
     sendPrompt: vi.fn(async () => ({ ok: true })),
     sendCommand: vi.fn(async () => ({ ok: true })),
     seedChatDraft: vi.fn(),
@@ -323,6 +326,26 @@ describe("引导页斜杠命令（design-slash-command 2026-09-08 修订）", ()
   function sessionStub() {
     return { id: "s1", directory: "/repo/a", title: "", time: { created: "", updated: "" } }
   }
+
+  it("空壳阻断（design-worktree-shell-rescue §2.1）：常驻红字（attach-error 标准错误样式）+ 发送置灰，Enter 不建会话", async () => {
+    const created = vi.fn()
+    storeStub = makeStore({ isWorkspaceBroken: () => true, createSession: created })
+    render(<Workspace />)
+    type("hello")
+    // 常驻红字：错误源同寿命（登记在即显示），非 4 秒 notice
+    expect(document.querySelector(".form-note.attach-error")?.textContent).toContain(
+      "工作区已损坏",
+    )
+    // 发送按钮置灰（与 tooLarge 占位同式）
+    const btn = Array.from(document.querySelectorAll<HTMLButtonElement>("button.btn-primary")).find(
+      (b) => b.textContent === "发送",
+    )
+    expect(btn?.disabled).toBe(true)
+    // Enter 亦不建会话（闸门 UI 层；store.createSession 另有静默双保险）
+    key("Enter")
+    await new Promise((r) => setTimeout(r, 0))
+    expect(created).not.toHaveBeenCalled()
+  })
 
   it("输入 / 触发按需拉取并展示菜单（前缀过滤）", () => {
     guideCommands = [

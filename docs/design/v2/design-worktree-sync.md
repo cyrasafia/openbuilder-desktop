@@ -222,7 +222,11 @@ location——建档燃料已付）即调 `onDeadLocation(directory)` 回调（�
 canonical**——canonical 死亡不是 worktree 删除语义，不越权处置、不登记最近
 删除集（吸收判别源 ① 同口径）。**红线：识别 ≠ 探测**——只消费已有请求的错误
 回执，不主动发 location 请求做 liveness probe（probe 本身即建档燃料，
-ref-pseudo-project-cleanup §3.4）。
+ref-pseudo-project-cleanup §3.4）。**红线修订（2026-11-03，
+design-worktree-shell-rescue §1.3）**：收窄为「不用 **location 请求**探测」——
+runShell 通道（`POST /api/shell` 不带 location）不 boot 目标目录、零建档，
+是唯一允许的主动探测通道；空壳型（`.git` 丢失目录仍在）的探测/拦截/删除
+兜底整体见该文件。
 
 **pty 清理燃料防御（#3 配套）**：`killPtyInDirectory` 对最近删除集内的目录
 **跳过 server `deletePty`**（仅本地标 exited）——带 location 的清理请求落在死

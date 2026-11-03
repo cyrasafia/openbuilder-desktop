@@ -225,6 +225,8 @@ const zh = {
   attachTooLargeBlocked: "文件过大，无法发送：{names}。请移除该文件后重试",
   attachTooLargeChip: "文件过大，无法发送",
   attachCmdBlocked: "斜杠命令不支持附件——请去掉 / 前缀或清空附件后发送",
+  // 空壳 worktree 会话创建闸门（design-worktree-shell-rescue §2.1）
+  workspaceBrokenBlocked: "工作区已损坏（git 元数据丢失）——请在左栏删除该工作区后重建",
   // 服务器连接状态（左栏底部）
   statusStreaming: "实时",
   statusDegraded: "重连中",
@@ -574,6 +576,8 @@ const en: typeof zh = {
   attachTooLargeBlocked: "File too large to send: {names}. Remove the file and retry",
   attachTooLargeChip: "File too large to send",
   attachCmdBlocked: "Slash commands do not support attachments — remove the / prefix or clear attachments",
+  workspaceBrokenBlocked:
+    "Workspace is damaged (git metadata lost) — delete this workspace in the sidebar and recreate it",
   statusStreaming: "Live",
   statusDegraded: "Reconnecting",
   statusOffline: "Offline",
