@@ -296,6 +296,10 @@ const zh = {
   confirmCloseStreamingTab:
     "会话正在运行，关闭将停止并归档该会话。继续？",
   confirmCloseStreamingTabTitle: "关闭进行中的会话？",
+  // 拖放移动进行中会话的二次确认（design-session-tab-drag-move §2.4）
+  confirmMoveActiveSession: "会话正在运行。移动前将先停止当前任务。继续？",
+  confirmMoveActiveSessionTitle: "移动进行中的会话？",
+  movingSession: "正在停止并移动…",
   confirmSwitchProject:
     "切换项目将关闭并归档当前所有打开的会话。继续？",
   confirmDeleteWorkspace: "删除工作树？",
@@ -634,6 +638,9 @@ const en: typeof zh = {
   diffViewFile: "View file",
   confirmCloseStreamingTab: "Session is running. Closing stops and archives it. Continue?",
   confirmCloseStreamingTabTitle: "Close running session?",
+  confirmMoveActiveSession: "Session is running. Moving stops the current task first. Continue?",
+  confirmMoveActiveSessionTitle: "Move running session?",
+  movingSession: "Stopping and moving…",
   confirmSwitchProject: "Switching projects closes and archives all open sessions. Continue?",
   confirmDeleteWorkspace: "Delete worktree?",
   confirmDeleteWorkspaceMsg: "This cannot be undone. Sessions, file tree, and terminals under this worktree will be cleaned up. The branch with the same name will also be deleted.",

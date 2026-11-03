@@ -6352,6 +6352,79 @@ describe("会话移动（design-session-tab-context-menu）", () => {
   })
 })
 
+describe("会话 Tab 拖放移动（design-session-tab-drag-move）", () => {
+  it("拖拽登记/目标生命周期：begin 重置目标、take 取走并清空、cancel 兜底", () => {
+    store.beginChatTabDrag({ sessionID: "s1", projectId: "proj1", directory: ROOT })
+    expect(store.draggingChatTab).toEqual({ sessionID: "s1", projectId: "proj1", directory: ROOT })
+    expect(store.sessionDropTarget).toBeNull()
+
+    store.setSessionDropTarget(WT1)
+    expect(store.sessionDropTarget).toBe(WT1)
+    store.setSessionDropTarget(WT1) // 同值幂等（dragover 高频）
+    expect(store.sessionDropTarget).toBe(WT1)
+
+    expect(store.takeSessionDropTarget()).toBe(WT1)
+    expect(store.draggingChatTab).toBeNull()
+    expect(store.sessionDropTarget).toBeNull()
+    // 无登记时再取 = null（dragend 回退重排序提交）
+    expect(store.takeSessionDropTarget()).toBeNull()
+
+    // 上次拖拽残留目标经 begin 重置（不自泄）
+    store.setSessionDropTarget(WT2)
+    store.beginChatTabDrag({ sessionID: "s2", projectId: "proj1", directory: WT1 })
+    expect(store.sessionDropTarget).toBeNull()
+    store.cancelChatTabDrag()
+    expect(store.draggingChatTab).toBeNull()
+    expect(store.sessionDropTarget).toBeNull()
+  })
+
+  it("moveSessionConfirmed：进行中 → interrupt 先停、主动置 idle 后移动", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    store.sessionStatus.set("s1", { type: "busy" })
+    const interrupt = vi.fn(async () => {})
+    const move = vi.fn(async () => {})
+    Object.assign(clientV2Of(), { interrupt, moveSession: move })
+
+    await expect(store.moveSessionConfirmed("s1", WT1)).resolves.toBe(true)
+    expect(interrupt).toHaveBeenCalledWith("s1")
+    // SSE idle 投影晚于回执的竞态：主动置 idle 放行 moveSession 的 active 守卫
+    expect(store.isSessionActive("s1")).toBe(false)
+    expect(move).toHaveBeenCalledWith("s1", WT1)
+  })
+
+  it("moveSessionConfirmed：interrupt 失败不移（保守口径）并经 connectionError 呈现", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    store.sessionStatus.set("s1", { type: "busy" })
+    const move = vi.fn(async () => {})
+    Object.assign(clientV2Of(), {
+      interrupt: vi.fn(async () => {
+        throw new Error("boom")
+      }),
+      moveSession: move,
+    })
+
+    await expect(store.moveSessionConfirmed("s1", WT1)).resolves.toBe(false)
+    expect(move).not.toHaveBeenCalled()
+    // 会话可能仍在运行：状态不被破坏（仍 active，后续入口照常禁用/确认）
+    expect(store.isSessionActive("s1")).toBe(true)
+    expect(store.connectionError).toContain("boom")
+  })
+
+  it("moveSessionConfirmed：确认时已空闲 → 跳过停止直接移动", async () => {
+    const s1 = session("s1", ROOT, { created: 1, updated: 1 })
+    store.sessionsByProject.set("proj1", sessionsOf(s1))
+    const interrupt = vi.fn(async () => {})
+    const move = vi.fn(async () => {})
+    Object.assign(clientV2Of(), { interrupt, moveSession: move })
+
+    await expect(store.moveSessionConfirmed("s1", WT1)).resolves.toBe(true)
+    expect(interrupt).not.toHaveBeenCalled()
+    expect(move).toHaveBeenCalledWith("s1", WT1)
+  })
+})
+
 describe("Tab 拖拽重排与重命名（design-tab-drag-rename）", () => {
   it("applyTabOrder 按预览 DOM 序整体重排（所见即所得）", () => {
     store.tabs = [

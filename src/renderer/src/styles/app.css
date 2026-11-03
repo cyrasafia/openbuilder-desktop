@@ -240,6 +240,18 @@
   background: color-mix(in srgb, var(--surface-container-highest) 92%, var(--primary));
 }
 
+/* 会话 Tab 拖放移动目标高亮（design-session-tab-drag-move §2.3）：悬停合法
+   worktree/项目行 = "松手即移入"的目标指示——所见即所得（目标显示期间任意
+   位置放手都移动）。取 primary 淡染背景、强于 scope-cursor 的 8%（drop 是
+   即时动作语义 > 待提交预览）；背景单信号惯例（无描边环，2026-08-24 idiom）；
+   显式压过 hover/active 三态（本块在后、:hover 变体同特异性胜出） */
+.tree-row.drop-target,
+.tree-row.drop-target:hover,
+.tree-row.drop-target.active,
+.tree-row.drop-target.active:hover {
+  background: color-mix(in srgb, var(--surface-container-highest) 84%, var(--primary));
+}
+
 /* gitignore 项弱化（design-layout §5，2026-08-27）：server 的 ignored = 根 .gitignore/.ignore
    规则命中（规则不存在则恒 false，等价"未 git 初始化不区分"）。样式参考 openbuilder
    file_list_screen.dart 同款语义（outline 色 + 斜体）；hover/active 背景态照常
