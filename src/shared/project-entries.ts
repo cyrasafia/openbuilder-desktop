@@ -128,3 +128,99 @@ export function migrateLegacyPersistedProjectIds(
   }
   return changed
 }
+
+// ============ 项目身份归一化（design-project-identity §3.1，2026-11-09） ============
+
+/**
+ * 同路径多 projectID 的身份分裂（server 端 projectID 优先级链输入变化：加/删
+ * remote → rootCommit 哈希 ↔ remote 哈希）客户端归一化。当前行 = 同路径
+ * `time.created` 最大者（同 created 取 id 字典序小者）——created 单调使映射
+ * 稳定（active 序会被旧行会话活动打点反超翻转，官方 app 可容忍、本仓库按
+ * projectId 键控的状态面不可，见 design-project-identity §1.2）。
+ */
+export interface ProjectIdentityInput {
+  id: string
+  worktree: string
+  time: { created: number }
+}
+
+/** 身份索引：仅分裂路径入表（无分裂返回 null，调用方走快路径） */
+export interface ProjectIdentityIndex {
+  /** 路径 → 当前行 id（仅出现多行的路径） */
+  currentByPath: Map<string, string>
+  /** 旧 id → 当前行 id（不含当前 id 自身） */
+  legacyToCurrent: Map<string, string>
+}
+
+/** a 的身份是否比 b 新（created 大者；同 created 取 id 字典序小者） */
+export function isNewerProjectIdentity(
+  a: ProjectIdentityInput,
+  b: ProjectIdentityInput,
+): boolean {
+  if (a.time.created !== b.time.created) return a.time.created > b.time.created
+  return a.id < b.id
+}
+
+/**
+ * 构建身份索引：按 worktree 路径分组，多行路径取 created 最大者为当前行，
+ * 其余行 id 记入 legacyToCurrent。无任何分裂路径时返回 null（常态，调用方
+ * no-op 零开销）。
+ */
+export function buildProjectIdentityIndex(
+  projects: ReadonlyArray<ProjectIdentityInput>,
+): ProjectIdentityIndex | null {
+  const byPath = new Map<string, ProjectIdentityInput[]>()
+  for (const p of projects) {
+    const list = byPath.get(p.worktree)
+    if (list) list.push(p)
+    else byPath.set(p.worktree, [p])
+  }
+  const currentByPath = new Map<string, string>()
+  const legacyToCurrent = new Map<string, string>()
+  for (const [path, rows] of byPath) {
+    if (rows.length < 2) continue
+    let current = rows[0]!
+    for (const r of rows) if (isNewerProjectIdentity(r, current)) current = r
+    currentByPath.set(path, current.id)
+    for (const r of rows) if (r.id !== current.id) legacyToCurrent.set(r.id, current.id)
+  }
+  return legacyToCurrent.size > 0 ? { currentByPath, legacyToCurrent } : null
+}
+
+/** 任意 id → 当前行 id；未命中（当前 id/未知 id/无分裂）原样返回 */
+export function normalizeProjectId(index: ProjectIdentityIndex | null, id: string): string {
+  return index ? (index.legacyToCurrent.get(id) ?? id) : id
+}
+
+/**
+ * opened 数组归一：逐 id 映射 + 去重保位（归一后重复取首现位置——用户经
+ * applyEntryOrder 排过的序不因归一重排）。无变化时返回原引用（调用方以
+ * 引用比较判定是否落盘）。
+ */
+export function normalizeOpenedIds(
+  index: ProjectIdentityIndex | null,
+  opened: string[],
+): string[] {
+  if (!index) return opened
+  let changed = false
+  const out: string[] = []
+  for (const id of opened) {
+    const next = normalizeProjectId(index, id)
+    if (!out.includes(next)) out.push(next)
+    if (next !== id) changed = true
+  }
+  return changed ? out : opened
+}
+
+/**
+ * 同路径多行去重视图（`uniqueProjects` 的纯函数核心）：每路径取当前行
+ * （created 最大），输出保持首见序（= server 返回序的路径首现序）。
+ */
+export function dedupeProjectsByIdentity<T extends ProjectIdentityInput>(projects: ReadonlyArray<T>): T[] {
+  const best = new Map<string, T>()
+  for (const p of projects) {
+    const cur = best.get(p.worktree)
+    if (!cur || isNewerProjectIdentity(p, cur)) best.set(p.worktree, p)
+  }
+  return [...best.values()]
+}

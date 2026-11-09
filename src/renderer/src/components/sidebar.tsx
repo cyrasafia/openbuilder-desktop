@@ -656,12 +656,14 @@ export function ProjectPicker({ onClose }: { onClose: () => void }) {
 
   const opened = new Set(store.openedEntries.map((e) => e.key))
   // v2/A：选择器候选 = 全部项目行（含伪项目——非 git 目录），v1 global 行已退役。
+  // 基底 = uniqueProjects（design-project-identity §3.4）：同路径多 projectID
+  // （身份分裂）每路径只列当前行——不归一会「发布管理平台」式双行。
   // 时间显示/排序用 time.active（会话事件打点，server list 同序——对「最近在用」
   // 敏感）；updated 只反映元数据写入，会造成旧项目沉在顶部（2026-10-14 改）。
   // active 0/缺省回退 updated：现役 server 插入即打点（2.0.18 迁移回填存量），
   // 实际不会出现，此处为未校验 JSON/异常 server 的防御。
   const candidates: PickerCandidate[] = [
-    ...store.projects
+    ...store.uniqueProjects
       .filter((p) => !opened.has(p.id))
       .map((p) => ({
         key: p.id,

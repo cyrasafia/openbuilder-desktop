@@ -140,6 +140,15 @@ describe("ProjectPicker「最近使用」时间（2026-10-14 改 time.active）"
         // 已打开（active 最新）：被 opened 过滤，不进候选
         proj("opened", "/opened", { created: 0, updated: 0, active: now }),
       ],
+      // 身份分裂夹具（design-project-identity §3.4）：/current 同路径双行
+      // （active 旧的在前——server active desc 序不受影响），选择器只见
+      // created 最新的 current ——守护换基底（uniqueProjects）行为
+      uniqueProjects: [
+        proj("old", "/old", { created: 0, updated: 0, active: now - 3 * 3600_000 }),
+        proj("current", "/current", { created: 1, updated: 0, active: now - 5 * 60_000 }),
+        proj("never", "/never", { created: 0, updated: now - 10 * 86400_000, active: 0 }),
+        proj("opened", "/opened", { created: 0, updated: 0, active: now }),
+      ],
       openedEntries: [{ key: "opened" }],
       syncWorktrees: vi.fn(async () => {}),
       openEntry: vi.fn(),
@@ -149,5 +158,24 @@ describe("ProjectPicker「最近使用」时间（2026-10-14 改 time.active）"
     expect(names).toEqual(["current", "old", "never"])
     const times = [...container.querySelectorAll(".project-row .tree-meta")].map((n) => n.textContent)
     expect(times).toEqual(["5 分钟前", "3 小时前", "10 天前"])
+  })
+
+  it("身份分裂（design-project-identity §3.4）：同路径双行经 uniqueProjects 只渲染当前行一行", () => {
+    const now = Date.now()
+    storeStub = {
+      // server 全量含双行（旧行 active 最新在前——active 序不参与判定）
+      projects: [
+        proj("legacy", "/current", { created: 0, updated: 0, active: now }),
+        proj("current", "/current", { created: 1, updated: 0, active: now - 5 * 60_000 }),
+      ],
+      // 归一化视图：/current 取 created 最大（current）
+      uniqueProjects: [proj("current", "/current", { created: 1, updated: 0, active: now - 5 * 60_000 })],
+      openedEntries: [],
+      syncWorktrees: vi.fn(async () => {}),
+      openEntry: vi.fn(),
+    }
+    const { container } = render(<ProjectPicker onClose={() => {}} />)
+    const names = [...container.querySelectorAll(".project-row .project-name")].map((n) => n.textContent)
+    expect(names).toEqual(["current"])
   })
 })

@@ -92,6 +92,11 @@ import {
   migrateLegacyGlobalState,
   migrateLegacyMemoryProjectIds,
   migrateLegacyPersistedProjectIds,
+  buildProjectIdentityIndex,
+  dedupeProjectsByIdentity,
+  normalizeOpenedIds,
+  normalizeProjectId,
+  type ProjectIdentityIndex,
 } from "@shared/project-entries"
 import type { BrowserViewState, ConnectionProfile, ManagedNotice } from "@shared/ipc"
 import "@shared/ipc-global"
@@ -994,6 +999,11 @@ export class AppStore {
       if (sessionChanged)
         void window.desktop.storeSet("tabs.session", this.tabSession).catch(() => {})
     }
+    // 项目身份归一化（design-project-identity §3.2）：同路径多 projectID 分裂的
+    // 持久化/运行时键归一到当前行。**后于 v1 迁移块**（review 2026-11-09 #1：
+    // 迁移按 worktree 匹配在分裂路径上可能输出旧行 id——byDir 末行胜——归一
+    // 收在其后兜底）；先于库存合并（worktreeDirs 重键后 union 才能对准当前行）
+    this.normalizeProjectIdentities()
     // 连接归属切片键落位（teardown 外科修剪用它定位；见 sessionProfileKey 注释）
     this.sessionProfileKey = this.profileKey()
     // 生效凭据（managed 模式为主进程生成值）——后续 SSE 重建统一使用
@@ -1191,6 +1201,9 @@ export class AppStore {
     this.client = null
     this.managedBaseUrl = null
     this.projects = []
+    // 身份索引随连接拆除失效（design-project-identity：残留会让归一把 id 改写
+    // 到已不存在的行——空 projects 重建即 null）
+    this.projectIdentity = null
     // worktree 库存随连接拆除清空（v2 权威源；重连时 refreshAllOpenedProjects
     // 重新 refresh+list 载入）
     this.worktreeDirs.clear()
@@ -1338,6 +1351,13 @@ export class AppStore {
    */
   private relocateSession(next: Session): boolean {
     const sessionID = next.id
+    // 身份归一（design-project-identity §3.3）：session.moved/快照兜底可能携
+    // 旧行 pid——归一后才不落入「targetProject 不在 openedProjects → 误关
+    // Tab」分支（存量 Tab 消失路径之一）
+    {
+      const pid = normalizeProjectId(this.projectIdentity, next.projectID)
+      if (pid !== next.projectID) next = { ...next, projectID: pid }
+    }
     const key = `chat:${sessionID}`
     const local = this.findSession(sessionID)
     const tab = this.tabs.find((t) => t.kind === "chat" && t.key === key)
@@ -1436,17 +1456,36 @@ export class AppStore {
   }
 
   /**
-   * 将单目录会话快照合入项目 map（按 projectID 过滤后交 session-merge 分域合并）。
+   * 将单目录会话快照合入项目 map（会话归属纽带 = directory，design-project-
+   * identity §2.2：不按 pid 过滤，实体 projectID 归一为登记键后交
+   * session-merge 分域合并）。
    * 闸门：在途快照落地时项目可能已关闭、目录可能已被删除（removeWorkspace）——
    * 过期快照直接丢弃，防止复活已卸载的 worktree 会话。
    */
   private applySessionsSnapshot(projectId: string, directory: string, sessions: Session[]) {
+    // 身份归一（design-project-identity §3.3）：reconciler 按 server 原值 pid 分组
+    // 可能送入旧 id——统一映射到当前行后再找项目
+    projectId = normalizeProjectId(this.projectIdentity, projectId)
     const project = this.openedProjects.find((p) => p.id === projectId)
     if (!project) return
     if (directory !== project.worktree && !(project.sandboxes ?? []).includes(directory)) {
       return
     }
-    const filtered = sessions.filter((s) => s.projectID === projectId)
+    // 目录吞并防御（design-project-identity §3.3）：其他项目的 canonical 目录
+    // （本项目 sandbox 内嵌独立 .git 自成项目行）不经此登记——防「同目录异
+    // 项目」双登记；普通 worktree 目录无独立 ProjectTable 行，不受此排除
+    if (
+      directory !== project.worktree &&
+      this.uniqueProjects.some((u) => u.worktree === directory)
+    ) {
+      return
+    }
+    // 会话归属纽带 = directory（design-project-identity §2.2）：directory 查询的
+    // 返回即该目录全集，不按 pid 过滤；实体 projectID 统一归一为登记键（旧行
+    // pid 的会话归属当前行）
+    const filtered = sessions.map((s) =>
+      s.projectID === projectId ? s : { ...s, projectID: projectId },
+    )
     // 目标目录快照是 SSE 丢失后的移动兜底。先按 updated 做 location 竞态审判，
     // 再交普通分域合并；被判定为旧源快照的条目整条跳过，防止其他字段也回卷。
     const accepted: Session[] = []
@@ -1639,6 +1678,10 @@ export class AppStore {
    */
   private applySessionEvent(info: Session, directory: string) {
     if (info.directory !== directory) return
+    // 身份归一（design-project-identity §3.3）：SSE 实体可能携旧行 pid——
+    // 归一后落 map，登记键与快照路径一致
+    const pid = normalizeProjectId(this.projectIdentity, info.projectID)
+    if (pid !== info.projectID) info = { ...info, projectID: pid }
     let map = this.sessionsByProject.get(info.projectID)
     if (!map) {
       map = new Map()
@@ -2040,7 +2083,10 @@ export class AppStore {
       const projectId = ev.type === "worktree.updated"
         ? String((ev.properties as { projectID?: unknown }).projectID ?? "")
         : (meta?.project ?? "")
-      if (projectId && !this.openedProjects.some((p) => p.id === projectId)) return
+      // 身份归一（design-project-identity §3.5）：事件可能携旧行 pid，opened 归一
+      // 后只含当前行 id——不归一会静默跳过对账（60s list-diff 兜底，但成本一行）
+      const normalized = normalizeProjectId(this.projectIdentity, projectId)
+      if (normalized && !this.openedProjects.some((p) => p.id === normalized)) return
       void this.syncWorktrees()
       return
     }
@@ -2055,7 +2101,9 @@ export class AppStore {
         subpath?: unknown
       }
       const sid = String(p.sessionID ?? "")
-      const projectID = String(p.projectID ?? "")
+      // 身份归一（design-project-identity §3.5）：事件可能携旧行 pid——归一后
+      // 参与版本/location 比较（与本地键空间一致）
+      const projectID = normalizeProjectId(this.projectIdentity, String(p.projectID ?? ""))
       const directory = String(p.location?.directory ?? "")
       if (!sid || !projectID || !directory) return
       const local = this.findSession(sid)
@@ -2302,7 +2350,9 @@ export class AppStore {
       case "session.deleted": {
         const info = ev.properties.info as Session
         if (!info) return
-        this.sessionsByProject.get(info.projectID)?.delete(info.id)
+        // 身份归一（design-project-identity §3.3）：v1 形状回退分支（v2 走
+        // findSession 已归一路径）——pid 原值可能是旧行 id，归一后删才不 miss
+        this.sessionsByProject.get(normalizeProjectId(this.projectIdentity, info.projectID))?.delete(info.id)
         this.sessionRegistryVersion++
         this.sessionLocationVersions.delete(info.id)
         this.movingSessions.delete(info.id)
@@ -2949,6 +2999,17 @@ export class AppStore {
     return this.projects.filter((p) => ids.has(p.id))
   }
 
+  /**
+   * 同路径多行去重视图（design-project-identity §3.4）：每 canonical 路径取
+   * 当前行（created 最大，tie 取 id 字典序小者——§2.1 裁定，不依赖 server
+   * 的 active 序：旧行会话活动打点会使其抖动）。输出保持 server 返回序的
+   * 路径首现序。选择器候选与目录归属解析（findProjectOwningDirectory）的
+   * 基底；`this.projects` 本身保持全量（§2.3，事件面旧 pid 判定依赖）。
+   */
+  get uniqueProjects(): Project[] {
+    return dedupeProjectsByIdentity(this.projects)
+  }
+
   get currentProject(): Project | null {
     const ps = this.projectStates[this.profileKey()]
     if (!ps?.currentProjectId) return null
@@ -3031,6 +3092,9 @@ export class AppStore {
    */
   async openProject(projectId: string, workspaceDirectory?: string) {
     this.cancelScopePreview() // 作用域操作介入：作废 Alt 预览（§3 修订）
+    // 身份归一（design-project-identity §3.2）：关闭栈/Tab 恢复等外部路径可能
+    // 送入旧 id——projects.find 会落空（旧行已不显示），统一映射到当前行
+    projectId = normalizeProjectId(this.projectIdentity, projectId)
     const epoch = ++this.switchEpoch
     const ps = this.projectStateFor()
     if (!ps.opened.includes(projectId)) ps.opened.push(projectId)
@@ -3135,6 +3199,8 @@ export class AppStore {
     if (signal?.aborted) return
     // projects 是左栏/打开流数据源，必须先含新项目再 openProject
     this.projects = fresh
+    // 身份归一化先于库存合并重放（design-project-identity §3.2 接线）
+    this.normalizeProjectIdentities()
     // 库存合并重放（listProjects 重映射丢失既有合并——见 mergeWorktreeDirsIntoProjects）
     this.mergeWorktreeDirsIntoProjects()
     this.emit()
@@ -3337,10 +3403,12 @@ export class AppStore {
    * 目录 → 所属项目（Tab 记忆归属 / restoreScopeTabs 会话集解析）。
    * v2 下项目行含伪项目（非 git 目录 = worktree 精确匹配）；git 项目经
    * worktree/sandboxes 认领。未命中返回 null。
+   * 基底 = uniqueProjects（design-project-identity §3.4）：同路径多行时取
+   * 当前行——全量序（active desc）在旧行活跃反超时会命中旧行。
    */
   private findProjectOwningDirectory(directory: string): Project | null {
     return (
-      this.projects.find(
+      this.uniqueProjects.find(
         (p) => p.worktree === directory || (p.sandboxes ?? []).includes(directory),
       ) ?? null
     )
@@ -3751,7 +3819,15 @@ export class AppStore {
   async refreshSessionsForProject(project: Project) {
     const client = this.client
     if (!client) return
-    const dirs = [...new Set([project.worktree, ...(project.sandboxes ?? [])])]
+    // 目录吞并防御（design-project-identity §3.3）：排除其他项目的 canonical
+    // （本项目 sandbox 内嵌独立 .git 自成项目行）——A 的作用域不吞并 B 的会话；
+    // 普通 worktree 目录无独立 ProjectTable 行，不受此排除
+    const foreignCanonicals = new Set(
+      this.uniqueProjects.filter((u) => u.id !== project.id).map((u) => u.worktree),
+    )
+    const dirs = [...new Set([project.worktree, ...(project.sandboxes ?? [])])].filter(
+      (d) => d === project.worktree || !foreignCanonicals.has(d),
+    )
     await runLimited(dirs, 3, async (dir) => {
       // v2：flat directory query + {data, cursor} envelope；limit 200 覆盖 v0.x 规模
       // （>200 目录的分页是 M2 决策点）。**不过滤归档**：v1 快照同构含归档会话，
@@ -4337,6 +4413,7 @@ export class AppStore {
       .catch(() => null)
     if (!fresh || this.client !== client) return
     this.projects = fresh
+    this.normalizeProjectIdentities()
     this.mergeWorktreeDirsIntoProjects()
     // diff 基线 = worktree ∪ sandboxes（before 的 sandboxes 已含上一轮库存合并），
     // 对照 = fresh sandboxes ∪ 新库存——库存行消失（他端 DELETE / refresh 清理）
@@ -4507,6 +4584,106 @@ export class AppStore {
   private provisionalWorktreeDirs = new Map<string, string>()
 
   /**
+   * 项目身份索引（design-project-identity §3.2）：同路径多 projectID（加/删
+   * remote 致 server 端身份分裂）的「旧 id → 当前行 id」映射。null = 无分裂
+   * （常态）。随 this.projects 写点重建；持久化/运行时的 projectId 键控状态
+   * 经 normalizeProjectIdentities() 归一，旧 id 对一切逻辑透明。
+   */
+  private projectIdentity: ProjectIdentityIndex | null = null
+
+  /**
+   * 项目身份归一化（design-project-identity §3.2）：在 this.projects 每个写点
+   * 后调用。快路径：无分裂 no-op（零开销）。有分裂时一次完成——运行时态重键
+   * （sessionsByProject/worktreeDirs/provisionalWorktreeDirs/sessionLocationVersions/
+   * tabs.projectId）+ 持久化态归一（projectStates 全 profile 的 opened/
+   * currentProjectId、tabMemory、tabSession 投影的 projectId）+ 落盘 + emit。
+   * 幂等：二次运行无变更不落盘不 emit。
+   */
+  private normalizeProjectIdentities() {
+    const index = buildProjectIdentityIndex(this.projects)
+    this.projectIdentity = index
+    if (!index) return
+    let runtimeChanged = false
+    // sessionsByProject：键重映射 + 实体 projectID 重写（同 id 实体后者胜——
+    // 快照/事件对账会再收敛）
+    const sessions = new Map<string, Map<string, Session>>()
+    for (const [pid, map] of this.sessionsByProject) {
+      const nid = normalizeProjectId(index, pid)
+      const target = sessions.get(nid) ?? new Map<string, Session>()
+      sessions.set(nid, target)
+      for (const s of map.values()) {
+        target.set(s.id, s.projectID === nid ? s : { ...s, projectID: nid })
+      }
+      if (nid !== pid) {
+        runtimeChanged = true
+        this.sessionRegistryVersion++
+      }
+    }
+    this.sessionsByProject = sessions
+    const wd = new Map<string, string[]>()
+    for (const [pid, dirs] of this.worktreeDirs) wd.set(normalizeProjectId(index, pid), dirs)
+    this.worktreeDirs = wd
+    for (const [dir, pid] of [...this.provisionalWorktreeDirs]) {
+      const nid = normalizeProjectId(index, pid)
+      if (nid !== pid) this.provisionalWorktreeDirs.set(dir, nid)
+    }
+    for (const [sid, v] of [...this.sessionLocationVersions]) {
+      const nid = normalizeProjectId(index, v.projectID)
+      if (nid !== v.projectID) this.sessionLocationVersions.set(sid, { ...v, projectID: nid })
+    }
+    for (const tab of this.tabs) {
+      const nid = normalizeProjectId(index, tab.projectId)
+      if (nid !== tab.projectId) {
+        tab.projectId = nid
+        runtimeChanged = true
+      }
+    }
+    // projectStates（全 profile，与 migrateLegacyGlobalState 同范围）：opened
+    // 去重保位（normalizeOpenedIds 无变化返回原引用）
+    let stateChanged = false
+    for (const key of Object.keys(this.projectStates)) {
+      const ps = this.projectStates[key]!
+      const opened = normalizeOpenedIds(index, ps.opened)
+      const current = ps.currentProjectId != null ? normalizeProjectId(index, ps.currentProjectId) : null
+      if (opened !== ps.opened || current !== ps.currentProjectId) {
+        ps.opened = opened
+        ps.currentProjectId = current
+        stateChanged = true
+      }
+    }
+    let memoryChanged = false
+    for (const slice of Object.values(this.tabMemory)) {
+      if (!slice) continue
+      for (const mem of Object.values(slice)) {
+        if (!mem) continue
+        const nid = normalizeProjectId(index, mem.projectId)
+        if (nid !== mem.projectId) {
+          mem.projectId = nid
+          memoryChanged = true
+        }
+      }
+    }
+    let sessionChanged = false
+    for (const slice of Object.values(this.tabSession)) {
+      if (!slice?.tabs) continue
+      for (const tab of slice.tabs) {
+        const nid = normalizeProjectId(index, tab.projectId)
+        if (nid !== tab.projectId) {
+          tab.projectId = nid
+          sessionChanged = true
+        }
+      }
+    }
+    if (stateChanged)
+      void window.desktop.storeSet("project.state", this.projectStates).catch(() => {})
+    if (memoryChanged)
+      void window.desktop.storeSet("tabs.memory", this.tabMemory).catch(() => {})
+    if (sessionChanged)
+      void window.desktop.storeSet("tabs.session", this.tabSession).catch(() => {})
+    if (runtimeChanged || stateChanged || memoryChanged || sessionChanged) this.emit()
+  }
+
+  /**
    * 拉取项目 worktree 库存并合并进内部 sandboxes。
    * opts.refresh：先 POST /api/worktree/refresh（server 端对账——发现外部
    * git worktree 增删、清理死行；外部 rm -rf 的库存残留只有此端点能清）。
@@ -4588,6 +4765,7 @@ export class AppStore {
       .catch(() => null)
     if (fresh && this.client === client) {
       this.projects = fresh
+      this.normalizeProjectIdentities()
       this.mergeWorktreeDirsIntoProjects()
       await this.loadWorktreeInventory(project.id)
     }
@@ -4833,13 +5011,21 @@ export class AppStore {
         ...(model ? { model } : {}),
       })
       const session = toInternalSession(wire)
-      const map = this.sessionsByProject.get(this.currentProject.id) ?? new Map()
-      map.set(session.id, session)
-      this.sessionsByProject.set(this.currentProject.id, map)
+      // 身份归一（design-project-identity §3.3，review #2）：REST 收敛实体的 pid
+      // 是 server 原值（陈旧缓存/新身份行未进列表的窗口内可能是旧行 id）——
+      // 登记键与实体统一归一到当前行
+      const pid = normalizeProjectId(this.projectIdentity, session.projectID)
+      const normalized = pid === session.projectID ? session : { ...session, projectID: pid }
+      const map = this.sessionsByProject.get(pid) ?? new Map()
+      map.set(normalized.id, normalized)
+      this.sessionsByProject.set(pid, map)
       this.sessionRegistryVersion++
-      if (opts.openTab !== false) this.openChatTab(session)
+      if (opts.openTab !== false) this.openChatTab(normalized)
       this.emit()
-      return session
+      // 返回归一后实体（review 二轮 #1）：调用方 openTab:false 路径的
+      // settle(session) → openChatTab(session) 会以返回值写 tab.projectId——
+      // 返回原始对象会把旧行 pid 写进新开 Tab（自愈但窗口内挂旧 id）
+      return normalized
     } catch (e) {
       this.connectionError = e instanceof Error ? e.message : String(e)
       this.emit()
@@ -5722,11 +5908,15 @@ export class AppStore {
         // 补开，否则会把已归档会话洗回未归档并复活刚关的 Tab
         const existing = this.findSession(forked.id)
         if (existing && existing.time.updated > forked.time.updated) return
-        const map = this.sessionsByProject.get(forked.projectID) ?? new Map()
-        map.set(forked.id, forked)
-        this.sessionsByProject.set(forked.projectID, map)
+        // 身份归一（design-project-identity §3.3，review #2）：同 createSession——
+        // 登记键与实体用归一后的 pid
+        const pid = normalizeProjectId(this.projectIdentity, forked.projectID)
+        const normalized = pid === forked.projectID ? forked : { ...forked, projectID: pid }
+        const map = this.sessionsByProject.get(pid) ?? new Map()
+        map.set(normalized.id, normalized)
+        this.sessionsByProject.set(pid, map)
         this.sessionRegistryVersion++
-        if (forked.directory === this.scopeDirectory()) this.openChatTabPassive(forked)
+        if (normalized.directory === this.scopeDirectory()) this.openChatTabPassive(normalized)
         this.emit()
       })
       .catch((e) => {
@@ -8401,12 +8591,15 @@ export class AppStore {
           .filter((t) => t.kind === "chat")
           .map((t) => ({ sessionID: t.key.slice(5), directory: t.directory! })),
       onSessionsSnapshot: (dir, sessions) => {
-        // 按项目合并（不清空重置，按 directory 分域）；同一 dir 可能含多项目会话
+        // 按项目合并（不清空重置，按 directory 分域）；同一 dir 可能含多项目会话。
+        // 身份归一（design-project-identity §3.3）：server 原值 pid 可能是旧行
+        // id——归一分组，applySessionsSnapshot 内再归一一次（双防线）
         const byProject = new Map<string, Session[]>()
         for (const s of sessions) {
-          const list = byProject.get(s.projectID) ?? []
-          list.push(s)
-          byProject.set(s.projectID, list)
+          const pid = normalizeProjectId(this.projectIdentity, s.projectID)
+          const list = byProject.get(pid) ?? []
+          list.push(s.projectID === pid ? s : { ...s, projectID: pid })
+          byProject.set(pid, list)
         }
         for (const [pid, list] of byProject) {
           this.applySessionsSnapshot(pid, dir, list)
