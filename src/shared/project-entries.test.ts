@@ -9,6 +9,11 @@ import {
   migrateLegacyGlobalState,
   migrateLegacyMemoryProjectIds,
   migrateLegacyPersistedProjectIds,
+  buildProjectIdentityIndex,
+  dedupeProjectsByIdentity,
+  isNewerProjectIdentity,
+  normalizeOpenedIds,
+  normalizeProjectId,
 } from "./project-entries"
 
 const PROJECTS = [
@@ -109,5 +114,78 @@ describe("migrateLegacyMemoryProjectIds / migrateLegacyPersistedProjectIds", () 
     expect(migrateLegacyPersistedProjectIds(session, PROJECTS2)).toBe(true)
     expect(session.p.tabs.map((t) => t.projectId)).toEqual(["p_hash", "p_git", "global", "p_git"])
     expect(migrateLegacyPersistedProjectIds(session, PROJECTS2)).toBe(false)
+  })
+})
+
+// ============ 项目身份归一化（design-project-identity §3.1，2026-11-09） ============
+
+describe("项目身份归一化（design-project-identity）", () => {
+  const row = (id: string, worktree: string, created: number) => ({ id, worktree, time: { created } })
+
+  it("无分裂路径：索引为 null（快路径）——单行/空集/全异路径", () => {
+    expect(buildProjectIdentityIndex([])).toBeNull()
+    expect(buildProjectIdentityIndex([row("a", "/x", 1)])).toBeNull()
+    expect(
+      buildProjectIdentityIndex([row("a", "/x", 1), row("b", "/y", 2)]),
+    ).toBeNull()
+  })
+
+  it("双行同路径：created 大者为当前行；旧行进 legacyToCurrent；currentByPath 记路径", () => {
+    // server 序任意（active desc 抖动）——旧行在前也不影响判定
+    const index = buildProjectIdentityIndex([
+      row("old", "/repo", 100),
+      row("cur", "/repo", 200),
+    ])
+    expect(index).not.toBeNull()
+    expect(index!.currentByPath.get("/repo")).toBe("cur")
+    expect(index!.legacyToCurrent.get("old")).toBe("cur")
+    expect(index!.legacyToCurrent.has("cur")).toBe(false)
+  })
+
+  it("created 相同：id 字典序小者为当前行（确定性 tie-break）", () => {
+    const index = buildProjectIdentityIndex([
+      row("bbb", "/repo", 100),
+      row("aaa", "/repo", 100),
+    ])
+    expect(index!.legacyToCurrent.get("bbb")).toBe("aaa")
+  })
+
+  it("normalizeProjectId：旧 id → 当前行；当前/未知 id 原样；null 索引原样", () => {
+    const index = buildProjectIdentityIndex([row("old", "/repo", 1), row("cur", "/repo", 2)])
+    expect(normalizeProjectId(index, "old")).toBe("cur")
+    expect(normalizeProjectId(index, "cur")).toBe("cur")
+    expect(normalizeProjectId(index, "unknown")).toBe("unknown")
+    expect(normalizeProjectId(null, "old")).toBe("old")
+  })
+
+  it("normalizeOpenedIds：归一去重保位（旧 id 在前则占其首现位）；无变化返回原引用", () => {
+    const index = buildProjectIdentityIndex([row("old", "/repo", 1), row("cur", "/repo", 2)])
+    // 旧 id 在前：当前行占据旧 id 的首现位置（用户排序不因归一重排）
+    expect(normalizeOpenedIds(index, ["old", "cur", "x"])).toEqual(["cur", "x"])
+    expect(normalizeOpenedIds(index, ["cur", "old", "x"])).toEqual(["cur", "x"])
+    // 未知 id 原样保留（不丢弃——与 global 迁移的丢弃语义不同）
+    expect(normalizeOpenedIds(index, ["gone", "cur"])).toEqual(["gone", "cur"])
+    const untouched = ["cur", "x"]
+    expect(normalizeOpenedIds(index, untouched)).toBe(untouched)
+    const nullIndexList = ["old"]
+    expect(normalizeOpenedIds(null, nullIndexList)).toBe(nullIndexList)
+  })
+
+  it("dedupeProjectsByIdentity：每路径取当前行（created 最大），输出保持首见序", () => {
+    const out = dedupeProjectsByIdentity([
+      row("oldA", "/a", 1),
+      row("oldB", "/b", 1),
+      row("curA", "/a", 2),
+      row("c", "/c", 1),
+    ])
+    // /a 取 curA；序 = 路径首现序（/a, /b, /c）
+    expect(out.map((p) => p.id)).toEqual(["curA", "oldB", "c"])
+  })
+
+  it("isNewerProjectIdentity：created 大者新；同 created id 小者新", () => {
+    expect(isNewerProjectIdentity(row("z", "/r", 2), row("a", "/r", 1))).toBe(true)
+    expect(isNewerProjectIdentity(row("z", "/r", 1), row("a", "/r", 2))).toBe(false)
+    expect(isNewerProjectIdentity(row("a", "/r", 1), row("z", "/r", 1))).toBe(true)
+    expect(isNewerProjectIdentity(row("z", "/r", 1), row("a", "/r", 1))).toBe(false)
   })
 })

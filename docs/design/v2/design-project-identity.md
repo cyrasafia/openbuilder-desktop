@@ -1,8 +1,10 @@
 # design-project-identity.md — 同路径多 projectID 的客户端归一化（项目身份分裂）
 
-> 日期：2026-11-09｜状态：草案（已评审修订，2026-11-09 review 六项：符号名/spec 指向/
-> worktree 事件守卫 pid 归一/目录吞并防御（§3.3 新增，消化「同目录异项目」边缘）/
-> 伪行措辞/行号校准——已全部落入正文）
+> 日期：2026-11-09｜状态：已实现（待评审；实现增补：§3.1 签名落地为
+> buildProjectIdentityIndex（null = 无分裂快路径）+ dedupeProjectsByIdentity，
+> identity map 的「路径表/id 表」拆为双 Map；2026-11-09 review 六项修订：符号名/
+> spec 指向/worktree 事件守卫 pid 归一/目录吞并防御（§3.3 新增，消化「同目录
+> 异项目」边缘）/伪行措辞/行号校准——已全部落入正文）
 > 关联：`design-worktree-sync.md` §0（worktree 库存权威源——本文的会话归属放宽以其目录集语义为基）；
 > `design-v2-migration.md` D6/M1b（global 语义退役——本文的旧 id 归一化与 `migrateLegacyGlobalState`
 > 同族，共享「连接期收敛持久化旧键」的先例与时机）；`design-tab-memory.md` §3.3/§17
@@ -111,15 +113,20 @@ rootCommit/`directory:` 行同样晚于 remote 行），映射稳定，仅在真
 ### 3.1 身份映射纯函数（`src/shared/project-entries.ts` 扩展）
 
 同文件既有职责即「持久化项目键的版本迁移」（v1 global → v2 id），本文新增同族
-函数，签名（全部纯函数，单测主战场）：
+函数（实现增补：设计稿的单 Map 签名落地为「null = 无分裂」的索引对象 + 去重
+函数，快路径判定更直白）：
 
 ```ts
-/** 路径 → 当前行 id（created 最大；同 created 取 id 字典序小者）；无重复路径的路径不入表 */
-buildProjectIdentityMap(projects: ReadonlyArray<{id, worktree, time:{created}}>): Map<string, string>
-/** 任意 id → 当前行 id；未命中（单行/未知 id）原样返回 */
-normalizeProjectId(map, id): string
-/** opened 数组归一：逐 id 映射 + 去重保位 */
-normalizeOpenedIds(map, opened: string[]): string[]
+/** 身份索引：仅分裂路径入表（无分裂返回 null，调用方走快路径） */
+interface ProjectIdentityIndex {
+  currentByPath: Map<string, string>   // 路径 → 当前行 id（仅多行路径）
+  legacyToCurrent: Map<string, string> // 旧 id → 当前行 id（不含自身）
+}
+buildProjectIdentityIndex(projects): ProjectIdentityIndex | null
+isNewerProjectIdentity(a, b): boolean  // created 大者新；同 created id 字典序小者新
+normalizeProjectId(index, id): string  // 未命中（当前/未知 id/无索引）原样返回
+normalizeOpenedIds(index, opened): string[] // 归一去重保位；无变化返回原引用
+dedupeProjectsByIdentity(projects): T[] // uniqueProjects 的纯函数核心（首见序）
 ```
 
 ### 3.2 store 归一化例程 `normalizeProjectIdentities()`

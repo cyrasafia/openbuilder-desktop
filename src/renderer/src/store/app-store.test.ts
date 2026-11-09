@@ -10344,3 +10344,200 @@ describe("后台 shell——SSE 缺口 input 守卫（review #2）", () => {
     expect(store.noticesForSession("p")).toHaveLength(0)
   })
 })
+
+// ============ 项目身份归一化（design-project-identity，2026-11-09） ============
+
+describe("项目身份归一化（design-project-identity）", () => {
+  const SPLIT = "/split"
+  const OLD_ID = "proj_old"
+  const CUR_ID = "proj_cur"
+
+  const splitProj = (id: string, created: number): Project => ({
+    id,
+    worktree: SPLIT,
+    vcs: "git",
+    time: { created, updated: created, active: created },
+    sandboxes: [],
+  })
+  const OLD_P = splitProj(OLD_ID, 100)
+  const CUR_P = splitProj(CUR_ID, 200)
+
+  /** 可指定 pid 的会话夹具（SPLIT 目录） */
+  const splitSess = (id: string, pid: string): Session => ({
+    id,
+    projectID: pid,
+    directory: SPLIT,
+    title: id,
+    time: { created: Number(id.slice(1)), updated: Number(id.slice(1)) },
+  })
+
+  /** 分裂数据就位：projects 双行 + opened 指向当前行 + 归一化例程已跑 */
+  function seedSplit(opened: string[] = [CUR_ID]) {
+    store.projects = [OLD_P, CUR_P] // server 序任意（active 抖动不影响判定）
+    store.projectStates.default = { opened, currentProjectId: opened[0] ?? null, currentWorkspaceId: null }
+    ;(store as unknown as { normalizeProjectIdentities: () => void }).normalizeProjectIdentities()
+  }
+
+  it("normalizeProjectIdentities：运行时重键 + 持久化归一（全 profile）+ opened 去重保位", () => {
+    store.projects = [OLD_P, CUR_P]
+    store.projectStates = {
+      default: { opened: [OLD_ID, CUR_ID, "other"], currentProjectId: OLD_ID, currentWorkspaceId: null },
+      prof2: { opened: [OLD_ID], currentProjectId: OLD_ID, currentWorkspaceId: null },
+    }
+    store.tabMemory = { default: { [SPLIT]: { projectId: OLD_ID, tabs: [], active: null } } }
+    const tsRef = store as unknown as {
+      tabSession: Record<string, { tabs: Array<{ kind: string; key: string; projectId: string; directory: string; title: string }>; scopeActive: Record<string, string | null> }>
+    }
+    tsRef.tabSession = {
+      default: {
+        tabs: [{ kind: "chat", key: "chat:s1", projectId: OLD_ID, directory: SPLIT, title: "t" }],
+        scopeActive: {},
+      },
+    }
+    store.sessionsByProject.set(OLD_ID, sessionsOf(splitSess("s1", OLD_ID)))
+    ;(store as unknown as { worktreeDirs: Map<string, string[]> }).worktreeDirs.set(OLD_ID, [SPLIT])
+    ;(store as unknown as { provisionalWorktreeDirs: Map<string, string> }).provisionalWorktreeDirs.set(
+      "/wt",
+      OLD_ID,
+    )
+    ;(store as unknown as { sessionLocationVersions: Map<string, unknown> }).sessionLocationVersions.set("s1", {
+      updated: 1,
+      projectID: OLD_ID,
+      directory: SPLIT,
+    })
+    store.tabs.push({
+      kind: "chat",
+      key: "chat:s1",
+      projectId: OLD_ID,
+      title: "s1",
+      directory: SPLIT,
+    })
+
+    const norm = store as unknown as { normalizeProjectIdentities: () => void }
+    norm.normalizeProjectIdentities()
+
+    // opened 去重保位（旧 id 首现位归当前行）+ currentProjectId 归一
+    expect(store.projectStates.default.opened).toEqual([CUR_ID, "other"])
+    expect(store.projectStates.default.currentProjectId).toBe(CUR_ID)
+    expect(store.projectStates.prof2.opened).toEqual([CUR_ID])
+    // 记忆/投影归一
+    expect(store.tabMemory.default[SPLIT]!.projectId).toBe(CUR_ID)
+    expect(tsRef.tabSession.default!.tabs[0]!.projectId).toBe(CUR_ID)
+    // 运行时重键：会话 map/库存/临时锚点/版本记录/Tab
+    expect(store.sessionsByProject.get(OLD_ID)).toBeUndefined()
+    expect(store.sessionsByProject.get(CUR_ID)!.get("s1")!.projectID).toBe(CUR_ID)
+    expect((store as unknown as { worktreeDirs: Map<string, string[]> }).worktreeDirs.get(OLD_ID)).toBeUndefined()
+    expect(
+      (store as unknown as { provisionalWorktreeDirs: Map<string, string> }).provisionalWorktreeDirs.get("/wt"),
+    ).toBe(CUR_ID)
+    expect(
+      (store as unknown as { sessionLocationVersions: Map<string, { projectID: string }> }).sessionLocationVersions.get(
+        "s1",
+      )!.projectID,
+    ).toBe(CUR_ID)
+    expect(store.tabs[0]!.projectId).toBe(CUR_ID)
+    // 幂等：二次归一无变化（opened 引用稳定）
+    const before = store.projectStates.default.opened
+    norm.normalizeProjectIdentities()
+    expect(store.projectStates.default.opened).toBe(before)
+  })
+
+  it("快照归属纽带 = directory：当前行拉回旧行 pid 会话，归一登记、visibleSessions 恢复", async () => {
+    seedSplit()
+    snapshots.set(SPLIT, [splitSess("s1", OLD_ID), splitSess("s2", OLD_ID)])
+    await store.refreshSessionsForProject(CUR_P)
+    // 实体 projectID 归一为登记键；旧行键无残留
+    expect(store.sessionsByProject.get(OLD_ID)).toBeUndefined()
+    expect(store.sessionsByProject.get(CUR_ID)!.get("s1")!.projectID).toBe(CUR_ID)
+    // 当前作用域可见（updated 降序）
+    expect(store.visibleSessions.map((s) => s.id)).toEqual(["s2", "s1"])
+  })
+
+  it("reconciler 快照分组：server 原值 pid=旧行也能落地（双防线）", () => {
+    seedSplit()
+    ;(store as unknown as { applySessionsSnapshot: (pid: string, dir: string, list: Session[]) => void })
+      .applySessionsSnapshot(OLD_ID, SPLIT, [splitSess("s1", OLD_ID)])
+    expect(store.sessionsByProject.get(CUR_ID)!.get("s1")!.projectID).toBe(CUR_ID)
+  })
+
+  it("relocate：旧行 pid 归一后不落「移出已打开项目」分支（不关 Tab）；未知 pid 照旧关", async () => {
+    seedSplit()
+    snapshots.set(SPLIT, [splitSess("s1", OLD_ID)])
+    await store.refreshSessionsForProject(CUR_P)
+    store.tabs.push({ kind: "chat", key: "chat:s1", projectId: CUR_ID, title: "s1", directory: SPLIT })
+
+    // 旧行 pid（他端 session.moved 携 server 原值）→ 归一命中当前行，Tab 保留
+    ;(store as unknown as { relocateSession: (s: Session) => boolean }).relocateSession({
+      ...splitSess("s1", OLD_ID),
+      time: { created: 1, updated: 99 },
+    })
+    expect(store.tabs.some((t) => t.key === "chat:s1")).toBe(true)
+    expect(store.sessionsByProject.get(CUR_ID)!.get("s1")).toBeTruthy()
+
+    // 对照：真正未知项目的 pid（无分裂映射）→ 移出已打开作用域，关 Tab 清状态
+    ;(store as unknown as { relocateSession: (s: Session) => boolean }).relocateSession({
+      ...splitSess("s1", "proj_elsewhere"),
+      directory: "/elsewhere",
+      time: { created: 1, updated: 100 },
+    })
+    expect(store.tabs.some((t) => t.key === "chat:s1")).toBe(false)
+  })
+
+  it("存量自愈：空记忆 + 旧行 pid 会话 → restoreScopeTabs §17 补开 Tab", async () => {
+    seedSplit()
+    // 事故现场形态：记忆被新行覆盖为空（tabs:[]）——归一后 projectId 已是当前行
+    store.tabMemory = { default: { [SPLIT]: { projectId: CUR_ID, tabs: [], active: null } } }
+    snapshots.set(SPLIT, [splitSess("s1", OLD_ID), splitSess("s2", OLD_ID)])
+    await store.refreshSessionsForProject(CUR_P)
+    ;(store as unknown as { restoreScopeTabs: (dir: string) => void }).restoreScopeTabs(SPLIT)
+    expect(store.tabs.filter((t) => t.kind === "chat").map((t) => t.key)).toEqual(["chat:s1", "chat:s2"])
+  })
+
+  it("目录吞并防御：其他项目 canonical 不进拉取目录集，闸门兜底同判", async () => {
+    const A: Project = { id: "proj_a", worktree: "/a", vcs: "git", time: { created: 1, updated: 1, active: 1 }, sandboxes: ["/sub"] }
+    const B: Project = { id: "proj_b", worktree: "/sub", vcs: "git", time: { created: 1, updated: 1, active: 1 }, sandboxes: [] }
+    store.projects = [A, B]
+    store.projectStates.default = { opened: ["proj_a", "proj_b"], currentProjectId: "proj_a", currentWorkspaceId: null }
+    ;(store as unknown as { normalizeProjectIdentities: () => void }).normalizeProjectIdentities()
+    snapshots.set("/a", [])
+    snapshots.set("/sub", [{ ...splitSess("sb1", "proj_b"), directory: "/sub" }])
+
+    // A 拉取：/sub 是 B 的 canonical，被排除（A 的 map 不含 B 会话）
+    await store.refreshSessionsForProject(A)
+    expect(store.sessionsByProject.get("proj_a")?.size ?? 0).toBe(0)
+    // B 自身正常拉到
+    await store.refreshSessionsForProject(B)
+    expect(store.sessionsByProject.get("proj_b")!.get("sb1")).toBeTruthy()
+    // 闸门兜底：即使直调快照登记，B 的 canonical 也不进 A
+    ;(store as unknown as { applySessionsSnapshot: (pid: string, dir: string, list: Session[]) => void })
+      .applySessionsSnapshot("proj_a", "/sub", [{ ...splitSess("sb1", "proj_b"), directory: "/sub" }])
+    expect(store.sessionsByProject.get("proj_a")?.has("sb1")).toBeFalsy()
+  })
+
+  it("worktree.updated 携旧行 pid：守卫归一后仍触发对账（不静默跳过）", async () => {
+    seedSplit()
+    const cv2 = clientV2Of()
+    cv2.refreshWorktrees = async () => {}
+    cv2.listWorktrees = async () => [{ directory: SPLIT }]
+    let listCalls = 0
+    cv2.listProjects = async () => {
+      listCalls++
+      return projectList.map(wireProject)
+    }
+
+    ;(store as unknown as { handleEvent: (dir: string, ev: unknown, meta?: unknown) => void }).handleEvent(SPLIT, {
+      type: "worktree.updated",
+      properties: { projectID: OLD_ID },
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(listCalls).toBeGreaterThan(0)
+  })
+
+  it("uniqueProjects：同路径取 created 最新；openedEntries/选择器只见一行", () => {
+    seedSplit([OLD_ID]) // opened 尚指旧行（归一化后收敛）
+    expect(store.projectStates.default.opened).toEqual([CUR_ID])
+    expect(store.uniqueProjects.map((p) => p.id)).not.toContain(OLD_ID)
+    expect(store.uniqueProjects.find((p) => p.worktree === SPLIT)!.id).toBe(CUR_ID)
+    expect(store.openedEntries.map((e) => e.project.id)).toEqual([CUR_ID])
+  })
+})
