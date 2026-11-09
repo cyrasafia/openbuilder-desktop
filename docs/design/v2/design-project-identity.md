@@ -1,10 +1,14 @@
 # design-project-identity.md — 同路径多 projectID 的客户端归一化（项目身份分裂）
 
-> 日期：2026-11-09｜状态：已实现（待评审；实现增补：§3.1 签名落地为
-> buildProjectIdentityIndex（null = 无分裂快路径）+ dedupeProjectsByIdentity，
-> identity map 的「路径表/id 表」拆为双 Map；2026-11-09 review 六项修订：符号名/
-> spec 指向/worktree 事件守卫 pid 归一/目录吞并防御（§3.3 新增，消化「同目录
-> 异项目」边缘）/伪行措辞/行号校准——已全部落入正文）
+> 日期：2026-11-09｜状态：已实现，活体验证通过（scripts/dev.sh 连 15120：同路径双行收敛
+> 为一行、「项目启动」及 fork 经 §17 补开找回 Tab——§4 存量自愈推演逐项兑现）；
+> 实现增补：§3.1 签名落地为 buildProjectIdentityIndex（null = 无分裂快路径）+
+> dedupeProjectsByIdentity，identity map 的「路径表/id 表」拆为双 Map；实现
+> review 五项修订（2026-11-09）：doConnect 归一后置于 v1 迁移块（byDir 末行胜
+> 兜底）、createSession/forkSession 实体 pid 归一、快照 docstring、
+> session.deleted v1 回退分支归一、选择器双行夹具用例；设计稿 review 六项：
+> 符号名/spec 指向/worktree 事件守卫 pid 归一/目录吞并防御（§3.3 新增，消化
+> 「同目录异项目」边缘）/伪行措辞/行号校准——均已落入正文
 > 关联：`design-worktree-sync.md` §0（worktree 库存权威源——本文的会话归属放宽以其目录集语义为基）；
 > `design-v2-migration.md` D6/M1b（global 语义退役——本文的旧 id 归一化与 `migrateLegacyGlobalState`
 > 同族，共享「连接期收敛持久化旧键」的先例与时机）；`design-tab-memory.md` §3.3/§17
