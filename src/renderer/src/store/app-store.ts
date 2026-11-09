@@ -5022,7 +5022,10 @@ export class AppStore {
       this.sessionRegistryVersion++
       if (opts.openTab !== false) this.openChatTab(normalized)
       this.emit()
-      return session
+      // 返回归一后实体（review 二轮 #1）：调用方 openTab:false 路径的
+      // settle(session) → openChatTab(session) 会以返回值写 tab.projectId——
+      // 返回原始对象会把旧行 pid 写进新开 Tab（自愈但窗口内挂旧 id）
+      return normalized
     } catch (e) {
       this.connectionError = e instanceof Error ? e.message : String(e)
       this.emit()
