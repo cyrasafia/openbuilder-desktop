@@ -1,6 +1,8 @@
 # 文件 Tab HTML 预览 — 设计文档
 
-> **（v0.3 已废弃）** HTML 预览已迁移至浏览器 Tab（[design-browser-tab.md](design-browser-tab.md) §1.4）：文件树点击 `.html` 默认开浏览器 Tab（file:// 全能力渲染），右键「查看源码」在文件 Tab 打开源码。本文保留为历史决策记录——sandboxed iframe + CSP 注入方案在桌面端被 WebContentsView 取代（无脚本执行限制不再适用：浏览器 Tab 本就是"执行网页"的语境；本地相对资源加载无需 CSP 放行）。`html-preview.ts` 扫描器与用例已删除。
+> **（2026-11-19 恢复有效）** 预览方案原样回归（2026-08-27 曾迁浏览器 Tab，commit 3e9e16e；本次恢复 = 打开方式按连接分派的配套半边）。FileView 预览分支、`html-preview.ts` 扫描器与用例自历史恢复。
+>
+> **打开路由按连接分派（§3.4）**：本地 server（baseUrl 回环，`store.isLocalServer`）点击 `.html` 默认浏览器 Tab——`file://` 可直读同机路径、全能力渲染；远程 attach（`file://` 指向远端路径，本地导航必败）默认文件 Tab 预览态。文件树右键双入口「在浏览器 Tab 中预览 / 预览打开」，当前连接的默认项带「默认」小标；「预览」显式覆写按文件模式记忆、确定性以预览态打开（原「查看源码」单项退役，源码经文件 Tab 工具条二态切换）。配套修订见 [design-browser-tab.md](design-browser-tab.md) §1.4。
 
 > 目标：`.html` / `.htm` 文件默认渲染预览（sandboxed iframe），工具条「预览 / 源码」二态与 markdown 预览对齐；源码态走 CodeMirror（lang-html，已具备）。
 >
@@ -54,6 +56,15 @@
 | HTML→净化重排 | CSP + sandbox + 导航拦截已覆盖执行面；重排破坏文档自身样式 |
 | 主题适配（暗色兜底） | 文档自带背景 |
 | iframe/外链资源放行 | 同 CSP 决策：无 baseUrl、无认证透传，放行即泄露面 |
+
+### 3.4 打开路由按连接分派与右键双入口（2026-11-19 恢复时增）
+
+- 判定：`store.isLocalServer`（`isLoopbackBaseUrl(store.baseUrl)`；managed server 恒本机，attach 按 baseUrl 回环判定——复用 `src/shared/loopback.ts`，pty 显示环境注入同源）。
+- 文件树点击 `.html/.htm`：本地默认浏览器 Tab（`file://` 直读同机路径；Electron shim 失败回退文件 Tab）；远程 attach 默认文件 Tab 预览态（`file://` 指向远端路径，本地导航必败）。
+
+- 右键菜单双入口（置首于通用「打开 / 打开方式」之前）：「在浏览器 Tab 中预览」（`openBrowserTab(fileUrlOf(path))`）/「预览」（先 `setFileViewState(path, preview)` 覆写模式记忆再 `openFileTab`——确定性预览态（已开 Tab 经 viewSeq 递增重挂载，激活中源码态同样生效——模式记忆的显式例外）。当前连接默认项带「默认」小标（`menu-default-tag`）。原「查看源码」单项退役：源码态经文件 Tab 工具条「预览/源码」二态切换，与 markdown 同 idiom。
+- FileView 集成差异（相对 markdown）：html 预览态**不注册**页面内查找——沙箱 iframe opaque origin 触不到内容 DOM（`mdPreviewLive` 收紧到 markdown；`codeViewLive` 的 previewable 分支只在源码态注册 CM 查找）。html 容器 `.html-view` 两态共用（iframe 自管滚动 / CM 内滚自管）。
+
 
 ## 4. 涉及文件
 

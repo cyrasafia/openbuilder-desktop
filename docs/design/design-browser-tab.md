@@ -1,6 +1,6 @@
 # 浏览器 Tab（WebContentsView）+ HTML 预览迁移 — 设计文档
 
-> 对应 spec-v0.3 #6。main 进程 `WebContentsView` 内嵌浏览器（地址栏 + 前进/后退/刷新 + 打开本地文件），Tab 归作用域；**文件树点击 `.html/.htm` 默认在浏览器 Tab 打开（file:// URL）**，右键「查看源码」在文件 Tab 打开源码（FileView 的 iframe 预览分支废弃）。导航安全：远端页面禁跳 `file://`、外链走系统浏览器。
+> 对应 spec-v0.3 #6。main 进程 `WebContentsView` 内嵌浏览器（地址栏 + 前进/后退/刷新 + 打开本地文件），Tab 归作用域；文件树点击 `.html/.htm` **按连接分派打开（2026-11-19 修订，原恒浏览器 Tab）**：本地 server 默认浏览器 Tab（file:// 可直读同机路径），远程 attach 默认文件 Tab 预览态（预览方案恢复，见 design-html-preview.md §3.4）；右键双入口「在浏览器 Tab 中预览 / 预览」，当前默认项带标。导航安全：远端页面禁跳 `file://`、外链走系统浏览器。
 >
 > 参考先例（AGENTS.md 约定先行检索）：`../openbuilder/docs/docs/design/design-html-preview.md`（移动端 CSP 注入路线——桌面 WebContentsView 全能力渲染，不再需要 CSP 限制，但 iframe 预览方案在桌面被本设计**取代**）；`design-layout.md` Tab 表预研（browser = WebContentsView）。z-order 对策为本设计新增。
 
@@ -37,11 +37,12 @@
 - **欢迎页（2026-09-18 增）**：新开空白 Tab（磁贴/Ctrl+3）、恢复 url 回落空白的条目、关闭栈重开空白，**不再加载 about:blank**（`doOpenBrowserTab`/`restoreBrowserTab` 对 about:blank 跳过 navigate——webContents 本就空白）；`isBrowserWelcome(key)`（url === about:blank）时原生视图隐藏（§1.2），内容宿主内渲染 DOM 欢迎页（Globe 图标 + 本地化标题「新标签页」+ 提示 + 「打开本地文件…」按钮，与工具条同 `openLocalFile` 路径；样式对齐 .workspace-empty 语言）。地址栏展示归一：欢迎态显示空（placeholder 引导）而非字面 about:blank（种子/回写/失焦还原/Esc 还原统一走 `addressOf`）；Enter 导航**乐观展示**所输 URL（2026-09-18 review 增——blur 还原的是 store 当前页，欢迎态为空、常规态为旧页，在途期间闪空/回旧页读作"输入被丢弃"；did-navigate/失败回填到达后回写接管为规范 URL）；导航（did-navigate/失败回填）即离开欢迎态，后退回 about:blank 重新进入。标签条标题展示层映射为本地化「新标签页」——store title 仍为 about:blank（持久化/关闭栈机器依赖它，仅展示层映射）。Ctrl+F 等页面内搜索维持现状（空页面 0 匹配，无欢迎态特判）
 - 关闭 Tab：`view-dispose` + 关闭栈（恢复 = 按 key 中 URL 重开——URL 取**当前页 URL**（关 Tab 时的 browserState.url），不是初始 key）
 
-### 1.4 HTML 预览迁移
+### 1.4 HTML 预览迁移（2026-11-19 修订：预览恢复、路由按连接分派）
 
-- `FilePanel` 点击 `.html/.htm` → `openBrowserTab(file://<absolute>)`（Electron 内）；shim 回退 `openFileTab`
-- 文件树右键菜单加「查看源码」项（仅 .html/.htm 文件行）→ `openFileTab(absolute)`；FileView 的 html 分支删 iframe 预览（`isHtmlPath` 预览态不再命中——**html 文件在 FileView 恒源码态**），`html-preview.ts` CSP 扫描器与用例删除；`will-frame-navigate` 拦截保留（防御，browser view 是独立 webContents 不经此 handler）
-- design-html-preview.md 标注废弃指向本文档
+- ~~`FilePanel` 点击 `.html/.htm` 恒 → `openBrowserTab(file://<absolute>)`~~ **按 `store.isLocalServer` 分派**（design-html-preview §3.4）：本地默认浏览器 Tab（shim 失败仍回退 `openFileTab`）；远程 attach 默认 `openFileTab`（预览态——`file://` 指向远端路径，本地导航必败）
+- ~~右键「查看源码」单项~~ → 双入口「在浏览器 Tab 中预览 / 预览」（仅 .html/.htm 文件行，（置首于通用「打开 / 打开方式」之前））：在浏览器 Tab 中预览 = `openBrowserTab(fileUrlOf(path))`；预览 = 覆写模式记忆 + `openFileTab`（确定性预览态）。当前连接默认项带「默认」小标；**FileView iframe 预览分支恢复**（`html-preview.ts` 扫描器与用例自 15832b3 恢复），html 文件在 FileView 回到预览默认 + 预览/源码二态
+- ~~design-html-preview.md 标注废弃指向本文档~~ 恢复有效，头部与 §3.4 记本次修订
+- `will-frame-navigate` 拦截保留（防御，browser view 是独立 webContents 不经此 handler）
 
 ### 1.5 最近访问（2026-09-19）
 

@@ -301,6 +301,9 @@ export interface TabEntity {
   /** file Tab 锚定行号（1-based）：从 diff 跳转时携带，FileView 传给 CodeView
    *  滚动到目标行；仅首次挂载消费，不持久化（复用已开 Tab 时不覆盖已有值） */
   revealLine?: number
+  /** file Tab 视图重挂载序号：「预览」等显式打开意图对已开 Tab 递增（FileView
+   *  key 并入），激活中源码态同样确定性切换；不持久化 */
+  viewSeq?: number
 }
 
 /** 关闭栈条目（design-keyboard-shortcuts §2）：TabEntity 快照，恢复按 kind 分流 */
@@ -891,6 +894,14 @@ export class AppStore {
 
   get baseUrl(): string | null {
     return this.managedBaseUrl ?? this.activeProfile?.baseUrl ?? null
+  }
+
+  /** 本机 server 判定（design-html-preview §3.4 路由闸门，2026-11-19 恢复预览时增）：
+   *  baseUrl 回环 = 本地（.html 默认浏览器 Tab，file:// 可直读同机路径）；非回环
+   *  = 远程 attach（file:// 指向远端路径，本地导航必败 → .html 默认文件 Tab 预览）。
+   *  managed server 恒本机 spawn，其 baseUrl 亦回环，无需特判 */
+  get isLocalServer(): boolean {
+    return isLoopbackBaseUrl(this.baseUrl)
   }
 
   /** connect 选项：openPickerAfter = 连接成功且无已打开项目时打开项目列表
@@ -6939,7 +6950,7 @@ export class AppStore {
   /** file Tab 作用域化（§18）：directory = 打开时作用域；复用已开同路径 Tab 时
    *  归属当前作用域（directory + projectId 一并更新，使关项目/关 global entry 的
    *  projectId 守卫可靠——双行目录下同文件可从两个作用域打开，显式重开 = 要在当前作用域看） */
-  openFileTab(absolutePath: string, revealLine?: number) {
+  openFileTab(absolutePath: string, revealLine?: number, opts?: { remountView?: boolean }) {
     const key = `file:${absolutePath}`
     const existing = this.tabs.find((t) => t.key === key)
     if (!existing) {
@@ -6959,6 +6970,10 @@ export class AppStore {
       // 从 diff 跳转携带 revealLine 时更新锚定行（重新激活后 FileView 消费）；
       // undefined = 无锚点（侧栏/关闭栈恢复等），清除残留避免过时行号强制源码模式
       existing.revealLine = revealLine
+      // 显式打开意图（文件树「预览」）：已开 Tab 递增重挂载序号——FileView 的
+      // mode 是挂载期一次性初始化，激活中覆写 store 模式吸收不到，key 变更强制
+      // 重挂载重读（design-html-preview §3.4）
+      if (opts?.remountView) existing.viewSeq = (existing.viewSeq ?? 0) + 1
     }
     this.activeTabKey = key
     // 任意 kind 最后激活记录（design-tab-state-memory §2.1 挂点：开即激活；

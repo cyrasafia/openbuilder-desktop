@@ -22,7 +22,7 @@ interface MenuState {
   path: string
   name: string
   isDirectory: boolean
-  /** .html/.htm 文件（「查看源码」项显隐，design-browser-tab §1.4） */
+  /** .html/.htm 文件（「在浏览器 Tab 中预览 / 预览」双入口显隐且置首，design-html-preview §3.4） */
   isHtml: boolean
   x: number
   y: number
@@ -219,12 +219,17 @@ function FileRow({
       }
       style={{ paddingLeft: 8 + depth * 14 + 16 }}
       onClick={() => {
-        // .html/.htm 默认浏览器 Tab 打开（design-browser-tab §1.4；Electron 不可
-        // 用回退文件 Tab 源码）
+        // .html/.htm 按连接分派（design-html-preview §3.4）：本地 server file://
+        // 可直读 → 浏览器 Tab（shim 失败回退文件 Tab）；远程 file:// 必败 →
+        // 文件 Tab 预览态
         if (/\.html?$/i.test(node.name)) {
-          void store.openBrowserTab(fileUrlOf(node.absolute)).then((ok) => {
-            if (!ok) store.openFileTab(node.absolute)
-          })
+          if (store.isLocalServer) {
+            void store.openBrowserTab(fileUrlOf(node.absolute)).then((ok) => {
+              if (!ok) store.openFileTab(node.absolute)
+            })
+          } else {
+            store.openFileTab(node.absolute)
+          }
           return
         }
         store.openFileTab(node.absolute)
@@ -245,7 +250,7 @@ function FileRow({
   )
 }
 
-/** 右键菜单（design-file-panel-context-menu）：打开 / 打开方式 / 引用到会话 / 复制路径 */
+/** 右键菜单（design-file-panel-context-menu）：html 双入口（置首）/ 打开 / 打开方式 / 引用到会话 / 复制路径 */
 function FileContextMenu({
   menu,
   onClose,
@@ -343,20 +348,43 @@ function FileContextMenu({
       onContextMenu={(e) => e.preventDefault()}
       onKeyDown={onKeyDown}
     >
+      {menu.isHtml && (
+        <>
+          <button
+            className="context-menu-item"
+            onClick={() =>
+              run(() => {
+                void store.openBrowserTab(fileUrlOf(menu.absolute)).then((ok) => {
+                  if (!ok) store.openFileTab(menu.absolute)
+                })
+              })
+            }
+          >
+            {t.filePreviewInBrowser}
+            {store.isLocalServer && <span className="menu-default-tag">{t.defaultAction}</span>}
+          </button>
+          <button
+            className="context-menu-item"
+            onClick={() =>
+              run(() => {
+                // 显式预览意图：覆写模式记忆确定性以预览打开（模式记忆的显式例外）
+                store.setFileViewState(menu.absolute, { mode: "preview", top: 0 })
+                store.openFileTab(menu.absolute, undefined, { remountView: true })
+              })
+            }
+          >
+            {t.filePreview}
+            {!store.isLocalServer && <span className="menu-default-tag">{t.defaultAction}</span>}
+          </button>
+        </>
+      )}
+
       <button
         className="context-menu-item"
         onClick={() => run(() => void window.desktop.shellOpenPath(menu.absolute))}
       >
         {t.fileOpen}
       </button>
-      {menu.isHtml && (
-        <button
-          className="context-menu-item"
-          onClick={() => run(() => store.openFileTab(menu.absolute))}
-        >
-          {t.fileViewSource}
-        </button>
-      )}
       {showOpenWith && (
         <button
           className="context-menu-item"
