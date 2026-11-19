@@ -75,6 +75,7 @@ import {
 import { createPortal } from "react-dom"
 import { ModelSwitcherBar } from "./model-switcher"
 import { CodeView } from "./code-view"
+import { buildHtmlPreviewDocument } from "./html-preview"
 import { openSearchPanel } from "@codemirror/search"
 import type { EditorView } from "@codemirror/view"
 import { collectHeadings, MdToc, type TocHeading } from "./md-toc"
@@ -586,7 +587,7 @@ export function Workspace() {
         {active?.kind === "chat" && <ChatView key={active.key} sessionID={active.key.slice(5)} />}
         {active?.kind === "file" && (
           /* key 隔离：file Tab 切换时防 mode（预览/源码）等局部 state 跨文件残留（同 ChatView） */
-          <FileView key={active.key} absolutePath={active.key.slice(5)} revealLine={active.revealLine} />
+          <FileView key={`${active.key}#${active.viewSeq ?? 0}`} absolutePath={active.key.slice(5)} revealLine={active.revealLine} />
         )}
         {active?.kind === "diff" &&
           (() => {
@@ -4199,6 +4200,18 @@ function isMarkdownPath(path: string): boolean {
   return ext === "md" || ext === "markdown"
 }
 
+/**
+ * html 文件判定（design-html-preview §3.2 恢复，2026-11-19）：与 isMarkdownPath
+ * 同解析规则，`.html`/`.htm` 命中；`.xhtml` 不识别。
+ */
+function isHtmlPath(path: string): boolean {
+  const base = path.split("/").pop() ?? ""
+  const dot = base.lastIndexOf(".")
+  if (dot <= 0) return false
+  const ext = base.slice(dot + 1).toLowerCase()
+  return ext === "html" || ext === "htm"
+}
+
 
 /* TOC 悬浮窗布局常量——与 app.css .md-toc 定位公式同源，改 CSS 须同步此处 */
 const TOC_W = 240 // --toc-w
@@ -4825,8 +4838,9 @@ function ImagePreview({ src, title, zoomLabel, failedText }: {
  * markdown（内容区动态宽度 [600, 800] 居中，TOC 悬浮窗挂内容区左侧）；
  * 模式/滚动/TOC 状态挂载时从 store 按路径恢复（切走保存、切回恢复，
  * design-tab-state-memory §2.2/§2.4），仅换文件（key 隔离重挂载无条目）回默认。
- * 其余文件（含 `.html`/`.htm`——预览已迁浏览器 Tab，design-browser-tab §1.4，
- * 此处恒源码态）走代码视图（行号+语法高亮，design-code-view）；
+ * `.html`/`.htm` 预览恢复（design-html-preview §3.2，2026-11-19）：sandboxed iframe
+ * （全沙箱 + CSP 注入），预览/源码二态与 markdown 共用工具条；
+ * 其余文件走代码视图（行号+语法高亮，design-code-view）；
  * 非图二进制占位提示（不把 base64 当文本）。
  */
 export function FileView({ absolutePath, revealLine }: { absolutePath: string; revealLine?: number }) {
@@ -4834,9 +4848,17 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
   const { t, locale } = useI18n()
   const cached = store.fileContents.get(absolutePath)
   const isMarkdown = isMarkdownPath(absolutePath)
+  const isHtml = isHtmlPath(absolutePath)
   const isImage = isImagePath(absolutePath)
   const isPdf = isPdfPath(absolutePath)
-  const previewable = isMarkdown
+  const previewable = isMarkdown || isHtml
+  // CSP 注入是 O(n) 扫描 + 拼接，只在内容变化时重算（SSE emit 重渲染不重复付出，
+  // 同 imageSrc/mdFrontMatter 决策）
+  const htmlDoc = useMemo(
+    () => (isHtml && cached ? buildHtmlPreviewDocument(cached.content) : ""),
+    [isHtml, cached?.content],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  )
   // 在途占位判定（design-file-load-streaming §2.3，review 2026-10-12 #1 修订）：
   // 仅「无可用渲染态」的加载条目（首开——无 content 且非 binary）走加载分支；
   // 重拉在途保留旧 content / binary（PDF 闸门/占位）静默呈现——内容容器不
@@ -4984,6 +5006,7 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
   // 占位在途（showLoading）同未落地：不注册任何 find（design-file-load-streaming）；
   // 重拉在途（有内容）find 照常——Ctrl+F 作用于旧内容，同旧版行为
   const mdPreviewLive = !!(
+    isMarkdown &&
     previewable &&
     cached &&
     !cached.error &&
@@ -4991,15 +5014,16 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
     mode === "preview" &&
     !cached.binary
   )
-  // CodeView 渲染中的渲染期镜像（内容分支条件的子集）：md 源码态，或
+  // CodeView 渲染中的渲染期镜像（内容分支条件的子集）：md/html 源码态，或
   // 非图片/PDF 的文本文件内容落地（图片文本回退的边角不注册——Ctrl+F
-  // 聚焦后仍可走 CM keymap）
+  // 聚焦后仍可走 CM keymap）。html 预览态不注册：沙箱 iframe opaque
+  // origin 触不到内容 DOM，DOM 扫描与 CM 面板都无从下手
   const codeViewLive = !!(
     cached &&
     !cached.error &&
     !showLoading &&
     !cached.binary &&
-    (isMarkdown ? mode === "source" : !isPdf && !isImage)
+    (previewable ? mode === "source" : !isPdf && !isImage)
   )
   const mdFindScanKey = useMemo(
     () => (mdPreviewLive ? `preview:${cached?.content ?? ""}` : null),
@@ -5106,7 +5130,7 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
     // ——捕获写入不 emit（§2.2）
     content = (
       <div
-        className="file-view code-view"
+        className={"file-view" + (isHtml ? " html-view" : " code-view")}
         ref={fileScrollRef}
         onScroll={(e) => store.setFileViewState(absolutePath, { mode, top: e.currentTarget.scrollTop })}
       >
@@ -5132,6 +5156,17 @@ export function FileView({ absolutePath, revealLine }: { absolutePath: string; r
               {mdFrontMatter ? mdFrontMatter.body : cached.content}
             </Markdown>
           </div>
+        )}
+        {cached && !cached.error && mode === "preview" && isHtml && (
+          <iframe
+            className="html-preview"
+            title={absolutePath.split("/").pop() ?? absolutePath}
+            // 全沙箱：禁脚本 / opaque origin（触不到父页面与 preload 桥）/ 禁顶层
+            // 导航与弹窗；CSP 注入屏蔽外链资源（design-html-preview §2）
+            sandbox=""
+            referrerPolicy="no-referrer"
+            srcDoc={htmlDoc}
+          />
         )}
         {cached && !cached.error && mode === "source" && (
           <CodeView

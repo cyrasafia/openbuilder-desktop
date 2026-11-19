@@ -437,34 +437,46 @@ describe("FileView markdown 预览", () => {
     expect(consumeFileReveal).toHaveBeenCalledWith("/repo/fresh.md")
   })
 
-  it(".html 恒源码态（预览已迁浏览器 Tab，design-browser-tab §1.4）：无 iframe、无预览/源码切换工具条", () => {
+  it(".html 恢复预览默认（design-html-preview §3.2 恢复，2026-11-19）：sandboxed iframe + CSP 注入；切源码为高亮代码", () => {
     fileContentsStub.set("/repo/page.html", { content: "<html><head><title>t</title></head><body><p>hi</p></body></html>" })
     render(<FileView absolutePath="/repo/page.html" />)
-    expect(document.querySelector("iframe.html-preview")).toBeNull()
-    // 非 previewable：无工具条（.ms-segmented 不渲染），直接代码视图
-    expect(document.querySelector(".ms-segmented")).toBeNull()
+    const iframe = document.querySelector("iframe.html-preview") as HTMLIFrameElement
+    expect(iframe).not.toBeNull()
+    expect(iframe.getAttribute("sandbox")).toBe("")
+    expect(iframe.getAttribute("referrerpolicy")).toBe("no-referrer")
+    expect(iframe.getAttribute("srcdoc")).toContain("Content-Security-Policy")
+
+    fireEvent.click(screen.getByRole("button", { name: "源码" }))
     expect(document.querySelector(".cm-content")?.textContent).toContain("<html>")
+    expect(document.querySelector("iframe.html-preview")).toBeNull()
   })
 
-  it(".htm 与大小写不敏感（.HTML）同样恒源码", () => {
+  it(".htm/.HTML 大小写不敏感同样走预览", () => {
     fileContentsStub.set("/repo/old.htm", { content: "<div>x</div>" })
     const { unmount } = render(<FileView absolutePath="/repo/old.htm" />)
-    expect(document.querySelector(".cm-content")?.textContent).toContain("<div>x</div>")
-    expect(document.querySelector("iframe.html-preview")).toBeNull()
+    expect(document.querySelector("iframe.html-preview")).not.toBeNull()
     unmount()
 
     fileContentsStub.set("/repo/BIG.HTML", { content: "<div>y</div>" })
     render(<FileView absolutePath="/repo/BIG.HTML" />)
-    expect(document.querySelector(".cm-content")?.textContent).toContain("<div>y</div>")
-    expect(document.querySelector("iframe.html-preview")).toBeNull()
+    expect(document.querySelector("iframe.html-preview")).not.toBeNull()
   })
 
-  it(".xhtml 不识别（走代码视图）", () => {
+  it(".xhtml 不识别（走代码视图，无二态工具条）", () => {
     fileContentsStub.set("/repo/page.xhtml", { content: "<div>xml</div>" })
     render(<FileView absolutePath="/repo/page.xhtml" />)
     expect(document.querySelector("iframe.html-preview")).toBeNull()
     expect(document.querySelector(".ms-segmented")).toBeNull()
     expect(document.querySelector(".cm-content")?.textContent).toContain("<div>xml</div>")
+  })
+
+  it("html 预览态不注册页面内查找（沙箱 iframe 不可扫）；源码态注册 CM 查找", () => {
+    fileContentsStub.set("/repo/f.html", { content: "<p>hi</p>" })
+    render(<FileView absolutePath="/repo/f.html" />)
+    expect(findRequestersStub.has("file:/repo/f.html")).toBe(false)
+
+    fireEvent.click(screen.getByRole("button", { name: "源码" }))
+    expect(findRequestersStub.has("file:/repo/f.html")).toBe(true)
   })
 
   it("错误/加载态：markdown 工具条常驻（防内容落地时布局跳动）", () => {

@@ -10541,3 +10541,37 @@ describe("项目身份归一化（design-project-identity）", () => {
     expect(store.openedEntries.map((e) => e.project.id)).toEqual([CUR_ID])
   })
 })
+
+describe("isLocalServer（design-html-preview §3.3 路由闸门）", () => {
+  it("attach 回环 baseUrl = 本地；非回环 = 远程", () => {
+    store.profiles = [{ id: "p", name: "a", baseUrl: "http://127.0.0.1:15120", mode: "attach" }]
+    store.activeProfileId = "p"
+    expect(store.isLocalServer).toBe(true)
+
+    store.profiles = [{ id: "p", name: "a", baseUrl: "http://192.168.1.5:15120", mode: "attach" }]
+    store.activeProfileId = "p"
+    expect(store.isLocalServer).toBe(false)
+  })
+
+  it("managed server 恒本机（managedBaseUrl 回环）；无连接 = false", () => {
+    store.managedBaseUrl = "http://127.0.0.1:15120"
+    expect(store.isLocalServer).toBe(true)
+
+    store.managedBaseUrl = null
+    expect(store.isLocalServer).toBe(false)
+  })
+})
+
+describe("openFileTab remountView（design-html-preview §3.4）", () => {
+  it("已开 Tab 递增 viewSeq；新开/省略 opts 不变", () => {
+    store.openFileTab("/repo/a.html")
+    const tab = () => store.tabs.find((t) => t.key === "file:/repo/a.html")!
+    expect(tab().viewSeq).toBeUndefined()
+    store.openFileTab("/repo/a.html", undefined, { remountView: true })
+    expect(tab().viewSeq).toBe(1)
+    store.openFileTab("/repo/a.html", undefined, { remountView: true })
+    expect(tab().viewSeq).toBe(2)
+    store.openFileTab("/repo/a.html")
+    expect(tab().viewSeq).toBe(2)
+  })
+})

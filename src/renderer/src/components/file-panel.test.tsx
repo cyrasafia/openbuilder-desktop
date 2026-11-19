@@ -23,7 +23,9 @@ vi.mock("../app", () => ({
       fileOpen: "打开",
       fileOpenWith: "打开方式…",
       fileCopyPath: "复制路径",
-      fileViewSource: "查看源码",
+      filePreviewInBrowser: "在浏览器 Tab 中预览",
+      filePreview: "预览",
+      defaultAction: "默认",
     },
     locale: "zh" as const,
   }),
@@ -83,6 +85,8 @@ function makeStore(): Record<string, unknown> {
     popOverlay: vi.fn(),
     toggleFileNode: vi.fn(),
     openFileTab: vi.fn(),
+    setFileViewState: vi.fn(),
+    isLocalServer: true,
   }
 }
 
@@ -242,14 +246,20 @@ describe("FilePanel 右键菜单", () => {
   })
 })
 
-describe("FilePanel .html 路由（design-browser-tab §1.4）", () => {
-  it("点击 .html 默认开浏览器 Tab（file URL 编码）；shim 失败回退文件 Tab", async () => {
-    const htmlNode: FileNode = { name: "页 面.html", path: "页 面.html", absolute: `${ROOT}/页 面.html`, type: "file", ignored: false }
-    storeStub = {
+describe("FilePanel .html 路由（design-html-preview §3.3 按连接分派）", () => {
+  const htmlNode: FileNode = { name: "页 面.html", path: "页 面.html", absolute: `${ROOT}/页 面.html`, type: "file", ignored: false }
+
+  function htmlStore(isLocal: boolean) {
+    return {
       ...makeStore(),
       fileTreeNodes: new Map([[".", [dirNode, fileNode, htmlNode]]]),
       openBrowserTab: vi.fn(async () => true),
+      isLocalServer: isLocal,
     }
+  }
+
+  it("本地 server：点击 .html 默认开浏览器 Tab（file URL 编码）；shim 失败回退文件 Tab", async () => {
+    storeStub = htmlStore(true)
     render(<FilePanel />)
     ;(screen.getAllByText("页 面.html")[0] as HTMLElement).click()
     await waitFor(() => {
@@ -265,20 +275,38 @@ describe("FilePanel .html 路由（design-browser-tab §1.4）", () => {
     await waitFor(() => expect(storeStub.openFileTab).toHaveBeenCalledWith(`${ROOT}/页 面.html`))
   })
 
-  it("右键 .html 显示「查看源码」，点击开文件 Tab", async () => {
-    const htmlNode: FileNode = { name: "a.html", path: "a.html", absolute: `${ROOT}/a.html`, type: "file", ignored: false }
-    storeStub = {
-      ...makeStore(),
-      fileTreeNodes: new Map([[".", [htmlNode]]]),
-      openBrowserTab: vi.fn(async () => true),
-      pushOverlay: vi.fn(),
-      popOverlay: vi.fn(),
-    }
+  it("远程 server：点击 .html 默认文件 Tab（预览态），不开浏览器 Tab", async () => {
+    storeStub = htmlStore(false)
     render(<FilePanel />)
-    fireEvent.contextMenu(screen.getByText("a.html"))
-    const item = await screen.findByText("查看源码")
-    item.click()
-    await waitFor(() => expect(storeStub.openFileTab).toHaveBeenCalledWith(`${ROOT}/a.html`))
+    ;(screen.getAllByText("页 面.html")[0] as HTMLElement).click()
+    await waitFor(() => expect(storeStub.openFileTab).toHaveBeenCalledWith(`${ROOT}/页 面.html`))
+    expect(storeStub.openBrowserTab).not.toHaveBeenCalled()
+  })
+
+  it("右键 .html 双入口置首：本地默认标在「在浏览器 Tab 中预览」；远程标在「预览」；预览入口强制 preview 模式", async () => {
+    // 本地：默认标记在浏览器项
+    storeStub = htmlStore(true)
+    render(<FilePanel />)
+    fireEvent.contextMenu(screen.getByText("页 面.html"))
+    const browserBtn = (await screen.findByText("在浏览器 Tab 中预览")).closest("button") as HTMLButtonElement
+    const previewBtn = (screen.getByText("预览")).closest("button") as HTMLButtonElement
+    expect(browserBtn.textContent).toContain("默认")
+    expect(previewBtn.textContent).not.toContain("默认")
+    previewBtn.click()
+    await waitFor(() => expect(storeStub.setFileViewState).toHaveBeenCalledWith(`${ROOT}/页 面.html`, { mode: "preview", top: 0 }))
+    await waitFor(() => expect(storeStub.openFileTab).toHaveBeenCalledWith(`${ROOT}/页 面.html`, undefined, { remountView: true }))
+    cleanup()
+
+    // 远程：默认标记在预览项；浏览器入口仍可用
+    storeStub = htmlStore(false)
+    render(<FilePanel />)
+    fireEvent.contextMenu(screen.getByText("页 面.html"))
+    const browserBtn2 = (await screen.findByText("在浏览器 Tab 中预览")).closest("button") as HTMLButtonElement
+    const previewBtn2 = (screen.getByText("预览")).closest("button") as HTMLButtonElement
+    expect(previewBtn2.textContent).toContain("默认")
+    expect(browserBtn2.textContent).not.toContain("默认")
+    browserBtn2.click()
+    await waitFor(() => expect(storeStub.openBrowserTab).toHaveBeenCalledWith("file:///repo/%E9%A1%B5%20%E9%9D%A2.html"))
     cleanup()
   })
 })
