@@ -169,7 +169,7 @@ function FileRow({
   onContextMenu: OpenMenu
 }) {
   const store = useStore()
-  const expanded = store.fileTreeExpanded.get(node.path) ?? false
+  const expanded = store.fileTreeExpanded.has(node.path)
   const children = store.fileTreeNodes.get(node.path) ?? []
   const isActive = store.activeTab?.key === `file:${node.absolute}`
 

@@ -76,7 +76,7 @@ function makeStore(): Record<string, unknown> {
     currentWorkspace: null,
     scopeQuery: { directory: ROOT },
     fileTreeNodes: new Map([[".", [dirNode, fileNode, ignoredFileNode, ignoredDirNode]]]),
-    fileTreeExpanded: new Map(),
+    fileTreeExpanded: new Set<string>(),
     activeTab: null,
     loadFileNodes: vi.fn(async () => {}),
     pushOverlay: vi.fn(),

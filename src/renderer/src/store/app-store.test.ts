@@ -479,6 +479,129 @@ describe("先切换后加载：setCurrentWorkspace", () => {
   })
 })
 
+describe("文件树展开状态跨作用域记忆（design-file-tree-expand-memory）", () => {
+  function clientRef(): Record<string, unknown> {
+    return (store as unknown as { client: Record<string, unknown> }).client
+  }
+
+  function fileNode(path: string, type: "file" | "directory" = "directory"): FileNode {
+    return {
+      name: path.replace(/\/$/, "").split("/").pop() ?? path,
+      path,
+      absolute: `${ROOT}/${path.replace(/\/$/, "")}`,
+      type,
+      ignored: false,
+    }
+  }
+
+  it("toggle 写透当前作用域记忆：展开入集、折叠出集", () => {
+    store.toggleFileNode("src/")
+    expect(store.fileTreeExpanded.has("src/")).toBe(true)
+    expect(store.fileTreeExpandedMemory.get(ROOT)?.has("src/")).toBe(true)
+
+    store.toggleFileNode("src/")
+    expect(store.fileTreeExpanded.has("src/")).toBe(false)
+    expect(store.fileTreeExpandedMemory.get(ROOT)?.has("src/")).toBe(false)
+  })
+
+  it("切换工作区后切回：展开集恢复，已展开目录子节点重拉", async () => {
+    const listFiles = vi.fn(async () => [fileNode("src/a.ts", "file")])
+    clientRef().listFiles = listFiles
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+
+    store.toggleFileNode("src/")
+    expect(store.fileTreeExpanded.has("src/")).toBe(true)
+
+    await store.setCurrentWorkspace(WT1)
+    // 切到无记忆的新工作区 = 全收起；重置不再清展开集
+    expect(store.fileTreeExpanded.size).toBe(0)
+    expect(store.fileTreeExpandedMemory.get(ROOT)?.has("src/")).toBe(true)
+
+    // 清掉 toggle 阶段的调用记录：切回后的 (ROOT, "src/") 只能来自 resetFileTree 重拉
+    listFiles.mockClear()
+    await store.setCurrentWorkspace(null)
+    // 切回项目根：展开集恢复 + resetFileTree 重拉已展开目录子节点
+    expect(store.fileTreeExpanded.has("src/")).toBe(true)
+    expect(listFiles).toHaveBeenCalledWith(ROOT, "src/")
+  })
+
+  it("断连 → 重连：记忆保留，恢复段重拉已展开目录子节点", async () => {
+    store.projectStates = {
+      p1: { opened: ["proj1"], currentProjectId: "proj1", currentWorkspaceId: null },
+    }
+    store.profiles = [{ id: "p1", name: "a", baseUrl: "http://127.0.0.1:1", mode: "attach" }]
+    store.activeProfileId = "p1"
+    store.toggleFileNode("src/")
+    expect(store.fileTreeExpandedMemory.get(ROOT)?.has("src/")).toBe(true)
+
+    // 断连（teardown）：projects 清 → 投影空集，节点清空且重拉跳过；记忆保留
+    ;(store as unknown as { teardownConnection: () => void }).teardownConnection()
+    expect(store.fileTreeNodes.size).toBe(0)
+    expect(store.fileTreeExpandedMemory.get(ROOT)?.has("src/")).toBe(true)
+
+    // 重连：connect 恢复段（projects 就位、不经 setCurrentWorkspace）须补拉。
+    // doConnect 内部 new RestClient——原型级 mock 才能命中
+    ;(window as unknown as { desktop: unknown }).desktop = {
+      ...(window as unknown as { desktop: Record<string, unknown> }).desktop,
+      onManagedEvent: () => () => {},
+    }
+    const listFiles = vi.spyOn(RestClient.prototype, "listFiles").mockResolvedValue([
+      fileNode("src/a.ts", "file"),
+    ])
+    vi.spyOn(RestClient.prototype, "serverInfo").mockResolvedValue({
+      version: "2.0.18",
+      pid: 1,
+      urls: [],
+      paths: { tmp: "/tmp" },
+    })
+    vi.spyOn(RestClient.prototype, "listProjects").mockResolvedValue([wireProject(project())])
+    vi.spyOn(RestClient.prototype, "listSessions").mockResolvedValue({ data: [], cursor: {} })
+
+    try {
+      await store.connect()
+      expect(store.connectionState).toBe("streaming")
+      // 恢复段重拉：展开目录子节点回到 fileTreeNodes（否则「箭头展开但空壳」且不自愈）
+      expect(listFiles).toHaveBeenCalledWith(ROOT, "src/")
+      expect(store.fileTreeNodes.has("src/")).toBe(true)
+    } finally {
+      await store.disconnect()
+    }
+  })
+
+  it("无作用域时 toggle 不写记忆；断连后记忆保留", () => {
+    ;(store as unknown as { projects: Project[] }).projects = []
+    store.toggleFileNode("src/")
+    expect(store.fileTreeExpandedMemory.size).toBe(0)
+
+    store.fileTreeExpandedMemory.set(ROOT, new Set(["src/"]))
+    ;(store as unknown as { projects: Project[] }).projects = [project()]
+    // teardownConnection：projects 已清 → 投影空集；记忆不清（重连恢复）
+    ;(
+      store as unknown as { teardownConnection: () => void }
+    ).teardownConnection()
+    expect(store.fileTreeExpanded.has("src/")).toBe(false)
+    expect(store.fileTreeExpandedMemory.get(ROOT)?.has("src/")).toBe(true)
+  })
+
+  it("worktree 目录卸载：展开记忆随目录清除", async () => {
+    const s2 = session("s2", WT1, { created: 2, updated: 2 })
+    store.sessionsByProject.set("proj1", sessionsOf(s2))
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [s2])
+    snapshots.set(WT2, [])
+    projectList = [{ ...project(), sandboxes: [WT2] }]
+    await store.setCurrentWorkspace(WT1)
+    store.toggleFileNode("src/")
+    expect(store.fileTreeExpandedMemory.get(WT1)?.has("src/")).toBe(true)
+
+    const res = await store.removeWorkspace(WT1)
+    expect(res.ok).toBe(true)
+    expect(store.fileTreeExpandedMemory.has(WT1)).toBe(false)
+  })
+})
+
 describe("非聊天 Tab 作用域化（design-tab-memory §18）", () => {
   it("file Tab 激活时切 worktree：激活随新作用域走；file Tab 不关闭（隐藏），切回恢复可见并恢复激活（规则 1.5）", async () => {
     const s1 = session("s1", ROOT, { created: 1, updated: 1 })

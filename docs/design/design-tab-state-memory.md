@@ -153,7 +153,8 @@ private diffViewStates = new Map<string, { foldOpen: boolean; fileOpens: Readonl
 - ~~DiffView~~ 滚动位置（**2026-08-27 修订**：已实现 §2.5 diff 视图状态——foldOpen + 文件折叠 + 滚动位置）
 - TOC / 侧栏滚动位置
 - html 沙箱 iframe 内部滚动（不可达）
-- 文件树展开/滚动状态（右栏随作用域重置是既有语义）
+- ~~文件树展开状态~~（**2026-11-19 修订**：改为按作用域目录跨切换记忆，切回恢复、重拉子节点，见 [design-file-tree-expand-memory.md](design-file-tree-expand-memory.md)——「随作用域重置」语义仅保留给滚动与节点缓存）
+- 文件树滚动状态（右栏随作用域重置不变；展开状态已拆出，见上条修订）
 - Tab 拖拽排序（v0.1 无；顺序语义由 design-tab-memory 记忆结构预留）
 
 ## 6. 涉及文件

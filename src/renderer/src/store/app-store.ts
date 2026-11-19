@@ -193,6 +193,10 @@ const BROWSER_RECENTS_LIMIT = 5
 /** 回宽放回回差（schmitt 上界 = 阈值 + 64）：窗口边缘在阈值附近拖动时不反复翻转 */
 const AUTO_COLLAPSE_HYSTERESIS = 64
 
+/** 文件树展开集空集哨兵（design-file-tree-expand-memory）：无记忆作用域投影
+ *  复用同一实例，避免每次 getter 读取分配 */
+const EMPTY_EXPANDED: ReadonlySet<string> = new Set()
+
 /** drafts.state 读入校验（同 sanitizeTabSessionMap 防御口径）：坏切片/坏条目
  *  丢弃，等效无记录——store.json 可能来自旧版本/手改 */
 function sanitizeDraftsState(
@@ -623,8 +627,20 @@ export class AppStore {
   settingsOpen = false
   /** 打开项目选择器（左栏 "+" 与 Alt+O 同路径；overlay 计数协调浏览器视图显隐） */
   pickerOpen = false
-  fileTreeExpanded = new Map<string, boolean>()
+  /**
+   * 文件树展开状态按作用域目录记忆（design-file-tree-expand-memory）：
+   * key = 作用域 directory（绝对路径），value = 该作用域已展开的相对路径集
+   * （目录尾随 /，与渲染 key / toggle 入参同源）。单一事实源 = 本表，
+   * `fileTreeExpanded` getter 按当前作用域投影；切作用域不清理（切换回原
+   * 作用域即恢复），目录卸载随 unloadWorktreeDirectory 清除。仅内存：
+   * 跨重启不恢复（同 design-tab-state-memory 各状态口径）。
+   */
+  fileTreeExpandedMemory = new Map<string, Set<string>>()
   fileTreeNodes = new Map<string, FileNode[]>()
+  /** 当前作用域的展开路径集（无记忆 = 空集，全部收起） */
+  get fileTreeExpanded(): ReadonlySet<string> {
+    return this.fileTreeExpandedMemory.get(this.scopeQuery.directory) ?? EMPTY_EXPANDED
+  }
   /**
    * binary/mimeType：图片预览分发依据（design-image-preview §2.1）；二进制非图占位用。
    * loading/progress（design-file-load-streaming）：在途条目——content 空、
@@ -1023,6 +1039,11 @@ export class AppStore {
       // 打开项目的快照 + 订阅
       await this.refreshAllOpenedProjects()
       if (stale()) return
+      // 重连段重拉已展开目录（design-file-tree-expand-memory，review 2026-11-19 #1）：
+      // teardown 的 resetFileTree 清节点时不重拉（当时作用域为空），恢复不经
+      // setCurrentWorkspace、无人补拉——记忆的展开目录会一直「箭头展开但空壳」。
+      // 此处 projects/projectStates 已就位，投影即恢复作用域
+      this.repullExpandedDirs()
       // 启动/重连恢复作用域的空壳探测（design-worktree-shell-rescue §2.1，
       // 2026-11-03 复测补丁）：恢复不走 setCurrentWorkspace——不探测则
       // brokenWorkspaces 空集，闸门对「刷新页面（Ctrl+R）后停在空壳作用域」
@@ -3794,13 +3815,24 @@ export class AppStore {
   }
 
   private resetFileTree() {
-    this.fileTreeExpanded.clear()
     this.fileTreeNodes.clear()
     this.fileContents.clear()
     // 挂起的树刷新随树重置作废：否则定时器在切换后落地会打进新作用域
     // （loadFileNodes 的闸门只挡在途期间切走，不挡落地前切走，design-file-watcher §3.2）
     for (const timer of this.treeRefreshTimers.values()) clearTimeout(timer)
     this.treeRefreshTimers.clear()
+    this.repullExpandedDirs()
+  }
+
+  /**
+   * 重拉当前作用域已展开目录的子节点（design-file-tree-expand-memory）：展开集
+   * 跨作用域记忆不清，但节点缓存已随树重置/teardown 清空——不重拉则恢复的展开
+   * 目录呈「箭头展开但空壳」且不自愈（watcher 重列要求目录已在 fileTreeNodes）。
+   * 断连/无作用域时投影为空集，天然跳过。调用点：resetFileTree（切换路径）与
+   * doConnect 恢复段（重连不走 resetFileTree——作用域恢复不经 setCurrentWorkspace）。
+   */
+  private repullExpandedDirs() {
+    for (const path of this.fileTreeExpanded) void this.loadFileNodes(path)
   }
 
   /**
@@ -4356,6 +4388,9 @@ export class AppStore {
     // 最后激活记录随目录卸载（须在关 Tab 之后——关激活 Tab 的回退钩子会
     // recordScopeActive 重建条目，先删会被写回，重开误落引导页/错激活）
     this.scopeActiveKeys.delete(directory)
+    // 展开状态记忆随目录卸载（design-file-tree-expand-memory）：目录已死，
+    // 同名重建视为新作用域从零展开
+    this.fileTreeExpandedMemory.delete(directory)
     // 删除该目录记忆（目录已死；须在关 Tab 之后——closeTab 同步会重建条目），
     // 按 projectId 精确匹配
     const key = this.profileKey()
@@ -8255,9 +8290,16 @@ export class AppStore {
   }
 
   toggleFileNode(path: string) {
-    const next = !this.fileTreeExpanded.get(path)
-    this.fileTreeExpanded.set(path, next)
-    if (next) void this.loadFileNodes(path)
+    const dir = this.scopeQuery.directory
+    if (!dir) return
+    let set = this.fileTreeExpandedMemory.get(dir)
+    if (!set) this.fileTreeExpandedMemory.set(dir, (set = new Set()))
+    if (set.has(path)) {
+      set.delete(path)
+    } else {
+      set.add(path)
+      void this.loadFileNodes(path)
+    }
     this.emit()
   }
 
