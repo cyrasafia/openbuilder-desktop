@@ -93,7 +93,7 @@ fileTreeExpanded: ReadonlySet<string>                                // getter�
 |---|---|
 | `src/renderer/src/store/app-store.ts` | `fileTreeExpandedMemory` 表 + `fileTreeExpanded` 投影 getter；`toggleFileNode` 写透；`resetFileTree` 去掉展开集清空、加重拉；`unloadWorktreeDirectory` 删域 |
 | `src/renderer/src/components/file-panel.tsx` | `FileRow` 展开读法 `.get(p) ?? false` → `.has(p)` |
-| `src/renderer/src/store/app-store.test.ts` | 新增 4 用例（写透、切回恢复+重拉、无作用域/断连保留、目录卸载清除） |
+| `src/renderer/src/store/app-store.test.ts` | 新增 5 用例（写透、切回恢复+重拉、断连重连恢复、目录卸载删域、无作用域/断连保留） |
 | `src/renderer/src/components/file-panel.test.tsx` | mock store `fileTreeExpanded` Map → Set |
 | `docs/design/design-tab-state-memory.md` | §5 修订：展开状态拆出「不做」，指向本文 |
 | `docs/design/design-layout.md` | §5「展开态按项目记忆」按 v2 语义改写为按作用域目录记忆 |
@@ -110,4 +110,14 @@ fileTreeExpanded: ReadonlySet<string>                                // getter�
 | 1 | 🔴 | 重连恢复路径缺口：`doConnect` 不经 `resetFileTree`、无人重拉记忆的展开目录——恢复后「箭头展开但空壳」且不自愈（watcher 重列要求目录已在 nodes），场景 7 只兑现「箭头恢复」一半 | **已修复**。重拉循环抽为 `repullExpandedDirs()`，`doConnect` 恢复段（`refreshAllOpenedProjects` + stale 闸门后）补调；用例实证（临时移除修复行则用例红）；§生命周期规则/§时序要点同步 |
 | 2 | 🟡 | 切回用例的重拉断言假绿：`toggleFileNode` 阶段已有同参调用，`toHaveBeenCalledWith` 恒过 | **已修复**。切换切回前 `mockClear()`，断言只能来自 reset 重拉 |
 | 3 | 🟢 | 场景 8（深层并行重拉）/场景 9（A→B→A 快连竞态）无用例 | **接受不改**。场景 9 竞态经代码核查封闭（闸门按 directory 判别丢跨作用域迟到落地；同作用域迟到为同源幂等覆写），补用例锁的是既有闸门机制而非本次增量，代价不抵收益 |
+
+## 评审记录二（2026-11-19，reviewer 二轮，对象 = 分支提交 e0629a9）
+
+结论：可以合入，无阻塞问题。
+
+| # | 优先级 | 问题 | 结论 |
+|---|--------|------|------|
+| 1 | 🟢 | `removeWorkspace` 删当前工作区双重 reset → 项目根已展开目录 `listFiles` 双发（同步段一次 + `unloadWorktreeDirectory` isCurrent 一次） | **接受不改**。同源幂等覆写、量级受展开目录数约束，无正确性影响；跳过紧随其后的一次需跨路径协调标志，复杂度不值 |
+| 2 | 🟢 | 删当前作用域 worktree 时二次 reset 对健在节点冗余 refetch | **接受不改，且净效果为改善**。原行为该 reset 清空节点后只有根被 effect 重载，展开行本就呈空壳——本次重拉顺带修了这个既有小毛病 |
+| 3 | 🟢 | §涉及文件表「新增 4 用例」与实际 5 个不符 | **已修复**（文档笔误，实跑计数 480/480 无误） |
 
