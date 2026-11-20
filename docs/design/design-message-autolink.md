@@ -93,7 +93,8 @@ AI 回复高频出现**项目内文件路径**（`src/foo/bar.ts`、`/abs/worktr
     if (!decoded) return
     const abs = resolveProjectPath(decoded.path, sessionDir ?? "")  // 点击层同源归属校验
     if (!abs) return
-    store.openFileTab(abs, decoded.line ?? undefined)
+    if (decoded.line != null) store.openFileTab(abs, decoded.line)  // 行号：§2.6 revealLine 语义
+    else openSessionFile(store, abs)  // 无行号：html 按连接分派（design-html-preview §3.4）
   }
   ```
 
@@ -111,7 +112,8 @@ AI 回复高频出现**项目内文件路径**（`src/foo/bar.ts`、`/abs/worktr
 
 - **Tab 注册制**：`file:${absolutePath}` 去重复用（重复点击同一文件 = 复用已开 Tab，与文件树/关闭栈入口一致——AGENTS.md Tab 注册语义）。
 - **行号**：`revealLine` 是既有机制（diff 跳转先例）：FileView 挂载消费（`consumeFileReveal` 一次性）、`revealLine != null` 强制源码模式 + CodeView 滚到行。**移动端 MA-1（`mdShowSource: line != null`——markdown 预览模式丢弃行号）在桌面是既有同构行为**，无需额外处理。无行号走保存的浏览模式。
-- **文件不存在**：识别/点击层零存在性校验（同步识别零 IO，移动端决策 3 同款）；FileView 加载失败 UI 兜底。
+- **html 按连接分派（2026-11-20 增）**：无行号链接点击 `.html/.htm` → 与文件树同默认（本地 server 浏览器 Tab，shim 失败回退文件 Tab；远程 attach 文件 Tab 预览态）——`openSessionFile` 共享路径，user 气泡引用 chip 同走；带 `:N` 行号仍走上一条 revealLine 语义，不分派（design-html-preview §3.4）。
+- **文件不存在**：识别/点击层零存在性校验（同步识别零 IO，移动端决策 3 同款）；FileView 加载失败 UI 兜底。本地 html 无行号链接经分派走浏览器 Tab（2026-11-20），不存在时失败呈 Chromium file-not-found 页（与文件树 v0.5.7 同）。
 - 作用域：openFileTab 归属当前作用域（与 diff 跳转同款路径，无新语义）。
 
 ### 2.7 覆盖范围

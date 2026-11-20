@@ -40,6 +40,7 @@
 ### 1.4 HTML 预览迁移（2026-11-19 修订：预览恢复、路由按连接分派）
 
 - ~~`FilePanel` 点击 `.html/.htm` 恒 → `openBrowserTab(file://<absolute>)`~~ **按 `store.isLocalServer` 分派**（design-html-preview §3.4）：本地默认浏览器 Tab（shim 失败仍回退 `openFileTab`）；远程 attach 默认 `openFileTab`（预览态——`file://` 指向远端路径，本地导航必败）
+- 会话记录入口同走该分派（2026-11-20 增）：消息内 ob-file 链接（无行号）与 user 气泡引用 chip 点击 html 同默认；带 `:N` 行号维持源码滚到行不分派（design-html-preview §3.4、design-message-autolink §2.6）
 - ~~右键「查看源码」单项~~ → 双入口「在浏览器 Tab 中预览 / 预览」（仅 .html/.htm 文件行，（置首于通用「打开 / 打开方式」之前））：在浏览器 Tab 中预览 = `openBrowserTab(fileUrlOf(path))`；预览 = 覆写模式记忆 + `openFileTab`（确定性预览态）。当前连接默认项带「默认」小标；**FileView iframe 预览分支恢复**（`html-preview.ts` 扫描器与用例自 15832b3 恢复），html 文件在 FileView 回到预览默认 + 预览/源码二态
 - ~~design-html-preview.md 标注废弃指向本文档~~ 恢复有效，头部与 §3.4 记本次修订
 - `will-frame-navigate` 拦截保留（防御，browser view 是独立 webContents 不经此 handler）
