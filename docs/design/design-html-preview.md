@@ -61,6 +61,7 @@
 
 - 判定：`store.isLocalServer`（`isLoopbackBaseUrl(store.baseUrl)`；managed server 恒本机，attach 按 baseUrl 回环判定——复用 `src/shared/loopback.ts`，pty 显示环境注入同源）。
 - 文件树点击 `.html/.htm`：本地默认浏览器 Tab（`file://` 直读同机路径；Electron shim 失败回退文件 Tab）；远程 attach 默认文件 Tab 预览态（`file://` 指向远端路径，本地导航必败）。
+- 会话记录入口同走分派（2026-11-20 增）：消息 ob-file 链接（无行号）与 user 气泡引用 chip 点击 html → 同一默认（共享 `openSessionFile`，workspace.tsx）；**带 `:N` 行号的链接例外**——维持 revealLine 强制源码滚到行（design-message-autolink §2.6），分派会丢行号。
 
 - 右键菜单双入口（置首于通用「打开 / 打开方式」之前）：「在浏览器 Tab 中预览」（`openBrowserTab(fileUrlOf(path))`）/「预览」（先 `setFileViewState(path, preview)` 覆写模式记忆再 `openFileTab`——确定性预览态（已开 Tab 经 viewSeq 递增重挂载，激活中源码态同样生效——模式记忆的显式例外）。当前连接默认项带「默认」小标（`menu-default-tag`）。原「查看源码」单项退役：源码态经文件 Tab 工具条「预览/源码」二态切换，与 markdown 同 idiom。
 - FileView 集成差异（相对 markdown）：html 预览态**不注册**页面内查找——沙箱 iframe opaque origin 触不到内容 DOM（`mdPreviewLive` 收紧到 markdown；`codeViewLive` 的 previewable 分支只在源码态注册 CM 查找）。html 容器 `.html-view` 两态共用（iframe 自管滚动 / CM 内滚自管）。

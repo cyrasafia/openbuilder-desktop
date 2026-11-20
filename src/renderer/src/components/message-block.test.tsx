@@ -5,7 +5,7 @@
  * `.system-notice.interrupted`，非中止错误才呈 `.error-card` 红卡。
  * ResizeObserver/IntersectionObserver jsdom 缺失，补 stub（workspace 模块图所需）。
  */
-import { fireEvent, render } from "@testing-library/react"
+import { act, fireEvent, render, waitFor } from "@testing-library/react"
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { MessageBlock } from "./workspace"
 import type { ChatEntry } from "@shared/message-merge"
@@ -15,6 +15,8 @@ const storeMock = vi.hoisted(() => ({
   showThinking: false,
   findSession: vi.fn((): unknown => undefined),
   openFileTab: vi.fn(),
+  openBrowserTab: vi.fn(async (): Promise<boolean> => true),
+  isLocalServer: true,
 }))
 
 vi.mock("../app", () => ({
@@ -159,6 +161,9 @@ describe("MessageBlock 文件路径自动链接（design-message-autolink）", (
   beforeEach(() => {
     storeMock.findSession.mockReturnValue(undefined)
     storeMock.openFileTab.mockClear()
+    storeMock.openBrowserTab.mockClear()
+    storeMock.openBrowserTab.mockResolvedValue(true)
+    storeMock.isLocalServer = true
   })
 
   it("assistant 消息项目内路径转链：点击 → openFileTab(绝对路径, 行号)", () => {
@@ -226,5 +231,76 @@ describe("MessageBlock 文件路径自动链接（design-message-autolink）", (
     fireEvent.click(links[0]) // 项目外：拒绝
     expect(storeMock.openFileTab).not.toHaveBeenCalled()
     fireEvent.click(links[1]) // 项目内：放行
-    expect(storeMock.openFileTab).toHaveBeenCalledWith("/repo/lib/a.ts", undefined)
+    expect(storeMock.openFileTab).toHaveBeenCalledWith("/repo/lib/a.ts")
   })
+
+describe("MessageBlock html 链接打开分派（design-html-preview §3.4，2026-11-20）", () => {
+  beforeEach(() => {
+    storeMock.findSession.mockReturnValue({ directory: "/repo", parentID: null })
+    storeMock.openFileTab.mockClear()
+    storeMock.openBrowserTab.mockClear()
+    storeMock.openBrowserTab.mockResolvedValue(true)
+    storeMock.isLocalServer = true
+  })
+
+  function renderWithText(text: string) {
+    const entry = assistantEntry(undefined)
+    ;((entry.data as { parts: Array<{ text: string }> }).parts[0]).text = text
+    return render(<MessageBlock entry={entry} />)
+  }
+
+  it("本地 server：无行号 html 链接 → 浏览器 Tab（file URL），不落文件 Tab", async () => {
+    const { container } = renderWithText("见 /repo/index.html")
+    const link = container.querySelector("a")
+    expect(link?.getAttribute("href")).toBe("ob-file:////repo/index.html")
+    fireEvent.click(link!)
+    await waitFor(() =>
+      expect(storeMock.openBrowserTab).toHaveBeenCalledWith("file:///repo/index.html"),
+    )
+    await act(async () => {})
+    expect(storeMock.openFileTab).not.toHaveBeenCalled()
+  })
+
+  it("本地 server 浏览器 shim 失败（openBrowserTab false）→ 回退文件 Tab", async () => {
+    storeMock.openBrowserTab.mockResolvedValue(false)
+    const { container } = renderWithText("见 /repo/page.htm")
+    fireEvent.click(container.querySelector("a")!)
+    await waitFor(() => expect(storeMock.openFileTab).toHaveBeenCalledWith("/repo/page.htm"))
+  })
+
+  it("远程 attach：无行号 html 链接 → 文件 Tab（预览态），不走浏览器 Tab", () => {
+    storeMock.isLocalServer = false
+    const { container } = renderWithText("见 /repo/index.html")
+    fireEvent.click(container.querySelector("a")!)
+    expect(storeMock.openBrowserTab).not.toHaveBeenCalled()
+    expect(storeMock.openFileTab).toHaveBeenCalledWith("/repo/index.html")
+  })
+
+  it("行号链接不分派：维持 revealLine 强制源码滚到行（design-message-autolink §2.6）", () => {
+    const { container } = renderWithText("见 /repo/index.html:7")
+    fireEvent.click(container.querySelector("a")!)
+    expect(storeMock.openBrowserTab).not.toHaveBeenCalled()
+    expect(storeMock.openFileTab).toHaveBeenCalledWith("/repo/index.html", 7)
+  })
+
+  it("引用 chip 点击 html：同走分派（评审建议补例）——本地 → 浏览器 Tab", async () => {
+    const entry = {
+      kind: "message",
+      data: {
+        info: { id: "msg_u1", sessionID: "s1", role: "user", time: { created: 1 } },
+        parts: [
+          { id: "prt_f1", type: "file", source: { type: "file", path: "/repo/index.html" } },
+        ],
+      },
+    } as unknown as ChatEntry
+    const { container } = render(<MessageBlock entry={entry} />)
+    const chip = container.querySelector(".ref-chip.clickable")
+    expect(chip).not.toBeNull()
+    fireEvent.click(chip!)
+    await waitFor(() =>
+      expect(storeMock.openBrowserTab).toHaveBeenCalledWith("file:///repo/index.html"),
+    )
+    await act(async () => {})
+    expect(storeMock.openFileTab).not.toHaveBeenCalled()
+  })
+})

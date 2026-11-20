@@ -44,6 +44,7 @@ import { format, relativeTime } from "../i18n"
 import type { Catalog } from "../i18n"
 import { filterRevertedEntries, type ChatEntry } from "@shared/message-merge"
 import { extractErrorMessage, extractRetryMessage, isAbortError } from "@shared/message-error"
+import { fileUrlOf } from "@shared/file-url"
 import { toolChildSessionId, type BackgroundTask, type SessionNotice } from "@shared/session-notices"
 import type {
   CommandInfo,
@@ -83,7 +84,7 @@ import { FindBar, useFindRequester } from "./find-bar"
 import { DiffView } from "./diff-view"
 import { PdfFrameView } from "./pdf-frame-view"
 import { OpenWithDialog } from "./open-with-dialog"
-import { parseDiffTabKey, type TabEntity } from "../store/app-store"
+import { parseDiffTabKey, type AppStore, type TabEntity } from "../store/app-store"
 import { closeTabInteractive } from "./tab-actions"
 import { ConfirmDialog } from "./confirm-dialog"
 import { TerminalView } from "./terminal-view"
@@ -3105,7 +3106,13 @@ export function MessageBlock({ entry }: { entry: ChatEntry }) {
       if (!decoded) return
       const abs = resolveProjectPath(decoded.path, sessionDir ?? "")
       if (!abs) return
-      store.openFileTab(abs, decoded.line ?? undefined)
+      if (decoded.line != null) {
+        // 行号链接维持 revealLine 语义（design-message-autolink §2.6）：revealLine
+        // != null 强制源码模式滚到行——html 不例外，按连接分派会丢行号
+        store.openFileTab(abs, decoded.line)
+        return
+      }
+      openSessionFile(store, abs)
     },
     [store, sessionDir],
   )
@@ -3126,7 +3133,7 @@ export function MessageBlock({ entry }: { entry: ChatEntry }) {
                 isDir: r.isDir,
                 title: r.absolute,
               }))}
-              onOpen={(item) => store.openFileTab(item.absolute!)}
+              onOpen={(item) => openSessionFile(store, item.absolute!)}
             />
           )}
           {/* 乐观附件（design-session-attachments §4，review P2-1 修订）：形态
@@ -3220,7 +3227,7 @@ export function MessageBlock({ entry }: { entry: ChatEntry }) {
           {refChipItems.length > 0 && (
             <FileRefChips
               items={refChipItems}
-              onOpen={(item) => store.openFileTab(item.absolute!)}
+              onOpen={(item) => openSessionFile(store, item.absolute!)}
             />
           )}
           {imageParts.length > 0 && (
@@ -4198,6 +4205,23 @@ function isMarkdownPath(path: string): boolean {
   if (dot <= 0) return false
   const ext = base.slice(dot + 1).toLowerCase()
   return ext === "md" || ext === "markdown"
+}
+
+/**
+ * 会话记录内文件打开分派（design-html-preview §3.4 打开路由的会话侧延伸，
+ * 2026-11-20 增）：html 与文件树点击同默认——本地 server `file://` 可直读同机
+ * 路径 → 浏览器 Tab（shim 失败回退文件 Tab）；远程 attach 默认文件 Tab（预览
+ * 态——`file://` 指向远端路径，本地导航必败）；非 html 维持文件 Tab。
+ * 消息 ob-file 链接（无行号）与 user 气泡引用 chip 共用此路径。
+ */
+function openSessionFile(store: AppStore, absolutePath: string): void {
+  if (isHtmlPath(absolutePath) && store.isLocalServer) {
+    void store.openBrowserTab(fileUrlOf(absolutePath)).then((ok) => {
+      if (!ok) store.openFileTab(absolutePath)
+    })
+    return
+  }
+  store.openFileTab(absolutePath)
 }
 
 /**
