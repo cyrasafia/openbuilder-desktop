@@ -6,7 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { waitFor } from "@testing-library/react"
-import { AppStore, diffTabKey, diffDataKey, FILE_WATCH_DEBOUNCE_MS } from "./app-store"
+import { AppStore, diffTabKey, diffDataKey, FILE_WATCH_DEBOUNCE_MS, FILE_WATCH_REARM_MS } from "./app-store"
 import type { Attachment } from "@shared/attachment-pipeline"
 import { ApiError, RestClient } from "@shared/rest-client"
 import { toInternalMessages } from "@shared/v2-adapter"
@@ -3720,8 +3720,9 @@ describe("文件监听（design-file-watcher）", () => {
     ;(store as unknown as { handleEvent: (d: string, e: unknown) => void }).handleEvent(dir, ev)
   }
 
+  /** v2 文件监听事件（design-file-watcher §7.2）：载荷 {file, event} */
   function watcherEvent(dir: string, file: string, event: string) {
-    dispatch(dir, { type: "file.watcher.updated", properties: { file, event } })
+    dispatch(dir, { type: "filesystem.changed", properties: { file, event } })
   }
 
   /** readFileContent mock 返回值：FileContentData 文本条目 */
@@ -3818,6 +3819,34 @@ describe("文件监听（design-file-watcher）", () => {
     expect(readFileContent).not.toHaveBeenCalled()
   })
 
+  it("v1 遗留名 file.watcher.updated 不再处理（v2 server 从不发布，§7.2）", async () => {
+    fileTab(ROOT + "/a.ts")
+    const readFileContent = vi.fn(async () => fc("v2"))
+    clientRef().readFileContent = readFileContent
+    dispatch(ROOT, { type: "file.watcher.updated", properties: { file: ROOT + "/a.ts", event: "change" } })
+    await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS)
+    expect(readFileContent).not.toHaveBeenCalled()
+  })
+
+  it("事件分支不发 emit（§7.5）：未命中是纯空转；命中后待重拉落地才 emit", async () => {
+    const notified = vi.fn()
+    const unsub = store.subscribe(notified)
+    try {
+      watcherEvent(ROOT, ROOT + "/ghost.ts", "change")
+      watcherEvent(ROOT, ROOT + "/.git/HEAD", "change") // server 切分支检测帧
+      expect(notified).not.toHaveBeenCalled()
+
+      fileTab(ROOT + "/a.ts")
+      clientRef().readFileContent = vi.fn(async () => fc("v2"))
+      watcherEvent(ROOT, ROOT + "/a.ts", "change")
+      expect(notified).not.toHaveBeenCalled() // 去抖窗口内无同步状态变化
+      await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS)
+      expect(notified).toHaveBeenCalled() // 重拉落地自行 emit
+    } finally {
+      unsub()
+    }
+  })
+
   it("unlink 走同一重拉路径：读取失败落 error 条目（FileView 错误态）", async () => {
     fileTab(ROOT + "/gone.ts")
     clientRef().readFileContent = vi.fn(async () => {
@@ -3904,6 +3933,494 @@ describe("文件监听（design-file-watcher）", () => {
     watcherEvent(WT1, WT1 + "/x.ts", "add") // 当前作用域 = ROOT
     await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS)
     expect(listFiles).not.toHaveBeenCalled()
+  })
+})
+
+// 文件监听注册（design-file-watcher §7.3/§7.4）：v2 无全树监听，已打开文件 Tab
+// 在内容加载成功后向 server 逐文件注册（watchFile），关闭时取消（unwatchFile）
+describe("文件监听注册（design-file-watcher §7.3/§7.4）", () => {
+  function fileTab(path: string, directory = ROOT) {
+    store.tabs.push({
+      kind: "file",
+      key: `file:${path}`,
+      projectId: "proj1",
+      title: path.split("/").pop() ?? path,
+      directory,
+    })
+  }
+
+  function clientRef(): Record<string, unknown> {
+    return (store as unknown as { client: Record<string, unknown> }).client
+  }
+
+  /** 装上 watchFile / unwatchFile / readFileContent 桩，返回各 mock */
+  function stubs(content: (path: string) => FileContentData = () => ({ type: "text", content: "v2" })) {
+    const watchFile = vi.fn(async (_directory: string, _path: string) => {})
+    const unwatchFile = vi.fn(async (_directory: string, _path: string) => {})
+    const readFileContent = vi.fn(async (_dir: string, path: string) => content(path))
+    Object.assign(clientRef(), { watchFile, unwatchFile, readFileContent })
+    return { watchFile, unwatchFile, readFileContent }
+  }
+
+  const flush = () => vi.advanceTimersByTimeAsync(0)
+  const rearm = () => (store as unknown as { rearmFileWatches: () => void }).rearmFileWatches()
+  const teardown = () => (store as unknown as { teardownConnection: () => void }).teardownConnection()
+  const fileEvent = (file: string, event: string) =>
+    (store as unknown as { handleEvent: (d: string, e: unknown) => void }).handleEvent(ROOT, {
+      type: "filesystem.changed",
+      properties: { file, event },
+    })
+
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it("内容加载成功后注册：path = 相对 Tab 归属目录的文件路径", async () => {
+    fileTab(ROOT + "/src/a.ts")
+    const { watchFile } = stubs()
+    await store.loadFileContent(ROOT + "/src/a.ts", ROOT)
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(1)
+    expect(watchFile).toHaveBeenCalledWith(ROOT, "src/a.ts")
+  })
+
+  it("可刷新类型才注册：文本 / 图片 / PDF；不可预览二进制不占名额", async () => {
+    for (const p of ["/a.ts", "/a.png", "/doc.pdf", "/bin.dat"]) fileTab(ROOT + p)
+    const { watchFile } = stubs((path) =>
+      path.endsWith(".png")
+        ? { type: "binary", content: "QUJD", encoding: "base64", mimeType: "image/png" }
+        : path.endsWith(".pdf")
+          ? { type: "binary", content: "", mimeType: "application/pdf" }
+          : path.endsWith(".dat")
+            ? { type: "binary", content: "", mimeType: "application/octet-stream" }
+            : { type: "text", content: "x" },
+    )
+    for (const p of ["/a.ts", "/a.png", "/doc.pdf", "/bin.dat"]) await store.loadFileContent(ROOT + p, ROOT)
+    await flush()
+    expect(watchFile.mock.calls.map((c) => c[1]).sort()).toEqual(["a.png", "a.ts", "doc.pdf"])
+  })
+
+  it("无 file Tab 的加载（markdown 相对图片）不注册；加载失败不注册", async () => {
+    fileTab(ROOT + "/gone.ts")
+    const { watchFile } = stubs()
+    await store.loadFileContent(ROOT + "/img.png", ROOT)
+    clientRef().readFileContent = vi.fn(async () => {
+      throw new ApiError(404, "not-found", "file not found")
+    })
+    await store.loadFileContent(ROOT + "/gone.ts", ROOT)
+    await flush()
+    expect(watchFile).not.toHaveBeenCalled()
+  })
+
+  it("续期窗口内重复加载不重复注册", async () => {
+    fileTab(ROOT + "/a.ts")
+    const { watchFile } = stubs()
+    await store.loadFileContent(ROOT + "/a.ts", ROOT)
+    await store.loadFileContent(ROOT + "/a.ts", ROOT)
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(1)
+  })
+
+  it("监听重拉成功：序号前进并补注册；重拉失败不前进序号", async () => {
+    fileTab(ROOT + "/a.ts")
+    const { watchFile } = stubs()
+    fileEvent(ROOT + "/a.ts", "change")
+    await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS)
+    await flush()
+    expect(store.fileReloadSeqFor(ROOT + "/a.ts")).toBe(1)
+    expect(watchFile).toHaveBeenCalledWith(ROOT, "a.ts")
+
+    clientRef().readFileContent = vi.fn(async () => {
+      throw new ApiError(404, "not-found", "gone")
+    })
+    fileEvent(ROOT + "/a.ts", "unlink")
+    await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS)
+    await flush()
+    expect(store.fileReloadSeqFor(ROOT + "/a.ts")).toBe(1)
+    expect(watchFile).toHaveBeenCalledTimes(1)
+  })
+
+  it("能力态：404 无 _tag（server 无此路由）→ 本次连接停用；重连后重置", async () => {
+    fileTab(ROOT + "/a.ts")
+    fileTab(ROOT + "/b.ts")
+    const { watchFile } = stubs()
+    watchFile.mockRejectedValue(new ApiError(404, "not-found", "HTTP 404"))
+    await store.loadFileContent(ROOT + "/a.ts", ROOT)
+    await flush()
+    await store.loadFileContent(ROOT + "/b.ts", ROOT)
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(1) // a 失败后停用，b 不再尝试
+
+    // 重连：连接拆除重置能力态（新 server 可能支持）
+    teardown()
+    const fresh = {
+      watchFile: vi.fn(async () => {}),
+      readFileContent: vi.fn(async () => ({ type: "text" as const, content: "v2" })),
+    }
+    ;(store as unknown as { client: unknown }).client = fresh
+    fileTab(ROOT + "/c.ts")
+    await store.loadFileContent(ROOT + "/c.ts", ROOT)
+    await flush()
+    expect(fresh.watchFile).toHaveBeenCalledTimes(1)
+  })
+
+  it("能力态：503（server 关闭文件监听）→ 本次连接停用", async () => {
+    fileTab(ROOT + "/a.ts")
+    fileTab(ROOT + "/b.ts")
+    const { watchFile } = stubs()
+    watchFile.mockRejectedValue(
+      new ApiError(503, "server", "HTTP 503", { _tag: "ServiceUnavailableError", message: "disabled" }),
+    )
+    await store.loadFileContent(ROOT + "/a.ts", ROOT)
+    await flush()
+    await store.loadFileContent(ROOT + "/b.ts", ROOT)
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(1)
+  })
+
+  it("能力态：FileNotFoundError / LocationNotFoundError / 网络错误是个别失败，不改能力态", async () => {
+    for (const p of ["/a.ts", "/b.ts", "/c.ts", "/d.ts"]) fileTab(ROOT + p)
+    const { watchFile } = stubs()
+    watchFile
+      .mockRejectedValueOnce(
+        new ApiError(404, "not-found", "HTTP 404", { _tag: "FileNotFoundError", message: "no file" }),
+      )
+      .mockRejectedValueOnce(
+        new ApiError(404, "not-found", "HTTP 404", {
+          _tag: "LocationNotFoundError",
+          location: { directory: ROOT },
+          message: "no dir",
+        }),
+      )
+      .mockRejectedValueOnce(new ApiError(0, "network", "无法连接服务器"))
+    for (const p of ["/a.ts", "/b.ts", "/c.ts", "/d.ts"]) await store.loadFileContent(ROOT + p, ROOT)
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(4)
+  })
+
+  it("关闭 Tab 取消监听；未注册的 Tab 关闭不发请求", async () => {
+    fileTab(ROOT + "/a.ts")
+    fileTab(ROOT + "/b.ts")
+    const { unwatchFile } = stubs()
+    await store.loadFileContent(ROOT + "/a.ts", ROOT)
+    await flush()
+    store.closeTab(`file:${ROOT}/b.ts`)
+    expect(unwatchFile).not.toHaveBeenCalled()
+    store.closeTab(`file:${ROOT}/a.ts`)
+    expect(unwatchFile).toHaveBeenCalledTimes(1)
+    expect(unwatchFile).toHaveBeenCalledWith(ROOT, "a.ts")
+  })
+
+  it("连接拆除只清记录、不发取消请求（server 侧 24 小时过期回收）", async () => {
+    fileTab(ROOT + "/a.ts")
+    const { unwatchFile } = stubs()
+    await store.loadFileContent(ROOT + "/a.ts", ROOT)
+    fileEvent(ROOT + "/a.ts", "change")
+    await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS)
+    await flush()
+    expect(store.fileReloadSeqFor(ROOT + "/a.ts")).toBe(1)
+
+    teardown()
+    expect(unwatchFile).not.toHaveBeenCalled()
+    expect(store.fileReloadSeqFor(ROOT + "/a.ts")).toBeUndefined()
+  })
+
+  it("对账续期：满续期窗口重启监听（先取消再注册）；Tab 已关的记录取消", async () => {
+    fileTab(ROOT + "/a.ts")
+    fileTab(ROOT + "/b.ts")
+    const { watchFile, unwatchFile } = stubs()
+    await store.loadFileContent(ROOT + "/a.ts", ROOT)
+    await store.loadFileContent(ROOT + "/b.ts", ROOT)
+    await flush()
+    rearm()
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(2) // 未满窗口：不重启
+    expect(unwatchFile).not.toHaveBeenCalled()
+
+    store.closeTab(`file:${ROOT}/b.ts`)
+    expect(unwatchFile).toHaveBeenCalledTimes(1) // 关 b：取消 b
+    await vi.advanceTimersByTimeAsync(FILE_WATCH_REARM_MS + 1000)
+    rearm()
+    await flush()
+    // server 对已存在的记录只延长过期、不重启监听 → 续期必须 DELETE + POST
+    expect(unwatchFile).toHaveBeenCalledTimes(2)
+    expect(unwatchFile).toHaveBeenLastCalledWith(ROOT, "a.ts")
+    expect(watchFile).toHaveBeenCalledTimes(3) // 仅 a 重启
+    expect(watchFile).toHaveBeenLastCalledWith(ROOT, "a.ts")
+    expect(unwatchFile.mock.invocationCallOrder[1]!).toBeLessThan(watchFile.mock.invocationCallOrder[2]!)
+  })
+
+  it("Tab 归属目录变更：旧目录的监听取消，新目录在加载成功后注册", async () => {
+    const parent = ROOT + "/pkg"
+    const child = parent + "/wt"
+    fileTab(child + "/a.ts", parent) // 首次归属 = 上层目录
+    const { watchFile, unwatchFile } = stubs()
+    await store.loadFileContent(child + "/a.ts", parent)
+    await flush()
+    expect(watchFile).toHaveBeenCalledWith(parent, "wt/a.ts")
+
+    // 复用已开 Tab 从子目录作用域重开（openFileTab 改写归属），随后激活重拉
+    store.tabs.find((t) => t.key === `file:${child}/a.ts`)!.directory = child
+    await store.loadFileContent(child + "/a.ts", child)
+    await flush()
+    expect(unwatchFile).toHaveBeenCalledWith(parent, "wt/a.ts")
+    expect(watchFile).toHaveBeenLastCalledWith(child, "a.ts")
+  })
+
+  it("Tab 归属目录变更时旧注册在途：串行收尾，旧失败不覆盖新目录记录", async () => {
+    const parent = ROOT + "/pkg"
+    const child = parent + "/wt"
+    fileTab(child + "/a.ts", parent)
+    const { watchFile, unwatchFile } = stubs()
+    let rejectOld!: (e: unknown) => void
+    watchFile.mockReturnValueOnce(new Promise<void>((_r, j) => (rejectOld = j)))
+    await store.loadFileContent(child + "/a.ts", parent)
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(1)
+
+    const tab = store.tabs.find((t) => t.key === `file:${child}/a.ts`)!
+    tab.directory = child
+    await store.loadFileContent(child + "/a.ts", child)
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(1) // 新目录 POST 等旧操作收尾
+
+    rejectOld(new ApiError(0, "network", "无法连接服务器"))
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(2)
+    expect(watchFile).toHaveBeenLastCalledWith(child, "a.ts")
+    rearm()
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(2) // 旧目录失败没有留下 at: 0 记录
+    expect(unwatchFile).not.toHaveBeenCalled()
+  })
+
+  it("注册在途期间连接换代：旧连接的注册不落到新连接的记录上", async () => {
+    fileTab(ROOT + "/a.ts")
+    const { watchFile } = stubs()
+    let resolve!: () => void
+    watchFile.mockReturnValueOnce(new Promise<void>((r) => (resolve = r)))
+    void store.loadFileContent(ROOT + "/a.ts", ROOT)
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(1)
+
+    ;(store as unknown as { client: unknown }).client = { ...clientRef() } // 换代
+    resolve()
+    await flush()
+    await vi.advanceTimersByTimeAsync(FILE_WATCH_REARM_MS + 1000)
+    rearm() // 无记录 → 不续期
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(1)
+  })
+
+  it("注册在途期间连接换代后失败：旧连接的失败不污染新连接的能力态", async () => {
+    fileTab(ROOT + "/a.ts")
+    const { watchFile } = stubs()
+    let reject!: (e: unknown) => void
+    watchFile.mockReturnValueOnce(new Promise<void>((_r, j) => (reject = j)))
+    void store.loadFileContent(ROOT + "/a.ts", ROOT)
+    await flush()
+
+    const fresh = {
+      watchFile: vi.fn(async (_directory: string, _path: string) => {}),
+      readFileContent: vi.fn(async () => ({ type: "text" as const, content: "v2" })),
+    }
+    ;(store as unknown as { client: unknown }).client = fresh // 换代
+    reject(new ApiError(404, "not-found", "HTTP 404")) // 旧 server：无此路由
+    await flush()
+
+    fileTab(ROOT + "/b.ts")
+    await store.loadFileContent(ROOT + "/b.ts", ROOT)
+    await flush()
+    expect(fresh.watchFile).toHaveBeenCalledTimes(1) // 新连接照常注册
+  })
+
+  it("`.git/` 下的文件不注册（事件会被 .git 过滤丢弃，注册无意义）", async () => {
+    fileTab(ROOT + "/.git/config")
+    fileTab(WT1 + "/a.ts") // WT1 物理位于 ROOT/.git/ 之下
+    const { watchFile } = stubs()
+    await store.loadFileContent(ROOT + "/.git/config", ROOT)
+    await store.loadFileContent(WT1 + "/a.ts", ROOT)
+    await flush()
+    expect(watchFile).not.toHaveBeenCalled()
+  })
+
+  it("扩展名与渲染分发同源：server MIME 误判的图片仍注册", async () => {
+    fileTab(ROOT + "/a.png")
+    // server MIME 误判（本仓库先例：.ts → video/mp2t）；FileView 按扩展名分发为图片
+    const { watchFile } = stubs(() => ({ type: "binary", content: "", mimeType: "application/octet-stream" }))
+    await store.loadFileContent(ROOT + "/a.png", ROOT)
+    await flush()
+    expect(watchFile).toHaveBeenCalledWith(ROOT, "a.png")
+  })
+
+  it("能力态：无 _tag 的 503（代理/网关）不算 server 关闭，下次加载照常注册", async () => {
+    fileTab(ROOT + "/a.ts")
+    fileTab(ROOT + "/b.ts")
+    const { watchFile } = stubs()
+    watchFile.mockRejectedValueOnce(new ApiError(503, "server", "HTTP 503"))
+    await store.loadFileContent(ROOT + "/a.ts", ROOT)
+    await flush()
+    await store.loadFileContent(ROOT + "/b.ts", ROOT)
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(2)
+  })
+
+  it("注册瞬时失败：记为待重试，对账下一轮重试；成功后进入续期窗口", async () => {
+    fileTab(ROOT + "/a.ts")
+    const { watchFile, unwatchFile } = stubs()
+    watchFile.mockRejectedValueOnce(new ApiError(0, "network", "无法连接服务器"))
+    await store.loadFileContent(ROOT + "/a.ts", ROOT)
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(1)
+
+    rearm()
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(2) // 未满续期窗口也重试（失败待重试记录）
+    expect(unwatchFile).not.toHaveBeenCalled() // 无既有监听：直接 POST，不先取消
+
+    rearm()
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(2) // 成功后进入续期窗口，不重复
+  })
+
+  it("待重试请求在途：对账不重复发起；落地成功后进入续期窗口", async () => {
+    fileTab(ROOT + "/a.ts")
+    const { watchFile } = stubs()
+    watchFile.mockRejectedValueOnce(new ApiError(0, "network", "无法连接服务器"))
+    await store.loadFileContent(ROOT + "/a.ts", ROOT)
+    await flush()
+
+    let resolve!: () => void
+    watchFile.mockReturnValueOnce(new Promise<void>((r) => (resolve = r)))
+    rearm()
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(2)
+    rearm()
+    rearm()
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(2) // 同一慢请求合并，不随对账累积
+
+    resolve()
+    await flush()
+    rearm()
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(2)
+  })
+
+  it("文件不存在 / 目录已死：清除既有待重试记录，不再周期重试", async () => {
+    fileTab(ROOT + "/a.ts")
+    const { watchFile } = stubs()
+    watchFile.mockRejectedValueOnce(new ApiError(0, "network", "无法连接服务器"))
+    await store.loadFileContent(ROOT + "/a.ts", ROOT)
+    await flush()
+    watchFile.mockRejectedValueOnce(
+      new ApiError(404, "not-found", "HTTP 404", { _tag: "FileNotFoundError", message: "no file" }),
+    )
+    rearm()
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(2)
+    rearm()
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(2)
+  })
+
+  it("从 error 条目恢复成功：立即重启监听（记录未满续期窗口也重启）", async () => {
+    fileTab(ROOT + "/a.ts")
+    const { watchFile, unwatchFile, readFileContent } = stubs()
+    await store.loadFileContent(ROOT + "/a.ts", ROOT)
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(1)
+
+    // 文件被删 → 监听重拉落 error 条目
+    readFileContent.mockRejectedValueOnce(
+      new ApiError(404, "not-found", "HTTP 404", { _tag: "FileNotFoundError", message: "gone" }),
+    )
+    fileEvent(ROOT + "/a.ts", "unlink")
+    await vi.advanceTimersByTimeAsync(FILE_WATCH_DEBOUNCE_MS)
+    await flush()
+    expect(store.fileContents.get(ROOT + "/a.ts")?.error).toBeTruthy()
+
+    // 恢复后重拉成功 → 重启监听：父目录删除后重建会让 server 侧监听死亡，
+    // 而单纯重新 POST 只延长过期（活体实证）
+    await store.loadFileContent(ROOT + "/a.ts", ROOT)
+    await flush()
+    expect(unwatchFile).toHaveBeenCalledTimes(1)
+    expect(unwatchFile).toHaveBeenCalledWith(ROOT, "a.ts")
+    expect(watchFile).toHaveBeenCalledTimes(2)
+  })
+
+  it("文本重拉后变成不可预览二进制：取消既有监听，不再占 server 名额", async () => {
+    fileTab(ROOT + "/a.dat")
+    let binary = false
+    const { watchFile, unwatchFile } = stubs(() => binary
+      ? { type: "binary", content: "", mimeType: "application/octet-stream" }
+      : { type: "text", content: "text" })
+    await store.loadFileContent(ROOT + "/a.dat", ROOT)
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(1)
+
+    binary = true
+    await store.loadFileContent(ROOT + "/a.dat", ROOT)
+    await flush()
+    expect(unwatchFile).toHaveBeenCalledWith(ROOT, "a.dat")
+    rearm()
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(1)
+  })
+
+  it("注册在途期间关 Tab：落地时取消监听、不落记录", async () => {
+    fileTab(ROOT + "/a.ts")
+    const { watchFile, unwatchFile } = stubs()
+    let resolve!: () => void
+    watchFile.mockReturnValueOnce(new Promise<void>((r) => (resolve = r)))
+    void store.loadFileContent(ROOT + "/a.ts", ROOT)
+    await flush()
+    store.closeTab(`file:${ROOT}/a.ts`) // 尚无记录：此时不发取消
+    expect(unwatchFile).not.toHaveBeenCalled()
+    resolve()
+    await flush()
+    expect(unwatchFile).toHaveBeenCalledTimes(1) // 落地发现 Tab 已关 → 取消 server 侧监听
+    expect(unwatchFile).toHaveBeenCalledWith(ROOT, "a.ts")
+    rearm()
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(1) // 未落记录
+  })
+
+  it("续期取消在途时关闭再重开同路径：旧重启不落地，新 Tab 在取消后注册", async () => {
+    fileTab(ROOT + "/a.ts")
+    const { watchFile, unwatchFile } = stubs()
+    await store.loadFileContent(ROOT + "/a.ts", ROOT)
+    await flush()
+    let resolveDelete!: () => void
+    unwatchFile.mockReturnValueOnce(new Promise<void>((r) => (resolveDelete = r)))
+    await vi.advanceTimersByTimeAsync(FILE_WATCH_REARM_MS + 1000)
+    rearm()
+    await flush()
+    expect(unwatchFile).toHaveBeenCalledTimes(1)
+
+    store.closeTab(`file:${ROOT}/a.ts`)
+    fileTab(ROOT + "/a.ts") // 新实体，同 key 同目录
+    await store.loadFileContent(ROOT + "/a.ts", ROOT)
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(1) // 等旧 DELETE 收尾
+
+    resolveDelete()
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(2) // 只有新 Tab 的 POST，旧重启已失效
+    expect(watchFile).toHaveBeenLastCalledWith(ROOT, "a.ts")
+    expect(unwatchFile).toHaveBeenCalledTimes(1)
+    expect(unwatchFile.mock.invocationCallOrder[0]!).toBeLessThan(watchFile.mock.invocationCallOrder[1]!)
+  })
+
+  it("对账定时器每分钟搭车续期（接线）", async () => {
+    fileTab(ROOT + "/a.ts")
+    const { watchFile } = stubs()
+    await store.loadFileContent(ROOT + "/a.ts", ROOT)
+    await flush()
+    ;(store as unknown as { startReconcileTimer: () => void }).startReconcileTimer()
+    await vi.advanceTimersByTimeAsync(FILE_WATCH_REARM_MS + 60_000)
+    await flush()
+    expect(watchFile).toHaveBeenCalledTimes(2) // 定时器触发重启，且只重启一次
+    ;(store as unknown as { stopReconcileTimer: () => void }).stopReconcileTimer()
   })
 })
 

@@ -3,6 +3,10 @@ import { useI18n, useStore } from "../app"
 import { fileUrlOf } from "@shared/file-url"
 import { FindBar, useWebContentsFind } from "./find-bar"
 
+/** 各 PDF Tab 已导航到的监听重拉序号（design-file-watcher §7.5）。跨挂载保留：
+ *  PdfFrameView 切走即卸载，后台期间的监听重拉在切回时补导航 */
+const navigatedSeq = new Map<string, number>()
+
 /**
  * PDF 预览宿主（design-pdf-preview §1 终态）：文件 Tab 内嵌**专用
  * WebContentsView**（复用 browser-view IPC 基建）——顶层 file:// 导航由
@@ -24,20 +28,23 @@ export function PdfFrameView({ tabKey, absolutePath }: { tabKey: string; absolut
 
   // 懒建视图 + 导航（一次）
   useEffect(() => {
-    if (viewId != null) return
     let disposed = false
-    void window.desktop.browserViewCreate().then((id) => {
-      if (id == null || id < 0) return
-      if (disposed) {
-        // IPC 落地时组件已卸载（StrictMode 双跑/切走）：main 侧 view 已建，
-        // 不 dispose 即为孤儿（评审 M2）——立即回收，不进注册表
-        window.desktop.browserViewDispose(id)
-        return
-      }
-      store.registerFileTabView(tabKey, id)
-      setViewId(id)
-      window.desktop.browserNavigate(id, fileUrlOf(absolutePath))
-    })
+    if (viewId == null) {
+      void window.desktop.browserViewCreate().then((id) => {
+        if (id == null || id < 0) return
+        if (disposed) {
+          // IPC 落地时组件已卸载（StrictMode 双跑/切走）：main 侧 view 已建，
+          // 不 dispose 即为孤儿（评审 M2）——立即回收，不进注册表
+          window.desktop.browserViewDispose(id)
+          return
+        }
+        store.registerFileTabView(tabKey, id)
+        setViewId(id)
+        window.desktop.browserNavigate(id, fileUrlOf(absolutePath))
+        // 首次导航呈现的就是当前磁盘内容：记为已导航到当前重拉序号
+        navigatedSeq.set(tabKey, store.fileReloadSeqFor(absolutePath) ?? 0)
+      })
+    }
     return () => {
       disposed = true
       // 卸载即隐藏（评审 N1）：文件监听把快照翻转为 error/占位时本组件卸载，
@@ -45,9 +52,26 @@ export function PdfFrameView({ tabKey, absolutePath }: { tabKey: string; absolut
       // 重挂载复用路径经 registerFileTabView 注册即 sync 恢复显示
       const id = store.browserViewIdFor(tabKey)
       if (id != null) window.desktop.browserViewHide(id)
+      else navigatedSeq.delete(tabKey) // 关 Tab / teardown：视图已 dispose，序号记录随 Tab 清理
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // 监听重拉后重载（design-file-watcher §7.5）：PDF 由 PDFium 直读 file://，不经
+  // fileContents 渲染，内容重拉对它无效——store 的重拉序号越过已导航值即重新
+  // 导航（在后台时序号照样前进，切回重挂载后在此补导航）
+  const reloadSeq = store.fileReloadSeqFor(absolutePath)
+  useEffect(() => {
+    if (viewId == null) return
+    if (reloadSeq === undefined) {
+      // 序号已随连接拆除清空：已导航值一并作废（全局序号单调，旧值不再可比）
+      navigatedSeq.delete(tabKey)
+      return
+    }
+    if (reloadSeq <= (navigatedSeq.get(tabKey) ?? 0)) return
+    navigatedSeq.set(tabKey, reloadSeq)
+    window.desktop.browserNavigate(viewId, fileUrlOf(absolutePath))
+  }, [viewId, reloadSeq, tabKey, absolutePath])
 
   // 复用重挂载（切回 Tab）：注册即协调恢复显示（首次路径 register 内已 sync）
   useEffect(() => {

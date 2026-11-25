@@ -1,6 +1,8 @@
 # 文件监听：磁盘变化实时更新右栏文件树与文件 Tab — 设计文档
 
 > **v2 迁移注记（2026-09-29，M6c 盘点）**：2.0.18 事件全集无 `file.watcher.updated`、无 watch 端点——文件监听自 v2 迁移（M3）起静默失效；重开 Tab/切作用域/重连对账重拉兜底，链路代码保留待上游恢复（spec-v0.5 功能降级表 #3）。
+>
+> **v2 复活（2026-11-25）**：server v2.2.0 起提供单文件监听端点 `POST /api/experimental/fs/watch`，配合 `filesystem.changed` 事件，**已打开文件 Tab 的内容自动刷新**已恢复，见 §7。文件树的新增/删除刷新仍不可得（无目录监听）。§2、§3 保留 v1 原设计作语义来源，现行事件源与注册生命周期以 §7 为准。
 
 
 > 目标：文件在磁盘上被新增/修改/删除（agent 工具写盘或外部编辑）时，右栏文件树实时增删刷新，已打开的文件 Tab 内容实时重拉刷新。
@@ -79,3 +81,124 @@ server 侧 @parcel/watcher 监听项目目录，SSE 广播 `file.watcher.updated
 | `src/renderer/src/store/app-store.ts` | `handleEvent` 增 `file.watcher.updated` 分支；`onFileWatcherEvent` + 内容重拉（去抖/singleflight/dirty）+ 树刷新（去抖）；`teardownConnection` 清理 |
 | `src/shared/api-types.ts` | `OpencodeEvent` 联合增 `file.watcher.updated` 成员 |
 | `src/renderer/src/store/app-store.test.ts` | 事件直驱测试（内容重拉/树刷新/过滤/守卫） |
+
+## 7. v2 复活：已打开文件的内容自动刷新（2026-11-25）
+
+> 触发：server 升至 2.4.1 后的契约审计（ref-pin-bump-2.4.1）确认单文件监听端点可用。范围 = §3.1 的内容失效；§3.2 树失效只剩一条可达路径——被监听文件删除时重列其父目录。
+> 参考来源（AGENTS.md 约定）：移动端无同类功能（文件浏览是会话内附件消费，design-file-view）。两条经验吸收进本设计：openbuilder design-file-cache §3.1——SSE 事件不保证送达，不能做唯一正确性来源；design-frame-drop JANK-6/10——未消费的事件不得落到全局刷新。官方 App v2.4.1 的 `workspaces/files/watcher.ts`（`invalidateFromWatcher`）消费同一事件，语义与 §3 相同。
+
+### 7.1 契约事实（活体 2026-11-25，server 2.4.1）
+
+| 项 | 事实 |
+|---|---|
+| 注册 | `POST /api/experimental/fs/watch?location[directory]=<目录>`，body `{path}`，path 是相对 location 的**文件**路径。204 无返回体。重复注册只**延长过期**，不重启监听（见「监听后端」） |
+| 取消 | `DELETE`，同路径同 body。204。监听记录按 (location, 文件) 全局唯一、无引用计数——任何客户端的 DELETE 都会取消该监听 |
+| 事件 | 全局 SSE 流上的 `filesystem.changed`：`{"type":"filesystem.changed","location":{"directory":"…"},"data":{"file":"<绝对路径>","event":"change"` 或 `"unlink"}}`。本机实测延迟 2–3 ms |
+| 限额 | 每个 location 最多 256 个文件，超出时淘汰最早过期的一个（不报错）；24 小时过期（源码 `core/src/filesystem/file-watch.ts`） |
+| 错误 | 404 `FileNotFoundError`（文件不存在，或 path 是目录——目录不能监听）；404 `LocationNotFoundError`（目录已死）；503 `ServiceUnavailableError`（server 关闭了文件监听）；400 `InvalidRequestError` |
+| 旧 server | 端点自 v2.2.0 提供（ref-pin-bump-2.2.0 §2）。未知路由返回 **404 且无响应体**，已知路由的错误体都带 `_tag`——两者可区分。验证方法：对不存在的路由发 POST（本机 2.4.1 实测）；旧 server 上本端点即属未知路由，属推断，未在旧 server 活体 |
+| 关闭开关 | `OPENCODE_FILEWATCHER_DISABLE` / `OPENCODE_DISABLE_FILEWATCHER`（`packages/cli/src/server-process.ts`）→ `watchFile` 返回 503 |
+| 稳定性 | experimental 端点，上游声明「may change without compatibility guarantees」 |
+| 监听后端 | server 对单文件实际监听**父目录**：`fs.watch(dirname, {recursive:false})` + 文件名过滤（`core/src/filesystem/watcher.ts` nativeLayer）。本机（Linux，server 2.4.1）实测：截断写、rename 覆盖、`sed -i` 都收到 `change`；**同目录内**删除后重建仍能收到事件；**父目录删除后重建，监听死亡**（删除时报 `unlink`，此后无事件），重新 POST 只续期不复活，`DELETE` + `POST` 才恢复。其他平台与运行时未实测 |
+
+运行时的行为不可外推：桌面版 bun 1.3.14 的 `fs.watch(dir)` 在 rename 覆盖时只报临时文件名（按文件名过滤即丢事件），本机 server 则报目标文件。判定监听行为必须以**运行中的 server** 为准。
+
+`filesystem.changed` 另有一个来源：server 每个 location 监听 `.git/HEAD`（切分支检测）。这些帧被 §3 的「相对化 + `.git` 过滤」丢弃。监听记录是全 server 共享的，其他客户端注册的监听也发同一事件——本端只消费命中已打开 file Tab 的帧。
+
+### 7.2 事件源（修订 D-1）
+
+只消费 `filesystem.changed`。v1 的 `file.watcher.updated` 是遗留名，v2 server 从不发布，其分支与类型成员删除。处理函数沿用 §3 的 `onFileWatcherEvent`：载荷从 `data.file` / `data.event` 读，形状与 v1 相同。
+
+### 7.3 监听注册（新）
+
+**注册时机 = 文件 Tab 内容成功加载之后**（`loadFileContent` 与监听重拉两条路径的成功点）。条件全部成立才注册：
+
+1. 存在同路径的 file Tab，且加载所用目录等于 Tab 归属目录。markdown 预览的相对图片也走 `loadFileContent`，但没有 file Tab——不注册（沿用「监听仅覆盖打开的 file Tab」）。
+2. 内容可刷新：文本看内容嗅探结果，图片 / PDF 按 **Tab 路径扩展名**判定（`@shared/file-kind` 的 `isImagePath` / `isPdfPath`，与 FileView 的渲染分发同源——server 的 MIME 头会误判）。不可预览的二进制只有占位，刷新没有可见变化，不占名额。
+3. 文件位于 Tab 归属目录之内（与 server 的 read confinement 一致；之外的读取本就失败），且不在 `.git/` 下——`.git` 内的事件本就会被 §3 的过滤丢弃，注册无意义。
+4. 本次连接未判定为「不支持」（见 7.4）。
+
+**取消时机**：关闭 file Tab（`closeTab`，best-effort，失败忽略），或成功重拉发现文本已变成不可预览的二进制。其余移除路径不取消：`teardownConnection` 只清本地记录、不发请求，由 server 的 24 小时过期回收。
+
+**注册请求的落地守卫**：在途期间关 Tab / 改归属 / 连接换代——注册不落记录；server 侧已建立的监听立即取消，不留到过期。同一 Tab 的注册、重启、取消按 client 串行执行，同目标请求合并；每次操作推进代次，旧回执不得覆盖新目录或新 Tab 实体的状态。迟到的 DELETE 因此不会取消后续 POST，慢请求也不会被对账重复发起。
+
+**续期 = 重启监听**：注册记录带时刻。记录满 12 小时后，由 60 秒对账定时器搭车**先 DELETE 再 POST**。不能只发 POST：server 对已存在的记录只延长过期、不重启监听，而监听会因父目录删除后重建而死亡（§7.1 活体实证）。两步之间的极短窗口可能漏事件，由激活即重拉兜底。
+
+**从失效态恢复即重启**：内容加载成功且此前缓存是 error 条目（文件曾被删、目录曾死）时，立即重启监听，不等续期窗口——监听可能已随父目录重建死亡。
+
+**注册失败待重试**：网络错误、400 等失败记为待重试（时刻置 0），对账每分钟重试。前台常驻的 Tab 没有「激活即重拉」这条恢复路径。文件不存在与目录已死会清除既有待重试记录（无可监听对象，下次加载成功再注册）。
+
+**Tab 归属目录变更**（`openFileTab` 复用已开 Tab 时改写 directory）：旧目录的监听取消，新目录在下次加载成功后注册。
+
+### 7.4 能力探测（新）
+
+不发探测请求。首次注册的响应即探测结果，按错误族分三路：
+
+| 响应 | 含义 | 处置 |
+|---|---|---|
+| 404 且无 `_tag` | server 低于 v2.2.0，无此路由 | 本次连接标记不支持，不再尝试；重连后重置 |
+| 503 且带 `ServiceUnavailableError` | server 关闭了文件监听 | 同上 |
+| 404 `FileNotFoundError` / `LocationNotFoundError` | 无可监听对象（文件不存在 / 目录已死） | 不改能力态，不留待重试记录；下次加载成功再注册 |
+| 400、网络错误、无 `_tag` 的 503（代理或网关造的） | 个别文件或瞬时问题 | 不改能力态；记为待重试，对账每分钟重试（7.3） |
+
+注册请求带 `location[directory]`，经 `withLocation` 包装：删除窗口的挂起闸门与死目录确证回执照常生效（design-worktree-sync §3.5/§3.6）。
+
+### 7.5 处理链路适配
+
+- **事件分支不发 `emit`**：分支内没有同步的状态变化（重拉经去抖定时器异步落地，落地时自行 emit）；没有命中已打开文件的事件直接返回。`.git/HEAD` 帧因此是纯空转。
+- **PDF 重载**：PDF 文件 Tab 由 Chromium PDFium 直读 `file://`，不渲染 `fileContents`，内容重拉对它无效。store 在监听重拉成功后给该文件的「重拉序号」加一，`PdfFrameView` 见序号前进即重新导航。已导航到的序号跨挂载保留：后台期间的重拉在切回 Tab 时补导航。页码回到首页是接受的代价。
+- **PDF 不受「激活即重拉」覆盖**：切回 Tab 复用既有视图、不重新导航（保留页码，design-pdf-preview）。所以监听丢失或静默停用时，PDF 切回仍显示旧内容——接受的例外（改动前也不刷新），恢复靠监听重拉或重开 Tab。D-10 的兜底对 PDF 不成立。
+- **`unlink`**：沿用 §3.1——读取失败落 error 条目，不自动关 Tab。**同目录内**删除后重建，server 仍报事件，重拉成功即自愈；**父目录**删除后重建则监听死亡，由「从失效态恢复即重启」接管（7.3）。
+
+### 7.6 场景验证
+
+| 场景 | 预期 |
+|---|---|
+| 打开文本文件，agent 改写它 | 300 ms 去抖后 Tab 显示新内容；后台 Tab 的缓存同步更新，切回即新 |
+| 连续多次写盘 | 合并为一次重拉（§3.1 去抖 + singleflight） |
+| 原子保存（rename 覆盖）、`sed -i` | 正常收到 change（本机 server 2.4.1 实测；其他运行时未实测，见 7.1） |
+| 打开的图片被重新生成 | 预览刷新（按扩展名判定，不受 server MIME 误判影响） |
+| 打开的 PDF 被重新生成 | 视图重新导航；若在后台，切回时导航 |
+| 文件被删除 | Tab 呈错误态；父目录若已展开则重列。同目录内重建 → 重拉成功即自愈；父目录删除后重建 → 监听死亡，恢复重拉成功时重启监听 |
+| `.git/` 下的文件 | 不注册监听（事件本就被过滤，注册无意义） |
+| 注册遇瞬时失败（网络错误） | 记为待重试，对账每分钟重试；前台常驻 Tab 也能恢复 |
+| 关闭 Tab | 取消监听；此后该文件的变化不再触发重拉。注册在途时关 Tab → 落地时取消 server 侧监听 |
+| 文本重拉后变成不可预览二进制 | 取消既有监听，不再占 server 名额 |
+| 注册慢请求跨越对账周期 / Tab 归属变更 | 同 Tab 操作按 client 串行、同目标合并；旧回执不覆盖新目录或新 Tab 实体 |
+| server 低于 v2.2.0，或关闭了文件监听 | 首次注册后静默停用；激活即重拉照旧（PDF 例外，见 7.5） |
+| 断线重连 | Tab 重建时重拉内容并重新注册；断连窗口内的修改由这次重拉覆盖 |
+| 删除 worktree 时该目录有打开的文件 Tab | Tab 随目录卸载关闭；取消请求被删除窗口闸门拒绝，被吸收 |
+| `.git/HEAD` 变化（切分支） | 事件被过滤，无任何动作，也不触发 emit |
+| Tab 连开超过 24 小时 | 满 12 小时重启监听（DELETE + POST），不中断 |
+
+### 7.7 关键设计决策
+
+- **D-5 注册挂在内容加载之后，而非 Tab 创建时**：此时才知道内容类型（7.3 第 2 条），也天然排除非 Tab 的图片加载；恢复的 Tab 在重建时预拉内容，同样走到这里。图片 / PDF 的判定按扩展名，与渲染分发共用 `@shared/file-kind`（store 不依赖 components）。
+- **D-6 能力探测零额外请求**：注册本身就是探测，错误族足以区分「不支持」与「个别失败」。503 须带 `ServiceUnavailableError` 才算 server 关闭——代理与网关也会造 503。
+- **D-7 续期搭对账定时器，且是重启**：不新增定时器；满窗口先 DELETE 再 POST，因为 server 只延长过期、不重启监听。同 Tab 的注册、重启、取消串行并带代次守卫，避免慢回执与迟到 DELETE 破坏新状态。
+- **D-8 不在每次事件后重新注册**：活体证实本机 server 在 rename 覆盖与同目录内删除重建后监听仍然有效；每次事件后重发 POST 只增加请求，不增加正确性。**父目录删除后重建是例外**——监听死亡且 POST 不复活，由「从失效态恢复即重启」与满窗口重启覆盖。
+- **D-9 事件分支不 emit**：吸收移动端 JANK-6/10 的教训。
+- **D-10 事件不是唯一正确性来源**：激活即重拉是兜底。断连窗口、监听丢失、平台差异都由它覆盖（移动端 design-file-cache §3.1 的教训）。**PDF 例外**：切回复用视图不重新导航，见 7.5。
+
+### 7.8 不做的事
+
+| 项 | 原因 |
+|---|---|
+| 文件树随新增/删除自动刷新 | server 无目录监听；`fs/watch` 对目录返回 404。兜底 = 工具事件触发的树刷新（待评估）或手动刷新 |
+| markdown 内相对图片跟随监听 | 维持 design-markdown-preview 的既定取舍 |
+| browser Tab 里的 HTML | 走 `file://`，不属 file Tab |
+| 不可预览的二进制文件 | 刷新没有可见变化 |
+| 每次事件后重新注册监听 | 见 D-8 |
+| 删除后重建在其他平台的自愈 | 未实测；激活即重拉兜底（PDF 例外，见 7.5） |
+
+### 7.9 涉及文件
+
+| 文件 | 变更 |
+|---|---|
+| `src/shared/rest-client.ts` | `watchFile` / `unwatchFile`（`withLocation` 包装，204） |
+| `src/shared/api-types.ts` | `OpencodeEvent` 的 `file.watcher.updated` 成员换成 `filesystem.changed` |
+| `src/shared/file-kind.ts`（新） | 扩展名判定单一来源：`isImagePath` / `IMAGE_MIME_BY_EXT`（自 markdown-image.ts 迁入）+ `isPdfPath`（自 workspace.tsx 迁入） |
+| `src/renderer/src/components/markdown-image.ts`、`workspace.tsx` | 改从 `@shared/file-kind` 取判定；markdown-image re-export 维持既有导入面 |
+| `src/renderer/src/store/app-store.ts` | `handleEvent` 分支改名；`armFileWatch` / `requestFileWatch` / `restartFileWatch` / `dropFileWatch` / `rearmFileWatches`；能力态；重拉序号；`closeTab`、`teardownConnection` 挂点 |
+| `src/renderer/src/components/pdf-frame-view.tsx` | 重拉序号前进 → 重新导航 |
+| `src/renderer/src/store/app-store.test.ts`、`src/shared/rest-client.test.ts`、`src/renderer/src/components/pdf-frame-view.test.tsx` | 注册 / 取消 / 重启续期 / 待重试 / 失效恢复 / 能力态 / 落地守卫 / PDF 重载 / 事件分支 / 删除窗口闸门 |

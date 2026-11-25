@@ -115,7 +115,7 @@
 - 数据：`GET /file?path=…` 懒加载逐层展开；**展开态按作用域目录记忆**（2026-11-19 修订：原「按项目记忆」在 v1「global 按 directory 拆分」语境下含混、且从未实现；v2 中 worktree 即完整目录作用域，树按作用域重根，故记忆键 = 作用域 directory，切回恢复、子节点重拉，见 [design-file-tree-expand-memory.md](design-file-tree-expand-memory.md)）
 - 交互：点击文件 → 工作区开文件 Tab；目录单击展开/折叠
 - 排序：目录优先、字母序；dotfiles 直接展示（2026-08-27 修订，原"默认隐藏可切"）；gitignore 项同展示但弱化区分（同日二次修订，原"ignored 过滤"——outline 色 + 斜体，参考 openbuilder `file_list_screen.dart` 同款语义；ignored 由 server 按根 `.gitignore`/`.ignore` 规则标记，规则不存在则恒 false，故无需客户端另行检测 git init）
-- **文件监听实时更新**（2026-08-25 增）：消费 `file.watcher.updated` SSE 事件，已加载目录随 add/unlink 实时重列；已打开文件 Tab 内容随磁盘变化实时重拉（含中栏文件视图），见 [design-file-watcher.md](design-file-watcher.md)
+- **文件监听实时更新**（2026-08-25 增）：消费 `file.watcher.updated` SSE 事件，已加载目录随 add/unlink 实时重列；已打开文件 Tab 内容随磁盘变化实时重拉（含中栏文件视图），见 [design-file-watcher.md](design-file-watcher.md)。**v2 现状（2026-11-25）**：事件源是 `filesystem.changed`；已打开文件 Tab 的内容自动刷新已恢复（逐文件向 server 注册监听，design-file-watcher §7）；文件树的新增/删除刷新仍不可得（server 无目录监听）
 - v0.1 不做：拖放、搜索、右键操作（新建/重命名/删除）
 - 顶部：路径面包屑（截断中间段）
 
