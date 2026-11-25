@@ -1,7 +1,8 @@
 /**
  * 文件栏右键菜单测试（design-file-panel-context-menu）：
  * 对象解析（行 = 节点绝对路径；空白/标题栏 = 作用域根目录）、
- * 「打开方式」可见性（win32/darwin/linux，目录/空白处根目录同文件行）、动作走 IPC/clipboard。
+ * 「打开方式」可见性（win32/darwin/linux，目录/空白处根目录同文件行）、动作走 IPC/clipboard、
+ * 刷新入口（标题栏钮/菜单项）走 store.refreshFileTree（2026-11-25 增补）。
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
@@ -23,6 +24,7 @@ vi.mock("../app", () => ({
       fileOpen: "打开",
       fileOpenWith: "打开方式…",
       fileCopyPath: "复制路径",
+      fileRefresh: "刷新",
       filePreviewInBrowser: "在浏览器 Tab 中预览",
       filePreview: "预览",
       defaultAction: "默认",
@@ -81,6 +83,7 @@ function makeStore(): Record<string, unknown> {
     fileTreeExpanded: new Set<string>(),
     activeTab: null,
     loadFileNodes: vi.fn(async () => {}),
+    refreshFileTree: vi.fn(),
     pushOverlay: vi.fn(),
     popOverlay: vi.fn(),
     toggleFileNode: vi.fn(),
@@ -215,10 +218,38 @@ describe("FilePanel 右键菜单", () => {
     const menu = document.querySelector(".context-menu") as HTMLElement
     ;(document.activeElement as HTMLElement | null)?.blur()
     fireEvent.keyDown(menu, { key: "ArrowUp" })
-    expect(document.activeElement).toBe(screen.getByText("复制路径"))
+    // 末项 = 分隔线后的「刷新」（2026-11-25 增补）
+    expect(document.activeElement).toBe(screen.getByText("刷新"))
     ;(document.activeElement as HTMLElement | null)?.blur()
     fireEvent.keyDown(menu, { key: "ArrowDown" })
     expect(document.activeElement).toBe(screen.getByText("打开"))
+  })
+
+  it("刷新（标题栏钮 + 菜单项，2026-11-25 增补）：走 store.refreshFileTree；动作后菜单关闭", () => {
+    render(<FilePanel />)
+    // 标题栏图标钮（左栏 Plus 钮同模式 .icon-btn）
+    fireEvent.click(document.querySelector(".sidebar-heading .icon-btn") as Element)
+    expect(storeStub.refreshFileTree).toHaveBeenCalledTimes(1)
+    // 菜单项：任意对象（文件/目录/空白处根目录）都刷新整树，与对象路径无关
+    fireEvent.contextMenu(screen.getByText("README.md"))
+    fireEvent.click(screen.getByText("刷新"))
+    expect(storeStub.refreshFileTree).toHaveBeenCalledTimes(2)
+    expect(screen.queryByText("复制路径")).toBeNull()
+    fireEvent.contextMenu(screen.getByText("src"))
+    fireEvent.click(screen.getByText("刷新"))
+    expect(storeStub.refreshFileTree).toHaveBeenCalledTimes(3)
+  })
+
+  it("根目录未加载（首载失败后常驻「加载中…」）：两刷新入口仍在——刷新兼首载重试（review 一轮 #1）", () => {
+    storeStub = { ...makeStore(), fileTreeNodes: new Map() }
+    const { container } = render(<FilePanel />)
+    expect(screen.getByText("加载中…")).toBeTruthy()
+    fireEvent.click(container.querySelector(".sidebar-heading .icon-btn") as Element)
+    expect(storeStub.refreshFileTree).toHaveBeenCalledTimes(1)
+    // 树区空白处右键（面板级兜底，对象 = 作用域根目录）→ 菜单「刷新」
+    fireEvent.contextMenu(container.querySelector(".tree") as Element)
+    fireEvent.click(screen.getByText("刷新"))
+    expect(storeStub.refreshFileTree).toHaveBeenCalledTimes(2)
   })
 
   it("ignored 节点展示且带弱化类（design-layout §5：不再过滤）", () => {
@@ -236,11 +267,13 @@ describe("FilePanel 右键菜单", () => {
     )
   })
 
-  it("无项目时：保留「文件」标题行（2026-09-06 修订，与左栏空态对称），不渲染菜单入口", () => {
+  it("无项目时：保留「文件」标题行（2026-09-06 修订，与左栏空态对称），不渲染菜单入口与刷新钮", () => {
     storeStub = { ...makeStore(), currentProject: null }
     const { container } = render(<FilePanel />)
     expect(screen.getByText("文件").closest(".sidebar-heading")).toBeTruthy()
     expect(container.querySelector(".tree")).toBeNull()
+    // 空态无树：标题栏不提供刷新钮（2026-11-25 增补的空态例外）
+    expect(container.querySelector(".sidebar-heading .icon-btn")).toBeNull()
     fireEvent.contextMenu(container.querySelector("aside") as Element)
     expect(screen.queryByText("打开")).toBeNull()
   })

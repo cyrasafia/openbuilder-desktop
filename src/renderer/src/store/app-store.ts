@@ -8367,6 +8367,22 @@ export class AppStore {
     this.emit()
   }
 
+  /**
+   * 手动刷新整个文件树（标题栏刷新钮/右键菜单「刷新」，design-file-panel-context-menu
+   * §2.3 2026-11-25 增补）：重列当前作用域**全部已加载目录**——根（"."）恒在
+   * 重列集合内，并上 fileTreeNodes 的 key（本作用域曾展开过的子目录：key 只随
+   * resetFileTree 整体清空，目录收起后保留，重列无害），逐 key 走 loadFileNodes
+   * 即整树重拉；懒加载语义不变（未展开目录不预取），展开记忆不动
+   * （design-file-tree-expand-memory）。根恒在的理由：loadFileNodes 吞错，根
+   * 首载失败时 "." 不入 key 集、树区常驻「加载中…」且不自愈——刷新兼首载重试
+   * （review 一轮 #1）；首载在途时刷新多发一次根请求，结果一致无害。
+   * 落地闸门（loadFileNodes 内作用域守卫）自带切换/重连防御；调用方不经去抖
+   * （scheduleTreeRefresh 是 watcher 事件合并，用户动作即时执行）。
+   */
+  refreshFileTree() {
+    for (const path of new Set([".", ...this.fileTreeNodes.keys()])) void this.loadFileNodes(path)
+  }
+
   // ============ 文件监听失效（design-file-watcher） ============
 
   private fileReloadTimers = new Map<string, ReturnType<typeof setTimeout>>()

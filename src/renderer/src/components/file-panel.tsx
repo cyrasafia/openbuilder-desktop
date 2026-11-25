@@ -7,7 +7,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react"
 import { createPortal } from "react-dom"
-import { ChevronDown, ChevronRight } from "lucide-react"
+import { ChevronDown, ChevronRight, RefreshCw } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import type { FileNode } from "@shared/api-types"
 import { PanelResizeHandle } from "./panel-resize"
@@ -87,6 +87,12 @@ export function FilePanel() {
     >
       <div className="sidebar-heading">
         <span>{t.filesTitle}</span>
+        {/* 刷新整树（design-file-panel-context-menu §2.3 2026-11-25 增补）：
+            同排图标钮沿左栏 Plus 钮模式（.icon-btn 12px）。空态无树不放；根目录
+            未加载时（含首载失败、树区常驻「加载中…」）照常渲染——刷新兼首载重试 */}
+        <button className="icon-btn" title={t.fileRefresh} onClick={() => store.refreshFileTree()}>
+          <RefreshCw size={12} aria-hidden />
+        </button>
       </div>
       <div className="tree scroll">
         {!hasLoaded && <div className="tree-empty">{t.loading}</div>}
@@ -250,7 +256,7 @@ function FileRow({
   )
 }
 
-/** 右键菜单（design-file-panel-context-menu）：html 双入口（置首）/ 打开 / 打开方式 / 引用到会话 / 复制路径 */
+/** 右键菜单（design-file-panel-context-menu）：html 双入口（置首）/ 打开 / 打开方式 / 引用到会话 / 复制路径 / 刷新（分隔线下，树全局动作） */
 function FileContextMenu({
   menu,
   onClose,
@@ -422,6 +428,12 @@ function FileContextMenu({
         onClick={() => run(() => void navigator.clipboard?.writeText(menu.absolute).catch(() => {}))}
       >
         {t.fileCopyPath}
+      </button>
+      {/* 刷新（§2.3 2026-11-25 增补）：树全局动作，与上方文件级动作以分隔线隔开；
+          无论菜单对象是文件还是目录，均刷新整树（= 当前作用域全部已加载目录重列） */}
+      <div className="context-menu-separator" />
+      <button className="context-menu-item" onClick={() => run(() => store.refreshFileTree())}>
+        {t.fileRefresh}
       </button>
     </div>,
     document.body,

@@ -1,8 +1,10 @@
-# 文件栏右键菜单（打开 / 打开方式 / 复制路径）— 设计文档
+# 文件栏右键菜单（打开 / 打开方式 / 复制路径 / 刷新）— 设计文档
 
-> 目标：右栏文件树支持右键菜单：打开、打开方式、复制路径。打开/打开方式委托系统（不在应用内消费文件）；复制路径复制绝对路径。空白处或标题栏右键时对象为当前文件树根目录。
+> 目标：右栏文件树支持右键菜单：打开、打开方式、复制路径、刷新。打开/打开方式委托系统（不在应用内消费文件）；复制路径复制绝对路径；刷新重列整个文件树。空白处或标题栏右键时对象为当前文件树根目录。「文件」标题栏另设刷新图标钮（2026-11-25 增补）。
 >
 > 参考来源（openbuilder 移动端，按 AGENTS.md 约定先行检索）：移动端文件消费走应用内渲染 + 系统分享面板（`design-file-view.md`），无右键/上下文菜单先例；桌面端文件树亦无菜单基建，本设计为新功能。参考项目 `openchamber` 的 openWith 语义是 Tab 打开路径集合，与本功能无关。
+>
+> 刷新入口参考来源（**2026-11-25 增补**）：移动端 `design-frontend.md` §7「下拉刷新」覆盖文件列表（§3.8 逐层进入式，非树形）。桌面端无下拉手势，改为「文件」标题栏钮 + 右键菜单项；刷新范围随形态调整——移动端只重列当前层，桌面端树同屏展示根与已展开目录多层，故重列根 + 本作用域曾展开过的全部目录。失败反馈口径：移动端 `design-network-error-handling.md`「读错误 vs 写错误的 UX 分层」把下拉刷新/文件浏览归为用户触发读，本端取舍见 §3。
 
 ## 1. 问题
 
@@ -32,6 +34,9 @@
 | 打开 | `shell.openPath`（文件 → 默认应用；目录 → 文件管理器） | 恒显示 |
 | 打开方式… | 系统「打开方式」机制（§2.4，分平台） | 恒显示（**2026-08-31 修订**：目录行/空白处根目录同样提供——`xdg-mime` 对目录返回 `inode/directory`，Linux 枚举天然命中文件管理器；win32/darwin 系统对话框同样接受目录路径。原「目录无系统级打开方式语义」判断不成立） |
 | 复制路径 | `navigator.clipboard.writeText(absolute)`（沿用 markdown.tsx 复制模式） | 恒显示 |
+| 刷新 | `store.refreshFileTree()`：重列当前作用域**全部已加载目录**——根（`.`）恒在重列集合内，并上 `fileTreeNodes` 的 key（本作用域曾展开过的子目录：key 只随 `resetFileTree` 整体清空，目录收起后保留，重列无害）；懒加载语义不变（未展开目录不预取），展开记忆不动（design-file-tree-expand-memory）。根恒在 = 首载失败的重试入口：`loadFileNodes` 吞错，根首载失败时树区常驻「加载中…」且不自愈，刷新补拉根（**2026-11-25 review 一轮 #1 修订**——原「`fileTreeNodes` 全部 key」口径下此时集合为空，刷新发 0 个请求） | 恒显示（**2026-11-25 增补**）——树全局动作，与上方文件级动作以 `.context-menu-separator` 隔开置末；无论菜单对象是文件还是目录，均刷新整树 |
+
+标题栏刷新钮（**2026-11-25 增补**）：「文件」标题行右侧 `.icon-btn` 图标钮（左栏 Plus 钮同模式，RefreshCw 12px），点击同走 `store.refreshFileTree()`。无项目空态无树，不放；根目录未加载时（含首载失败）两入口照常渲染——此时它们是唯一的手动重试入口（2026-11-25 review 一轮 #1）。刷新是显式重列而非去抖（`scheduleTreeRefresh` 是 watcher 事件合并机制，用户动作即时执行）；`loadFileNodes` 落地闸门自带切换/重连防御。
 
 ### 2.4 「打开方式」跨平台策略（D-2）
 
@@ -69,6 +74,7 @@
 | 「在文件管理器中显示」（showItemInFolder） | 本需求未提；需要时同通道加一项即可 |
 | ~~Linux「打开方式」降级方案~~（v0.3 修订：自建选择器落地，见 design-linux-open-with） | — |
 | 复制成功的 toast 反馈 | 菜单关闭本身即反馈；无全局 toast 基建 |
+| 刷新失败的错误反馈（toast / 错误态，2026-11-25 增补） | 无全局 toast 基建（同上行口径）。`loadFileNodes` 沿既有吞错口径：重列失败时树区保留上次内容；根未加载时树区常驻「加载中…」，刷新入口兼手动重试（§2.3，review 一轮 #1）。移动端 design-network-error-handling 对用户触发读给「error state / fixed SnackBar + 手动重试」，本端暂只取手动重试一半 |
 | 菜单项键盘可达之外的完整菜单语义（子菜单、快捷键标注） | 三项扁平菜单，不预建 |
 
 ## 4. 涉及文件
@@ -79,7 +85,8 @@
 | `src/main/ipc.ts` | 两个通道实现（含 win32/darwin 打开方式） |
 | `src/preload/index.ts` | 暴露通道 |
 | `src/renderer/src/browser-shim.ts` | shim：两通道返回不支持 |
-| `src/renderer/src/i18n/index.ts` | `fileOpen` / `fileOpenWith` / `fileCopyPath` |
-| `src/renderer/src/components/file-panel.tsx` | 触发点接线 + `FileContextMenu` 组件 |
+| `src/renderer/src/i18n/index.ts` | `fileOpen` / `fileOpenWith` / `fileCopyPath`；`fileRefresh`（2026-11-25 增补） |
+| `src/renderer/src/components/file-panel.tsx` | 触发点接线 + `FileContextMenu` 组件；标题栏刷新钮（2026-11-25 增补） |
+| `src/renderer/src/store/app-store.ts` | `refreshFileTree()`（2026-11-25 增补） |
 | `src/renderer/src/styles/app.css` | `.context-menu` / `.context-menu-item` |
 | `src/renderer/src/components/file-panel.test.tsx` | 组件测试 |

@@ -585,6 +585,48 @@ describe("文件树展开状态跨作用域记忆（design-file-tree-expand-memo
     expect(store.fileTreeExpandedMemory.get(ROOT)?.has("src/")).toBe(true)
   })
 
+  it("refreshFileTree：全部已加载目录逐 key 重列；展开记忆不动", async () => {
+    const listFiles = vi.fn(async () => [fileNode("src/a.ts", "file")])
+    clientRef().listFiles = listFiles
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+
+    // 已加载集合直接播种（"." 由 FilePanel 挂载时装、"src/" 由展开时装——store 纯
+    // 状态机测试不经组件）；展开记忆经 toggle 写入
+    store.fileTreeNodes.set(".", [fileNode("README.md", "file")])
+    store.fileTreeNodes.set("src/", [])
+    store.toggleFileNode("src/")
+    listFiles.mockClear()
+
+    store.refreshFileTree()
+    await waitFor(() => expect(listFiles).toHaveBeenCalledTimes(2))
+    expect(listFiles).toHaveBeenCalledWith(ROOT, ".")
+    expect(listFiles).toHaveBeenCalledWith(ROOT, "src/")
+    // 刷新只重列节点，不动展开集
+    expect(store.fileTreeExpanded.has("src/")).toBe(true)
+    expect(store.fileTreeExpandedMemory.get(ROOT)?.has("src/")).toBe(true)
+  })
+
+  it("refreshFileTree：根首载失败后仍重列根（刷新兼首载重试，review 一轮 #1）", async () => {
+    let fail = true
+    const listFiles = vi.fn(async () => {
+      if (fail) throw new Error("list failed")
+      return [fileNode("README.md", "file")]
+    })
+    clientRef().listFiles = listFiles
+    // 根首载失败：loadFileNodes 吞错，"." 不入 fileTreeNodes（树区常驻「加载中…」且不自愈）
+    await store.loadFileNodes(".")
+    expect(store.fileTreeNodes.has(".")).toBe(false)
+    fail = false
+    listFiles.mockClear()
+
+    store.refreshFileTree()
+    await waitFor(() => expect(store.fileTreeNodes.has(".")).toBe(true))
+    expect(listFiles).toHaveBeenCalledTimes(1)
+    expect(listFiles).toHaveBeenCalledWith(ROOT, ".")
+  })
+
   it("worktree 目录卸载：展开记忆随目录清除", async () => {
     const s2 = session("s2", WT1, { created: 2, updated: 2 })
     store.sessionsByProject.set("proj1", sessionsOf(s2))
