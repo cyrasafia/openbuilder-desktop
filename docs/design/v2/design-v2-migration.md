@@ -234,7 +234,7 @@ v2 server 默认强制密码（移动端基线 §认证）。桌面端影响：
 |---|--------|----------|----------|
 | B1 | **归档 API 回归**（D1 私约 `metadata.archivedAt` 的迁回触发点） | metadata 私约 + 识别层双源 | v2.0.24 PATCH `/api/session/{sessionID}` payload 仍只有 title/metadata/permissions；v2.0.18..24 零 archive 提交；PR #47848（unarchive）GitHub 实查 open/未合 |
 | B2 | **`GET /api/session/status` 完整状态端点**（retry 细节恢复，D7） | `GET /api/session/active` 双向 diff 对账 | v2.0.24 路径全集无此端点 |
-| B3 | **文件监听自动刷新**（spec 降级 #3：无 `file.watcher.updated` 事件、无 watch 端点） | 重开文件 Tab / 切作用域 / 重连对账重拉；链路代码保留 | v2.0.19–24 无 watch 路径；事件 schema 名单 v2.0.18→24 零变化 |
+| B3 | **文件监听自动刷新**（spec 降级 #3：无 `file.watcher.updated` 事件、无 watch 端点） | 重开文件 Tab / 切作用域 / 重连对账重拉；链路代码保留 | v2.0.19–24 无 watch 路径；事件 schema 名单 v2.0.18→24 零变化。**2026-11-25 部分恢复**：v2.2.0 起有单文件监听端点 `POST /api/experimental/fs/watch`，已打开文件 Tab 的内容自动刷新恢复（design-file-watcher §7）；文件树的新增/删除刷新仍降级（无目录监听） |
 | B4 | **大文件下载被 Bun keepAliveTimeout 截断**（openbuilder todo，🔴 >20MB 慢链路 100% 失败） | 无（客户端明确不做续传——server 不支持 Range） | PR #50507（4 行 `keepAliveTimeout=0`）实查 open/未合；v2.0.24 源码 grep 零命中 |
 | B5 | **worktree create 恒 detached**（上游 #26931 未合） | 本端 `POST /api/shell` 挂 `opencode/{name}` 分支 + 删除时 canonical 下 `branch -D`（design-worktree-branch-sync） | v2.0.24 `git.ts` `worktree add --detach` 仍硬编码 |
 | B6 | **伪项目回收机制**（server 只 upsert 不删、重启解析 cwd 复活、`project.sandboxes` 冻结列无写 API、warm location 周期刷新） | ~~客户端指纹过滤~~（2026-10-12 否决：易误伤且属上游问题，见 ref §8 裁定）+ SQL 手工清理 + 删 worktree 时卸载该目录全部引用（ref §3.4/§8）+ **删除成功后 evict 该目录 warm location**（2026-10-12 落地，design-worktree-sync §3.4——断 5 分钟刷新再生燃料） | v2.0.18..24 project 层仅 refactor（#51729），无回收机制；上游 issue 仍未提（ref §8 待办）。身份模型与解析时机核对见附录二——「upsert-only 无回收」是配套缺陷而非身份模型问题 |

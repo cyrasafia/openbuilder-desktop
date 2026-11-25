@@ -99,7 +99,7 @@
 - **durable 归类**：2.1.3 源码 47 个，2.4.1 spec 47 个，两版都在联合内的事件**零翻转**。
 - **发布者**（`.publish(X)` 调用点）：143 处 / 89 个目标 → 151 处 / 93 个目标。`SessionEvent.Text.Delta`/`Ended`、`Reasoning.Delta`/`Ended` 在 2.4.1 改经 `contentFragments(name, events)` 辅助函数发布，**事件照常发出，载荷不变**（`publish-llm-event.ts`）。
 - **有定义无发布者，维持**：`session.status`、`session.idle`（typing-indicator 兼容判断不变）；`worktree.ready`、`worktree.failed`、`worktree.resolved`。
-- **`filesystem.changed`**：发布者 = `.git/HEAD` location watcher（两版都有）+ v2.2.0 起的单文件 watch 端点 `POST /api/experimental/fs/watch`。`file.watcher.updated` 仍无定义，spec-v0.5 降级表 #3 维持。本机 server 的 `OPENCODE_EXPERIMENTAL_FILEWATCHER=true` 只启用 server 内部 watcher 后端（插件与配置监听、`.git/HEAD` 监听、单文件 watch 端点），不向客户端发通用文件事件。
+- **`filesystem.changed`**：发布者 = `.git/HEAD` location watcher（两版都有）+ v2.2.0 起的单文件 watch 端点 `POST /api/experimental/fs/watch`。`file.watcher.updated` 仍无定义。spec-v0.5 降级表 #3 于 **2026-11-25 部分恢复**：已打开文件 Tab 的内容自动刷新经单文件 watch 端点恢复（design-file-watcher §7），文件树的新增/删除刷新仍降级。本机 server 的 `OPENCODE_EXPERIMENTAL_FILEWATCHER=true` 只启用 server 内部 watcher 后端（插件与配置监听、`.git/HEAD` 监听、单文件 watch 端点），不向客户端发通用文件事件。
 - **载荷变化（涉及消费事件的）**：仅 Assistant 消息 `time.firstToken`（可选，v2.3.0）。其余：`credential.updated` 载荷 `{}` → `{integrationID, credentialID}`（未消费；spec 联合自 v2.2.7 体现）；`session.usage.recorded` 的 `source` 枚举 + `"generate"`（不在全局流联合内）。
 - **客户端比对**：非测试源码引用 47 个事件名，全部仍在 2.4.1 定义集内；45 个在全局流联合内，`worktree.ready`/`worktree.failed` 有定义但不在联合内（既有记载）。新增 6 个事件桌面端都未消费；`handleEvent` 的 `default:` 分支对未知事件透传忽略。
 - 另有 7 个 v1 时代事件名（`message.updated`、`session.updated` 等）留在 `app-store.ts`，两版定义集都没有它们，非本轮变化。

@@ -73,7 +73,7 @@ v2 消息 id = `msg_ + ascending()`（`packages/schema/src/identifier.ts`：时�
 | `session.forked` | REST + `session.created` 已覆盖（低） |
 | `session.inbox.delivery.changed` | steer/queue 模式变化（低） |
 | `session.permissions`、`session.instructions.updated` | 低 |
-| `filesystem.changed` | `{file, event: add/change/unlink}`；**v2.0.18 唯一发布者是 LocationWatcher，只监听 `.git/HEAD`（分支切换检测，`location-watcher.ts:29`）**——全树监听仍不可得，迁移文档附录 B3 结论维持；载荷形状先记录，上游恢复全树发布后可直接接 |
+| `filesystem.changed` | `{file, event: add/change/unlink}`；发布者两处——LocationWatcher 只监听 `.git/HEAD`（分支切换检测，`location-watcher.ts:29`），FileWatch 单文件监听（v2.2.0 起，客户端经 `POST /api/experimental/fs/watch` 注册）。**无目录监听，全树监听不可得**。2026-11-25 已接，见下方出表注 |
 | `vcs.branch.updated` | 分支切换广播（worktree 分支挂载的外部变化可感知） |
 | `location.shutdown` | location 关停预告（带显式 location ref） |
 | `installation.updated` / `installation.update-available` | server 更新通知 |
@@ -84,6 +84,8 @@ v2 消息 id = `msg_ + ascending()`（`packages/schema/src/identifier.ts`：时�
 | `reference.updated`、`plugin.updated`、`websearch.updated` | 低 |
 
 > 已接出表（2026-11-02）：`session.moved` 随会话移动功能接入（design-session-tab-context-menu §2.5）——durable 旁路按 data 目标 location 收敛，源/目标双路由幂等；目标目录快照兜底，旧源快照按 `time_updated` 拒绝回卷。
+
+> 已接出表（2026-11-25）：`filesystem.changed` 随已打开文件内容自动刷新接入（design-file-watcher §7）——本端在 file Tab 内容加载成功后逐文件向 server 注册监听（`watchFile`），事件驱动已打开 file Tab 重拉；`.git/HEAD` 帧被 `.git` 过滤丢弃；事件分支无同步状态变化，恒不 emit（openbuilder design-frame-drop JANK-6/10 的教训）。文件树的新增/删除刷新仍不可得。
 
 ### 表 C：定义了但 v2.0.18 无发布者（勿接）
 
@@ -101,7 +103,8 @@ v2 消息 id = `msg_ + ascending()`（`packages/schema/src/identifier.ts`：时�
 | `session.next.agent.switched` / `session.next.model.switched`（`app-store.ts:1859/1865`） | v1.18.x 名；v2 改名后永不触发——A 组修复项的成因 |
 | `permission.updated`（`app-store.ts:1686`） | v2 只有 asked/replied；死 case 无害 |
 | `session.updated`（v1 `properties.info` 形状，`app-store.ts:1665`） | v2 不发；v0.5 起仅支持 v2，属待清理死代码 |
-| `file.watcher.updated`、`worktree.ready` / `worktree.failed` | v1/早期 v2 遗留名，v2.0.18 不发（design-file-watcher 迁移注记已有记载） |
+| `file.watcher.updated` | v1 遗留名，v2 从不发布。**2026-11-25 已删除**——处理链路改接 `filesystem.changed`（design-file-watcher §7.2） |
+| `worktree.ready` / `worktree.failed` | v1/早期 v2 遗留名，v2.0.18 不发（design-file-watcher 迁移注记已有记载） |
 
 ## 4. 收敛策略：三层防御（通用模式）
 

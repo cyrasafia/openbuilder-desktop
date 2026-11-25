@@ -366,6 +366,41 @@ describe("worktree 库存直连（2026-09-29：v2 权威源）", () => {
       },
     ])
   })
+
+  it("watchFile / unwatchFile：POST/DELETE /api/experimental/fs/watch?location[directory]=，body {path}", async () => {
+    const seen: Array<{ url: string; method: string; body: string }> = []
+    const client = mkClient((url, init) => {
+      seen.push({ url, method: init.method ?? "GET", body: String(init.body) })
+      return new Response(null, { status: 204 })
+    })
+    // path = 相对 location 的文件路径，原样进 body（不做任何拼接/归一）
+    await client.watchFile("/repo", "src/a b.ts")
+    await client.unwatchFile("/repo", "src/a b.ts")
+    const url = "http://server/api/experimental/fs/watch?location%5Bdirectory%5D=%2Frepo"
+    expect(seen).toEqual([
+      { url, method: "POST", body: JSON.stringify({ path: "src/a b.ts" }) },
+      { url, method: "DELETE", body: JSON.stringify({ path: "src/a b.ts" }) },
+    ])
+  })
+
+  it("watchFile 错误透传：无 _tag 的 404（旧 server 无此路由）与 503（已关闭）保留 status/tag 供调用方判别能力态", async () => {
+    const legacy = mkClient(() => new Response(null, { status: 404 }))
+    const e1 = (await legacy.watchFile("/repo", "a.ts").catch((e: unknown) => e)) as ApiError
+    expect(e1).toBeInstanceOf(ApiError)
+    expect(e1.status).toBe(404)
+    expect(e1.tag).toBeUndefined()
+
+    const disabled = mkClient(
+      () =>
+        new Response(
+          JSON.stringify({ _tag: "ServiceUnavailableError", message: "File watching is disabled" }),
+          { status: 503 },
+        ),
+    )
+    const e2 = (await disabled.watchFile("/repo", "a.ts").catch((e: unknown) => e)) as ApiError
+    expect(e2.status).toBe(503)
+    expect(e2.tag).toBe("ServiceUnavailableError")
+  })
 })
 
 describe("runShell（design-worktree-branch-sync：POST /api/shell 至终态）", () => {
@@ -1011,6 +1046,21 @@ describe("location 请求屏障（design-worktree-sync §3.5，ref §3.4 三订�
     const client = mkClient(() => new Response(null, { status: 204 }))
     client.suspendLocationRequests("/wt")
     await expect(client.evictLocation("/wt")).resolves.toBeUndefined()
+  })
+
+  it("gate 覆盖 watchFile / unwatchFile（带 location 参数，删除窗口内不得打向死目录）", async () => {
+    let fetched = 0
+    const client = mkClient(() => {
+      fetched++
+      return new Response(null, { status: 204 })
+    })
+    client.suspendLocationRequests("/wt")
+    await expect(client.watchFile("/wt", "a.ts")).rejects.toThrow(/挂起/)
+    await expect(client.unwatchFile("/wt", "a.ts")).rejects.toThrow(/挂起/)
+    expect(fetched).toBe(0)
+    client.resumeLocationRequests("/wt")
+    await expect(client.watchFile("/wt", "a.ts")).resolves.toBeUndefined()
+    expect(fetched).toBe(1)
   })
 
   it("gate 不影响其他目录（按目录精确挂起）", async () => {

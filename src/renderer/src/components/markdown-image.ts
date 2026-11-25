@@ -4,36 +4,12 @@
  * 非图片扩展/空 src）返回 null——字面交给 `<img>`，外链图照常经网络加载，
  * 非图片扩展维持破图（与「分发只按扩展名，不嗅探内容」同哲学）。
  * 纯函数，无 React 依赖（同 markdown-frontmatter.ts 先例）。
- * isImagePath / IMAGE_MIME_BY_EXT 自 workspace.tsx 迁入：文件 Tab 图片分发
- * （design-image-preview §2.2）与 md 相对图片扩展名闸门共用同一集合，单一来源。
+ * isImagePath / IMAGE_MIME_BY_EXT 已迁 `@shared/file-kind`（文件监听注册同样
+ * 要用，而 store 不依赖 components）；此处 re-export 维持既有导入面。
  */
+import { isImagePath } from "@shared/file-kind"
 
-/**
- * 位图扩展 → mime（design-image-preview §2.3：服务端 mimeType 缺省时的
- * data URL 兜底映射）。svg 不在此表（服务端对 svg 返回 text 源码，另行分发）。
- */
-export const IMAGE_MIME_BY_EXT: Record<string, string> = {
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  gif: "image/gif",
-  webp: "image/webp",
-  avif: "image/avif",
-  bmp: "image/bmp",
-  ico: "image/x-icon",
-}
-
-/**
- * 图片文件判定（design-image-preview §2.2）：basename 最后一个**非前导**点的
- * 后缀，大小写不敏感；点文件（前导点，如 `.png`）不命中。
- */
-export function isImagePath(path: string): boolean {
-  const base = path.split("/").pop() ?? ""
-  const dot = base.lastIndexOf(".")
-  if (dot <= 0) return false
-  const ext = base.slice(dot + 1).toLowerCase()
-  return ext === "svg" || ext in IMAGE_MIME_BY_EXT
-}
+export { IMAGE_MIME_BY_EXT, isImagePath } from "@shared/file-kind"
 
 /** URL scheme（`http:` / `data:` / `file:` 等，首段字母开头 + 合法 scheme 字符） */
 const URL_SCHEME = /^[a-zA-Z][a-zA-Z0-9+.-]*:/

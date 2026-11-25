@@ -501,10 +501,13 @@ export type OpencodeEvent =
     }
   | { id: string; type: "session.revert.cleared"; properties: { sessionID: string } }
   | { id: string; type: "session.revert.committed"; properties: { sessionID: string; to: string } }
-  // ---- 文件监听（design-file-watcher）：server 侧 @parcel/watcher 磁盘变化广播 ----
+  // ---- 文件监听（design-file-watcher §7）：v2 `filesystem.changed`——任何客户端
+  // 经 watchFile 注册的单文件监听在变化时发（change/unlink），本端只注册已打开的
+  // file Tab；server 的 .git/HEAD 监听同用此事件（add/change/unlink），被 store
+  // 的 .git 过滤丢弃 ----
   | {
       id: string
-      type: "file.watcher.updated"
+      type: "filesystem.changed"
       properties: { file: string; event: "add" | "change" | "unlink" }
     }
   // ---- worktree 生命周期（design-worktree-sync）：create boot 结束时广播，

@@ -12,6 +12,7 @@
 - **v0.5.5 主题 = 归档迁回官方 API（私约退役）**（design-archive-official-api：≥2.1.3 走官方 `PATCH /api/session/:id` body `archived`（版本分派，`archiveApiReady` 连接期缓存）、存量 marker-only 快照 backfill 转正+清标记、SSE `session.archived/unarchived` 接线；<2.1.3 回退 D1 私约，识别层双源过渡保留至 marker drained——todo-archive-marker-cleanup；随版含契约 pin 升 2.1.3（ref-pin-bump-2.1.3，官方归档链路回归的契约依据）与错误体 `_tag` 判别/死目录静默吸收/被动确证收敛（design-worktree-sync §3.6））。
 - **v0.5.6 主题 = 新增会话移动（功能 #13）**（chat Tab 右键移动会话到同项目工作区——目标限主工作区与现有 worktree，运行中会话与移动在途时禁用目标项；REST `POST /api/session/:id/move` 204 仅作 inbox 准入，完成语义由 SSE `session.moved`（目录闸门前旁路、源/目标双路由）与目标目录快照兜底，统一经 relocateSession 收敛，竞态防护四层——location 版本拒旧源快照回卷、relocation 单调水位、迟到重命名只合并标题、旧连接回执不清新连接守卫，design-session-tab-context-menu §2.5、design-sse-event-surface；随版含问题卡 v2 对齐两项——custom 自定义回答选项（T1）与 hidden/external 保留补键消混合表单 400（T5），对齐移动端 todo-form-card-v2-parity；worktree 挂分支 fork 基准改从 canonical 拉出 + diff 消费侧显式传 base（design-worktree-branch-fork-base）；滚动条交汇角白色背景修复与 v2.2.0 契约审计记录（ref-pin-bump-2.2.0））。
 - **v0.5.7 主题 = 新增 HTML 文件远程预览**（恢复 HTML 文件预览，打开路由按本地/远程连接分派——文件树右键双入口置首带默认标，会话记录内 ob-file 链接与引用 chip 同走分派（带行号链接维持源码滚到行），design-html-preview、design-browser-tab）；随版含：会话 Tab 拖放移动到同项目工作区（design-session-tab-drag-move）；空壳 worktree 探测拦截与删除兜底——runShell 零建档通道（design-worktree-shell-rescue）；项目身份归一化——同路径多 projectID 修复项目重复与会话不可见（design-project-identity）；文件树展开状态按作用域目录跨切换记忆（design-file-tree-expand-memory）。
+- **v0.5.8 主题 = 恢复已打开文件的内容自动刷新**（降级 #3 部分恢复：server v2.2.0 起的单文件监听端点 `POST /api/experimental/fs/watch` + `filesystem.changed` 事件——文件 Tab 内容加载成功后逐文件注册、关闭取消、12 小时重启续期，文本/图片/PDF 随磁盘变化刷新，PDF 经重拉序号重新导航；server 低于 v2.2.0 或关闭文件监听时静默停用，激活即重拉兜底（PDF 例外）；文件树的新增/删除刷新仍降级；design-file-watcher §7、design-sse-event-surface 表 B 出表注；随版含契约审计 2.2.0→2.4.1 与 pin 升 2.4.1（ref-pin-bump-2.4.1））。
 
 ## 范围内
 
@@ -43,7 +44,7 @@
 |---|--------|------|------|
 | 1 | **任务卡（todo）**全链移除 | v2 无端点无事件（概念在 server API 层面消失） | 无（消息流内的计划文本不受影响；恢复等 server 侧概念回归另行设计） |
 | 2 | **Provider 页签**（API key 设置/删除/已配置列表）降级隐藏 | v2 credential/integration 是全新体系：无 API key 写入端点、Provider.Info 无 key/connected 状态 | 无（v0.6+ 评估 credential 体系设计；连接凭据配置不受影响——那是 server 密码/token 层）。（2026-10-06 注：已恢复，见 design-v2/design-provider-config——版本归属待 v0.6 范围确定） |
-| 3 | **文件监听自动刷新**失效（design-file-watcher） | 2.0.18 事件全集无 `file.watcher.updated`、无 watch 端点（M3 起静默失效，M6c 盘点确认） | 重开文件 Tab / 切作用域 / 重连对账触发重拉；链路代码保留待上游恢复 |
+| 3 | **文件监听自动刷新**失效（design-file-watcher）——**2026-11-25 部分恢复** | 2.0.18 事件全集无 `file.watcher.updated`、无 watch 端点（M3 起静默失效，M6c 盘点确认）；v2.2.0 起有单文件监听端点 | 已打开文件 Tab 的内容自动刷新已恢复（design-file-watcher §7，server ≥2.2.0；更早的 server 或关闭文件监听时静默停用）；**文件树的新增/删除刷新仍降级**（无目录监听），兜底 = 重开/切作用域/重连对账重拉 |
 | 4 | 文件树 ignored 弱化样式 | v2 `FileSystem.Entry` 无 gitignore 标记 | 无害降级（同移动端）；dot 文件仍展示 |
 | 5 | 命令集来源变化 | v2 注册制（无外部 skill 扫描） | `/api/skill` 合并对齐 v1 体验（命令集随 server 侧注册表自然变化） |
 

@@ -45,6 +45,7 @@ import type { Catalog } from "../i18n"
 import { filterRevertedEntries, type ChatEntry } from "@shared/message-merge"
 import { extractErrorMessage, extractRetryMessage, isAbortError } from "@shared/message-error"
 import { fileUrlOf } from "@shared/file-url"
+import { isPdfPath } from "@shared/file-kind"
 import { toolChildSessionId, type BackgroundTask, type SessionNotice } from "@shared/session-notices"
 import type {
   CommandInfo,
@@ -4261,12 +4262,6 @@ function tocOccludesContent(paneW: number): boolean {
  * ~~图片文件判定与 mime 映射~~ 已迁 `markdown-image.ts`（design-markdown-preview
  * §2.8：文件 Tab 图片分发与 md 相对图片扩展名闸门共用同一集合，单一来源）。
  */
-
-/** PDF 判定（design-pdf-preview §1）：仅 .pdf 扩展名（大小写不敏感） */
-function isPdfPath(path: string): boolean {
-  const base = path.split("/").pop() ?? ""
-  return base.toLowerCase().endsWith(".pdf")
-}
 
 /* ---------- markdown 预览态页面内搜索（design-find-in-page §2.3） ----------
  * TreeWalker 扫描 .file-md 文本节点收集命中区间（大小写不敏感 indexOf），

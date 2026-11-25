@@ -28,6 +28,8 @@ const registerFileTabView = vi.fn()
 const browserViewIdFor = vi.fn((): number | null => null)
 const registerFindRequester = vi.fn()
 const unregisterFindRequester = vi.fn()
+/** 监听重拉序号桩（design-file-watcher §7.5）：undefined = 无监听重拉 */
+const fileReloadSeqFor = vi.fn((): number | undefined => undefined)
 
 let findRequestCbs: Array<(payload: unknown) => void> = []
 let findStateCbs: Array<(state: unknown) => void> = []
@@ -50,6 +52,7 @@ vi.mock("../app", () => ({
     browserViewIdFor,
     registerFindRequester,
     unregisterFindRequester,
+    fileReloadSeqFor,
   }),
 }))
 
@@ -71,6 +74,7 @@ beforeEach(() => {
   browserViewIdFor.mockClear().mockReturnValue(null)
   registerFindRequester.mockClear()
   unregisterFindRequester.mockClear()
+  fileReloadSeqFor.mockClear().mockReturnValue(undefined)
   ;(window as unknown as { desktop: unknown }).desktop = desktop
 })
 
@@ -130,5 +134,95 @@ describe("PdfFrameView 页面内搜索", () => {
     expect(screen.getByText("加载中…")).toBeTruthy()
     expect(document.querySelector(".pdf-host")).not.toBeNull()
     expect(registerFindRequester).not.toHaveBeenCalled()
+  })
+})
+
+describe("PdfFrameView 监听重载（design-file-watcher §7.5）", () => {
+  // 上一组用例结尾把 browserViewCreate 改成了 -1（shim 分支），mockClear 不恢复
+  // 实现——本组依赖懒建成功，显式恢复
+  beforeEach(() => {
+    desktop.browserViewCreate.mockResolvedValue(5)
+  })
+
+  // 模块级 navigatedSeq 跨用例保留：各用例用不同 Tab key 互不干扰。
+  // ui 是工厂：rerender 须传新元素——同一元素引用 React 会跳过渲染
+  it("重拉序号前进 → 重新导航；序号不变不重复导航", async () => {
+    const ui = () => (<PdfFrameView tabKey="file:/repo/r1.pdf" absolutePath="/repo/r1.pdf" />)
+    const { rerender } = render(ui())
+    await waitFor(() => expect(desktop.browserNavigate).toHaveBeenCalledTimes(1))
+    const url = expect.stringContaining("r1.pdf")
+
+    fileReloadSeqFor.mockReturnValue(4)
+    rerender(ui())
+    expect(desktop.browserNavigate).toHaveBeenCalledTimes(2)
+    expect(desktop.browserNavigate).toHaveBeenLastCalledWith(5, url)
+
+    // 序号未变（其他 SSE emit 驱动的重渲染）不重导航
+    rerender(ui())
+    expect(desktop.browserNavigate).toHaveBeenCalledTimes(2)
+
+    fileReloadSeqFor.mockReturnValue(6)
+    rerender(ui())
+    expect(desktop.browserNavigate).toHaveBeenCalledTimes(3)
+  })
+
+  it("后台期间的重拉：切回重挂载时补导航一次", async () => {
+    browserViewIdFor.mockReturnValue(9)
+    const ui = () => (<PdfFrameView tabKey="file:/repo/r2.pdf" absolutePath="/repo/r2.pdf" />)
+    const first = render(ui())
+    expect(desktop.browserNavigate).not.toHaveBeenCalled()
+    first.unmount()
+
+    // 视图存续期间（后台）发生了两次监听重拉
+    fileReloadSeqFor.mockReturnValue(7)
+    const { rerender } = render(ui())
+    expect(desktop.browserNavigate).toHaveBeenCalledTimes(1)
+    expect(desktop.browserNavigate).toHaveBeenCalledWith(9, expect.stringContaining("r2.pdf"))
+    rerender(ui())
+    expect(desktop.browserNavigate).toHaveBeenCalledTimes(1)
+  })
+
+  it("首次导航呈现的就是当前磁盘内容：不因既有序号重复导航", async () => {
+    fileReloadSeqFor.mockReturnValue(3)
+    const ui = () => (<PdfFrameView tabKey="file:/repo/r3.pdf" absolutePath="/repo/r3.pdf" />)
+    const { rerender } = render(ui())
+    await waitFor(() => expect(desktop.browserNavigate).toHaveBeenCalledTimes(1))
+    rerender(ui())
+    expect(desktop.browserNavigate).toHaveBeenCalledTimes(1)
+    fileReloadSeqFor.mockReturnValue(4)
+    rerender(ui())
+    expect(desktop.browserNavigate).toHaveBeenCalledTimes(2)
+  })
+
+  it("序号随连接拆除清空（undefined）：不导航，已导航值作废", async () => {
+    browserViewIdFor.mockReturnValue(9)
+    const ui = () => (<PdfFrameView tabKey="file:/repo/r4.pdf" absolutePath="/repo/r4.pdf" />)
+    fileReloadSeqFor.mockReturnValue(5)
+    const { rerender } = render(ui())
+    expect(desktop.browserNavigate).toHaveBeenCalledTimes(1) // 后台期间的重拉：补导航
+
+    fileReloadSeqFor.mockReturnValue(undefined) // 连接拆除，store 清空序号表
+    rerender(ui())
+    expect(desktop.browserNavigate).toHaveBeenCalledTimes(1) // 不导航
+
+    // 重连后序号表重建：即使值更小也能导航（已导航值已作废，不再可比）
+    fileReloadSeqFor.mockReturnValue(1)
+    rerender(ui())
+    expect(desktop.browserNavigate).toHaveBeenCalledTimes(2)
+  })
+
+  it("关 Tab 卸载时清理已导航序号：同路径重开后较小的新代序号仍可导航", () => {
+    browserViewIdFor.mockReturnValue(9)
+    fileReloadSeqFor.mockReturnValue(5)
+    const ui = () => (<PdfFrameView tabKey="file:/repo/r5.pdf" absolutePath="/repo/r5.pdf" />)
+    const first = render(ui())
+    expect(desktop.browserNavigate).toHaveBeenCalledTimes(1)
+
+    browserViewIdFor.mockReturnValue(null) // closeTab 已 dispose 并清注册表
+    first.unmount()
+    browserViewIdFor.mockReturnValue(9)
+    fileReloadSeqFor.mockReturnValue(1) // 新连接的序号表从较小值重建
+    render(ui())
+    expect(desktop.browserNavigate).toHaveBeenCalledTimes(2)
   })
 })

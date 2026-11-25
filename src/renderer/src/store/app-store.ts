@@ -18,6 +18,7 @@ import { SseSubscriber, type SseStatus, type SseEventMeta } from "@shared/sse-su
 import { Reconciler } from "@shared/reconciler"
 import { mergeMonotoneSessionTime, mergeSessionsSnapshot } from "@shared/session-merge"
 import { isSessionUnread } from "@shared/unread"
+import { isImagePath, isPdfPath } from "@shared/file-kind"
 import { inferFailedFromMessages, inferIdleFromMessages } from "@shared/session-status"
 import { runLimited } from "@shared/run-limited"
 import {
@@ -141,6 +142,36 @@ export const DIFF_TAB_TYPES: readonly DiffTabType[] = ["round", "uncommitted", "
 
 /** 文件监听失效去抖窗口（design-file-watcher §3.1/§3.2） */
 export const FILE_WATCH_DEBOUNCE_MS = 300
+
+/** 文件监听注册续期窗口（design-file-watcher §7.3）：server 侧监听 24 小时过期，
+ *  记录满 12 小时重启监听（对账定时器搭车），监听与 file Tab 同寿 */
+export const FILE_WATCH_REARM_MS = 12 * 60 * 60 * 1000
+
+type FileWatchOperation = {
+  id: number
+  key: string
+  kind: "watch" | "restart" | "drop"
+  client: RestClient | null
+  directory: string
+  tab: TabEntity | null
+}
+
+/** 内容可刷新判定（design-file-watcher §7.3）：文本看内容嗅探结果，图片 / PDF 按
+ *  Tab 路径扩展名——与 FileView 的渲染分发同源（server 的 MIME 头会误判，如
+ *  `.ts` → `video/mp2t`）。不可预览的二进制只有占位，刷新没有可见变化，不占
+ *  server 侧名额 */
+function fileWatchRefreshable(path: string, fc: FileContentData): boolean {
+  return fc.type === "text" || isImagePath(path) || isPdfPath(path)
+}
+
+/** 文件相对归属目录的路径（`fs/watch` 的 path 契约）。不可注册返回 null：
+ *  文件在目录之外（server 的 read confinement 之外，读取本就失败），或落在
+ *  `.git/` 下——事件会被 onFileWatcherEvent 的 .git 过滤丢弃，注册无意义 */
+function fileWatchRelativePath(directory: string, absolutePath: string): string | null {
+  if (!absolutePath.startsWith(directory + "/")) return null
+  const rel = absolutePath.slice(directory.length + 1)
+  return rel === ".git" || rel.startsWith(".git/") ? null : rel
+}
 
 /** 草稿磁盘写去抖窗口（design-compose-draft §5）：键入高频，磁盘写只在停顿
  *  500ms 后收尾一次；发送清空/关 Tab/目录卸载/teardown/pagehide 走即时冲刷 */
@@ -1334,6 +1365,14 @@ export class AppStore {
     this.commandsInFlight.clear()
     // dispose 等待全部兑现放弃（后续 client 身份守卫丢弃），防跨连接误等
     this.clearFileWatchTimers()
+    // 文件监听注册记录随连接作废（design-file-watcher §7.3）：不发取消请求（client
+    // 已置 null，由 server 侧 24 小时过期回收）；能力态重置——重连的 server 可能
+    // 不是同一台。在途操作只清本地索引，旧回执由 client 身份与操作代次丢弃
+    this.fileWatchArmed.clear()
+    this.fileWatchLatestOperation.clear()
+    this.fileWatchInflight.clear()
+    this.fileWatchUnsupported = false
+    this.fileReloadSeqs.clear()
     this.stopWorktreeSyncTimer()
     this.stopReconcileTimer()
     this.snapshottedDirs.clear()
@@ -2603,16 +2642,17 @@ export class AppStore {
         if (sessionID && model?.id && model?.providerID) this.patchSessionModel(sessionID, model)
         break
       }
-      case "file.watcher.updated": {
-        // **v2 已知缺口（M6c 盘点）**：2.0.18 事件全集无 file.watcher.updated、
-        // 亦无 watch 端点——本 case 自 M3 起静默失效（文件 Tab/树不自动刷新，
-        // 重开/切作用域触发重拉兜底）。链路保留：上游恢复该事件即自动接通；
-        // spec-v0.5 修订时按功能降级记录（M6d）
+      case "filesystem.changed": {
+        // v2 文件监听（design-file-watcher §7.2）：本端只注册已打开的 file Tab，
+        // 其他客户端注册的监听也发同一事件；server 的 .git/HEAD 监听同用此事件
+        // （被相对化 + .git 过滤丢弃）。分支内无同步状态变化——重拉/重列经去抖
+        // 定时器异步落地并自行 emit；故恒跳过尾部 emit（未命中已打开文件的事件
+        // 是纯空转，不得触发全局重渲染——openbuilder design-frame-drop JANK-6/10）
         const { file, event } = ev.properties
         if (typeof file === "string" && typeof event === "string") {
           this.onFileWatcherEvent(directory, file, event)
         }
-        break
+        return
       }
       default:
         // 未知事件透传忽略（AGENTS.md 风险对策）
@@ -2644,6 +2684,8 @@ export class AppStore {
     this.stopReconcileTimer()
     this.reconcileTimer = setInterval(() => {
       this.reconciler?.request()
+      // 搭车续期文件监听（design-file-watcher §7.3，D-7）：不新增定时器
+      this.rearmFileWatches()
     }, AppStore.RECONCILE_INTERVAL_MS)
   }
 
@@ -7634,6 +7676,10 @@ export class AppStore {
       })
       if (this.client !== client) return rollback()
       this.fileContents.set(absolutePath, fileContentEntry(fc))
+      // 文件 Tab 内容加载成功 → 注册监听（design-file-watcher §7.3）；无 file Tab
+      // 的加载（markdown 相对图片）不注册。prev 是 error 条目 = 从失效态恢复 → 重启监听
+      const tab = this.tabs.find((t) => t.kind === "file" && t.key === `file:${absolutePath}`)
+      if (tab) this.armFileWatch(tab, fc, dir, !!prev?.error)
     } catch (e) {
       if (this.client !== client) return rollback()
       // 死目录预期失败静默吸收（todo-error-body-tag #2）：回滚在途条目保留旧内容，
@@ -7772,6 +7818,9 @@ export class AppStore {
     if (closed.kind === "file") {
       this.fileViewStates.delete(closed.key.slice(5))
       this.tocStates.delete(closed.key.slice(5))
+      // 监听随 Tab 关闭取消（design-file-watcher §7.3，best-effort）；重拉序号一并清
+      this.dropFileWatch(closed.key)
+      this.fileReloadSeqs.delete(closed.key.slice(5))
     }
     if (this.activeTabKey === key) {
       this.activeTabKey = fallbackKey
@@ -8329,9 +8378,37 @@ export class AppStore {
   /** 进度上报节流时间戳（loadFileContent 在途条目按 path） */
   private fileLoadProgressAt = new Map<string, number>()
   private treeRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  /**
+   * 文件监听能力态（design-file-watcher §7.4，连接期缓存）：注册返回 404 且无
+   * `_tag`（server 低于 v2.2.0，无此路由）或 503 且带 ServiceUnavailableError
+   * （server 关闭文件监听）时置位——本次连接不再注册，teardown 重置
+   */
+  private fileWatchUnsupported = false
+  /** 已注册监听的 file Tab：键 = Tab key；值 = 注册时的归属目录与时刻（续期判据）。
+   *  `at: 0` = 注册失败待重试（对账每分钟重试） */
+  private fileWatchArmed = new Map<string, { directory: string; at: number }>()
+  /** 每个 Tab 最新监听操作的代次。旧回执不得改写新操作的状态 */
+  private fileWatchLatestOperation = new Map<string, FileWatchOperation>()
+  /** 每个 Tab 最新在途/排队操作。相同 client 的操作串行，避免迟到的 DELETE
+   *  取消后续 POST；同目标重复注册合并，慢请求不会被对账重复发起 */
+  private fileWatchInflight = new Map<
+    string,
+    { operation: FileWatchOperation; task: Promise<void> }
+  >()
+  private fileWatchOperationSeq = 0
+  /** 监听重拉序号（file → 最近一次监听重拉的全局序号）：PDF 等不经 fileContents
+   *  渲染的视图据此重载（§7.5）。全局单调计数，条目随 teardown 清空 */
+  private fileReloadSeqs = new Map<string, number>()
+  private fileReloadSeq = 0
+
+  /** 监听重拉序号读取（PdfFrameView 消费）：undefined = 本次连接内无监听重拉 */
+  fileReloadSeqFor(absolutePath: string): number | undefined {
+    return this.fileReloadSeqs.get(absolutePath)
+  }
 
   /**
-   * file.watcher.updated 统一入口（官方 app invalidateFromWatcher 同语义）：
+   * `filesystem.changed` 统一入口（官方 app invalidateFromWatcher 同语义；v2 事件源
+   * 见 design-file-watcher §7.2，v1 名 `file.watcher.updated` 已随契约删除）：
    * 内容失效 = 已打开文件 Tab 重拉；树失效 = 已加载目录重列。
    */
   private onFileWatcherEvent(directory: string, file: string, kind: string) {
@@ -8393,6 +8470,7 @@ export class AppStore {
     const client = this.client
     const tab = this.tabs.find((t) => t.kind === "file" && t.key === `file:${file}`)
     if (!client || !tab || !tab.directory) return
+    const prev = this.fileContents.get(file)
     this.fileReloadInflight.add(file)
     try {
       // directory = Tab 打开时作用域（非当前 scopeQuery）：Tab 跨作用域混排，
@@ -8400,6 +8478,11 @@ export class AppStore {
       const fc = await client.readFileContent(tab.directory, file)
       if (this.client !== client || !this.tabs.some((t) => t.key === `file:${file}`)) return
       this.fileContents.set(file, fileContentEntry(fc))
+      // 监听重拉落地 → 序号前进：PDF 等不经 fileContents 渲染的视图据此重载
+      // （design-file-watcher §7.5）；顺带补注册（记录缺失/归属目录变了/已满续期
+      // 窗口/从失效态恢复）
+      this.fileReloadSeqs.set(file, ++this.fileReloadSeq)
+      this.armFileWatch(tab, fc, tab.directory, !!prev?.error)
       this.emit()
     } catch (e) {
       if (this.client !== client || !this.tabs.some((t) => t.key === `file:${file}`)) return
@@ -8437,6 +8520,238 @@ export class AppStore {
     this.treeRefreshTimers.clear()
     this.fileReloadInflight.clear()
     this.fileReloadDirty.clear()
+  }
+
+  // ---- 监听注册（design-file-watcher §7.3/§7.4）：v2 无全树监听，已打开文件的
+  // 变化事件须本端逐文件向 server 注册（POST /api/experimental/fs/watch） ----
+
+  /**
+   * 串行执行同一 Tab 的监听操作。相同目标的 watch/restart 合并；restart 可顶替
+   * watch。不同目标先等前一个同 client 操作收尾，避免迟到的 DELETE 取消新 POST。
+   * 操作 id 是落地判据：关 Tab、归属变更、恢复重启都会使旧回执失效。
+   */
+  private runFileWatchOperation(
+    key: string,
+    kind: FileWatchOperation["kind"],
+    directory: string,
+    tab: TabEntity | null,
+    run: (operation: FileWatchOperation) => Promise<void>,
+  ): Promise<void> {
+    const client = this.client
+    const previous = this.fileWatchInflight.get(key)
+    const prev = previous?.operation
+    if (
+      previous && tab && prev && prev.client === client && prev.directory === directory && prev.tab === tab &&
+      (prev.kind === kind || (kind === "watch" && prev.kind === "restart"))
+    ) {
+      return previous.task
+    }
+    const operation: FileWatchOperation = {
+      id: ++this.fileWatchOperationSeq,
+      key,
+      kind,
+      client,
+      directory,
+      tab,
+    }
+    this.fileWatchLatestOperation.set(key, operation)
+    const task = (async () => {
+      if (previous && prev && prev.client === client) await previous.task.catch(() => {})
+      await run(operation)
+    })()
+    this.fileWatchInflight.set(key, { operation, task })
+    const settled = () => {
+      if (this.fileWatchInflight.get(key)?.operation.id === operation.id) {
+        this.fileWatchInflight.delete(key)
+      }
+      // drop 是最末代次时，连同代次记录清理；已有关闭后的新操作则不动
+      if (kind === "drop" && this.fileWatchLatestOperation.get(key)?.id === operation.id) {
+        this.fileWatchLatestOperation.delete(key)
+      }
+    }
+    void task.then(settled, settled)
+    return task
+  }
+
+  private fileWatchOperationCurrent(operation: FileWatchOperation): boolean {
+    return this.client === operation.client &&
+      this.fileWatchLatestOperation.get(operation.key)?.id === operation.id
+  }
+
+  private fileWatchTabCurrent(operation: FileWatchOperation): boolean {
+    const tab = operation.tab
+    return !!tab && this.tabs.find((t) => t.key === operation.key) === tab &&
+      tab.directory === operation.directory
+  }
+
+  private clearFileWatchRecord(operation: FileWatchOperation): void {
+    if (this.fileWatchArmed.get(operation.key)?.directory === operation.directory) {
+      this.fileWatchArmed.delete(operation.key)
+    }
+  }
+
+  /**
+   * 注册文件监听：调用点 = 文件内容成功加载之后（doLoadFileContent / doFileReload
+   * 的成功点）——此时才知内容类型（可刷新类型才注册），且天然排除无 file Tab 的
+   * 加载（markdown 相对图片）。归属目录变了先取消旧目录的监听。`directory` =
+   * 本次加载所用目录，须等于 Tab 归属目录（复用已开 Tab 改写归属后，旧目录的在途
+   * 加载落地不注册）。
+   * `recovered` = 本次加载前缓存是 error 条目（文件曾被删/目录曾死）。此时同目录
+   * 的记录也须重启：server 监听的是**父目录**，父目录删除后重建监听即死，而记录
+   * 未满续期窗口（§7.3，活体实证）。
+   */
+  private armFileWatch(tab: TabEntity, fc: FileContentData, directory: string, recovered: boolean): void {
+    if (this.fileWatchUnsupported || tab.directory !== directory) return
+    if (!fileWatchRefreshable(tab.key.slice("file:".length), fc)) {
+      // 文本变成不可预览的二进制：既有监听不再有价值，随本次成功重拉取消
+      this.dropFileWatch(tab.key)
+      return
+    }
+    if (fileWatchRelativePath(directory, tab.key.slice("file:".length)) === null) {
+      this.dropFileWatch(tab.key)
+      return
+    }
+    const armed = this.fileWatchArmed.get(tab.key)
+    if (armed && armed.directory !== directory) this.dropFileWatch(tab.key)
+    if (armed?.directory === directory) {
+      if (recovered || (armed.at > 0 && Date.now() - armed.at >= FILE_WATCH_REARM_MS)) {
+        void this.restartFileWatch(tab, directory)
+      } else if (armed.at === 0) {
+        void this.requestFileWatch(tab, directory)
+      }
+      // 同目录成功记录：续期窗口内不重复
+      return
+    }
+    void this.requestFileWatch(tab, directory)
+  }
+
+  /** 发注册请求；同目标的在途/排队请求合并 */
+  private requestFileWatch(tab: TabEntity, directory: string): Promise<void> {
+    const rel = fileWatchRelativePath(directory, tab.key.slice("file:".length))
+    if (!this.client || rel === null) return Promise.resolve()
+    return this.runFileWatchOperation(tab.key, "watch", directory, tab, (operation) =>
+      this.performRequestFileWatch(operation, rel),
+    )
+  }
+
+  /**
+   * 执行注册并落记录。错误分族（§7.4）：
+   * - 「无此路由（404 且无 `_tag`）/ server 关闭文件监听（503 且带
+   *   ServiceUnavailableError）」→ 置能力态，本次连接不再注册；
+   * - 文件不存在 / 目录已死 → 无可监听对象，清掉本操作的待重试记录；
+   * - 其余（网络错误、400 等）→ 记为待重试（`at: 0`），对账每分钟重试。
+   * 旧代次与旧 client 的回执不改本地状态。旧 POST 若实际成功，且没有同目标的新
+   * 操作接管，则立即取消 server 侧监听。
+   */
+  private async performRequestFileWatch(operation: FileWatchOperation, rel: string): Promise<void> {
+    const client = operation.client
+    const tab = operation.tab
+    if (!client || !tab || this.fileWatchUnsupported || !this.fileWatchOperationCurrent(operation) ||
+        !this.fileWatchTabCurrent(operation)) return
+    try {
+      await client.watchFile(operation.directory, rel)
+    } catch (e) {
+      if (!this.fileWatchOperationCurrent(operation)) return
+      if (!this.fileWatchTabCurrent(operation)) {
+        this.clearFileWatchRecord(operation)
+        return
+      }
+      if (e instanceof ApiError) {
+        const unsupported = e.status === 404
+          ? e.tag === undefined // 未知路由无错误体；已知路由的错误必带 _tag
+          : e.status === 503 && e.tag === "ServiceUnavailableError" // 代理/网关的 503 不算
+        if (unsupported) {
+          this.clearFileWatchRecord(operation)
+          this.fileWatchUnsupported = true
+          return
+        }
+        if (e.tag === "FileNotFoundError" || e.tag === "LocationNotFoundError") {
+          this.clearFileWatchRecord(operation)
+          return
+        }
+      }
+      this.fileWatchArmed.set(operation.key, { directory: operation.directory, at: 0 })
+      return
+    }
+    // 换代：旧 server 的监听留到 24 小时过期，不向新连接发旧目录的取消
+    if (this.client !== client) return
+    if (!this.fileWatchOperationCurrent(operation)) {
+      const latest = this.fileWatchLatestOperation.get(operation.key)
+      const replacedBySameWatch = latest && latest.kind !== "drop" &&
+        latest.client === client && latest.directory === operation.directory
+      // 同目标的新操作会接管；否则这次迟到的成功必须取消，避免遗留监听
+      if (!replacedBySameWatch) await this.sendUnwatchFile(client, operation.directory, rel)
+      return
+    }
+    if (!this.fileWatchTabCurrent(operation)) {
+      this.clearFileWatchRecord(operation)
+      await this.sendUnwatchFile(client, operation.directory, rel)
+      return
+    }
+    this.fileWatchArmed.set(operation.key, { directory: operation.directory, at: Date.now() })
+  }
+
+  /**
+   * 重启监听（§7.3）：server 对已存在的记录只延长过期、**不重启监听**——监听已死
+   * （父目录删除后重建）或记录满续期窗口时，须先 DELETE 再 POST。两步之间的极短
+   * 窗口可能漏事件，由激活即重拉兜底。
+   */
+  private restartFileWatch(tab: TabEntity, directory: string): Promise<void> {
+    const rel = fileWatchRelativePath(directory, tab.key.slice("file:".length))
+    if (!this.client || rel === null) return Promise.resolve()
+    return this.runFileWatchOperation(tab.key, "restart", directory, tab, async (operation) => {
+      if (!operation.client || !this.fileWatchOperationCurrent(operation) ||
+          !this.fileWatchTabCurrent(operation)) return
+      this.clearFileWatchRecord(operation)
+      await this.sendUnwatchFile(operation.client, directory, rel)
+      await this.performRequestFileWatch(operation, rel)
+    })
+  }
+
+  /** 取消注册并取消监听：关 Tab / 归属目录变更 / 内容已不可刷新。即使注册仍在途，
+   *  也推进代次，使旧回执不能落记录；旧 POST 迟到成功时自行取消 */
+  private dropFileWatch(tabKey: string): void {
+    const armed = this.fileWatchArmed.get(tabKey)
+    const tracked = this.fileWatchLatestOperation.has(tabKey)
+    if (!armed && !tracked) return
+    this.fileWatchArmed.delete(tabKey)
+    const rel = armed
+      ? fileWatchRelativePath(armed.directory, tabKey.slice("file:".length))
+      : null
+    void this.runFileWatchOperation(tabKey, "drop", armed?.directory ?? "", null, async (operation) => {
+      if (operation.client && armed && rel !== null) {
+        await this.sendUnwatchFile(operation.client, armed.directory, rel)
+      }
+    })
+  }
+
+  /** 取消请求 best-effort：失败忽略（删除窗口闸门拒绝、死目录、网络错误都属预期） */
+  private async sendUnwatchFile(client: RestClient, directory: string, rel: string): Promise<void> {
+    try {
+      await client.unwatchFile(directory, rel)
+    } catch {
+      // best-effort
+    }
+  }
+
+  /**
+   * 对账定时器搭车续期（§7.3，D-7）：记录满续期窗口 → **重启**监听（DELETE + POST，
+   * 单纯重新 POST 只延长过期）；待重试记录（`at: 0`）→ 直接重试注册。Tab 已关或
+   * 归属目录已变的记录取消——后者的新目录监听由下次加载成功注册。
+   */
+  private rearmFileWatches(): void {
+    if (this.fileWatchUnsupported) return
+    const now = Date.now()
+    // 快照遍历：重启会改记录表
+    for (const [key, armed] of [...this.fileWatchArmed]) {
+      const tab = this.tabs.find((t) => t.key === key)
+      if (!tab || tab.directory !== armed.directory) {
+        this.dropFileWatch(key)
+        continue
+      }
+      if (armed.at === 0) void this.requestFileWatch(tab, armed.directory)
+      else if (now - armed.at >= FILE_WATCH_REARM_MS) void this.restartFileWatch(tab, armed.directory)
+    }
   }
 
   // ============ 设置 ============

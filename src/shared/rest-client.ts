@@ -1120,6 +1120,45 @@ export class RestClient {
     })
   }
 
+  /**
+   * POST /api/experimental/fs/watch?location[directory]=：监听**单个文件** 24 小时，
+   * 变化时经全局 SSE 发 `filesystem.changed`（design-file-watcher §7.1）。
+   * - v2.2.0 起提供；experimental 端点（上游声明无兼容承诺）；
+   * - `path` = 相对 location 的文件路径——目录不能监听（404 FileNotFoundError）；
+   * - 重复注册即续期，但**对已存在的记录只延长过期、不重启监听**（server 实际
+   *   监听父目录并按文件名过滤；父目录删除后重建监听即死）——重启须先 unwatchFile；
+   * - 204 无返回体；
+   * - 能力判别在调用方（store，§7.4）：旧 server 的未知路由 = 404 且错误体无
+   *   `_tag`；server 关闭文件监听 = 503 且带 `ServiceUnavailableError`。
+   *   本方法只透传 ApiError。
+   * 经 withLocation 包装：删除窗口闸门与死目录确证回执照常（design-worktree-sync
+   * §3.5/§3.6）。
+   */
+  async watchFile(directory: string, path: string): Promise<void> {
+    await this.withLocation(directory, async () => {
+      const q = new URLSearchParams()
+      q.set("location[directory]", directory)
+      await this.fetchResponse(`/api/experimental/fs/watch?${q.toString()}`, {
+        method: "POST",
+        body: JSON.stringify({ path }),
+      })
+    })
+  }
+
+  /** DELETE /api/experimental/fs/watch?location[directory]=：取消 watchFile 的监听。
+   *  body 同 `{path}`；204 无返回体。调用点 = 关闭 file Tab / Tab 归属目录变更 /
+   *  监听重启（design-file-watcher §7.3，均 best-effort） */
+  async unwatchFile(directory: string, path: string): Promise<void> {
+    await this.withLocation(directory, async () => {
+      const q = new URLSearchParams()
+      q.set("location[directory]", directory)
+      await this.fetchResponse(`/api/experimental/fs/watch?${q.toString()}`, {
+        method: "DELETE",
+        body: JSON.stringify({ path }),
+      })
+    })
+  }
+
   // ============ diff（M6b：vcs 组 deepObject + session turn 语义） ============
 
   /**
