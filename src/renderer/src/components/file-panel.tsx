@@ -51,7 +51,9 @@ export function FilePanel() {
   const treeRestorePending = useRef(false)
 
   /** 刷新动效入口（标题栏钮/右键菜单共用，review R6-1 方案 B）：清空前存滚动位，
-   *  再走 store 轮次。轮次在途时不重复存（singleflight 下不可达，防御保留） */
+   *  再走 store 轮次。在途守卫可达且必要（review R7-2）：空白窗口内再点一次，
+   *  store 会忽略这次轮次，但存值若不拦，会把清空帧钳后的 0 覆盖进还原目标
+   *  （落地帧还原成 0，跳顶）——不是「不可达的防御」 */
   const refreshTree = () => {
     const el = treeRef.current
     if (el && !store.refreshingFileTree) {

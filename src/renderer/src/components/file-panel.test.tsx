@@ -451,6 +451,23 @@ describe("FilePanel 刷新滚动还原（R6-1 方案 B，scrollTop 钳制模型�
     expect(scrollModel.value).toBe(0)
   })
 
+  it("空白窗口内再点：在途守卫拦住存值，落地帧仍还原首拍的 400（R7-2）", () => {
+    installScrollModel()
+    scrollModel.value = 400
+    const nodes = new Map([[".", [fileNode]]])
+    const { rerender } = renderPanel(nodes)
+    clickTitleRefresh() // 首拍：存 400、置 pending
+    // 触发帧：清空、置位、钳 0
+    triggerFrame(rerender, nodes)
+    // 空白窗口内再点：store 忽略轮次，守卫须拦住存值——否则把钳后的 0 覆盖进还原目标
+    fireEvent.click(document.querySelector(".sidebar-heading .icon-btn") as Element)
+    expect(storeStub.refreshFileTree).toHaveBeenCalledTimes(2)
+    // 落地帧：还原首拍的 400，而非 0
+    nodes.set(".", [fileNode])
+    rerender(<FilePanel />)
+    expect(scrollModel.value).toBe(400)
+  })
+
   it("失败回填帧还原（探针 6）：回填 emit 时标记仍真，内容帧归位", () => {
     installScrollModel()
     scrollModel.value = 400
