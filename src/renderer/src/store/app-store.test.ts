@@ -822,7 +822,7 @@ describe("文件树刷新动效时序（fake timers，design-file-panel-context-
     await vi.advanceTimersByTimeAsync(0) // 落地 + settle 同步段
     // 收标不得与落地同拍（rAF 合帧会吞掉组件在 refreshing=true 帧的还原/重试，
     // 三轮评审遗留窗口）——须滞后 FILE_TREE_CLEAR_GAP_MS。
-    // 字面量 49/1 钉下界（review n-f）：GAP 取 10 或 1 时第一处断言即红
+    // 字面量 49/1 钉下界（review n-f）：GAP 取 10 或 1 时 49ms 处断言即红
     expect(store.refreshingFileTree).toBe(true)
     await vi.advanceTimersByTimeAsync(49)
     expect(store.refreshingFileTree).toBe(true)
