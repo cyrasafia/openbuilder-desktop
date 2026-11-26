@@ -3061,6 +3061,18 @@
   overflow: hidden;
 }
 
+/* 标题栏刷新钮在途转圈（design-file-panel-context-menu §2.3 2026-11-26 增补）：
+   store.refreshingFileTree 驱动，作用域全部已加载目录重列落地后停。keyframes
+   复用 typing-spin，时长同既有 4 处用法（1s） */
+.icon-btn.tree-refresh.spinning > svg {
+  animation: typing-spin 1s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .icon-btn.tree-refresh.spinning > svg {
+    animation: none;
+  }
+}
+
 /* 右键菜单（design-file-panel-context-menu）：popover 基底 + 菜单项（同 .ms-row 交互 idiom） */
 .context-menu {
   position: fixed;

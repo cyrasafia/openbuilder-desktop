@@ -7,7 +7,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react"
 import { createPortal } from "react-dom"
-import { ChevronDown, ChevronRight } from "lucide-react"
+import { ChevronDown, ChevronRight, RefreshCw } from "lucide-react"
 import { useI18n, useStore } from "../app"
 import type { FileNode } from "@shared/api-types"
 import { PanelResizeHandle } from "./panel-resize"
@@ -42,12 +42,55 @@ export function FilePanel() {
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [openWith, setOpenWith] = useState<string | null>(null)
   const collapsed = store.layoutRightCollapsed
+  // 刷新滚动还原（q1→R6-1 方案 B，2026-11-26 review）：先清空再渲染会塌缩
+  // 内容高度，浏览器把 scrollTop 钳到 0；且置位与清空同帧 emit（触发帧
+  // hasLoaded 已是 false），layout effect 存不到——必须在点击时经 refreshTree
+  // 入口读。jsdom 无布局测不了真实钳制，组件测试用 scrollTop 钳制模型覆盖
+  const treeRef = useRef<HTMLDivElement>(null)
+  const treeScrollTop = useRef(0)
+  const treeRestorePending = useRef(false)
+
+  /** 刷新动效入口（标题栏钮/右键菜单共用，review R6-1 方案 B）：清空前存滚动位，
+   *  再走 store 轮次。在途守卫可达且必要（review R7-2）：空白窗口内再点一次，
+   *  store 会忽略这次轮次，但存值若不拦，会把清空帧钳后的 0 覆盖进还原目标
+   *  （落地帧还原成 0，跳顶）——不是「不可达的防御」 */
+  const refreshTree = () => {
+    const el = treeRef.current
+    if (el && !store.refreshingFileTree) {
+      treeScrollTop.current = el.scrollTop
+      treeRestorePending.current = true
+    }
+    store.refreshFileTree()
+  }
 
   // Hooks 必须无条件执行（项目有↔无切换时不允许 Hook 数量变化）
   useEffect(() => {
-    if (project && !hasLoaded) void store.loadFileNodes(".")
+    // 刷新在途（先清空再渲染的空白窗口）不抢跑根首载：重列集合自带 "."，抢跑
+    // 会让根行在窗口内提前回填、清空帧被吞（多一轮重复请求）；首载失败的补拉
+    // 走刷新钮（重列集合根恒在），不靠本效应重触发。
+    // 依赖含 refreshingFileTree（review m1）：同作用域 resetFileTree（如卸载
+    // 非当前 worktree）会收标记作废本轮，但 hasLoaded 已是 false 且不再变化——
+    // 不入依赖效应不重跑，根永远无人拉，树卡「加载中…」
+    if (project && !hasLoaded && !store.refreshingFileTree) void store.loadFileNodes(".")
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasLoaded, project?.id, store.currentWorkspace?.directory])
+  }, [hasLoaded, project?.id, store.currentWorkspace?.directory, store.refreshingFileTree])
+
+  // 滚动还原走 layout effect（提交前归位，不闪跳）。分支按 review R6-1 方案 B：
+  // 轮收/作废只清 pending——不带旧值跨轮/跨作用域，尾段用户已滚动不回写；
+  // 内容帧归位，根先落地时高度不足被钳制则留 pending，待后续目录落地（size
+  // 变化重触发）的内容帧重试。依赖含 refreshingFileTree 之外加 size 的理由同上
+  useLayoutEffect(() => {
+    const el = treeRef.current
+    if (!el || !treeRestorePending.current) return
+    if (!store.refreshingFileTree) {
+      treeRestorePending.current = false
+      return
+    }
+    if (!hasLoaded) return // 空白窗口：等首个内容帧
+    el.scrollTop = treeScrollTop.current
+    if (el.scrollTop === treeScrollTop.current) treeRestorePending.current = false
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store.refreshingFileTree, hasLoaded, store.fileTreeNodes.size])
 
   if (!project) {
     // 空态（design-layout §4 无项目空状态，2026-09-06 修订）：右栏保留「文件」
@@ -87,8 +130,21 @@ export function FilePanel() {
     >
       <div className="sidebar-heading">
         <span>{t.filesTitle}</span>
+        {/* 刷新整树（design-file-panel-context-menu §2.3 2026-11-25 增补）：
+            同排图标钮沿左栏 Plus 钮模式（.icon-btn 12px）。空态无树不放；根目录
+            未加载时（含首载失败、树区常驻「加载中…」）照常渲染——刷新兼首载重试。
+            在途转圈（2026-11-26）：refreshingFileTree 驱动 .spinning，重列全部
+            落地停——两入口同走 refreshTree()（清空前存滚动位，R6-1 方案 B），
+            转圈与滚动还原表现一致 */}
+        <button
+          className={"icon-btn tree-refresh" + (store.refreshingFileTree ? " spinning" : "")}
+          title={t.fileRefresh}
+          onClick={() => refreshTree()}
+        >
+          <RefreshCw size={12} aria-hidden />
+        </button>
       </div>
-      <div className="tree scroll">
+      <div ref={treeRef} className="tree scroll">
         {!hasLoaded && <div className="tree-empty">{t.loading}</div>}
         <NodeList nodes={rootNodes} depth={0} onContextMenu={openMenu} />
       </div>
@@ -97,6 +153,7 @@ export function FilePanel() {
           menu={menu}
           onClose={() => setMenu(null)}
           onOpenWith={(path) => setOpenWith(path)}
+          onRefresh={() => refreshTree()}
         />
       )}
       {openWith && (
@@ -250,15 +307,19 @@ function FileRow({
   )
 }
 
-/** 右键菜单（design-file-panel-context-menu）：html 双入口（置首）/ 打开 / 打开方式 / 引用到会话 / 复制路径 */
+/** 右键菜单（design-file-panel-context-menu）：html 双入口（置首）/ 打开 / 打开方式 / 引用到会话 / 复制路径 / 刷新（分隔线下，树全局动作） */
 function FileContextMenu({
   menu,
   onClose,
   onOpenWith,
+  onRefresh,
 }: {
   menu: MenuState
   onClose: () => void
   onOpenWith: (path: string) => void
+  /** 刷新整树（R6-1 方案 B）：经面板 refreshTree() 走——清空前存滚动位，
+   *  与标题栏钮共用同一还原链路 */
+  onRefresh: () => void
 }) {
   const { t } = useI18n()
   const store = useStore()
@@ -422,6 +483,12 @@ function FileContextMenu({
         onClick={() => run(() => void navigator.clipboard?.writeText(menu.absolute).catch(() => {}))}
       >
         {t.fileCopyPath}
+      </button>
+      {/* 刷新（§2.3 2026-11-25 增补）：树全局动作，与上方文件级动作以分隔线隔开；
+          无论菜单对象是文件还是目录，均刷新整树（= 当前作用域全部已加载目录重列） */}
+      <div className="context-menu-separator" />
+      <button className="context-menu-item" onClick={() => run(onRefresh)}>
+        {t.fileRefresh}
       </button>
     </div>,
     document.body,

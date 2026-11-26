@@ -147,6 +147,30 @@ export const FILE_WATCH_DEBOUNCE_MS = 300
  *  记录满 12 小时重启监听（对账定时器搭车），监听与 file Tab 同寿 */
 export const FILE_WATCH_REARM_MS = 12 * 60 * 60 * 1000
 
+/**
+ * 整树刷新转圈最短呈现（design-file-panel-context-menu §2.3 2026-11-26 增补）：
+ * 本地 server 重列常在数十 ms 内落地——置位/清除同帧 emit 会被 App 订阅侧 rAF
+ * 合帧成一次渲染（false 已就位），转圈一帧都画不出；过短闪现肉眼亦不可辨。
+ * 落地早于最短时长时补足到最短再收标记（延迟期间 singleflight 照常占位）。
+ */
+export const FILE_TREE_SPINNER_MIN_MS = 500
+
+/**
+ * 整树刷新空白窗口（2026-11-26 增补「先清空再渲染」）：触发即清空现树（树区回
+ * 「加载中…」占位），此窗口后才发起重列——清空帧先画出来。不清窗口直接发请求
+ * 时，本地 server 数十 ms 落地会与清空 emit 撞进同一 rAF 帧被合帧吞掉，空白
+ * 一帧不染、刷新手势不可见（与转圈不可见同根源）。
+ */
+export const FILE_TREE_REFRESH_BLANK_MS = 150
+
+/**
+ * 收标滞后拍（2026-11-26 三轮评审，R6-1 遗留窗口）：收标 emit 与最后落地 emit
+ * 至少隔此拍数——两者同帧（或落入同一 rAF 合帧窗）时，组件在 refreshing=true
+ * 帧上做还原/重试的机会被吞，慢 server（重列 ≥ 最短转圈）下刷新跳顶复现。
+ * 50ms ≈ 3 帧，足够错开合帧窗。
+ */
+export const FILE_TREE_CLEAR_GAP_MS = 50
+
 type FileWatchOperation = {
   id: number
   key: string
@@ -3874,6 +3898,10 @@ export class AppStore {
     // （loadFileNodes 的闸门只挡在途期间切走，不挡落地前切走，design-file-watcher §3.2）
     for (const timer of this.treeRefreshTimers.values()) clearTimeout(timer)
     this.treeRefreshTimers.clear()
+    // 手动整树刷新的在途轮随作用域切换作废：收转圈 + 前进代次（旧轮落地不得
+    // 收新作用域已开启的新轮标记，见 refreshFileTree 代次守卫）
+    this.refreshingFileTree = false
+    this.fileTreeRefreshSeq++
     this.repullExpandedDirs()
   }
 
@@ -8365,6 +8393,83 @@ export class AppStore {
       void this.loadFileNodes(path)
     }
     this.emit()
+  }
+
+  /**
+   * 手动刷新整个文件树（标题栏刷新钮/右键菜单「刷新」，design-file-panel-context-menu
+   * §2.3 2026-11-25 增补）：重列当前作用域**全部已加载目录**——根（"."）恒在
+   * 重列集合内，并上 fileTreeNodes 的 key（本作用域曾展开过的子目录：key 只随
+   * resetFileTree 整体清空，目录收起后保留，重列无害），逐 key 走 loadFileNodes
+   * 即整树重拉；懒加载语义不变（未展开目录不预取），展开记忆不动
+   * （design-file-tree-expand-memory）。根恒在的理由：loadFileNodes 吞错，根
+   * 首载失败时 "." 不入 key 集、树区常驻「加载中…」且不自愈——刷新兼首载重试
+   * （review 一轮 #1）；首载在途时刷新多发一次根请求，结果一致无害。
+   * 落地闸门（loadFileNodes 内作用域守卫）自带切换/重连防御；调用方不经去抖
+   * （scheduleTreeRefresh 是 watcher 事件合并，用户动作即时执行）。
+   *
+   * 在途转圈（2026-11-26 增补）：refreshingFileTree 置位驱动标题栏钮旋转，全部
+   * 子请求落地清除（loadFileNodes 吞错必 resolve，成功/失败皆算完成）——转圈
+   * 即真实获取进度，成功落地逐 key emit 重渲列表。**先清空再渲染**：触发即清
+   * 空现树（树区回「加载中…」占位；展开记忆不动），FILE_TREE_REFRESH_BLANK_MS
+   * 后才发起重列——清空帧先画出来，否则落地过快与清空 emit 同帧被 rAF 合帧
+   * 吞掉，看不出刷新发生过（dev 联调实测）。**失败回填**（同日 review M1）：
+   * 触发前快照节点，落地后缺失的 key 从快照补回——loadFileNodes 吞错不写入，
+   * 远程 server 超时/5xx 下若不回填，根失败树区常驻「加载中…」不自愈、子目录
+   * 失败呈「…」空壳（watcher 补拉闸门要求 key 已在 fileTreeNodes，丢了没人
+   * 救），回填立即 emit。**最短呈现**：落地不足 FILE_TREE_SPINNER_MIN_MS 补足
+   * 到最短再收。singleflight：在途（空白+重列+补足全程）期间重复触发不另起
+   * 轮次（当轮在推进 = 合并进当轮；数据已落地的补足尾段点击被忽略，标记收后
+   * 即可再刷）；切作用域经 resetFileTree 作废在途轮，代次守卫约束空白发起、
+   * 落地、补足收标三处定时器。
+   */
+  refreshingFileTree = false
+  private fileTreeRefreshSeq = 0
+
+  refreshFileTree() {
+    if (this.refreshingFileTree) return
+    const keys = new Set([".", ...this.fileTreeNodes.keys()])
+    const prev = new Map(this.fileTreeNodes) // 失败回填快照（清空前取）
+    this.refreshingFileTree = true
+    const seq = ++this.fileTreeRefreshSeq
+    const startedAt = Date.now()
+    // 先清空再渲染：现树立即撤下（展开记忆不动，key 集已快照进 keys）
+    this.fileTreeNodes.clear()
+    this.emit()
+    const settle = () => {
+      // 旧轮落地不清新轮标记：切作用域作废（resetFileTree 前进代次）与新刷新
+      // 开启的轮次都使代次前进，代次不符 = 本轮已被取代，不得回填/收标记
+      if (seq !== this.fileTreeRefreshSeq) return
+      // 失败回填：重列失败的 key 不写入（loadFileNodes 吞错），从快照补回上次
+      // 内容并立即渲染（不等转圈收）——树保持可用，watcher 补拉闸门可再武装
+      let backfilled = false
+      for (const [path, nodes] of prev) {
+        if (!this.fileTreeNodes.has(path)) {
+          this.fileTreeNodes.set(path, nodes)
+          backfilled = true
+        }
+      }
+      if (backfilled) this.emit()
+      const clear = () => {
+        // 补足窗口内切作用域/开新轮 → 代次前进，定时器同样不得收标记
+        if (seq !== this.fileTreeRefreshSeq) return
+        this.refreshingFileTree = false
+        this.emit()
+      }
+      const rest = FILE_TREE_SPINNER_MIN_MS - (Date.now() - startedAt)
+      // 收标至少滞后最后落地一拍（FILE_TREE_CLEAR_GAP_MS）：同拍 emit 被 rAF 合帧
+      // 成一次渲染时，组件在 refreshing=true 帧的还原/重试被吞、跳顶复现（三轮
+      // 评审 R6-1 遗留窗口，慢 server 重列 ≥ 最短转圈即触发）
+      setTimeout(clear, Math.max(rest, FILE_TREE_CLEAR_GAP_MS))
+    }
+    // 空白窗口后才发起重列（发起前再查代次：窗口内切作用域 = 本轮作废，不发）
+    setTimeout(() => {
+      if (seq !== this.fileTreeRefreshSeq) return
+      void Promise.all([...keys].map((path) => this.loadFileNodes(path)))
+        // 防御：当前 loadFileNodes 吞错不可达 reject，但标记悬挂会锁死 singleflight
+        // （转圈永转、后续点击全无效）——链路加空 catch 不赌将来不变
+        .catch(() => {})
+        .then(settle)
+    }, FILE_TREE_REFRESH_BLANK_MS)
   }
 
   // ============ 文件监听失效（design-file-watcher） ============

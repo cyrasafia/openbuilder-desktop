@@ -100,6 +100,7 @@ const zh = {
   fileOpen: "打开",
   fileOpenWith: "打开方式…",
   fileCopyPath: "复制路径",
+  fileRefresh: "刷新",
   // 文件引用（design-file-reference）
   // 文件引用（design-file-reference）
   fileRefToSession: "引用到会话",
@@ -468,6 +469,7 @@ const en: typeof zh = {
   fileOpen: "Open",
   fileOpenWith: "Open with…",
   fileCopyPath: "Copy path",
+  fileRefresh: "Refresh",
   fileRefToSession: "Reference in chat",
   fileRefNoMatch: "No matching files",
   fileRefRemove: "Remove reference",

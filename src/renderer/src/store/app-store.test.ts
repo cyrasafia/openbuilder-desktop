@@ -6,7 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { waitFor } from "@testing-library/react"
-import { AppStore, diffTabKey, diffDataKey, FILE_WATCH_DEBOUNCE_MS, FILE_WATCH_REARM_MS } from "./app-store"
+import { AppStore, diffTabKey, diffDataKey, FILE_TREE_REFRESH_BLANK_MS, FILE_TREE_SPINNER_MIN_MS, FILE_WATCH_DEBOUNCE_MS, FILE_WATCH_REARM_MS } from "./app-store"
 import type { Attachment } from "@shared/attachment-pipeline"
 import { ApiError, RestClient } from "@shared/rest-client"
 import { toInternalMessages } from "@shared/v2-adapter"
@@ -585,6 +585,48 @@ describe("文件树展开状态跨作用域记忆（design-file-tree-expand-memo
     expect(store.fileTreeExpandedMemory.get(ROOT)?.has("src/")).toBe(true)
   })
 
+  it("refreshFileTree：全部已加载目录逐 key 重列；展开记忆不动", async () => {
+    const listFiles = vi.fn(async () => [fileNode("src/a.ts", "file")])
+    clientRef().listFiles = listFiles
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+
+    // 已加载集合直接播种（"." 由 FilePanel 挂载时装、"src/" 由展开时装——store 纯
+    // 状态机测试不经组件）；展开记忆经 toggle 写入
+    store.fileTreeNodes.set(".", [fileNode("README.md", "file")])
+    store.fileTreeNodes.set("src/", [])
+    store.toggleFileNode("src/")
+    listFiles.mockClear()
+
+    store.refreshFileTree()
+    await waitFor(() => expect(listFiles).toHaveBeenCalledTimes(2))
+    expect(listFiles).toHaveBeenCalledWith(ROOT, ".")
+    expect(listFiles).toHaveBeenCalledWith(ROOT, "src/")
+    // 刷新只重列节点，不动展开集
+    expect(store.fileTreeExpanded.has("src/")).toBe(true)
+    expect(store.fileTreeExpandedMemory.get(ROOT)?.has("src/")).toBe(true)
+  })
+
+  it("refreshFileTree：根首载失败后仍重列根（刷新兼首载重试，review 一轮 #1）", async () => {
+    let fail = true
+    const listFiles = vi.fn(async () => {
+      if (fail) throw new Error("list failed")
+      return [fileNode("README.md", "file")]
+    })
+    clientRef().listFiles = listFiles
+    // 根首载失败：loadFileNodes 吞错，"." 不入 fileTreeNodes（树区常驻「加载中…」且不自愈）
+    await store.loadFileNodes(".")
+    expect(store.fileTreeNodes.has(".")).toBe(false)
+    fail = false
+    listFiles.mockClear()
+
+    store.refreshFileTree()
+    await waitFor(() => expect(store.fileTreeNodes.has(".")).toBe(true))
+    expect(listFiles).toHaveBeenCalledTimes(1)
+    expect(listFiles).toHaveBeenCalledWith(ROOT, ".")
+  })
+
   it("worktree 目录卸载：展开记忆随目录清除", async () => {
     const s2 = session("s2", WT1, { created: 2, updated: 2 })
     store.sessionsByProject.set("proj1", sessionsOf(s2))
@@ -599,6 +641,210 @@ describe("文件树展开状态跨作用域记忆（design-file-tree-expand-memo
     const res = await store.removeWorkspace(WT1)
     expect(res.ok).toBe(true)
     expect(store.fileTreeExpandedMemory.has(WT1)).toBe(false)
+  })
+})
+
+// 刷新动效时序统一 fake timers（review M2 + 迁移 todo）：真实定时器 + sleep(50)
+// 负向断言在慢 CI 下有窗口被越过抖掉的风险；fake timers 确定性推进时钟，能精确
+// 卡位守卫/补足的变异点。先例 = 文件监听 describe（beforeEach/afterEach 装拆）
+describe("文件树刷新动效时序（fake timers，design-file-panel-context-menu §2.3）", () => {
+  function clientRef(): Record<string, unknown> {
+    return (store as unknown as { client: Record<string, unknown> }).client
+  }
+
+  function fileNode(path: string, type: "file" | "directory" = "file"): FileNode {
+    return {
+      name: path.replace(/\/$/, "").split("/").pop() ?? path,
+      path,
+      absolute: `${ROOT}/${path.replace(/\/$/, "")}`,
+      type,
+      ignored: false,
+    }
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+  })
+  afterEach(() => vi.useRealTimers())
+
+  it("空白窗口 + 转圈最短呈现：窗口内不发请求；落地不闪收，补足到最短再收", async () => {
+    const listFiles = vi.fn(async () => [] as FileNode[])
+    clientRef().listFiles = listFiles
+    store.fileTreeNodes.set(".", [])
+
+    store.refreshFileTree()
+    expect(store.refreshingFileTree).toBe(true)
+    // 字面量钉窗口长度（review R6-2）：advance 常量本身钉不住——BLANK 取 0/100 时
+    // 下列断言照样绿；149/1 才把「窗口 ≥150 且在 150 发起」钉死
+    await vi.advanceTimersByTimeAsync(149)
+    expect(listFiles).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    // 窗口后发起；子请求即刻落地——标记不得随落地即收：置位/清除同帧 emit 会被
+    // App 侧 rAF 合帧成一次渲染（false 已就位），转圈一帧画不出（dev 实测不可见）
+    expect(listFiles).toHaveBeenCalledTimes(1)
+    expect(listFiles).toHaveBeenCalledWith(ROOT, ".")
+    expect(store.refreshingFileTree).toBe(true)
+    // 补足同理用字面量差值钉住（BLANK+SPINNER 总时长）
+    await vi.advanceTimersByTimeAsync(349)
+    expect(store.refreshingFileTree).toBe(true)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(store.refreshingFileTree).toBe(false)
+  })
+
+  it("在途合并 / 切作用域作废 / 旧轮落地不误清新轮（代次守卫三处定时器）", async () => {
+    // 根请求按次序取 deferred（第 1 轮 roots[0]、第 2 轮 roots[1]）；子目录共享 dSrc
+    const rootRounds = [deferred<FileNode[]>(), deferred<FileNode[]>()]
+    const dSrc = deferred<FileNode[]>()
+    let rootCall = 0
+    const listFiles = vi.fn(async (_dir: string, path: string) =>
+      path === "." ? rootRounds[rootCall++].promise : dSrc.promise,
+    )
+    clientRef().listFiles = listFiles
+    store.fileTreeNodes.set(".", [])
+    store.fileTreeNodes.set("src/", [])
+
+    // 第 1 轮：置位；窗口后发起（根+子目录）；在途重复触发不另起轮次
+    store.refreshFileTree()
+    expect(store.refreshingFileTree).toBe(true)
+    store.refreshFileTree()
+    await vi.advanceTimersByTimeAsync(FILE_TREE_REFRESH_BLANK_MS) // T=150 发起
+    expect(listFiles).toHaveBeenCalledTimes(2)
+
+    // 切作用域：在途轮作废（转圈收 + 代次前进）
+    await store.setCurrentWorkspace(WT1)
+    expect(store.refreshingFileTree).toBe(false)
+    listFiles.mockClear()
+
+    // 第 2 轮（T=150，新作用域树已清 → 仅根）：旧轮全部子请求在新轮在途时落地
+    store.refreshFileTree()
+    rootRounds[0].resolve([])
+    dSrc.resolve([])
+    await vi.advanceTimersByTimeAsync(0) // 冲刷：旧轮 settle——代次守卫早退，无回填无收标
+    expect(store.refreshingFileTree).toBe(true)
+    // 守卫缺失时旧轮 settle 会把旧快照回填进新轮刚清空的树——断言树仍空（杀入口守卫变异）
+    expect(store.fileTreeNodes.size).toBe(0)
+    await vi.advanceTimersByTimeAsync(FILE_TREE_REFRESH_BLANK_MS) // T=300：新轮发起 → roots[1]
+    expect(listFiles).toHaveBeenCalledTimes(1)
+    expect(listFiles).toHaveBeenCalledWith(WT1, ".")
+    rootRounds[1].resolve([])
+    await vi.advanceTimersByTimeAsync(0) // 新轮 settle：rest = 500-150 > 0 → 补足定时器 @T=650
+    // 杀补足删除变异（删补足则此处已 false）；入口守卫变异由 T=649 断言杀——
+    // 守卫缺失时旧轮 settle 会排补足定时器 @T=500，此刻已误清新轮标记
+    expect(store.refreshingFileTree).toBe(true)
+    await vi.advanceTimersByTimeAsync(FILE_TREE_SPINNER_MIN_MS - FILE_TREE_REFRESH_BLANK_MS - 1) // T=649
+    expect(store.refreshingFileTree).toBe(true)
+    await vi.advanceTimersByTimeAsync(1) // T=650：新轮补足收
+    expect(store.refreshingFileTree).toBe(false)
+  })
+
+  it("先清空再渲染：触发即清树（展开记忆不动），窗口后重列落地回填渲染", async () => {
+    const listFiles = vi.fn(async () => [fileNode("src/a.ts")])
+    clientRef().listFiles = listFiles
+    store.fileTreeNodes.set(".", [fileNode("README.md")])
+    store.fileTreeNodes.set("src/", [])
+    // 展开记忆直写（不经 toggleFileNode：其触发的首拉是即时请求，会污染窗口断言）
+    store.fileTreeExpandedMemory.set(ROOT, new Set(["src/"]))
+
+    store.refreshFileTree()
+    // 现树立即撤下；展开记忆不动；窗口内不发请求（清空帧先画，否则被 rAF 合帧吞掉）
+    expect(store.fileTreeNodes.size).toBe(0)
+    expect(store.fileTreeExpandedMemory.get(ROOT)?.has("src/")).toBe(true)
+    expect(store.refreshingFileTree).toBe(true)
+    // 字面量钉窗口长度（review R6-2，同「转圈最短呈现」用例）
+    await vi.advanceTimersByTimeAsync(149)
+    expect(listFiles).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(listFiles).toHaveBeenCalledTimes(2)
+    expect(listFiles).toHaveBeenCalledWith(ROOT, ".")
+    expect(listFiles).toHaveBeenCalledWith(ROOT, "src/")
+    // 总时长字面量钉住（150 空白 + 350 补足 = 500）
+    await vi.advanceTimersByTimeAsync(349)
+    expect(store.refreshingFileTree).toBe(true)
+    await vi.advanceTimersByTimeAsync(1)
+    // 全部成功：新内容在位，无回填，转圈收
+    expect(store.fileTreeNodes.has(".")).toBe(true)
+    expect(store.refreshingFileTree).toBe(false)
+  })
+
+  it("刷新失败回填（review M1）：全部重列失败回填快照——树不空、watcher 闸门可再武装", async () => {
+    clientRef().listFiles = vi.fn(async () => {
+      throw new Error("boom")
+    })
+    store.fileTreeNodes.set(".", [fileNode("README.md")])
+    store.fileTreeNodes.set("src/", [fileNode("src/a.ts")])
+
+    // 回填必须 emit（review n-b）：序列 = 触发（标记真）→ 回填（标记仍真）→ 收标。
+    // 删回填后 emit 的变异在此红（序列退化为 [true, false]）。
+    // 订阅须在触发前挂（触发 emit 同步发生，后挂漏记）；advance 推到 T=500 收标
+    const emittedFlags: boolean[] = []
+    const unsubscribe = store.subscribe(() => emittedFlags.push(store.refreshingFileTree))
+    store.refreshFileTree()
+    expect(store.fileTreeNodes.size).toBe(0) // 清空发生
+    await vi.advanceTimersByTimeAsync(150) // 字面量钉窗口（review R6-2）
+    await vi.advanceTimersByTimeAsync(350) // T=500：补足收
+    unsubscribe()
+    expect(emittedFlags).toEqual([true, true, false])
+    // loadFileNodes 吞错不写入 → 快照回填：两个 key 都回来（不回填则根常驻
+    // 「加载中…」不自愈、子目录呈「…」空壳，watcher 闸门丢 key 没人救）
+    expect(store.fileTreeNodes.has(".")).toBe(true)
+    expect(store.fileTreeNodes.has("src/")).toBe(true)
+    expect(store.refreshingFileTree).toBe(false)
+  })
+
+  it("刷新失败回填：部分失败——成功 key 用新内容，失败 key 回填上次内容", async () => {
+    const listFiles = vi.fn(async (_dir: string, path: string) => {
+      if (path === "src/") throw new Error("boom")
+      return [fileNode("README-new.md")]
+    })
+    clientRef().listFiles = listFiles
+    store.fileTreeNodes.set(".", [fileNode("README-old.md")])
+    store.fileTreeNodes.set("src/", [fileNode("src/a.ts")])
+
+    store.refreshFileTree()
+    await vi.advanceTimersByTimeAsync(FILE_TREE_REFRESH_BLANK_MS + FILE_TREE_SPINNER_MIN_MS)
+    expect(store.fileTreeNodes.get(".")?.map((n) => n.name)).toEqual(["README-new.md"])
+    expect(store.fileTreeNodes.get("src/")?.map((n) => n.name)).toEqual(["a.ts"])
+    expect(store.refreshingFileTree).toBe(false)
+  })
+
+  it("慢轮（落地晚于最短转圈）：收标滞后最后落地一拍，组件内容帧不被合帧吞", async () => {
+    const d = deferred<FileNode[]>()
+    clientRef().listFiles = vi.fn(async () => d.promise)
+    store.fileTreeNodes.set(".", [])
+
+    store.refreshFileTree()
+    await vi.advanceTimersByTimeAsync(150) // T=150：发起，请求在途
+    await vi.advanceTimersByTimeAsync(400) // T=550：早已过最短转圈点（rest ≤ 0）
+    d.resolve([])
+    await vi.advanceTimersByTimeAsync(0) // 落地 + settle 同步段
+    // 收标不得与落地同拍（rAF 合帧会吞掉组件在 refreshing=true 帧的还原/重试，
+    // 三轮评审遗留窗口）——须滞后 FILE_TREE_CLEAR_GAP_MS。
+    // 字面量 49/1 钉下界（review n-f）：GAP 取 10 或 1 时 49ms 处断言即红
+    expect(store.refreshingFileTree).toBe(true)
+    await vi.advanceTimersByTimeAsync(49)
+    expect(store.refreshingFileTree).toBe(true)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(store.refreshingFileTree).toBe(false)
+  })
+
+  it("空白窗口内切作用域：本轮作废，重列不发请求", async () => {
+    const listFiles = vi.fn(async () => [] as FileNode[])
+    clientRef().listFiles = listFiles
+    store.fileTreeNodes.set(".", [])
+
+    store.refreshFileTree()
+    // 字面量钉窗口（review R6-2）：切作用域前先推进 149ms 并断言未发——BLANK 取
+    // 0/100 时「窗口内切作用域」的作废路径根本走不到，断言失去意义
+    await vi.advanceTimersByTimeAsync(149)
+    expect(listFiles).not.toHaveBeenCalled()
+    await store.setCurrentWorkspace(WT1)
+    // 越过空白窗口 + 补足窗口：go 的代次守卫拦下，不发请求；转圈已随 resetFileTree 收
+    await vi.advanceTimersByTimeAsync(500)
+    expect(listFiles).not.toHaveBeenCalled()
+    expect(store.refreshingFileTree).toBe(false)
   })
 })
 
