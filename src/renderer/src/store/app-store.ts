@@ -8404,10 +8404,15 @@ export class AppStore {
    * 即真实获取进度，成功落地逐 key emit 重渲列表。**先清空再渲染**：触发即清
    * 空现树（树区回「加载中…」占位；展开记忆不动），FILE_TREE_REFRESH_BLANK_MS
    * 后才发起重列——清空帧先画出来，否则落地过快与清空 emit 同帧被 rAF 合帧
-   * 吞掉，看不出刷新发生过（dev 联调实测）。**最短呈现**：落地不足
-   * FILE_TREE_SPINNER_MIN_MS 补足到最短再收。singleflight：在途（含空白/补足
-   * 窗口）期间重复触发合并进当轮；切作用域经 resetFileTree 作废在途轮，代次
-   * 守卫约束落地、空白发起、补足收标三处定时器。
+   * 吞掉，看不出刷新发生过（dev 联调实测）。**失败回填**（同日 review M1）：
+   * 触发前快照节点，落地后缺失的 key 从快照补回——loadFileNodes 吞错不写入，
+   * 远程 server 超时/5xx 下若不回填，根失败树区常驻「加载中…」不自愈、子目录
+   * 失败呈「…」空壳（watcher 补拉闸门要求 key 已在 fileTreeNodes，丢了没人
+   * 救），回填立即 emit。**最短呈现**：落地不足 FILE_TREE_SPINNER_MIN_MS 补足
+   * 到最短再收。singleflight：在途（空白+重列+补足全程）期间重复触发不另起
+   * 轮次（当轮在推进 = 合并进当轮；数据已落地的补足尾段点击被忽略，标记收后
+   * 即可再刷）；切作用域经 resetFileTree 作废在途轮，代次守卫约束空白发起、
+   * 落地、补足收标三处定时器。
    */
   refreshingFileTree = false
   private fileTreeRefreshSeq = 0
@@ -8415,6 +8420,7 @@ export class AppStore {
   refreshFileTree() {
     if (this.refreshingFileTree) return
     const keys = new Set([".", ...this.fileTreeNodes.keys()])
+    const prev = new Map(this.fileTreeNodes) // 失败回填快照（清空前取）
     this.refreshingFileTree = true
     const seq = ++this.fileTreeRefreshSeq
     const startedAt = Date.now()
@@ -8423,8 +8429,18 @@ export class AppStore {
     this.emit()
     const settle = () => {
       // 旧轮落地不清新轮标记：切作用域作废（resetFileTree 前进代次）与新刷新
-      // 开启的轮次都使代次前进，代次不符 = 本轮已被取代，不得收标记
+      // 开启的轮次都使代次前进，代次不符 = 本轮已被取代，不得回填/收标记
       if (seq !== this.fileTreeRefreshSeq) return
+      // 失败回填：重列失败的 key 不写入（loadFileNodes 吞错），从快照补回上次
+      // 内容并立即渲染（不等转圈收）——树保持可用，watcher 补拉闸门可再武装
+      let backfilled = false
+      for (const [path, nodes] of prev) {
+        if (!this.fileTreeNodes.has(path)) {
+          this.fileTreeNodes.set(path, nodes)
+          backfilled = true
+        }
+      }
+      if (backfilled) this.emit()
       const clear = () => {
         // 补足窗口内切作用域/开新轮 → 代次前进，定时器同样不得收标记
         if (seq !== this.fileTreeRefreshSeq) return

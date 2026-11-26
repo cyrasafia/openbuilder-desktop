@@ -3063,9 +3063,9 @@
 
 /* 标题栏刷新钮在途转圈（design-file-panel-context-menu §2.3 2026-11-26 增补）：
    store.refreshingFileTree 驱动，作用域全部已加载目录重列落地后停。keyframes
-   复用 typing-spin（仓库先例：spinner 类跨组件共用同一旋转，仅时长按场景取） */
+   复用 typing-spin，时长同既有 4 处用法（1s） */
 .icon-btn.tree-refresh.spinning > svg {
-  animation: typing-spin 0.8s linear infinite;
+  animation: typing-spin 1s linear infinite;
 }
 @media (prefers-reduced-motion: reduce) {
   .icon-btn.tree-refresh.spinning > svg {

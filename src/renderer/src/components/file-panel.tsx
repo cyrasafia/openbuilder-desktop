@@ -42,15 +42,40 @@ export function FilePanel() {
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [openWith, setOpenWith] = useState<string | null>(null)
   const collapsed = store.layoutRightCollapsed
+  // 刷新滚动还原（q1，2026-11-26 review）：先清空再渲染会塌缩内容高度，
+  // 浏览器把 scrollTop 钳到 0——触发沿存、回填后 layout 提交前还原
+  const treeRef = useRef<HTMLDivElement>(null)
+  const treeScrollTop = useRef(0)
+  const treeRestorePending = useRef(false)
 
   // Hooks 必须无条件执行（项目有↔无切换时不允许 Hook 数量变化）
   useEffect(() => {
     // 刷新在途（先清空再渲染的空白窗口）不抢跑根首载：重列集合自带 "."，抢跑
     // 会让根行在窗口内提前回填、清空帧被吞（多一轮重复请求）；首载失败的补拉
-    // 走刷新钮（重列集合根恒在），不靠本效应重触发
+    // 走刷新钮（重列集合根恒在），不靠本效应重触发。
+    // 依赖含 refreshingFileTree（review m1）：同作用域 resetFileTree（如卸载
+    // 非当前 worktree）会收标记作废本轮，但 hasLoaded 已是 false 且不再变化——
+    // 不入依赖效应不重跑，根永远无人拉，树卡「加载中…」
     if (project && !hasLoaded && !store.refreshingFileTree) void store.loadFileNodes(".")
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasLoaded, project?.id, store.currentWorkspace?.directory])
+  }, [hasLoaded, project?.id, store.currentWorkspace?.directory, store.refreshingFileTree])
+
+  // 滚动还原走 layout effect：回填帧提交前归位，不闪跳顶（q1 dev 实测确认；
+  // jsdom 无布局测不了，见 design-file-panel-context-menu §2.3 已接受边缘）
+  useLayoutEffect(() => {
+    const el = treeRef.current
+    if (!el) return
+    if (store.refreshingFileTree && !treeRestorePending.current && hasLoaded) {
+      // 触发沿首个内容帧：存滚动位（每轮一次；清空后的内容帧 hasLoaded=false 不覆盖）
+      treeScrollTop.current = el.scrollTop
+      treeRestorePending.current = true
+    } else if (treeRestorePending.current && hasLoaded) {
+      // 回填帧（其后任一内容帧）：归位
+      el.scrollTop = treeScrollTop.current
+      treeRestorePending.current = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store.refreshingFileTree, hasLoaded])
 
   if (!project) {
     // 空态（design-layout §4 无项目空状态，2026-09-06 修订）：右栏保留「文件」
@@ -103,7 +128,7 @@ export function FilePanel() {
           <RefreshCw size={12} aria-hidden />
         </button>
       </div>
-      <div className="tree scroll">
+      <div ref={treeRef} className="tree scroll">
         {!hasLoaded && <div className="tree-empty">{t.loading}</div>}
         <NodeList nodes={rootNodes} depth={0} onContextMenu={openMenu} />
       </div>

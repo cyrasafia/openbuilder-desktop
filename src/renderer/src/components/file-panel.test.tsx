@@ -265,18 +265,25 @@ describe("FilePanel 右键菜单", () => {
     expect(storeStub.refreshFileTree).toHaveBeenCalledTimes(2)
   })
 
-  it("根未加载且刷新在途：挂载效应不抢跑根首载（2026-11-26 先清空再渲染，抢跑吞清空帧）", () => {
+  it("根未加载且刷新在途：挂载效应不抢跑根首载；标记收（同作用域 reset）后效应重跑补拉根", () => {
+    // 在途闸：空白窗口内不抢跑（重列集合根恒在，抢跑吞清空帧）
+    const load = vi.fn(async () => {})
     storeStub = {
       ...makeStore(),
       fileTreeNodes: new Map(),
       refreshingFileTree: true,
-      loadFileNodes: vi.fn(async () => {}),
+      loadFileNodes: load,
     }
-    render(<FilePanel />)
+    const { rerender } = render(<FilePanel />)
     expect(screen.getByText("加载中…")).toBeTruthy()
-    expect(storeStub.loadFileNodes).not.toHaveBeenCalled()
+    expect(load).not.toHaveBeenCalled()
+    // m1（2026-11-26 review）：同作用域 resetFileTree 收标记作废本轮后 hasLoaded
+    // 仍是 false 且不变——依赖须含 refreshingFileTree，效应才重跑，否则卡「加载中…」
+    storeStub = { ...storeStub, refreshingFileTree: false }
+    rerender(<FilePanel />)
+    expect(load).toHaveBeenCalledWith(".")
     cleanup()
-    // 刷新不在途：效应照常首载根
+    // 刷新不在途直接挂载：效应照常首载根
     storeStub = {
       ...makeStore(),
       fileTreeNodes: new Map(),
