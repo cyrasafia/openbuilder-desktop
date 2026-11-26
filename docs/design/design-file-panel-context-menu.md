@@ -46,9 +46,9 @@
 
 失败回填（**2026-11-26 review M1**）：触发前快照节点（`prev`），落地 settle 时代次守卫通过后把缺失的 key 从快照补回并立即 emit——`loadFileNodes` 吞错不写入，不回填则根失败树区常驻「加载中…」不自愈、子目录失败呈「…」空壳（watcher 补拉闸门要求 key 已在 `fileTreeNodes`，丢了没人救）；本地 server 少见，远程连接超时/5xx 是现实场景。回填 = 上次内容（§3 失败反馈口径），成功 key 用新内容。部分失败的 key 保留展开态渲染。
 
-滚动还原（**2026-11-26 review q1**）：清空塌缩内容高度，浏览器把 `scrollTop` 钳到 0——触发沿存滚动位（内容帧才存，清空后读到 0 不覆盖），回填后 layout effect 提交前还原（不等转圈收，无跳顶闪烁）。jsdom 无布局测不了，dev 实测确认。
+滚动还原（**2026-11-26 review q1/R6-1 方案 B**）：先清空再渲染塌缩内容高度，浏览器把 `scrollTop` 钳到 0；且置位与清空同帧 emit（触发帧 `hasLoaded` 已是 false），layout effect 存不到——初版「触发沿存」实现因此不生效（二轮探针证伪；`ef33811` 正文与本文旧版的「dev 实测确认」系误记，未实际执行，见评审记录）。现版：两入口共用 `refreshTree()`，**点击时**（清空前）存滚动位并置 pending；layout effect 分支——轮收/作废只清 pending（不带旧值跨轮跨作用域，补足尾段用户已滚动不回写）；内容帧归位（layout 提交前，无跳顶闪烁），根先落地时高度不足被钳制则留 pending，待后续目录落地（`fileTreeNodes.size` 入依赖重触发）的内容帧重试。组件测试以 scrollTop 钳制语义模型覆盖探针 6 条 + 子目录晚落地；真实钳制行为仍待 dev 复核（窗口后台 rAF 节流时曾出现合帧假象，见评审 q-a）。
 
-已接受的边缘（记录在案）：① 空白窗口内 watcher 去抖定时器（300ms）落地会把单行提前回填、局部吞掉该行清空帧——纯视觉、瞬态、自愈；② 刷新期间到达的 watcher 事件若落在「server 已读盘、响应未落地」之间，该目录不排去抖、等下一个事件才更新——与既有目录首载竞态同类，窗口 ≈ 一次往返。两例均不修（2026-11-26 review m2）。原 todo 文档（测试 fake timers 迁移）已随本批用例重写完成而删除。
+已接受的边缘（记录在案）：① 空白窗口内 watcher 去抖定时器（300ms）落地会把单行提前回填、局部吞掉该行清空帧——纯视觉、瞬态、自愈；② 刷新期间到达的 watcher 事件若落在「server 已读盘、响应未落地」之间，该目录不排去抖、等下一个事件才更新——与既有目录首载竞态同类，窗口 ≈ 一次往返；③ 失败回填孤儿 key：目录已从磁盘删除时重列失败回填会把旧节点补回（根新列表无此行、不渲染），此后每次手动刷新多发一个必败请求——与 d9db2ad–95861f4 行为等价（review n-a 接受不修）。①② 均不修（2026-11-26 review m2）。原 todo 文档（测试 fake timers 迁移）已随动效用例迁 fake timers 完成而删除。
 
 ### 2.4 「打开方式」跨平台策略（D-2）
 
@@ -102,3 +102,13 @@
 | `src/renderer/src/store/app-store.ts` | `refreshFileTree()`（2026-11-25 增补） |
 | `src/renderer/src/styles/app.css` | `.context-menu` / `.context-menu-item` |
 | `src/renderer/src/components/file-panel.test.tsx` | 组件测试 |
+| `src/renderer/src/store/app-store.test.ts` | `refreshFileTree` 动效时序用例（fake timers，2026-11-26 增补） |
+
+## 5. 评审记录
+
+- 2026-11-26 两轮只读评审（reviewer 子代理探针/变异 + 主会话实跑核对），过程与
+  证据见 [../review/review-file-tree-refresh.md](../review/review-file-tree-refresh.md)。
+  一轮 M1（失败丢树）按回填方向闭环；M2（空用例）经 fake timers 重写并在修订提交
+  自证变异。二轮 R6-1（滚动还原不生效，初版实现被探针证伪）按方案 B 重做并补
+  钳制模型用例；R6-2（空白窗口字面量钉住）、n-a/n-b/n-c/n-d/n-e 已处置（n-a 记
+  已接受边缘 ③，n-e 维持随版本 bump）。待三轮评审确认。

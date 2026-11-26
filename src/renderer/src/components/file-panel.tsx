@@ -42,11 +42,24 @@ export function FilePanel() {
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [openWith, setOpenWith] = useState<string | null>(null)
   const collapsed = store.layoutRightCollapsed
-  // 刷新滚动还原（q1，2026-11-26 review）：先清空再渲染会塌缩内容高度，
-  // 浏览器把 scrollTop 钳到 0——触发沿存、回填后 layout 提交前还原
+  // 刷新滚动还原（q1→R6-1 方案 B，2026-11-26 review）：先清空再渲染会塌缩
+  // 内容高度，浏览器把 scrollTop 钳到 0；且置位与清空同帧 emit（触发帧
+  // hasLoaded 已是 false），layout effect 存不到——必须在点击时经 refreshTree
+  // 入口读。jsdom 无布局测不了真实钳制，组件测试用 scrollTop 钳制模型覆盖
   const treeRef = useRef<HTMLDivElement>(null)
   const treeScrollTop = useRef(0)
   const treeRestorePending = useRef(false)
+
+  /** 刷新动效入口（标题栏钮/右键菜单共用，review R6-1 方案 B）：清空前存滚动位，
+   *  再走 store 轮次。轮次在途时不重复存（singleflight 下不可达，防御保留） */
+  const refreshTree = () => {
+    const el = treeRef.current
+    if (el && !store.refreshingFileTree) {
+      treeScrollTop.current = el.scrollTop
+      treeRestorePending.current = true
+    }
+    store.refreshFileTree()
+  }
 
   // Hooks 必须无条件执行（项目有↔无切换时不允许 Hook 数量变化）
   useEffect(() => {
@@ -60,22 +73,22 @@ export function FilePanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasLoaded, project?.id, store.currentWorkspace?.directory, store.refreshingFileTree])
 
-  // 滚动还原走 layout effect：回填帧提交前归位，不闪跳顶（q1 dev 实测确认；
-  // jsdom 无布局测不了，见 design-file-panel-context-menu §2.3 已接受边缘）
+  // 滚动还原走 layout effect（提交前归位，不闪跳）。分支按 review R6-1 方案 B：
+  // 轮收/作废只清 pending——不带旧值跨轮/跨作用域，尾段用户已滚动不回写；
+  // 内容帧归位，根先落地时高度不足被钳制则留 pending，待后续目录落地（size
+  // 变化重触发）的内容帧重试。依赖含 refreshingFileTree 之外加 size 的理由同上
   useLayoutEffect(() => {
     const el = treeRef.current
-    if (!el) return
-    if (store.refreshingFileTree && !treeRestorePending.current && hasLoaded) {
-      // 触发沿首个内容帧：存滚动位（每轮一次；清空后的内容帧 hasLoaded=false 不覆盖）
-      treeScrollTop.current = el.scrollTop
-      treeRestorePending.current = true
-    } else if (treeRestorePending.current && hasLoaded) {
-      // 回填帧（其后任一内容帧）：归位
-      el.scrollTop = treeScrollTop.current
+    if (!el || !treeRestorePending.current) return
+    if (!store.refreshingFileTree) {
       treeRestorePending.current = false
+      return
     }
+    if (!hasLoaded) return // 空白窗口：等首个内容帧
+    el.scrollTop = treeScrollTop.current
+    if (el.scrollTop === treeScrollTop.current) treeRestorePending.current = false
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store.refreshingFileTree, hasLoaded])
+  }, [store.refreshingFileTree, hasLoaded, store.fileTreeNodes.size])
 
   if (!project) {
     // 空态（design-layout §4 无项目空状态，2026-09-06 修订）：右栏保留「文件」
@@ -119,11 +132,12 @@ export function FilePanel() {
             同排图标钮沿左栏 Plus 钮模式（.icon-btn 12px）。空态无树不放；根目录
             未加载时（含首载失败、树区常驻「加载中…」）照常渲染——刷新兼首载重试。
             在途转圈（2026-11-26）：refreshingFileTree 驱动 .spinning，重列全部
-            落地停——标题栏钮与右键菜单两入口同走 store 方法，转圈表现一致 */}
+            落地停——两入口同走 refreshTree()（清空前存滚动位，R6-1 方案 B），
+            转圈与滚动还原表现一致 */}
         <button
           className={"icon-btn tree-refresh" + (store.refreshingFileTree ? " spinning" : "")}
           title={t.fileRefresh}
-          onClick={() => store.refreshFileTree()}
+          onClick={() => refreshTree()}
         >
           <RefreshCw size={12} aria-hidden />
         </button>
@@ -137,6 +151,7 @@ export function FilePanel() {
           menu={menu}
           onClose={() => setMenu(null)}
           onOpenWith={(path) => setOpenWith(path)}
+          onRefresh={() => refreshTree()}
         />
       )}
       {openWith && (
@@ -295,10 +310,14 @@ function FileContextMenu({
   menu,
   onClose,
   onOpenWith,
+  onRefresh,
 }: {
   menu: MenuState
   onClose: () => void
   onOpenWith: (path: string) => void
+  /** 刷新整树（R6-1 方案 B）：经面板 refreshTree() 走——清空前存滚动位，
+   *  与标题栏钮共用同一还原链路 */
+  onRefresh: () => void
 }) {
   const { t } = useI18n()
   const store = useStore()
@@ -466,7 +485,7 @@ function FileContextMenu({
       {/* 刷新（§2.3 2026-11-25 增补）：树全局动作，与上方文件级动作以分隔线隔开；
           无论菜单对象是文件还是目录，均刷新整树（= 当前作用域全部已加载目录重列） */}
       <div className="context-menu-separator" />
-      <button className="context-menu-item" onClick={() => run(() => store.refreshFileTree())}>
+      <button className="context-menu-item" onClick={() => run(onRefresh)}>
         {t.fileRefresh}
       </button>
     </div>,

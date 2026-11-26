@@ -677,14 +677,20 @@ describe("文件树刷新动效时序（fake timers，design-file-panel-context-
 
     store.refreshFileTree()
     expect(store.refreshingFileTree).toBe(true)
+    // 字面量钉窗口长度（review R6-2）：advance 常量本身钉不住——BLANK 取 0/100 时
+    // 下列断言照样绿；149/1 才把「窗口 ≥150 且在 150 发起」钉死
+    await vi.advanceTimersByTimeAsync(149)
     expect(listFiles).not.toHaveBeenCalled()
-    await vi.advanceTimersByTimeAsync(FILE_TREE_REFRESH_BLANK_MS)
+    await vi.advanceTimersByTimeAsync(1)
     // 窗口后发起；子请求即刻落地——标记不得随落地即收：置位/清除同帧 emit 会被
     // App 侧 rAF 合帧成一次渲染（false 已就位），转圈一帧画不出（dev 实测不可见）
     expect(listFiles).toHaveBeenCalledTimes(1)
     expect(listFiles).toHaveBeenCalledWith(ROOT, ".")
     expect(store.refreshingFileTree).toBe(true)
-    await vi.advanceTimersByTimeAsync(FILE_TREE_SPINNER_MIN_MS - FILE_TREE_REFRESH_BLANK_MS)
+    // 补足同理用字面量差值钉住（BLANK+SPINNER 总时长）
+    await vi.advanceTimersByTimeAsync(349)
+    expect(store.refreshingFileTree).toBe(true)
+    await vi.advanceTimersByTimeAsync(1)
     expect(store.refreshingFileTree).toBe(false)
   })
 
@@ -747,12 +753,17 @@ describe("文件树刷新动效时序（fake timers，design-file-panel-context-
     expect(store.fileTreeNodes.size).toBe(0)
     expect(store.fileTreeExpandedMemory.get(ROOT)?.has("src/")).toBe(true)
     expect(store.refreshingFileTree).toBe(true)
+    // 字面量钉窗口长度（review R6-2，同「转圈最短呈现」用例）
+    await vi.advanceTimersByTimeAsync(149)
     expect(listFiles).not.toHaveBeenCalled()
-    await vi.advanceTimersByTimeAsync(FILE_TREE_REFRESH_BLANK_MS)
+    await vi.advanceTimersByTimeAsync(1)
     expect(listFiles).toHaveBeenCalledTimes(2)
     expect(listFiles).toHaveBeenCalledWith(ROOT, ".")
     expect(listFiles).toHaveBeenCalledWith(ROOT, "src/")
-    await vi.advanceTimersByTimeAsync(FILE_TREE_SPINNER_MIN_MS)
+    // 总时长字面量钉住（150 空白 + 350 补足 = 500）
+    await vi.advanceTimersByTimeAsync(349)
+    expect(store.refreshingFileTree).toBe(true)
+    await vi.advanceTimersByTimeAsync(1)
     // 全部成功：新内容在位，无回填，转圈收
     expect(store.fileTreeNodes.has(".")).toBe(true)
     expect(store.refreshingFileTree).toBe(false)
@@ -765,9 +776,17 @@ describe("文件树刷新动效时序（fake timers，design-file-panel-context-
     store.fileTreeNodes.set(".", [fileNode("README.md")])
     store.fileTreeNodes.set("src/", [fileNode("src/a.ts")])
 
+    // 回填必须 emit（review n-b）：序列 = 触发（标记真）→ 回填（标记仍真）→ 收标。
+    // 删回填后 emit 的变异在此红（序列退化为 [true, false]）。
+    // 订阅须在触发前挂（触发 emit 同步发生，后挂漏记）；advance 推到 T=500 收标
+    const emittedFlags: boolean[] = []
+    const unsubscribe = store.subscribe(() => emittedFlags.push(store.refreshingFileTree))
     store.refreshFileTree()
     expect(store.fileTreeNodes.size).toBe(0) // 清空发生
-    await vi.advanceTimersByTimeAsync(FILE_TREE_REFRESH_BLANK_MS + FILE_TREE_SPINNER_MIN_MS)
+    await vi.advanceTimersByTimeAsync(150) // 字面量钉窗口（review R6-2）
+    await vi.advanceTimersByTimeAsync(350) // T=500：补足收
+    unsubscribe()
+    expect(emittedFlags).toEqual([true, true, false])
     // loadFileNodes 吞错不写入 → 快照回填：两个 key 都回来（不回填则根常驻
     // 「加载中…」不自愈、子目录呈「…」空壳，watcher 闸门丢 key 没人救）
     expect(store.fileTreeNodes.has(".")).toBe(true)
@@ -797,9 +816,13 @@ describe("文件树刷新动效时序（fake timers，design-file-panel-context-
     store.fileTreeNodes.set(".", [])
 
     store.refreshFileTree()
+    // 字面量钉窗口（review R6-2）：切作用域前先推进 149ms 并断言未发——BLANK 取
+    // 0/100 时「窗口内切作用域」的作废路径根本走不到，断言失去意义
+    await vi.advanceTimersByTimeAsync(149)
+    expect(listFiles).not.toHaveBeenCalled()
     await store.setCurrentWorkspace(WT1)
     // 越过空白窗口 + 补足窗口：go 的代次守卫拦下，不发请求；转圈已随 resetFileTree 收
-    await vi.advanceTimersByTimeAsync(FILE_TREE_REFRESH_BLANK_MS + FILE_TREE_SPINNER_MIN_MS)
+    await vi.advanceTimersByTimeAsync(500)
     expect(listFiles).not.toHaveBeenCalled()
     expect(store.refreshingFileTree).toBe(false)
   })

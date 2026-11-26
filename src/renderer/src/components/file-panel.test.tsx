@@ -6,6 +6,7 @@
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import type { ReactNode } from "react"
 import { FilePanel } from "./file-panel"
 import type { FileNode } from "@shared/api-types"
 
@@ -318,6 +319,169 @@ describe("FilePanel 右键菜单", () => {
     expect(container.querySelector(".sidebar-heading .icon-btn")).toBeNull()
     fireEvent.contextMenu(container.querySelector("aside") as Element)
     expect(screen.queryByText("打开")).toBeNull()
+  })
+})
+
+// 刷新滚动还原（R6-1 方案 B）：jsdom 无布局，scrollTop 用钳制语义模型——
+// 写 = 钳到 [0, maxScroll]，读 = 当前值；内容塌缩/长高引发的浏览器钳制由用例
+// 手工改 value/maxScroll 模拟。每帧独立 rerender（RTL 自带 act，帧不合并）
+describe("FilePanel 刷新滚动还原（R6-1 方案 B，scrollTop 钳制模型）", () => {
+  const scrollModel = { value: 0, maxScroll: 400 }
+  let restoreScroll: (() => void) | null = null
+
+  function installScrollModel() {
+    const desc = Object.getOwnPropertyDescriptor(Element.prototype, "scrollTop")
+    Object.defineProperty(Element.prototype, "scrollTop", {
+      configurable: true,
+      get: () => scrollModel.value,
+      set: (v: number) => {
+        scrollModel.value = Math.max(0, Math.min(v, scrollModel.maxScroll))
+      },
+    })
+    restoreScroll = () => {
+      if (desc) Object.defineProperty(Element.prototype, "scrollTop", desc)
+      restoreScroll = null
+    }
+  }
+
+  afterEach(() => {
+    restoreScroll?.()
+    restoreScroll = null
+  })
+
+  /** 触发帧：真实流程置位与清空同帧 emit（hasLoaded 即 false），浏览器在塌缩帧
+   *  把 scrollTop 钳 0——节点清空、标记置位、钳 0 三件事一批，独立 rerender */
+  function triggerFrame(
+    rerender: (ui: ReactNode) => void,
+    nodes: Map<string, FileNode[]>,
+  ) {
+    nodes.clear()
+    storeStub.refreshingFileTree = true
+    scrollModel.value = 0
+    rerender(<FilePanel />)
+  }
+
+  function renderPanel(nodes: Map<string, FileNode[]>) {
+    storeStub = { ...makeStore(), fileTreeNodes: nodes }
+    return render(<FilePanel />)
+  }
+
+  function clickTitleRefresh() {
+    fireEvent.click(document.querySelector(".sidebar-heading .icon-btn") as Element)
+    expect(storeStub.refreshFileTree).toHaveBeenCalledTimes(1)
+  }
+
+  it("标题栏钮：点击时存滚动位（清空前），落地帧还原 400 而非钳后的 0", () => {
+    installScrollModel()
+    scrollModel.value = 400
+    const nodes = new Map([[".", [dirNode, fileNode]]])
+    const { rerender } = renderPanel(nodes)
+    clickTitleRefresh()
+    triggerFrame(rerender, nodes)
+    // 根落地帧：内容回来 → layout 提交前还原
+    nodes.set(".", [dirNode, fileNode])
+    rerender(<FilePanel />)
+    expect(scrollModel.value).toBe(400)
+  })
+
+  it("右键菜单：同一 refreshTree 入口，落地帧同样还原（探针 2）", () => {
+    installScrollModel()
+    scrollModel.value = 400
+    const nodes = new Map([[".", [fileNode]]])
+    const { rerender } = renderPanel(nodes)
+    fireEvent.contextMenu(screen.getByText("README.md"))
+    fireEvent.click(screen.getByText("刷新"))
+    expect(storeStub.refreshFileTree).toHaveBeenCalledTimes(1)
+    triggerFrame(rerender, nodes)
+    nodes.set(".", [fileNode])
+    rerender(<FilePanel />)
+    expect(scrollModel.value).toBe(400)
+  })
+
+  it("子目录晚于根落地：根帧高度不足被钳制，size 变化重试至还原（未探测风险 5）", () => {
+    installScrollModel()
+    scrollModel.value = 400
+    const nodes = new Map([[".", [fileNode]], ["src/", []]])
+    const { rerender } = renderPanel(nodes)
+    clickTitleRefresh()
+    // 根落地帧：内容矮（maxScroll=50）——写入被钳到 50 ≠ 400，pending 留待重试
+    triggerFrame(rerender, nodes)
+    scrollModel.maxScroll = 50
+    nodes.set(".", [fileNode])
+    rerender(<FilePanel />)
+    expect(scrollModel.value).toBe(50)
+    // src/ 落地帧：高度够 → 重试成功
+    scrollModel.maxScroll = 400
+    nodes.set("src/", [dirNode])
+    rerender(<FilePanel />)
+    expect(scrollModel.value).toBe(400)
+  })
+
+  it("补足尾段用户滚动不被收标帧回写（探针 5；91e7652 的重置缺陷）", () => {
+    installScrollModel()
+    scrollModel.value = 400
+    const nodes = new Map([[".", [fileNode]]])
+    const { rerender } = renderPanel(nodes)
+    clickTitleRefresh()
+    triggerFrame(rerender, nodes)
+    nodes.set(".", [fileNode])
+    rerender(<FilePanel />)
+    expect(scrollModel.value).toBe(400)
+    // 尾段用户滚到 250 → 收标帧不得回写
+    scrollModel.value = 250
+    storeStub.refreshingFileTree = false
+    rerender(<FilePanel />)
+    expect(scrollModel.value).toBe(250)
+  })
+
+  it("落地前切作用域：轮作废清 pending 不写入，新作用域不带旧值（探针 4）", () => {
+    installScrollModel()
+    scrollModel.value = 400
+    const nodes = new Map([[".", [fileNode]]])
+    const { rerender } = renderPanel(nodes)
+    clickTitleRefresh()
+    // 触发帧 + 作废（resetFileTree 收标记，标记 false）：pending 清、无写入
+    nodes.clear()
+    storeStub.refreshingFileTree = false
+    scrollModel.value = 0
+    rerender(<FilePanel />)
+    // 新作用域落地帧：不得写入旧值 400
+    nodes.set(".", [fileNode])
+    rerender(<FilePanel />)
+    expect(scrollModel.value).toBe(0)
+  })
+
+  it("失败回填帧还原（探针 6）：回填 emit 时标记仍真，内容帧归位", () => {
+    installScrollModel()
+    scrollModel.value = 400
+    const nodes = new Map([[".", [fileNode]], ["src/", []]])
+    const { rerender } = renderPanel(nodes)
+    clickTitleRefresh()
+    triggerFrame(rerender, nodes)
+    // settle 回填（标记仍真）→ 内容帧还原
+    nodes.set(".", [fileNode])
+    nodes.set("src/", [])
+    rerender(<FilePanel />)
+    expect(scrollModel.value).toBe(400)
+  })
+
+  it("落地后切作用域：已还原即清 pending，新作用域无残留写入（探针 3）", () => {
+    installScrollModel()
+    scrollModel.value = 400
+    const nodes = new Map([[".", [fileNode]]])
+    const { rerender } = renderPanel(nodes)
+    clickTitleRefresh()
+    triggerFrame(rerender, nodes)
+    nodes.set(".", [fileNode])
+    rerender(<FilePanel />)
+    expect(scrollModel.value).toBe(400) // 已还原、pending 清
+    // 切新作用域：滚动归零（浏览器行为），不得被旧值回写
+    scrollModel.value = 0
+    storeStub.refreshingFileTree = false
+    nodes.clear()
+    nodes.set(".", [fileNode])
+    rerender(<FilePanel />)
+    expect(scrollModel.value).toBe(0)
   })
 })
 
