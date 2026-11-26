@@ -38,6 +38,8 @@
 
 标题栏刷新钮（**2026-11-25 增补**）：「文件」标题行右侧 `.icon-btn` 图标钮（左栏 Plus 钮同模式，RefreshCw 12px），点击同走 `store.refreshFileTree()`。无项目空态无树，不放；根目录未加载时（含首载失败）两入口照常渲染——此时它们是唯一的手动重试入口（2026-11-25 review 一轮 #1）。刷新是显式重列而非去抖（`scheduleTreeRefresh` 是 watcher 事件合并机制，用户动作即时执行）；`loadFileNodes` 落地闸门自带切换/重连防御。
 
+在途转圈（**2026-11-26 增补**）：触发即置位 `store.refreshingFileTree`，标题栏钮加 `.spinning`（复用 `typing-spin` keyframes 旋转，`prefers-reduced-motion` 下不转）；全部子请求落地（`loadFileNodes` 吞错必 resolve，成功/失败皆算完成）清除置位并停转——转圈即真实获取进度；成功落地逐 key emit 重渲列表，展开状态全程保留。两入口（标题栏钮/右键菜单）同走 store 方法，转圈表现一致；菜单项点击后菜单即关，转圈呈现在常驻的标题栏钮上。singleflight：在途期间重复触发合并进当轮（目录层面无 inflight 去重是既定取舍，轮级合并即可）；切作用域随 `resetFileTree` 作废在途轮（转圈即收 + 代次前进，旧轮落地不得误清新轮标记）。
+
 ### 2.4 「打开方式」跨平台策略（D-2）
 
 系统级「打开方式」机制各平台不对称：

@@ -89,8 +89,14 @@ export function FilePanel() {
         <span>{t.filesTitle}</span>
         {/* 刷新整树（design-file-panel-context-menu §2.3 2026-11-25 增补）：
             同排图标钮沿左栏 Plus 钮模式（.icon-btn 12px）。空态无树不放；根目录
-            未加载时（含首载失败、树区常驻「加载中…」）照常渲染——刷新兼首载重试 */}
-        <button className="icon-btn" title={t.fileRefresh} onClick={() => store.refreshFileTree()}>
+            未加载时（含首载失败、树区常驻「加载中…」）照常渲染——刷新兼首载重试。
+            在途转圈（2026-11-26）：refreshingFileTree 驱动 .spinning，重列全部
+            落地停——标题栏钮与右键菜单两入口同走 store 方法，转圈表现一致 */}
+        <button
+          className={"icon-btn tree-refresh" + (store.refreshingFileTree ? " spinning" : "")}
+          title={t.fileRefresh}
+          onClick={() => store.refreshFileTree()}
+        >
           <RefreshCw size={12} aria-hidden />
         </button>
       </div>

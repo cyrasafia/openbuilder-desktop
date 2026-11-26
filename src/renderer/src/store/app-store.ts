@@ -3874,6 +3874,10 @@ export class AppStore {
     // （loadFileNodes 的闸门只挡在途期间切走，不挡落地前切走，design-file-watcher §3.2）
     for (const timer of this.treeRefreshTimers.values()) clearTimeout(timer)
     this.treeRefreshTimers.clear()
+    // 手动整树刷新的在途轮随作用域切换作废：收转圈 + 前进代次（旧轮落地不得
+    // 收新作用域已开启的新轮标记，见 refreshFileTree 代次守卫）
+    this.refreshingFileTree = false
+    this.fileTreeRefreshSeq++
     this.repullExpandedDirs()
   }
 
@@ -8378,9 +8382,33 @@ export class AppStore {
    * （review 一轮 #1）；首载在途时刷新多发一次根请求，结果一致无害。
    * 落地闸门（loadFileNodes 内作用域守卫）自带切换/重连防御；调用方不经去抖
    * （scheduleTreeRefresh 是 watcher 事件合并，用户动作即时执行）。
+   *
+   * 在途转圈（2026-11-26 增补）：refreshingFileTree 置位驱动标题栏钮旋转，全部
+   * 子请求落地清除（loadFileNodes 吞错必 resolve，成功/失败皆算完成）——转圈
+   * 即真实获取进度，成功落地逐 key emit 重渲列表。singleflight：在途期间重复
+   * 触发合并进当轮（目录层面无 inflight 去重是既定取舍，轮级合并即可）；切
+   * 作用域经 resetFileTree 作废在途轮，代次守卫防旧轮落地误清标记。
    */
+  refreshingFileTree = false
+  private fileTreeRefreshSeq = 0
+
   refreshFileTree() {
-    for (const path of new Set([".", ...this.fileTreeNodes.keys()])) void this.loadFileNodes(path)
+    if (this.refreshingFileTree) return
+    const keys = new Set([".", ...this.fileTreeNodes.keys()])
+    this.refreshingFileTree = true
+    const seq = ++this.fileTreeRefreshSeq
+    this.emit()
+    void Promise.all([...keys].map((path) => this.loadFileNodes(path)))
+      // 防御：当前 loadFileNodes 吞错不可达 reject，但标记悬挂会锁死 singleflight
+      // （转圈永转、后续点击全无效）——链路加空 catch 不赌将来不变
+      .catch(() => {})
+      .then(() => {
+        // 旧轮落地不清新轮标记：切作用域作废（resetFileTree 前进代次）与新刷新
+        // 开启的轮次都使代次前进，代次不符 = 本轮已被取代，不得收标记
+        if (seq !== this.fileTreeRefreshSeq) return
+        this.refreshingFileTree = false
+        this.emit()
+      })
   }
 
   // ============ 文件监听失效（design-file-watcher） ============

@@ -84,6 +84,7 @@ function makeStore(): Record<string, unknown> {
     activeTab: null,
     loadFileNodes: vi.fn(async () => {}),
     refreshFileTree: vi.fn(),
+    refreshingFileTree: false,
     pushOverlay: vi.fn(),
     popOverlay: vi.fn(),
     toggleFileNode: vi.fn(),
@@ -238,6 +239,18 @@ describe("FilePanel 右键菜单", () => {
     fireEvent.contextMenu(screen.getByText("src"))
     fireEvent.click(screen.getByText("刷新"))
     expect(storeStub.refreshFileTree).toHaveBeenCalledTimes(3)
+  })
+
+  it("刷新在途转圈（2026-11-26）：refreshingFileTree 驱动 .spinning 类；静止无类", () => {
+    storeStub = { ...makeStore(), refreshingFileTree: true }
+    const { container } = render(<FilePanel />)
+    const btn = container.querySelector(".sidebar-heading .icon-btn") as Element
+    expect(btn.classList.contains("spinning")).toBe(true)
+    cleanup()
+    storeStub = makeStore()
+    render(<FilePanel />)
+    const idle = document.querySelector(".sidebar-heading .icon-btn") as Element
+    expect(idle.classList.contains("spinning")).toBe(false)
   })
 
   it("根目录未加载（首载失败后常驻「加载中…」）：两刷新入口仍在——刷新兼首载重试（review 一轮 #1）", () => {

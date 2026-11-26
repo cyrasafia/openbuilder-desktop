@@ -627,6 +627,48 @@ describe("文件树展开状态跨作用域记忆（design-file-tree-expand-memo
     expect(listFiles).toHaveBeenCalledWith(ROOT, ".")
   })
 
+  it("refreshFileTree 在途标记（2026-11-26 转圈）：置位→全部落地清；在途合并；切作用域作废旧轮不误清新轮", async () => {
+    // 根请求按次序取 deferred（第 1 轮 roots[0]、第 2 轮 roots[1]）；子目录共享 dSrc
+    const rootRounds = [deferred<FileNode[]>(), deferred<FileNode[]>()]
+    const dSrc = deferred<FileNode[]>()
+    let rootCall = 0
+    const listFiles = vi.fn(async (_dir: string, path: string) =>
+      path === "." ? rootRounds[rootCall++].promise : dSrc.promise,
+    )
+    clientRef().listFiles = listFiles
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+    store.fileTreeNodes.set(".", [])
+    store.fileTreeNodes.set("src/", [])
+
+    // 第 1 轮：置位；在途重复触发合并进当轮（不发起第二轮请求）
+    store.refreshFileTree()
+    expect(store.refreshingFileTree).toBe(true)
+    store.refreshFileTree()
+    expect(listFiles).toHaveBeenCalledTimes(2)
+
+    // 切作用域：在途轮作废（转圈收 + 代次前进）
+    await store.setCurrentWorkspace(WT1)
+    expect(store.refreshingFileTree).toBe(false)
+    listFiles.mockClear()
+
+    // 第 2 轮（新作用域树已清 → 仅根）：旧轮全部子请求在新轮在途时落地——
+    // 旧轮 Promise.all 真正走完 .then，代次守卫挡下，不得收新轮标记
+    // （变异验证：删守卫此断言即红）
+    store.refreshFileTree()
+    expect(store.refreshingFileTree).toBe(true)
+    rootRounds[0].resolve([])
+    dSrc.resolve([])
+    await new Promise((r) => setTimeout(r, 0))
+    expect(store.refreshingFileTree).toBe(true)
+    // 新轮根落地 → 转圈收；新作用域只重列根（树已清，无子目录 key）
+    rootRounds[1].resolve([])
+    await waitFor(() => expect(store.refreshingFileTree).toBe(false))
+    expect(listFiles).toHaveBeenCalledTimes(1)
+    expect(listFiles).toHaveBeenCalledWith(WT1, ".")
+  })
+
   it("worktree 目录卸载：展开记忆随目录清除", async () => {
     const s2 = session("s2", WT1, { created: 2, updated: 2 })
     store.sessionsByProject.set("proj1", sessionsOf(s2))
