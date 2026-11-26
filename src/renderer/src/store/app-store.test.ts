@@ -6,7 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { waitFor } from "@testing-library/react"
-import { AppStore, diffTabKey, diffDataKey, FILE_WATCH_DEBOUNCE_MS, FILE_WATCH_REARM_MS } from "./app-store"
+import { AppStore, diffTabKey, diffDataKey, FILE_TREE_REFRESH_BLANK_MS, FILE_WATCH_DEBOUNCE_MS, FILE_WATCH_REARM_MS } from "./app-store"
 import type { Attachment } from "@shared/attachment-pipeline"
 import { ApiError, RestClient } from "@shared/rest-client"
 import { toInternalMessages } from "@shared/v2-adapter"
@@ -627,7 +627,7 @@ describe("文件树展开状态跨作用域记忆（design-file-tree-expand-memo
     expect(listFiles).toHaveBeenCalledWith(ROOT, ".")
   })
 
-  it("refreshFileTree 在途标记（2026-11-26 转圈）：置位→全部落地清；在途合并；切作用域作废旧轮不误清新轮", async () => {
+  it("refreshFileTree 在途标记（2026-11-26 转圈）：置位→全部落地清；在途合并；旧轮落地不误清新轮", async () => {
     // 根请求按次序取 deferred（第 1 轮 roots[0]、第 2 轮 roots[1]）；子目录共享 dSrc
     const rootRounds = [deferred<FileNode[]>(), deferred<FileNode[]>()]
     const dSrc = deferred<FileNode[]>()
@@ -642,11 +642,14 @@ describe("文件树展开状态跨作用域记忆（design-file-tree-expand-memo
     store.fileTreeNodes.set(".", [])
     store.fileTreeNodes.set("src/", [])
 
-    // 第 1 轮：置位；在途重复触发合并进当轮（不发起第二轮请求）
+    // 第 1 轮：置位；空白窗口内不发起重列；在途重复触发合并进当轮
     store.refreshFileTree()
     expect(store.refreshingFileTree).toBe(true)
     store.refreshFileTree()
-    expect(listFiles).toHaveBeenCalledTimes(2)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(listFiles).not.toHaveBeenCalled()
+    // 空白窗口过后重列发起：根 + 子目录各一次
+    await waitFor(() => expect(listFiles).toHaveBeenCalledTimes(2))
 
     // 切作用域：在途轮作废（转圈收 + 代次前进）
     await store.setCurrentWorkspace(WT1)
@@ -664,9 +667,65 @@ describe("文件树展开状态跨作用域记忆（design-file-tree-expand-memo
     expect(store.refreshingFileTree).toBe(true)
     // 新轮根落地 → 转圈收；新作用域只重列根（树已清，无子目录 key）
     rootRounds[1].resolve([])
-    await waitFor(() => expect(store.refreshingFileTree).toBe(false))
+    await waitFor(() => expect(store.refreshingFileTree).toBe(false), { timeout: 2000 })
     expect(listFiles).toHaveBeenCalledTimes(1)
     expect(listFiles).toHaveBeenCalledWith(WT1, ".")
+  })
+
+  it("先清空再渲染（2026-11-26）：触发即清树（展开记忆不动），空白窗口后才发起重列", async () => {
+    const listFiles = vi.fn(async () => [fileNode("src/a.ts", "file")])
+    clientRef().listFiles = listFiles
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+    store.fileTreeNodes.set(".", [fileNode("README.md", "file")])
+    store.fileTreeNodes.set("src/", [])
+    // 展开记忆直写（不经 toggleFileNode：其触发的首拉是即时请求，会污染清空窗口断言）
+    store.fileTreeExpandedMemory.set(ROOT, new Set(["src/"]))
+
+    store.refreshFileTree()
+    // 现树立即撤下；展开记忆不动；窗口内不发请求（清空帧先画，否则被 rAF 合帧吞掉）
+    expect(store.fileTreeNodes.size).toBe(0)
+    expect(store.fileTreeExpandedMemory.get(ROOT)?.has("src/")).toBe(true)
+    expect(store.refreshingFileTree).toBe(true)
+    expect(listFiles).not.toHaveBeenCalled()
+    await new Promise((r) => setTimeout(r, 50))
+    expect(listFiles).not.toHaveBeenCalled()
+    // 窗口后重列：根 + 曾加载的子目录，落地回填
+    await waitFor(() => expect(listFiles).toHaveBeenCalledTimes(2))
+    expect(listFiles).toHaveBeenCalledWith(ROOT, ".")
+    expect(listFiles).toHaveBeenCalledWith(ROOT, "src/")
+    await waitFor(() => expect(store.fileTreeNodes.has(".")).toBe(true))
+  })
+
+  it("空白窗口内切作用域：本轮作废，重列不发请求", async () => {
+    const listFiles = vi.fn(async () => [] as FileNode[])
+    clientRef().listFiles = listFiles
+    snapshots.set(ROOT, [])
+    snapshots.set(WT1, [])
+    snapshots.set(WT2, [])
+    store.fileTreeNodes.set(".", [])
+
+    store.refreshFileTree()
+    await store.setCurrentWorkspace(WT1)
+    // 越过空白窗口：go 的代次守卫拦下，不发请求；转圈已随 resetFileTree 收
+    await new Promise((r) => setTimeout(r, FILE_TREE_REFRESH_BLANK_MS + 50))
+    expect(listFiles).not.toHaveBeenCalled()
+    expect(store.refreshingFileTree).toBe(false)
+  })
+
+  it("转圈最短呈现（2026-11-26）：快落地不闪收——补足到 FILE_TREE_SPINNER_MIN_MS 再清", async () => {
+    const listFiles = vi.fn(async () => [] as FileNode[])
+    clientRef().listFiles = listFiles
+    store.fileTreeNodes.set(".", [])
+
+    store.refreshFileTree()
+    expect(store.refreshingFileTree).toBe(true)
+    // 子请求即刻落地：标记不得随落地即收——置位/清除同帧 emit 会被 App 侧 rAF
+    // 合帧成一次渲染（false 已就位），转圈一帧画不出（dev 联调实测不可见）
+    await new Promise((r) => setTimeout(r, 50))
+    expect(store.refreshingFileTree).toBe(true)
+    await waitFor(() => expect(store.refreshingFileTree).toBe(false), { timeout: 2000 })
   })
 
   it("worktree 目录卸载：展开记忆随目录清除", async () => {

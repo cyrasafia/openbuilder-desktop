@@ -45,7 +45,10 @@ export function FilePanel() {
 
   // Hooks 必须无条件执行（项目有↔无切换时不允许 Hook 数量变化）
   useEffect(() => {
-    if (project && !hasLoaded) void store.loadFileNodes(".")
+    // 刷新在途（先清空再渲染的空白窗口）不抢跑根首载：重列集合自带 "."，抢跑
+    // 会让根行在窗口内提前回填、清空帧被吞（多一轮重复请求）；首载失败的补拉
+    // 走刷新钮（重列集合根恒在），不靠本效应重触发
+    if (project && !hasLoaded && !store.refreshingFileTree) void store.loadFileNodes(".")
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasLoaded, project?.id, store.currentWorkspace?.directory])
 

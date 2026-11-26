@@ -38,7 +38,9 @@
 
 标题栏刷新钮（**2026-11-25 增补**）：「文件」标题行右侧 `.icon-btn` 图标钮（左栏 Plus 钮同模式，RefreshCw 12px），点击同走 `store.refreshFileTree()`。无项目空态无树，不放；根目录未加载时（含首载失败）两入口照常渲染——此时它们是唯一的手动重试入口（2026-11-25 review 一轮 #1）。刷新是显式重列而非去抖（`scheduleTreeRefresh` 是 watcher 事件合并机制，用户动作即时执行）；`loadFileNodes` 落地闸门自带切换/重连防御。
 
-在途转圈（**2026-11-26 增补**）：触发即置位 `store.refreshingFileTree`，标题栏钮加 `.spinning`（复用 `typing-spin` keyframes 旋转，`prefers-reduced-motion` 下不转）；全部子请求落地（`loadFileNodes` 吞错必 resolve，成功/失败皆算完成）清除置位并停转——转圈即真实获取进度；成功落地逐 key emit 重渲列表，展开状态全程保留。两入口（标题栏钮/右键菜单）同走 store 方法，转圈表现一致；菜单项点击后菜单即关，转圈呈现在常驻的标题栏钮上。singleflight：在途期间重复触发合并进当轮（目录层面无 inflight 去重是既定取舍，轮级合并即可）；切作用域随 `resetFileTree` 作废在途轮（转圈即收 + 代次前进，旧轮落地不得误清新轮标记）。
+在途转圈（**2026-11-26 增补**）：触发即置位 `store.refreshingFileTree`，标题栏钮加 `.spinning`（复用 `typing-spin` keyframes 旋转，`prefers-reduced-motion` 下不转）；全部子请求落地（`loadFileNodes` 吞错必 resolve，成功/失败皆算完成）后收置位停转——转圈即真实获取进度；成功落地逐 key emit 重渲列表，展开状态全程保留。**最短呈现**：本地 server 重列数十 ms 即落地，置位/清除同帧 emit 被 App 订阅侧 rAF 合帧成一次渲染（false 已就位）转圈一帧画不出（dev 联调实测不可见），过短闪现肉眼亦不可辨——落地不足 500ms（`FILE_TREE_SPINNER_MIN_MS`）补足到最短再收，延迟期间 singleflight 照常占位，代次守卫同样约束补足定时器。
+
+先清空再渲染（**2026-11-26 增补**，用户反馈「否则看不出来刷了」）：触发即清空 `fileTreeNodes`——树区回「加载中…」占位、展开记忆不动（key 集已快照进重列集合），`FILE_TREE_REFRESH_BLANK_MS`（150ms）后才发起重列。空白窗口是必要的：清空与落地若同帧 emit 会被 rAF 合帧吞掉，空白一帧不染、手势不可见（与转圈不可见同根源）。窗口内挂载效应不抢跑根首载（`FilePanel` 挂载效应闸 `refreshingFileTree`）：重列集合根恒在，抢跑会让根行提前回填、清空帧被吞。两入口（标题栏钮/右键菜单）同走 store 方法，动效一致；菜单项点击后菜单即关，动效呈现在常驻的右栏。singleflight：在途期间重复触发合并进当轮（目录层面无 inflight 去重是既定取舍，轮级合并即可）；切作用域随 `resetFileTree` 作废在途轮（转圈即收 + 代次前进，代次守卫约束落地、空白发起、补足收标三处定时器）。
 
 ### 2.4 「打开方式」跨平台策略（D-2）
 

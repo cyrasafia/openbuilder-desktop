@@ -265,6 +265,28 @@ describe("FilePanel 右键菜单", () => {
     expect(storeStub.refreshFileTree).toHaveBeenCalledTimes(2)
   })
 
+  it("根未加载且刷新在途：挂载效应不抢跑根首载（2026-11-26 先清空再渲染，抢跑吞清空帧）", () => {
+    storeStub = {
+      ...makeStore(),
+      fileTreeNodes: new Map(),
+      refreshingFileTree: true,
+      loadFileNodes: vi.fn(async () => {}),
+    }
+    render(<FilePanel />)
+    expect(screen.getByText("加载中…")).toBeTruthy()
+    expect(storeStub.loadFileNodes).not.toHaveBeenCalled()
+    cleanup()
+    // 刷新不在途：效应照常首载根
+    storeStub = {
+      ...makeStore(),
+      fileTreeNodes: new Map(),
+      refreshingFileTree: false,
+      loadFileNodes: vi.fn(async () => {}),
+    }
+    render(<FilePanel />)
+    expect(storeStub.loadFileNodes).toHaveBeenCalledWith(".")
+  })
+
   it("ignored 节点展示且带弱化类（design-layout §5：不再过滤）", () => {
     render(<FilePanel />)
     // 文件行与目录行都覆盖

@@ -147,6 +147,22 @@ export const FILE_WATCH_DEBOUNCE_MS = 300
  *  记录满 12 小时重启监听（对账定时器搭车），监听与 file Tab 同寿 */
 export const FILE_WATCH_REARM_MS = 12 * 60 * 60 * 1000
 
+/**
+ * 整树刷新转圈最短呈现（design-file-panel-context-menu §2.3 2026-11-26 增补）：
+ * 本地 server 重列常在数十 ms 内落地——置位/清除同帧 emit 会被 App 订阅侧 rAF
+ * 合帧成一次渲染（false 已就位），转圈一帧都画不出；过短闪现肉眼亦不可辨。
+ * 落地早于最短时长时补足到最短再收标记（延迟期间 singleflight 照常占位）。
+ */
+export const FILE_TREE_SPINNER_MIN_MS = 500
+
+/**
+ * 整树刷新空白窗口（2026-11-26 增补「先清空再渲染」）：触发即清空现树（树区回
+ * 「加载中…」占位），此窗口后才发起重列——清空帧先画出来。不清窗口直接发请求
+ * 时，本地 server 数十 ms 落地会与清空 emit 撞进同一 rAF 帧被合帧吞掉，空白
+ * 一帧不染、刷新手势不可见（与转圈不可见同根源）。
+ */
+export const FILE_TREE_REFRESH_BLANK_MS = 150
+
 type FileWatchOperation = {
   id: number
   key: string
@@ -8385,9 +8401,13 @@ export class AppStore {
    *
    * 在途转圈（2026-11-26 增补）：refreshingFileTree 置位驱动标题栏钮旋转，全部
    * 子请求落地清除（loadFileNodes 吞错必 resolve，成功/失败皆算完成）——转圈
-   * 即真实获取进度，成功落地逐 key emit 重渲列表。singleflight：在途期间重复
-   * 触发合并进当轮（目录层面无 inflight 去重是既定取舍，轮级合并即可）；切
-   * 作用域经 resetFileTree 作废在途轮，代次守卫防旧轮落地误清标记。
+   * 即真实获取进度，成功落地逐 key emit 重渲列表。**先清空再渲染**：触发即清
+   * 空现树（树区回「加载中…」占位；展开记忆不动），FILE_TREE_REFRESH_BLANK_MS
+   * 后才发起重列——清空帧先画出来，否则落地过快与清空 emit 同帧被 rAF 合帧
+   * 吞掉，看不出刷新发生过（dev 联调实测）。**最短呈现**：落地不足
+   * FILE_TREE_SPINNER_MIN_MS 补足到最短再收。singleflight：在途（含空白/补足
+   * 窗口）期间重复触发合并进当轮；切作用域经 resetFileTree 作废在途轮，代次
+   * 守卫约束落地、空白发起、补足收标三处定时器。
    */
   refreshingFileTree = false
   private fileTreeRefreshSeq = 0
@@ -8397,18 +8417,33 @@ export class AppStore {
     const keys = new Set([".", ...this.fileTreeNodes.keys()])
     this.refreshingFileTree = true
     const seq = ++this.fileTreeRefreshSeq
+    const startedAt = Date.now()
+    // 先清空再渲染：现树立即撤下（展开记忆不动，key 集已快照进 keys）
+    this.fileTreeNodes.clear()
     this.emit()
-    void Promise.all([...keys].map((path) => this.loadFileNodes(path)))
-      // 防御：当前 loadFileNodes 吞错不可达 reject，但标记悬挂会锁死 singleflight
-      // （转圈永转、后续点击全无效）——链路加空 catch 不赌将来不变
-      .catch(() => {})
-      .then(() => {
-        // 旧轮落地不清新轮标记：切作用域作废（resetFileTree 前进代次）与新刷新
-        // 开启的轮次都使代次前进，代次不符 = 本轮已被取代，不得收标记
+    const settle = () => {
+      // 旧轮落地不清新轮标记：切作用域作废（resetFileTree 前进代次）与新刷新
+      // 开启的轮次都使代次前进，代次不符 = 本轮已被取代，不得收标记
+      if (seq !== this.fileTreeRefreshSeq) return
+      const clear = () => {
+        // 补足窗口内切作用域/开新轮 → 代次前进，定时器同样不得收标记
         if (seq !== this.fileTreeRefreshSeq) return
         this.refreshingFileTree = false
         this.emit()
-      })
+      }
+      const rest = FILE_TREE_SPINNER_MIN_MS - (Date.now() - startedAt)
+      if (rest <= 0) clear()
+      else setTimeout(clear, rest)
+    }
+    // 空白窗口后才发起重列（发起前再查代次：窗口内切作用域 = 本轮作废，不发）
+    setTimeout(() => {
+      if (seq !== this.fileTreeRefreshSeq) return
+      void Promise.all([...keys].map((path) => this.loadFileNodes(path)))
+        // 防御：当前 loadFileNodes 吞错不可达 reject，但标记悬挂会锁死 singleflight
+        // （转圈永转、后续点击全无效）——链路加空 catch 不赌将来不变
+        .catch(() => {})
+        .then(settle)
+    }, FILE_TREE_REFRESH_BLANK_MS)
   }
 
   // ============ 文件监听失效（design-file-watcher） ============
