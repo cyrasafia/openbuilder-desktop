@@ -163,6 +163,14 @@ export const FILE_TREE_SPINNER_MIN_MS = 500
  */
 export const FILE_TREE_REFRESH_BLANK_MS = 150
 
+/**
+ * 收标滞后拍（2026-11-26 三轮评审，R6-1 遗留窗口）：收标 emit 与最后落地 emit
+ * 至少隔此拍数——两者同帧（或落入同一 rAF 合帧窗）时，组件在 refreshing=true
+ * 帧上做还原/重试的机会被吞，慢 server（重列 ≥ 最短转圈）下刷新跳顶复现。
+ * 50ms ≈ 3 帧，足够错开合帧窗。
+ */
+export const FILE_TREE_CLEAR_GAP_MS = 50
+
 type FileWatchOperation = {
   id: number
   key: string
@@ -8448,8 +8456,10 @@ export class AppStore {
         this.emit()
       }
       const rest = FILE_TREE_SPINNER_MIN_MS - (Date.now() - startedAt)
-      if (rest <= 0) clear()
-      else setTimeout(clear, rest)
+      // 收标至少滞后最后落地一拍（FILE_TREE_CLEAR_GAP_MS）：同拍 emit 被 rAF 合帧
+      // 成一次渲染时，组件在 refreshing=true 帧的还原/重试被吞、跳顶复现（三轮
+      // 评审 R6-1 遗留窗口，慢 server 重列 ≥ 最短转圈即触发）
+      setTimeout(clear, Math.max(rest, FILE_TREE_CLEAR_GAP_MS))
     }
     // 空白窗口后才发起重列（发起前再查代次：窗口内切作用域 = 本轮作废，不发）
     setTimeout(() => {

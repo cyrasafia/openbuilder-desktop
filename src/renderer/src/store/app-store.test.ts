@@ -810,6 +810,23 @@ describe("文件树刷新动效时序（fake timers，design-file-panel-context-
     expect(store.refreshingFileTree).toBe(false)
   })
 
+  it("慢轮（落地晚于最短转圈）：收标滞后最后落地一拍，组件内容帧不被合帧吞", async () => {
+    const d = deferred<FileNode[]>()
+    clientRef().listFiles = vi.fn(async () => d.promise)
+    store.fileTreeNodes.set(".", [])
+
+    store.refreshFileTree()
+    await vi.advanceTimersByTimeAsync(150) // T=150：发起，请求在途
+    await vi.advanceTimersByTimeAsync(400) // T=550：早已过最短转圈点（rest ≤ 0）
+    d.resolve([])
+    await vi.advanceTimersByTimeAsync(0) // 落地 + settle 同步段
+    // 收标不得与落地同拍（rAF 合帧会吞掉组件在 refreshing=true 帧的还原/重试，
+    // 三轮评审遗留窗口）——须滞后 FILE_TREE_CLEAR_GAP_MS
+    expect(store.refreshingFileTree).toBe(true)
+    await vi.advanceTimersByTimeAsync(50)
+    expect(store.refreshingFileTree).toBe(false)
+  })
+
   it("空白窗口内切作用域：本轮作废，重列不发请求", async () => {
     const listFiles = vi.fn(async () => [] as FileNode[])
     clientRef().listFiles = listFiles
